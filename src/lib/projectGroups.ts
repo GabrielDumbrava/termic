@@ -41,3 +41,25 @@ export function projectSections(list: Project[]): ProjectSection[] {
  *  pulled together at the group's position). */
 export const visualProjectOrder = (list: Project[]): Project[] =>
   projectSections(list).flatMap(s => (s.kind === "loose" ? [s.p] : s.members));
+
+/** Section list ordered so any section holding an active task floats to the
+ *  top, sections keeping their relative order otherwise (Array.sort is stable).
+ *
+ *  Section AFTER sorting, never before. The dashboard has floated projects with
+ *  live tasks to the top since the project list learned to scroll, and sorting
+ *  the flat project list first would interleave that rule with the sectioning
+ *  one: a group is anchored at its FIRST member's index, so moving members
+ *  around moves the folder and reorders it internally. With store order
+ *  `A(group G, idle), B(loose, active), C(group G, active)`, sorting first
+ *  gives `[B, G{C, A}]` where the sidebar renders `[G{A, C}, B]` — the folder
+ *  lands in a different place AND its members swap. Sorting whole sections
+ *  keeps a folder intact and keeps its members in the order every other
+ *  surface shows them. */
+export function sortSectionsActiveFirst(
+  sections: ProjectSection[],
+  isActive: (projectId: string) => boolean,
+): ProjectSection[] {
+  const active = (s: ProjectSection): boolean =>
+    s.kind === "loose" ? isActive(s.p.id) : s.members.some(p => isActive(p.id));
+  return [...sections].sort((a, b) => Number(active(b)) - Number(active(a)));
+}

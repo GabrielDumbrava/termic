@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { groupOf, projectSections, visualProjectOrder } from "@/lib/projectGroups";
+import { groupOf, projectSections, sortSectionsActiveFirst, visualProjectOrder } from "@/lib/projectGroups";
 import type { Project } from "@/lib/types";
 
 // Only id/name/group matter to the helpers; keep fixtures terse.
@@ -67,5 +67,44 @@ describe("visualProjectOrder", () => {
   it("is the identity for a group-free list", () => {
     const list = [proj("a"), proj("b"), proj("c")];
     expect(visualProjectOrder(list)).toEqual(list);
+  });
+});
+
+describe("sortSectionsActiveFirst", () => {
+  // The bug this helper exists to prevent: sorting the flat project list and
+  // THEN sectioning moves the folder (a group is anchored at its first
+  // member's index) and reorders its members. Sorting sections does neither.
+  const list = [proj("a", "G"), proj("b"), proj("c", "G")];
+  const activeIs = (...ids: string[]) => (id: string) => ids.includes(id);
+
+  it("floats a section whose member has an active task, folder intact", () => {
+    const sorted = sortSectionsActiveFirst(projectSections(list), activeIs("c"));
+    expect(sorted.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(["G", "b"]);
+    // Members keep STORE order: "c" being the active one does not promote it
+    // inside its own folder.
+    expect((sorted[0] as Extract<typeof sorted[number], { kind: "group" }>).members.map(p => p.id))
+      .toEqual(["a", "c"]);
+  });
+
+  it("floats a loose active project above an idle folder", () => {
+    const sorted = sortSectionsActiveFirst(projectSections(list), activeIs("b"));
+    expect(sorted.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(["b", "G"]);
+  });
+
+  it("is stable: with nothing active, order is untouched", () => {
+    const sorted = sortSectionsActiveFirst(projectSections(list), () => false);
+    expect(sorted.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(["G", "b"]);
+  });
+
+  it("is stable: with everything active, order is untouched", () => {
+    const sorted = sortSectionsActiveFirst(projectSections(list), () => true);
+    expect(sorted.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(["G", "b"]);
+  });
+
+  it("does not mutate the input", () => {
+    const sections = projectSections(list);
+    const before = sections.map(s => (s.kind === "loose" ? s.p.id : s.name));
+    sortSectionsActiveFirst(sections, activeIs("b"));
+    expect(sections.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(before);
   });
 });

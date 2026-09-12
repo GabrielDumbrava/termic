@@ -29,7 +29,7 @@ vi.mock("@/lib/agents", () => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { isTabOnScreenIn, isUserWatching, useApp } from "@/store/app";
+import { isTabOnScreenIn, isUserWatching, RECENT_TASKS_CAP, useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
 import { markUnattendedSpawn, takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import type { QueueItem, PaneLeaf, Tab, TerminalTab, PersistedTab } from "@/lib/types";
@@ -1385,5 +1385,101 @@ describe("ensureDefaultTab — unattended restore mark", () => {
     useApp.getState().ensureDefaultTab("ws1", "claude");
     const tabs = useApp.getState().tabs["ws1"] as TerminalTab[];
     expect(tabs[0].unattended).toBeUndefined();
+  });
+});
+
+// ── dashboard recents (localStorage-backed task MRU) ──────────────────
+
+describe("recentTasks", () => {
+  const task = (id: string, archived = false) =>
+    ({ id, project_id: "p1", name: id, archived } as import("@/lib/types").Task);
+
+  // Same Map-backed fake as the group-state block: Node's experimental global
+  // localStorage shadows happy-dom's and is unusable without a backing file.
+  function fakeLocalStorage() {
+    const store = new Map<string, string>();
+    return {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+      clear: () => { store.clear(); },
+    };
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    useApp.setState({
+      recentTasks: [],
+      tasks: [task("a"), task("b"), task("c")],
+      mountedTasks: new Set<string>(),
+      collapsedProjects: {},
+      collapsedGroups: {},
+    });
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const recents = () => useApp.getState().recentTasks;
+
+  it("pushes the activated task to the front and persists it", () => {
+    useApp.getState().setActiveTask("a");
+    expect(recents()).toEqual(["a"]);
+    expect(JSON.parse(localStorage.getItem("recentTasks")!)).toEqual(["a"]);
+  });
+
+  it("orders newest first", () => {
+    useApp.getState().setActiveTask("a");
+    useApp.getState().setActiveTask("b");
+    expect(recents()).toEqual(["b", "a"]);
+  });
+
+  it("dedupes: revisiting a task moves it up rather than repeating it", () => {
+    useApp.getState().setActiveTask("a");
+    useApp.getState().setActiveTask("b");
+    useApp.getState().setActiveTask("a");
+    expect(recents()).toEqual(["a", "b"]);
+  });
+
+  it("caps the list, dropping the oldest", () => {
+    const many = Array.from({ length: RECENT_TASKS_CAP + 3 }, (_, i) => `t${i}`);
+    useApp.setState({ tasks: many.map(id => task(id)) });
+    for (const id of many) useApp.getState().setActiveTask(id);
+    expect(recents()).toHaveLength(RECENT_TASKS_CAP);
+    expect(recents()[0]).toBe(many[many.length - 1]);
+    expect(recents()).not.toContain("t0");
+  });
+
+  it("does not write when the task is already the newest entry", () => {
+    useApp.getState().setActiveTask("a");
+    const before = recents();
+    useApp.getState().setActiveTask("a");
+    // Same ARRAY, not merely equal: a fresh array would invalidate every
+    // subscriber reading recentTasks for a list that did not change.
+    expect(recents()).toBe(before);
+  });
+
+  it("records nothing when the active task is cleared", () => {
+    useApp.getState().setActiveTask("a");
+    useApp.getState().setActiveTask(null);
+    expect(recents()).toEqual(["a"]);
+  });
+
+  it("loadAll prunes ids that no longer resolve to an open task", async () => {
+    useApp.setState({ recentTasks: ["gone", "a", "archived"] });
+    const ipc = await import("@/lib/ipc");
+    vi.mocked(ipc.tasksList).mockResolvedValueOnce([task("a"), task("archived", true)]);
+    await useApp.getState().loadAll();
+    // "gone" no longer exists and "archived" belongs to History now, so
+    // neither may sit in the Recent row offering a dead link.
+    expect(recents()).toEqual(["a"]);
+    expect(JSON.parse(localStorage.getItem("recentTasks")!)).toEqual(["a"]);
+  });
+
+  it("loadAll leaves an already-clean list alone", async () => {
+    useApp.setState({ recentTasks: ["a"] });
+    const before = useApp.getState().recentTasks;
+    const ipc = await import("@/lib/ipc");
+    vi.mocked(ipc.tasksList).mockResolvedValueOnce([task("a")]);
+    await useApp.getState().loadAll();
+    expect(useApp.getState().recentTasks).toBe(before);
   });
 });

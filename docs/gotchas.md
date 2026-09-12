@@ -509,6 +509,27 @@ sidebar row, the tray, a window title and a desktop notification all outlive
 the panel their data came from. The tell is a component-owned `setInterval`
 whose output is read outside that component's subtree.
 
+## One task's work badge is computed twice, and the two ranked it differently
+
+The sidebar and the dashboard both draw a badge for a task, and both now go
+through `taskWorkBadge()` in `src/lib/taskWorkState.ts`, which ranks
+**attention > done > working**. Keep it that way: a blocked agent is more
+actionable than a finished one, and both beat one still chugging.
+
+`computeAgentStates()` in `src/lib/cliAgentState.ts` ranks the same inputs
+**working > attention > done**. That is not a bug to go and fix: it feeds
+`TaskSummary.work_state` over the CLI wire, which is a published additive
+contract, so flipping it changes what `termic list` reports. It IS a trap,
+because the two functions read identical tab state and answer differently, and
+a reader who finds one will reasonably assume the other agrees.
+
+Related: `data-testid="work-badge"` stopped being unique when the dashboard
+started drawing it. The sidebar is always mounted and the dashboard is an
+overlay on top of it, so a task with a live agent renders the badge twice and a
+bare testid query silently returns the sidebar's. Every assertion scopes:
+`dashboardBadge()` through `[data-dashboard-task-id]`, `sidebarBadge()` through
+`[data-sidebar-task-row]`.
+
 ## git speaks repo-root paths; termic speaks project paths
 
 A project does not have to be a repository root. Point termic at
