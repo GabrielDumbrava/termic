@@ -118,7 +118,11 @@ just `bg` and `accent` and still look coherent.
 | `palette-red` … `palette-pink` | hue-named accent ramp for user-assigned marks (today: project-group folder colors). 8 keys: `palette-red`, `palette-orange`, `palette-yellow`, `palette-green`, `palette-teal`, `palette-blue`, `palette-purple`, `palette-pink`. Tune shades to your theme, but keep each hue recognizable: users pick colors by name and expect "red" to stay red across themes |
 
 The `--color-cli-*` agent tint variables are not themeable in v1; they keep
-their defaults.
+their defaults. So do `--color-pr-merged` / `--color-pr-open`, the pull-request
+state tints on the sidebar and dashboard task rows: like the agent tints they
+are matched to somebody else's palette (GitHub's), so a theme re-shading them
+would make the glyph stop reading as the state it names. Both flip with
+`colorScheme`, so a light theme gets the darker pair automatically.
 
 ### `terminal` keys
 
