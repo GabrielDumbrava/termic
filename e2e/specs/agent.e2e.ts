@@ -16,6 +16,7 @@ import {
   archiveTask,
   clickByText,
   clickWhenVisible,
+  cliRpc,
   ensureActiveTask,
   openTask,
   queuedCount,
@@ -40,6 +41,183 @@ const quietFor = (taskId: string) =>
     const t = window.__termic!.useApp.getState().tabs[id][0];
     return Date.now() - (t.lastOutputAt ?? 0);
   }, taskId);
+
+// Synthetic native-shaped events exercise the installed xterm + IME bridge
+// together. This covers event routing, not macOS input-source generation.
+describe("terminal IME", () => {
+  let taskId: string;
+  const taskName = "e2e-terminal-ime";
+  before(async () => {
+    await waitForAppShell();
+    taskId = await openTask(taskName);
+    await waitForAgentReady(taskId);
+  });
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  const cases: Array<{ name: string; expected: string; steps: Array<[string, string, string | null]> }> = [
+    { name: "a syllable without a final consonant", expected: "가", steps: [
+      ["insertText", "ㄱ", "ㄱ"], ["insertReplacementText", "가", "가"],
+    ] },
+    { name: "consecutive syllables with final consonants", expected: "안녕", steps: [
+      ["insertText", "ㅇ", "ㅇ"], ["insertReplacementText", "아", "아"],
+      ["insertReplacementText", "안", "안"], ["insertText", "안ㄴ", "ㄴ"],
+      ["insertReplacementText", "안녀", "녀"], ["insertReplacementText", "안녕", "녕"],
+    ] },
+    { name: "a final consonant moving into the next syllable", expected: "아나", steps: [
+      ["insertText", "ㅇ", "ㅇ"], ["insertReplacementText", "아", "아"],
+      ["insertReplacementText", "안", "안"], ["insertReplacementText", "아나", "아나"],
+    ] },
+    { name: "a space between syllables", expected: "가 나", steps: [
+      ["insertText", "ㄱ", "ㄱ"], ["insertReplacementText", "가", "가"],
+      ["insertText", "가 ", " "], ["insertText", "가 ㄴ", "ㄴ"],
+      ["insertReplacementText", "가 나", "나"],
+    ] },
+    { name: "Backspace removing a composing final consonant", expected: "아", steps: [
+      ["insertText", "ㅇ", "ㅇ"], ["insertReplacementText", "아", "아"],
+      ["insertReplacementText", "안", "안"], ["deleteContentBackward", "아", null],
+    ] },
+  ];
+
+  for (const [index, { name, expected, steps }] of cases.entries()) {
+    it(`preserves the preceding text when typing ${name}`, async () => {
+      const prefix = `ime-${index}:`;
+      await browser.execute((id, start, inputs) => {
+        const ta = document.querySelector<HTMLTextAreaElement>(
+          `[data-task-id="${id}"] [data-terminal-host] .xterm-helper-textarea`,
+        );
+        if (!ta) throw new Error("agent terminal textarea is missing");
+        ta.focus();
+        ta.value = start;
+        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: start, bubbles: true }));
+        for (const [inputType, value, data] of inputs) {
+          const space = data === " ";
+          const key = { key: space ? " " : "Process", keyCode: space ? 32 : 229, bubbles: true, cancelable: true };
+          ta.dispatchEvent(new KeyboardEvent("keydown", key));
+          if (space) ta.dispatchEvent(new KeyboardEvent("keypress", { ...key, charCode: 32, which: 32 }));
+          ta.value = start + value;
+          ta.dispatchEvent(new InputEvent("input", { inputType, data, bubbles: true, composed: true }));
+          ta.dispatchEvent(new KeyboardEvent("keyup", key));
+        }
+        for (const type of ["keydown", "keyup"]) {
+          ta.dispatchEvent(new KeyboardEvent(type, {
+            key: "Enter", code: "Enter", keyCode: 13, bubbles: true, cancelable: true,
+          }));
+        }
+      }, taskId, prefix, steps);
+      let echo = "";
+      await browser.waitUntil(async () => {
+        const logs = await cliRpc({ cmd: "logs", task: taskName });
+        echo = logs.data?.data ?? "";
+        return echo.includes(`FAKE-AGENT echo: ime-${index}`);
+      }, { timeoutMsg: "the fixture never echoed the IME input" });
+      expect(echo).toContain(`FAKE-AGENT echo: ${prefix}${expected}\r\n`);
+    });
+  }
+
+  it("preserves a syllable when the next insert precedes keydown and the previous keyup", async () => {
+    await browser.execute((id) => {
+      const ta = document.querySelector<HTMLTextAreaElement>(
+        `[data-task-id="${id}"] [data-terminal-host] .xterm-helper-textarea`,
+      )!;
+      ta.focus();
+      const input = (inputType: string, value: string, data: string) => {
+        ta.value = `ime-rollover:${value}`;
+        ta.dispatchEvent(new InputEvent("input", { inputType, data, composed: true, bubbles: true }));
+      };
+      const key = (type: string, keyCode: number) => {
+        ta.dispatchEvent(new KeyboardEvent(type, { keyCode, bubbles: true, cancelable: true }));
+      };
+      input("insertText", "", "ime-rollover:");
+      input("insertText", "ㄱ", "ㄱ");
+      key("keydown", 229);
+      input("insertReplacementText", "가", "가");
+      // The next jamo arrives before its keydown and the previous key's keyup.
+      input("insertText", "가ㄴ", "ㄴ");
+      key("keydown", 229);
+      key("keyup", 82);
+      input("insertReplacementText", "가나", "나");
+      key("keyup", 83);
+    }, taskId);
+    await submitToAgent(taskId, "");
+    await browser.waitUntil(async () => {
+      const logs = await cliRpc({ cmd: "logs", task: taskName });
+      return logs.data?.data?.includes("FAKE-AGENT echo: ime-rollover:가나\r\n");
+    }, { timeoutMsg: "key rollover lost the preceding Korean syllable" });
+  });
+
+  for (const [index, [name, draft, committed]] of [
+    ["Japanese conversion", "にほん", "日本"],
+    ["Chinese conversion", "zhongwen", "中文"],
+    ["accent composition", "e", "é"],
+    ["emoji composition", "👩", "👩‍💻"],
+    ["dictation", "hello", "hello world"],
+  ].entries()) {
+    it(`sends ${name} once when the final input follows compositionend`, async () => {
+      const prefix = `native-${index}:`;
+      await browser.execute((id, start, value) => {
+        const ta = document.querySelector<HTMLTextAreaElement>(
+          `[data-task-id="${id}"] [data-terminal-host] .xterm-helper-textarea`,
+        )!;
+        ta.focus();
+        ta.value = start;
+        ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: start, bubbles: true }));
+        ta.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        ta.dispatchEvent(new CompositionEvent("compositionupdate", { data: value, bubbles: true }));
+        ta.value = start + value;
+        ta.dispatchEvent(new InputEvent("input", {
+          inputType: "insertCompositionText", data: value, isComposing: true, composed: true, bubbles: true,
+        }));
+      }, taskId, prefix, draft);
+      await browser.execute((id, start, value) => {
+        const ta = document.querySelector<HTMLTextAreaElement>(
+          `[data-task-id="${id}"] [data-terminal-host] .xterm-helper-textarea`,
+        )!;
+        ta.value = start;
+        ta.dispatchEvent(new InputEvent("input", {
+          inputType: "deleteCompositionText", isComposing: true, composed: true, bubbles: true,
+        }));
+        ta.dispatchEvent(new CompositionEvent("compositionend", { data: value, bubbles: true }));
+        ta.value = start + value;
+        ta.dispatchEvent(new InputEvent("input", {
+          inputType: "insertFromComposition", data: value, composed: true, bubbles: true,
+        }));
+      }, taskId, prefix, committed);
+      await submitToAgent(taskId, "");
+      let echo = "";
+      await browser.waitUntil(async () => {
+        const logs = await cliRpc({ cmd: "logs", task: taskName });
+        echo = logs.data?.data ?? "";
+        return echo.includes(`FAKE-AGENT echo: ${prefix}`);
+      }, { timeoutMsg: "the fixture never echoed the native composition" });
+      expect(echo).toContain(`FAKE-AGENT echo: ${prefix}${committed}\r\n`);
+    });
+  }
+
+  for (const paste of [false, true]) {
+    it(`preserves English, spaces, accents and emoji through ${paste ? "paste" : "direct text input"}`, async () => {
+      const text = `${paste ? "paste" : "direct"}:hello café 🙂`;
+      if (paste) {
+        await browser.execute((id, value) => {
+          const ta = document.querySelector<HTMLTextAreaElement>(
+            `[data-task-id="${id}"] [data-terminal-host] .xterm-helper-textarea`,
+          )!;
+          const clipboardData = new DataTransfer();
+          clipboardData.setData("text/plain", value);
+          ta.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+        }, taskId, text);
+        await submitToAgent(taskId, "");
+      } else {
+        await submitToAgent(taskId, text);
+      }
+      await browser.waitUntil(async () => {
+        const logs = await cliRpc({ cmd: "logs", task: taskName });
+        return logs.data?.data?.includes(`FAKE-AGENT echo: ${text}\r\n`);
+      }, { timeoutMsg: "ordinary terminal text was lost or duplicated" });
+    });
+  }
+});
 
 // Pasting an image into an agent terminal.
 //

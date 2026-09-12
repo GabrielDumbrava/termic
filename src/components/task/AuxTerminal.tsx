@@ -146,12 +146,10 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     const disposeLinkOpener = attachCmdClickLinkOpener(term, host, (target) => {
       if (target.kind === "url") openLink("capture")(target.uri);
     }, { urlsOnly: true });
-    // Korean/CJK IME (WKWebView). WebKit composes via textarea `input` events
-    // (insertText + insertReplacementText), not compositionstart/end, and
-    // xterm drops the replacement events — so input gets mangled (안녕 → ㅇㄴ).
-    // setupImeReplacementBridge fills the gap; see src/lib/ime.ts. The
-    // keyCode-229 guard below keeps xterm's keydown path inert during IME so
-    // only the input-event bridge drives composition. Mirrors TerminalPane.
+    // Mirror TerminalPane's IME handling: the shared bridge forwards WebKit
+    // Korean input that xterm drops, while real composition sessions stay
+    // with xterm. The guard below leaves native text editing enabled.
+    // See src/lib/ime.ts for ownership of the input events.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
         return false;

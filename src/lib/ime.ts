@@ -1,48 +1,12 @@
-// Korean/CJK IME bridge for WKWebView terminals.
-//
-// In WKWebView (WebKit), xterm.js loses CJK input. WebKit does NOT drive
-// composition through compositionstart/update/end (those never fire; the
-// keydown's `isComposing` stays false and `keyCode` is always 229). Instead
-// it composes directly in the helper textarea via `input` events:
-//
-//   • inputType "insertText"            → a fresh jamo is appended (the start
-//                                          of a new syllable). xterm's
-//                                          _inputEvent forwards these to the
-//                                          PTY on its own.
-//   • inputType "insertReplacementText" → the in-progress syllable is refined
-//                                          (e.g. ㅇ → 아 → 안). xterm only
-//                                          forwards inputType === "insertText",
-//                                          so EVERY refinement is dropped and
-//                                          only the leading jamo of each
-//                                          syllable reaches the PTY: 안녕 → ㅇㄴ.
-//
-// We fill the gap. On a replacement event we diff the textarea's current value
-// against its previous value (code-point aware) and send backspaces (DEL,
-// 0x7f) for the removed suffix followed by the new tail, so the PTY line
-// always mirrors the textarea. Diffing the whole composing value — not just
-// the last char — also handles Korean's final-consonant migration (typing a
-// vowel after a closed syllable moves the trailing consonant onto the next
-// syllable, e.g. 안 + ㅏ → 아나).
-//
-// `prevVal` is resynced on EVERY input event, including the "insertText" ones
-// xterm forwards itself, so the diff baseline stays correct across syllable
-// boundaries. xterm clears the textarea on Enter / Ctrl+C without firing an
-// input event, so we also reset the baseline on those keys.
-//
-// English and control keys route through keypress / keydown (keyCode is not
-// 229), never hitting the replacement branch, so they are untouched.
+// Korean IME can edit WKWebView's textarea without composition events.
+// Forward replacements and insertText dropped while an IME key is pending.
+// Native composition, including its trailing commit, stays with xterm.
+// See docs/gotchas.md for the failure sequence.
 
 const DEL = 0x7f;
 
-// inputTypes that refine/delete the composing text and that xterm's
-// _inputEvent drops (it forwards ONLY "insertText"). We must forward their
-// delta ourselves. Deliberately EXCLUDES:
-//   • insertText                  → xterm forwards it; we'd double-send.
-//   • insertFromPaste             → xterm's own paste handler covers it.
-//   • insertLineBreak/Paragraph   → Enter; xterm's keydown handles it.
-// During IME a Backspace decomposes the syllable and arrives as a
-// deleteContent*/deleteComposition* input event (xterm's keydown only
-// preventDefaults Backspace OUTSIDE composition, so these only fire for IME).
+// xterm handles insertText, paste and line breaks separately. These events
+// refine or delete modeless composition and need the textarea delta.
 const FORWARDED_INPUT_TYPES = new Set([
   "insertReplacementText",
   "insertCompositionText",
@@ -97,40 +61,57 @@ export function setupImeReplacementBridge(
   if (!ta) return () => {};
 
   let prevVal = "";
+  let imeKeyDown = false;
+  let nativeComposition: "idle" | "active" | "pending" = "idle";
 
   const onInput = (ev: Event) => {
     const e = ev as InputEvent;
     const newVal = ta.value;
-    // `isComposing === true` means WebKit is driving a REAL composition and
-    // firing genuine compositionstart/update/end events — the macOS Dictation
-    // and emoji-picker path. There xterm's own CompositionHelper forwards the
-    // composed text on compositionend, so if we ALSO forwarded the delta every
-    // dictated word would double (#38: "Hello" -> "HelloHello"). CJK keyboard
-    // input in WKWebView is the opposite: composition events never fire and
-    // isComposing stays false (see header), so xterm's helper is inert and the
-    // bridge is the ONLY forwarder. Hence: forward only when NOT composing.
-    if (!e.isComposing && isForwardedInputType(e.inputType)) {
+    // xterm sets _keyDownSeen before our custom IME guard returns false,
+    // then drops composed insertText until keyup. `composed` is a DOM flag,
+    // not isComposing. Missing that insert makes the next DEL erase old text.
+    const droppedInsert = imeKeyDown && e.composed && e.inputType === "insertText";
+    if (nativeComposition === "idle" && !e.isComposing
+      && (droppedInsert || isForwardedInputType(e.inputType))) {
       const bytes = computeImeDelta(prevVal, newVal);
       const pid = getPty();
       if (pid && bytes.length > 0) write(pid, bytes);
     }
-    // Always resync the baseline (insertText is forwarded by xterm itself; we
-    // only need its value to keep the diff anchored).
+    // Always resync the baseline, including events forwarded by xterm, so
+    // the next diff stays anchored to the textarea's current value.
     prevVal = newVal;
   };
 
   const onKeydown = (ev: Event) => {
     const e = ev as KeyboardEvent;
+    if (nativeComposition !== "active" && !e.isComposing) nativeComposition = "idle";
+    imeKeyDown = e.keyCode === 229 && !e.isComposing;
     const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter";
     const isCtrlC = e.ctrlKey && (e.key === "c" || e.key === "C");
-    // xterm wipes the textarea on these (Terminal.ts) without an input event.
-    if (isEnter || isCtrlC) prevVal = "";
+    // xterm wipes the textarea on these unless its custom IME guard skips
+    // the key. An IME confirmation Enter must keep the existing baseline.
+    if (!e.isComposing && e.keyCode !== 229 && (isEnter || isCtrlC)) prevVal = "";
+  };
+  const onKeyup = () => { imeKeyDown = false; };
+  const onCompositionStart = () => {
+    nativeComposition = "active";
+    imeKeyDown = false;
+  };
+  const onCompositionEnd = () => {
+    // Final input may have isComposing=false; xterm still owns it (#38).
+    nativeComposition = "pending";
   };
 
   ta.addEventListener("input", onInput, true);
   ta.addEventListener("keydown", onKeydown, true);
+  ta.addEventListener("keyup", onKeyup, true);
+  ta.addEventListener("compositionstart", onCompositionStart, true);
+  ta.addEventListener("compositionend", onCompositionEnd, true);
   return () => {
     ta.removeEventListener("input", onInput, true);
     ta.removeEventListener("keydown", onKeydown, true);
+    ta.removeEventListener("keyup", onKeyup, true);
+    ta.removeEventListener("compositionstart", onCompositionStart, true);
+    ta.removeEventListener("compositionend", onCompositionEnd, true);
   };
 }

@@ -75,6 +75,22 @@
   managed paths above count), so this cannot be reproduced without root or an
   org account.
 
+## Korean IME input can delete preceding text
+
+For modeless Korean input in WKWebView, xterm 5.5 drops `insertText`
+with `composed: true` between an IME `keydown` and DOM `keyup`.
+Advancing the bridge's baseline without sending that jamo makes the next
+replacement delete preceding PTY text.
+
+`src/lib/ime.ts` forwards the missed insert and keeps `computeImeDelta`
+unchanged. Native composition and its trailing commit stay with xterm to
+avoid duplicates. IME confirmation Enter preserves the baseline.
+
+Reproduction can depend on IME process state: restarting `KIM_Extension`
+exposed the bug in a previously working Termic window. Compare builds after
+resetting that state and type jamo; a different app ID or pasted text is not
+an equivalent test.
+
 ## React/Zustand traps
 
 - Don't return new objects/arrays from selectors without memo. Use frozen constants for defaults.
