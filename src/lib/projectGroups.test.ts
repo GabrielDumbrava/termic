@@ -108,3 +108,22 @@ describe("sortSectionsActiveFirst", () => {
     expect(sections.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(before);
   });
 });
+
+describe("a mixed-case group name keys the same everywhere", () => {
+  // The sharing claim the dashboard makes is that it and the sidebar agree on
+  // the key for `collapsedGroups` / `groupColors`. Every existing fixture here
+  // and in the e2e suite uses an already-uppercase name, so nothing proved the
+  // normalization actually reaches the section name.
+  it("names the section by the NORMALIZED label, not the stored one", () => {
+    const sections = projectSections([proj("a", "Infrastructure"), proj("b", " infrastructure ")]);
+    expect(sections).toHaveLength(1);
+    const g = sections[0] as Extract<typeof sections[number], { kind: "group" }>;
+    expect(g.name).toBe("INFRASTRUCTURE");
+    expect(g.members.map(p => p.id)).toEqual(["a", "b"]);
+  });
+
+  it("gives two spellings of one group a single section", () => {
+    const sections = projectSections([proj("a", "Infra"), proj("b"), proj("c", "INFRA")]);
+    expect(sections.map(s => (s.kind === "loose" ? s.p.id : s.name))).toEqual(["INFRA", "b"]);
+  });
+});

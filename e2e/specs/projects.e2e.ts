@@ -1320,6 +1320,47 @@ describe("dashboard", () => {
     await waitVisible(card(grouped[0]));
   });
 
+  it("keys a MIXED-CASE group name the same way on both surfaces", async () => {
+    // The sharing claim is that the dashboard and the sidebar agree on the
+    // key for `collapsedGroups`. Every other fixture here uses a name that is
+    // already ALL-CAPS, so nothing proved the normalization in `groupOf()`
+    // actually reaches the section name: a group somebody types as
+    // "Infrastructure" is stored as typed and must render, collapse and share
+    // state under "INFRASTRUCTURE" everywhere.
+    const TYPED = "Infrastructure";
+    const KEY = "INFRASTRUCTURE";
+    await browser.execute(async (list, g) => {
+      await window.__termic!.ipc.projectSetGroup(list, g);
+      await window.__termic!.useApp.getState().loadAll();
+    }, grouped, TYPED);
+    await showDashboard();
+
+    // Rendered under the normalized key, not the typed one.
+    await waitVisible(`[data-dashboard-group-header="${KEY}"]`);
+    expect(await browser.execute(
+      (typed) => !!document.querySelector(`[data-dashboard-group-header="${typed}"]`), TYPED,
+    )).toBe(false);
+
+    // And the collapse still crosses to the sidebar, which is the whole claim.
+    await clickWhenVisible(`[data-dashboard-group-header="${KEY}"]`);
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(
+          (k) => document.querySelector(`[data-group-name="${k}"]`)?.getAttribute("aria-expanded"),
+          KEY,
+        )) === "false",
+      { timeout: 8_000, timeoutMsg: "a mixed-case group did not share its collapse state" },
+    );
+
+    // Put the fixture back for the cases below.
+    await clickWhenVisible(`[data-group-name="${KEY}"]`);
+    await browser.execute(async (list, g) => {
+      await window.__termic!.ipc.projectSetGroup(list, g);
+      await window.__termic!.useApp.getState().loadAll();
+    }, grouped, GROUP);
+    await waitVisible(header);
+  });
+
   it("floats a section holding an active task above an idle one", async () => {
     // A task in the SECOND project should carry the whole folder above the
     // loose fixture-repo card, and must not reorder the folder internally.
