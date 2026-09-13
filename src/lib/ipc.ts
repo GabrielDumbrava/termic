@@ -325,6 +325,13 @@ export const agentUsageCodex = (agentId: string, docker: boolean, account: strin
   invoke<AgentUsage & { planType: string | null; accountId: string | null }>(
     "agent_usage_codex", { agentId, docker, account });
 
+/** devin's pull is an HTTPS call, not a spawned process: `GetUserStatus` on
+ *  the Connect server named in the account's credentials.toml answers cold,
+ *  so `account` picks WHICH credential file asks. */
+export const agentUsageDevin = (agentId: string, docker: boolean, account: string | null) =>
+  invoke<AgentUsage & { planType: string | null; accountId: string | null }>(
+    "agent_usage_devin", { agentId, docker, account });
+
 /** Per-task deny counters surfaced in the TerminalPane footer
  *  chip. Currently only `network` (the proxy bumps it on every CONNECT
  *  / HTTP request that fails the host allowlist). Cheap to poll. */

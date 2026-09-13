@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   USAGE_BODY_PREFIX, parseUsageBody, sameUsage, formatPercent, formatReset, formatUsd,
-  usageLevel, drivingWindow, USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
+  usageLevel, drivingWindow, shortWindowWords, USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
   blocksUsageFeed, statusLineAgentPrompt, type StatusLineOwner,
 } from "./agentUsage";
 import { HOOK_OSC_BODY, HOOK_OSC_READY_BODY, parseNotifyBody, hookOscHandlerData } from "./agentHooks";
@@ -605,5 +605,21 @@ describe("gathering the no-plan evidence", () => {
     read("c", 0); read("c", 0);
     read("c", 0.235401);
     expect(entryFor("c").sessionCostUsd).toBe(0.235401);
+  });
+});
+
+describe("the short window's name", () => {
+  it("is 5h for the agents whose quota rolls over in hours", () => {
+    for (const base of ["claude", "codex", "anything-else"]) {
+      expect(shortWindowWords(base).chip).toBe("5h");
+      expect(shortWindowWords(base).label).toBe("Session");
+    }
+  });
+
+  it("is a day for devin, whose quota is a daily reset", () => {
+    // Calling a 24-hour window "5h" in the footer would misname the one number
+    // it leads with.
+    expect(shortWindowWords("devin").chip).toBe("day");
+    expect(shortWindowWords("devin").label).toBe("Daily");
   });
 });

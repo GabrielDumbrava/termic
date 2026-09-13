@@ -216,6 +216,18 @@ export function drivingWindow(u: AgentUsage): { window: UsageWindow; label: "5h"
   return w.window.usedPercent > s.window.usedPercent ? w : s;
 }
 
+/** The short window's name, per agent. claude and codex roll over in hours;
+ *  devin's quota is a daily reset, so calling it "5h" would misname the one
+ *  number the footer leads with. The "wk" half needs no per-agent word: both
+ *  report a weekly window. */
+export function shortWindowWords(baseId: string): {
+  chip: string; label: string; sub: string; limit: string;
+} {
+  return baseId === "devin"
+    ? { chip: "day", label: "Daily", sub: "resets daily", limit: "daily" }
+    : { chip: "5h", label: "Session", sub: "rolling 5 hours", limit: "session" };
+}
+
 /** Who owns claude's `statusLine` slot for a given task, from
  *  `agent_hooks::status_line_owner`. */
 export interface StatusLineOwner {

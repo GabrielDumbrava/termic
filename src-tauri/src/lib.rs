@@ -22114,6 +22114,7 @@ pub fn run() {
             agent_hooks::agent_hooks_sync,
             agent_hooks::usage_status_line_owner,
             agent_usage::agent_usage_codex,
+            agent_usage::agent_usage_devin,
             perf_boot_elapsed_ms,
             deep_link_take_pending,
             agent_accounts, account_add, account_remove, account_set_default, account_set_auto_switch,

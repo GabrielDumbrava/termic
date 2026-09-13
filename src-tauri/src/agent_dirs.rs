@@ -72,7 +72,7 @@ pub fn instance_config_dir(
 /// Settings, so a literal `~/.next-claude` has to become a real path rather
 /// than a directory called `~` (which is what the file tree in the reporter's
 /// screenshot was already showing).
-fn expand_home(raw: &str, home: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn expand_home(raw: &str, home: &std::path::Path) -> std::path::PathBuf {
     let t = raw.trim();
     if t == "~" || t == "$HOME" {
         return home.to_path_buf();
@@ -379,18 +379,19 @@ pub fn shared_config_entries(base_id: &str) -> &'static [&'static str] {
 /// only where this is true. Everywhere else the switch is manual, which is the
 /// half that works for all eight built-ins.
 ///
-/// TWO agents, by two different transports, and neither is a guess: claude
-/// pushes percentages through the status line it lets termic install, and
-/// codex answers `agent_usage.rs` over JSON-RPC. An agent gets a `true` here
-/// only once one of those two paths actually produces numbers for it, because
-/// the cost of being wrong is an "auto-switch" toggle that silently never
-/// fires. See `docs/ideas/usage-footer.md` for why the transports differ.
+/// THREE agents, by two transport shapes, and none is a guess: claude pushes
+/// percentages through the status line it lets termic install, codex answers
+/// `agent_usage.rs` over JSON-RPC, and devin answers it over the Connect
+/// `GetUserStatus` call its own TUI header reads. An agent gets a `true` here
+/// only once one of those paths actually produces numbers for it, because the
+/// cost of being wrong is an "auto-switch" toggle that silently never fires.
+/// See `docs/ideas/usage-footer.md` for why the transports differ.
 ///
 /// A clone resolves through `base_agent_id` first, exactly like the login
 /// table, so a second claude entry reports usage for the same reason the
 /// original does.
 pub fn reports_usage(base_id: &str) -> bool {
-    matches!(base_id, "claude" | "codex")
+    matches!(base_id, "claude" | "codex" | "devin")
 }
 
 /// Extra variables an agent needs before its login REALLY follows the store.
@@ -648,13 +649,16 @@ mod instance_dir_tests {
     }
 
     #[test]
-    fn only_the_two_agents_with_a_measured_transport_report_usage() {
+    fn only_the_agents_with_a_measured_transport_report_usage() {
         // A row here turns on a control that ACTS on the user's behalf, so it
         // is pinned by name rather than by count: adding an agent to this
         // table has to be a deliberate edit backed by a working transport,
         // not something a refactor can do quietly.
         let reporting: Vec<String> = built_ins().into_iter().filter(|id| reports_usage(id)).collect();
-        assert_eq!(reporting, vec!["claude".to_string(), "codex".to_string()]);
+        assert_eq!(
+            reporting,
+            vec!["claude".to_string(), "codex".to_string(), "devin".to_string()]
+        );
     }
 
     #[test]

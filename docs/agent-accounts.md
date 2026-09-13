@@ -128,12 +128,12 @@ someone wonder why the number did not move.
 | Surface | Job | Covers |
 |---|---|---|
 | Row at the top of the agent's card | discover and manage | all eight agents |
-| Usage popover, "Running low? Add a second set..." | discovery **at the moment of need** | claude, codex |
+| Usage popover, "Running low? Add a second set..." | discovery **at the moment of need** | claude, codex, devin |
 | Footer pill, appears at 2+ | see which account, switch it | all eight |
 
 The usage popover is the best vector and cannot be the only one: it renders
-nothing until an account has reported usage, which today means claude and codex
-alone. The pill stays hidden below two accounts, because before a second set
+nothing until an account has reported usage, which today means claude, codex and
+devin. The pill stays hidden below two accounts, because before a second set
 exists there is no account concept to name (see profiles.md's strip, same
 reasoning).
 
@@ -255,7 +255,7 @@ a wrong switch moves a work session onto a personal subscription.
 | nothing at all for an unnamed login | termic would be moving someone off the account they have always used, having never asked |
 
 **Automatic is opt-in, per agent, and only where a number exists.** The toggle
-is offered only when `agent_dirs::reports_usage` is true (claude and codex), and
+is offered only when `agent_dirs::reports_usage` is true (claude, codex, devin), and
 `account_set_auto_switch` REFUSES to store it anywhere else rather than keeping
 a flag that can never fire. The view reports it as off for an agent that cannot
 act on it whatever is stored, because a checked box for something that will
@@ -533,10 +533,10 @@ percentages would be meaningless.
   might silently share one login is worse than shipping none. Both say so in
   the UI. Resolving muse means one measurement: sign into two stores and see
   whether the first still works.
-- **Automatic switching needs a usage feed, so six agents only get the manual
+- **Automatic switching needs a usage feed, so five agents only get the manual
   half.** That is the shape of the problem, not a gap in the work: "nearly out"
-  is a number somebody has to report, and only claude and codex report one. The
-  manual switch works everywhere.
+  is a number somebody has to report, and only claude, codex and devin report
+  one. The manual switch works everywhere.
 - **The switch never rescues the turn in flight.** A running process keeps its
   environment, so the earliest a switch can take effect is the next start. The
   UI says so in three places rather than letting anyone discover it.
