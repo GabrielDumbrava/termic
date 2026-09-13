@@ -910,24 +910,11 @@ const captureArmedRef = useRef(false);
     termRef.current = term;
     fitRef.current = fit;
 
-    // ── Korean/CJK IME fix for WKWebView ───────────────────────────────
-    // WebKit drives CJK composition NOT through compositionstart/update/end
-    // (those never fire here; isComposing stays false, keyCode is always
-    // 229) but through `input` events on the helper textarea:
-    //   • insertText            → a fresh jamo is appended (syllable start)
-    //   • insertReplacementText → the composing syllable is refined
-    // xterm's _inputEvent only forwards inputType === 'insertText', so every
-    // replacement is DROPPED and only the leading jamo of each syllable
-    // reaches the PTY (안녕 → ㅇㄴ). We fill the gap: on a replacement event,
-    // diff the textarea against its previous value and emit backspaces + the
-    // new tail so the PTY line tracks the textarea exactly — this also
-    // handles Korean's final-consonant migration (안 + ㅏ → 아나), since the
-    // whole composing value is diffed, not just the last char. `prevTaVal`
-    // is synced on EVERY input event (including the insertText ones xterm
-    // forwards) so the diff baseline stays correct across syllable
-    // boundaries. English/control keys route through keypress/keydown and
-    // never hit the replacement branch, so they're untouched. See the
-    // keyCode-229 guard above, which keeps the keydown path inert for IME.
+    // WebKit's Korean path can compose through textarea input events without
+    // compositionstart/end. The bridge forwards replacement deltas and the
+    // initial insertText that xterm drops while an IME key is held. Real
+    // composition sessions stay with xterm, including their final input.
+    // See lib/ime.ts and the custom key guard below.
     const disposeImeBridge = setupImeReplacementBridge(host, () => ptyRef.current, ipc.ptyWrite);
 
     // Drop target: dragging a file (screenshot, etc.) onto this terminal

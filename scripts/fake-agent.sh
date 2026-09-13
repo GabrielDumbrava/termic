@@ -19,6 +19,10 @@
 
 set -u
 
+# Unlike a real agent's raw-mode editor, this fixture reads canonical lines.
+# Make DEL erase a whole UTF-8 character so IME edits survive that read.
+if [ -t 0 ]; then stty iutf8; fi
+
 # OSC 0 window/icon title, ST-terminated (ESC \). Deliberately NOT BEL-
 # terminated: a stray BEL would trip termic's bell -> attention heuristic.
 set_title() { printf '\033]0;%s\033\\' "$1"; }

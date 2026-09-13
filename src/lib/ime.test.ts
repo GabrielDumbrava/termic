@@ -88,8 +88,7 @@ function fireInput(ta: HTMLTextAreaElement, inputType: string, value: string, da
   ta.dispatchEvent(new InputEvent("input", { inputType, data, bubbles: true }));
 }
 
-// macOS Dictation / emoji-picker path: WebKit fires a REAL composition, so
-// every input event carries isComposing === true.
+// Input during native composition; the final commit may be unflagged.
 function fireComposingInput(ta: HTMLTextAreaElement, inputType: string, value: string, data: string | null) {
   ta.value = value;
   ta.dispatchEvent(new InputEvent("input", { inputType, data, isComposing: true, bubbles: true }));
@@ -97,6 +96,66 @@ function fireComposingInput(ta: HTMLTextAreaElement, inputType: string, value: s
 
 describe("setupImeReplacementBridge", () => {
   const PID = "pty-1";
+
+  it("forwards the first jamo when xterm drops insertText during a held IME key", () => {
+    const { host, ta } = mountTerminal();
+    const write = vi.fn();
+    const dispose = setupImeReplacementBridge(host, () => PID, write);
+
+    ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Process", keyCode: 229, bubbles: true }));
+    ta.value = "ㄱ";
+    ta.dispatchEvent(new InputEvent("input", {
+      inputType: "insertText", data: "ㄱ", composed: true, bubbles: true,
+    }));
+    fireInput(ta, "insertReplacementText", "가", "가");
+
+    expect(write.mock.calls.map(c => c[1])).toEqual([
+      enc("ㄱ"),
+      [DEL, ...enc("가")],
+    ]);
+    dispose();
+    host.remove();
+  });
+
+  it("forwards repeated jamo inserts while the IME key remains held", () => {
+    const { host, ta } = mountTerminal();
+    const write = vi.fn();
+    const dispose = setupImeReplacementBridge(host, () => PID, write);
+
+    for (let i = 1; i <= 3; i++) {
+      ta.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Process", keyCode: 229, repeat: i > 1, bubbles: true,
+      }));
+      ta.value = "ㅋ".repeat(i);
+      ta.dispatchEvent(new InputEvent("input", {
+        inputType: "insertText", data: "ㅋ", composed: true, bubbles: true,
+      }));
+    }
+
+    expect(write.mock.calls.map(c => c[1])).toEqual([enc("ㅋ"), enc("ㅋ"), enc("ㅋ")]);
+    dispose();
+    host.remove();
+  });
+
+  it.each([
+    { name: "an ordinary key", keyCode: 65, composed: true, isComposing: false, keyup: false },
+    { name: "an input event xterm accepts", keyCode: 229, composed: false, isComposing: false, keyup: false },
+    { name: "an IME input after keyup", keyCode: 229, composed: true, isComposing: false, keyup: true },
+    { name: "a real composition", keyCode: 229, composed: true, isComposing: true, keyup: false },
+  ])("does not double-forward insertText for $name", ({ keyCode, composed, isComposing, keyup }) => {
+    const { host, ta } = mountTerminal();
+    const write = vi.fn();
+    const dispose = setupImeReplacementBridge(host, () => PID, write);
+    ta.dispatchEvent(new KeyboardEvent("keydown", { keyCode, isComposing, bubbles: true }));
+    if (keyup) ta.dispatchEvent(new KeyboardEvent("keyup", { keyCode, bubbles: true }));
+    ta.value = "ㄱ";
+    ta.dispatchEvent(new InputEvent("input", {
+      inputType: "insertText", data: "ㄱ", composed, isComposing, bubbles: true,
+    }));
+    expect(write).not.toHaveBeenCalled();
+    dispose();
+    host.remove();
+  });
 
   it("forwards only the dropped events while typing 안녕, reconstructing it on the PTY", () => {
     const { host, ta } = mountTerminal();
@@ -146,10 +205,7 @@ describe("setupImeReplacementBridge", () => {
     const write = vi.fn();
     setupImeReplacementBridge(host, () => PID, write);
 
-    // The exact WebKit event sequence captured from the live app dictating
-    // "Hello". Unlike CJK, every event has isComposing === true because real
-    // compositionstart/update/end fire — xterm's own CompositionHelper sends
-    // the composed text. If the bridge also forwarded, "Hello" -> "HelloHello".
+    // Composition-flagged dictation stays with xterm to avoid duplicates.
     fireComposingInput(ta, "insertCompositionText", "H", "H");
     fireComposingInput(ta, "insertCompositionText", "He", "He");
     fireComposingInput(ta, "insertCompositionText", "Hel", "Hel");
@@ -162,6 +218,51 @@ describe("setupImeReplacementBridge", () => {
     // Bridge stays silent for the whole dictation; xterm forwards "Hello" once.
     expect(write).not.toHaveBeenCalled();
 
+    host.remove();
+  });
+
+  it.each(["insertFromComposition", "insertCompositionText", "insertReplacementText"])(
+    "leaves a native composition's final %s to xterm even when isComposing is false",
+    (inputType) => {
+      const { host, ta } = mountTerminal();
+      const write = vi.fn();
+      const dispose = setupImeReplacementBridge(host, () => PID, write);
+      ta.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      fireComposingInput(ta, "insertCompositionText", "にほん", "にほん");
+      fireComposingInput(ta, "deleteCompositionText", "", null);
+      ta.dispatchEvent(new CompositionEvent("compositionend", { data: "日本", bubbles: true }));
+      ta.dispatchEvent(new KeyboardEvent("keyup", { keyCode: 13, bubbles: true }));
+      fireInput(ta, inputType, "日本", "日本");
+      expect(write).not.toHaveBeenCalled();
+
+      // Switching back to the WebKit Korean path must re-enable the bridge.
+      ta.dispatchEvent(new KeyboardEvent("keydown", { keyCode: 229, bubbles: true }));
+      ta.value = "日本ㄱ";
+      ta.dispatchEvent(new InputEvent("input", {
+        inputType: "insertText", data: "ㄱ", composed: true, bubbles: true,
+      }));
+      expect(write).toHaveBeenCalledExactlyOnceWith(PID, enc("ㄱ"));
+      dispose();
+      host.remove();
+    },
+  );
+
+  it("keeps unflagged input inside a real composition with xterm", () => {
+    const { host, ta } = mountTerminal();
+    const write = vi.fn();
+    const dispose = setupImeReplacementBridge(host, () => PID, write);
+    ta.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    ta.dispatchEvent(new KeyboardEvent("keydown", { keyCode: 229, bubbles: true }));
+    fireInput(ta, "insertReplacementText", "中文", "中文");
+    expect(write).not.toHaveBeenCalled();
+    // Cancellation without a final input must not disable later Korean input.
+    ta.value = "";
+    ta.dispatchEvent(new CompositionEvent("compositionend", { data: "", bubbles: true }));
+    ta.dispatchEvent(new KeyboardEvent("keydown", { keyCode: 229, bubbles: true }));
+    fireInput(ta, "insertText", "ㄱ", "ㄱ");
+    fireInput(ta, "insertReplacementText", "가", "가");
+    expect(write).toHaveBeenCalledExactlyOnceWith(PID, [DEL, ...enc("가")]);
+    dispose();
     host.remove();
   });
 
@@ -183,6 +284,20 @@ describe("setupImeReplacementBridge", () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0][1]).toEqual([...enc("하")]);
 
+    host.remove();
+  });
+
+  it("preserves the baseline when an IME confirmation Enter is skipped by xterm", () => {
+    const { host, ta } = mountTerminal();
+    const write = vi.fn();
+    const dispose = setupImeReplacementBridge(host, () => PID, write);
+    fireInput(ta, "insertText", "가", "가");
+    ta.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter", code: "Enter", keyCode: 229, bubbles: true,
+    }));
+    fireInput(ta, "insertReplacementText", "각", "각");
+    expect(write).toHaveBeenCalledExactlyOnceWith(PID, [DEL, ...enc("각")]);
+    dispose();
     host.remove();
   });
 
