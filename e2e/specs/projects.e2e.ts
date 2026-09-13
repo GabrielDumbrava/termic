@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, dismissOverlays, pointerDrag, requireTermicApi, keysIn, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, dashboardBadge, dismissOverlays, ensureActiveTask, pointerDrag, requireTermicApi, keysIn, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -1196,6 +1196,318 @@ describe("dashboard empty state", () => {
     await showEmptyDashboard();
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
     await waitGone(CARD);
+  });
+});
+
+// The dashboard is the home screen, and until now it showed a flat project
+// list: no group folders, no live agent state, no PR state, no way back into
+// what you were just doing. Each case here is one of those, driven through the
+// real surfaces rather than the store, because the whole point of the feature
+// is that the page RENDERS what the sidebar knows.
+describe("dashboard", () => {
+  const dirs: string[] = [];
+  const ids: string[] = [];
+  const GROUP = "E2E-DASH";
+  /** Ungrouped, task-free, and first in store order: the thing the folder has
+   *  to sort above once it holds an active task. */
+  let looseId = "";
+  /** The two projects inside the folder, in store order. */
+  const grouped: string[] = [];
+  let taskId = "";
+
+  const header = `[data-dashboard-group-header="${GROUP}"]`;
+  const section = `[data-dashboard-group="${GROUP}"]`;
+  const card = (id: string) => `[data-dashboard-project-id="${id}"]`;
+
+  const showDashboard = async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
+    await waitVisible('[data-testid="empty-projects-card"], [data-dashboard-project-id]');
+  };
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await dismissOverlays();
+    // THREE projects: one loose and idle, then two in a folder. The loose one
+    // is added FIRST so it precedes the folder in store order, which is what
+    // makes the active-first case below assert something — and it makes that
+    // case independent of whatever `fixture-repo` is carrying by the time this
+    // block runs, which earlier blocks in this file are free to change.
+    for (let i = 0; i < 3; i++) {
+      const d = mkdtempSync(path.join(os.tmpdir(), "e2e-dash-"));
+      execSync(
+        `git -C "${d}" init -q && git -C "${d}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
+      );
+      dirs.push(d);
+    }
+    for (const d of dirs) {
+      const proj = await browser.execute(
+        async (dir) => await window.__termic!.ipc.projectAdd(dir),
+        d,
+      );
+      ids.push((proj as any).id);
+    }
+    looseId = ids[0];
+    grouped.push(ids[1], ids[2]);
+    await browser.execute(
+      async (list, g) => {
+        await window.__termic!.ipc.projectSetGroup(list, g);
+        await window.__termic!.useApp.getState().loadAll();
+      },
+      grouped,
+      GROUP,
+    );
+  });
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    for (const id of ids) {
+      await browser.execute(async (i) => { await window.__termic!.ipc.projectRemove(i); }, id);
+    }
+    // The dashboard shares its collapse map with the sidebar, so a folder left
+    // collapsed would follow this spec into the next one.
+    await browser.execute((g) => {
+      window.__termic!.useApp.getState().setGroupCollapsed(g, false);
+      window.__termic!.useApp.setState({ recentTasks: [] });
+      window.__termic!.useApp.getState().setView("dashboard");
+    }, GROUP);
+    await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("renders a group folder with its members inside it", async () => {
+    await showDashboard();
+    await waitVisible(header);
+    // Both project cards live INSIDE the folder, not merely after it: a flat
+    // list that happened to sort them adjacently would pass a looser check.
+    const inside = await browser.execute(
+      (sec, a, b) => {
+        const root = document.querySelector(sec) as HTMLElement;
+        return [a, b].map((id) => !!root?.querySelector(`[data-dashboard-project-id="${id}"]`));
+      },
+      section, grouped[0], grouped[1],
+    );
+    expect(inside).toEqual([true, true]);
+    // The count on the header is the folder's membership.
+    const count = await browser.execute(
+      (sel) => (document.querySelector(sel) as HTMLElement).innerText.trim(),
+      header,
+    );
+    expect(count).toContain("2");
+    expect(count).toContain(GROUP);
+    await snap("dashboard-groups.png");
+  });
+
+  it("shares its collapse state with the sidebar", async () => {
+    await showDashboard();
+    await clickWhenVisible(header);
+    // Collapsing on the dashboard hides the member cards there...
+    await waitGone(card(grouped[0]));
+    // ...and the sidebar folder, which reads the same map, is collapsed too.
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(
+          (g) => document.querySelector(`[data-group-name="${g}"]`)?.getAttribute("aria-expanded"),
+          GROUP,
+        )) === "false",
+      { timeout: 8_000, timeoutMsg: "collapsing on the dashboard did not reach the sidebar folder" },
+    );
+    await snap("dashboard-group-collapsed.png");
+
+    // And back: expanding from the SIDEBAR re-opens the dashboard folder, so
+    // the sharing is not one-directional.
+    await clickWhenVisible(`[data-group-name="${GROUP}"]`);
+    await waitVisible(card(grouped[0]));
+  });
+
+  it("keys a MIXED-CASE group name the same way on both surfaces", async () => {
+    // The sharing claim is that the dashboard and the sidebar agree on the
+    // key for `collapsedGroups`. Every other fixture here uses a name that is
+    // already ALL-CAPS, so nothing proved the normalization in `groupOf()`
+    // actually reaches the section name: a group somebody types as
+    // "Infrastructure" is stored as typed and must render, collapse and share
+    // state under "INFRASTRUCTURE" everywhere.
+    const TYPED = "Infrastructure";
+    const KEY = "INFRASTRUCTURE";
+    await browser.execute(async (list, g) => {
+      await window.__termic!.ipc.projectSetGroup(list, g);
+      await window.__termic!.useApp.getState().loadAll();
+    }, grouped, TYPED);
+    await showDashboard();
+
+    // Rendered under the normalized key, not the typed one.
+    await waitVisible(`[data-dashboard-group-header="${KEY}"]`);
+    expect(await browser.execute(
+      (typed) => !!document.querySelector(`[data-dashboard-group-header="${typed}"]`), TYPED,
+    )).toBe(false);
+
+    // And the collapse still crosses to the sidebar, which is the whole claim.
+    await clickWhenVisible(`[data-dashboard-group-header="${KEY}"]`);
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(
+          (k) => document.querySelector(`[data-group-name="${k}"]`)?.getAttribute("aria-expanded"),
+          KEY,
+        )) === "false",
+      { timeout: 8_000, timeoutMsg: "a mixed-case group did not share its collapse state" },
+    );
+
+    // Put the fixture back for the cases below.
+    await clickWhenVisible(`[data-group-name="${KEY}"]`);
+    await browser.execute(async (list, g) => {
+      await window.__termic!.ipc.projectSetGroup(list, g);
+      await window.__termic!.useApp.getState().loadAll();
+    }, grouped, GROUP);
+    await waitVisible(header);
+  });
+
+  it("floats a section holding an active task above an idle one", async () => {
+    // A task in the SECOND project should carry the whole folder above the
+    // loose fixture-repo card, and must not reorder the folder internally.
+    taskId = await browser.execute(async (projId) => {
+      const t = window.__termic!;
+      const ws = await t.invoke("task_open_repo",
+        { projectId: projId, cli: "fakeagent", name: "dash-order" }) as any;
+      await t.useApp.getState().loadAll();
+      return ws.id as string;
+    }, grouped[1]);
+    await showDashboard();
+
+    const domOrder = () => browser.execute(() =>
+      [...document.querySelectorAll("[data-dashboard-project-id], [data-dashboard-group]")]
+        .filter((el) => !el.parentElement?.closest("[data-dashboard-group]"))
+        .map((el) => (el as HTMLElement).dataset.dashboardGroup
+          ?? (el as HTMLElement).dataset.dashboardProjectId) as string[]);
+
+    // The folder was added AFTER the loose project, so store order puts it
+    // second; holding an active task has to carry it above.
+    await browser.waitUntil(
+      async () => {
+        const o = (await domOrder()) as string[];
+        return o.indexOf(GROUP) > -1 && o.indexOf(GROUP) < o.indexOf(looseId);
+      },
+      { timeout: 8_000, timeoutMsg: "the folder holding the active task did not sort above the idle project" },
+    );
+    // Members keep STORE order — the active one is second and stays second.
+    // Sorting the flat project list instead of the sections is what would
+    // promote it here, and would move the folder itself somewhere else again.
+    const members = await browser.execute(
+      (sec) => [...(document.querySelector(sec) as HTMLElement)
+        .querySelectorAll("[data-dashboard-project-id]")]
+        .map((el) => (el as HTMLElement).dataset.dashboardProjectId) as string[],
+      section,
+    );
+    expect(members).toEqual(grouped);
+  });
+
+  it("shows the agent work badge on the task row", async () => {
+    // A task created through IPC has no TABS until something mounts it: the
+    // tab model is frontend-only and `task_open_repo` writes a record, not a
+    // terminal. Visiting it once is what the badge needs to have anything to
+    // read, and it is what a user does before an agent can be working anyway.
+    await ensureActiveTask(taskId);
+    await browser.waitUntil(
+      () => browser.execute((id) => (window.__termic!.useApp.getState().tabs[id] ?? []).length > 0, taskId),
+      { timeout: 15_000, timeoutMsg: "the task never got a tab to carry a work state" },
+    );
+    await showDashboard();
+    await waitVisible(`[data-dashboard-task-id="${taskId}"]`);
+    // No agent has run, so the row is quiet.
+    expect(await dashboardBadge(taskId)).toBeNull();
+
+    // Seed the tab state the detector would have written. This is SETUP, not
+    // the assertion: what is being tested is that the dashboard renders the
+    // same badge the sidebar does from the same input.
+    await browser.execute((id) => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? [])[0];
+      app.setWorkState(id, tab.id, "done");
+    }, taskId);
+    await browser.waitUntil(async () => (await dashboardBadge(taskId)) === "done", {
+      timeout: 8_000,
+      timeoutMsg: "the dashboard row never showed the done badge",
+    });
+
+    // Attention outranks done, the same precedence the sidebar uses — the two
+    // surfaces showing one task differently is the bug this shares code for.
+    await browser.execute((id) => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? [])[0];
+      app.markAttention(id, tab.id, "attention", "needs you");
+    }, taskId);
+    await browser.waitUntil(async () => (await dashboardBadge(taskId)) === "attention", {
+      timeout: 8_000,
+      timeoutMsg: "attention did not outrank done on the dashboard row",
+    });
+    await snap("dashboard-work-badge.png");
+
+    await browser.execute((id) => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? [])[0];
+      // patchTab, not setWorkState: setWorkState is the detector's state
+      // machine and holds `done` deliberately (the sticky-done / premature-done
+      // logic). A MANUAL clear goes through patchTab, which is what
+      // TerminalPane and cliRpc both do.
+      app.patchTab(id, tab.id, { workState: "idle", unread: null });
+    }, taskId);
+    await browser.waitUntil(async () => (await dashboardBadge(taskId)) === null, {
+      timeout: 8_000,
+      timeoutMsg: "the dashboard badge never cleared",
+    });
+  });
+
+  it("shows the PR chip for a task that has one, and nothing for one that does not", async () => {
+    await showDashboard();
+    const chip = `[data-dashboard-task-id="${taskId}"] [data-testid="task-pr-badge"]`;
+    // Nothing resolved yet, so no chip: the dashboard renders what the poller
+    // already knows and never kicks a lookup of its own.
+    expect(await browser.execute((sel) => !!document.querySelector(sel), chip)).toBe(false);
+
+    await browser.execute((id) => {
+      window.__termic!.usePr.setState({
+        byTask: {
+          [id]: {
+            lookup: {
+              status: "ok",
+              pr: {
+                provider: "github", number: 7, url: "https://github.com/acme/repo/pull/7",
+                title: "t", state: "open", checks: "passing", review: "none",
+                base: "main", head: "dash-order",
+              },
+            },
+            loading: false,
+            fetchedAt: Date.now(),
+          },
+        },
+      });
+    }, taskId);
+    await waitVisible(chip);
+    expect(await browser.execute(
+      (sel) => (document.querySelector(sel) as HTMLElement).dataset.prState, chip,
+    )).toEqual("open");
+    await snap("dashboard-pr-chip.png");
+    await browser.execute(() => window.__termic!.usePr.setState({ byTask: {} }));
+  });
+
+  it("lists a visited task under Recent, and drops it when it is archived", async () => {
+    const RECENTS = '[data-testid="dashboard-recents"]';
+    // A store with no history shows no Recent row at all, so an install that
+    // has never opened a task sees exactly the page it always saw.
+    await browser.execute(() => window.__termic!.useApp.setState({ recentTasks: [] }));
+    await showDashboard();
+    await waitGone(RECENTS);
+
+    // Visiting a task is what records it; going back to the dashboard shows it.
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
+    await showDashboard();
+    await waitVisible(`${RECENTS} [data-dashboard-recent-task-id="${taskId}"]`);
+    await snap("dashboard-recents.png");
+
+    // Archiving moves the task to History, so the chip must not be left behind
+    // offering a dead link.
+    await archiveTask(taskId);
+    taskId = "";
+    await waitGone(RECENTS);
   });
 });
 

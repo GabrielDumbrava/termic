@@ -985,6 +985,25 @@ export async function sidebarBadge(taskId: string): Promise<WorkBadge | null> {
 }
 
 /**
+ * The work state the DASHBOARD row for a task is showing, or null when it has
+ * no badge.
+ *
+ * Scoped through `data-dashboard-task-id` on purpose: `work-badge` is no
+ * longer unique on the page. The sidebar is always mounted and the dashboard
+ * is an overlay on top of it, so a task with a live agent renders the badge
+ * twice and a bare testid query would return whichever came first in document
+ * order (the sidebar's).
+ */
+export async function dashboardBadge(taskId: string): Promise<WorkBadge | null> {
+  return browser.execute((id) => {
+    const el = document.querySelector(
+      `[data-dashboard-task-id="${id}"] [data-testid="work-badge"]`,
+    ) as HTMLElement | null;
+    return (el?.dataset.workState as string | undefined) ?? null;
+  }, taskId) as Promise<WorkBadge | null>;
+}
+
+/**
  * Wait until the badge for `taskId` reads one of `want`. Looks at the task's
  * own tab strip AND its sidebar row, so the same call works whether the task
  * is in front or backgrounded.

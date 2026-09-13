@@ -130,6 +130,17 @@ export interface AppState {
    *  name like collapsedGroups. Persisted to localStorage; pruned and
    *  rename-migrated alongside the collapse map. */
   groupColors: Record<string, string>;
+  /** Task ids most recently activated, newest first, capped at
+   *  RECENT_TASKS_CAP. Drives the dashboard's "Recent" row, which is the
+   *  only way back into a task from the home screen without hunting the
+   *  sidebar for it.
+   *
+   *  localStorage rather than a persisted `last_opened_at` on the Task
+   *  record, for the same reason collapsedGroups lives here: it is a
+   *  per-machine UI convenience, and a disk write on every task click to
+   *  store it would be the wrong trade. Pruned in `loadAll` alongside the
+   *  group maps, so an archived or deleted task leaves no ghost. */
+  recentTasks: string[];
   /** Editable agent registry from settings.json. Loaded by `loadAll` so
    *  `spawnArgsForCli` can consult `agent.command + args + capabilities`
    *  instead of hard-coding by CLI string. Empty until first loadAll. */
@@ -396,10 +407,23 @@ const LS_COLLAPSED_PROJ = scoped("collapsedProjects"); // Record<projId, true>
 const LS_COLLAPSED_TASK   = scoped("collapsedTasks"); // Record<taskId, bool>
 const LS_COLLAPSED_GRP  = scoped("collapsedGroups"); // Record<groupName, bool>
 const LS_GROUP_COLORS   = scoped("groupColors"); // Record<groupName, paletteKey>
+const LS_RECENT_TASKS   = scoped("recentTasks"); // string[] of task ids, newest first
+/** How many tasks the dashboard's Recent row remembers. A way back into what
+ *  you were just doing, not a second history view — `History` already lists
+ *  everything, and a long list here would push the projects off the screen. */
+export const RECENT_TASKS_CAP = 8;
 const initialCollapsed   = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_PROJ) || "{}"); } catch { return {}; } })();
 const initialCollapsedTask = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_TASK)   || "{}"); } catch { return {}; } })();
 const initialCollapsedGrp = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_GRP) || "{}"); } catch { return {}; } })();
 const initialGroupColors = (() => { try { return JSON.parse(localStorage.getItem(LS_GROUP_COLORS) || "{}"); } catch { return {}; } })();
+// Array, not a record: an unparseable or hand-edited value must not become a
+// non-array that every consumer then has to defend against.
+const initialRecentTasks: string[] = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(LS_RECENT_TASKS) || "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch { return []; }
+})();
 
 const initialCompact = (() => { try { return localStorage.getItem(LS_COMPACT) === "1"; } catch { return false; } })();
 const initialHidden  = (() => { try { return localStorage.getItem(LS_RPANEL)  === "1"; } catch { return false; } })();
@@ -620,6 +644,7 @@ export const useApp = create<AppState>((set, get) => ({
   collapsedTasks: initialCollapsedTask as Record<string, boolean>,
   collapsedGroups: initialCollapsedGrp as Record<string, boolean>,
   groupColors: initialGroupColors as Record<string, string>,
+  recentTasks: initialRecentTasks,
   agents: [],
   previewBrowser: "",
   detectedClis: {},
@@ -662,7 +687,16 @@ export const useApp = create<AppState>((set, get) => ({
       );
       try { localStorage.setItem(LS_GROUP_COLORS, JSON.stringify(groupColors)); } catch {}
     }
-    set({ projects, tasks, collapsedGroups, groupColors, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [], previewBrowser: settings.preview_browser ?? "" });
+    // Same reasoning for recents: an archived or deleted task must not sit in
+    // the dashboard's Recent row offering a dead link. Archived counts as
+    // gone here (History is where an archived task is reachable from).
+    const openTaskIds = new Set(tasks.filter(t => !t.archived).map(t => t.id));
+    let recentTasks = get().recentTasks;
+    if (recentTasks.some(id => !openTaskIds.has(id))) {
+      recentTasks = recentTasks.filter(id => openTaskIds.has(id));
+      try { localStorage.setItem(LS_RECENT_TASKS, JSON.stringify(recentTasks)); } catch {}
+    }
+    set({ projects, tasks, collapsedGroups, groupColors, recentTasks, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [], previewBrowser: settings.preview_browser ?? "" });
     // Same housekeeping for Agent Race cohorts: once every task in a race is
     // archived or deleted, drop the race so the board and its localStorage
     // don't accumulate dead entries.
@@ -832,12 +866,22 @@ export const useApp = create<AppState>((set, get) => ({
         try { localStorage.setItem(LS_COLLAPSED_GRP, JSON.stringify(nextCollapsedGroups)); } catch {}
       }
     }
+    // Recents ride along in the set() that was happening anyway: a separate
+    // write here would copy the whole state a second time and re-run every
+    // mounted task's selectors for a localStorage list nobody renders while a
+    // task is open (see docs/performance.md bear trap 8).
+    let nextRecent = get().recentTasks;
+    if (id && nextRecent[0] !== id) {
+      nextRecent = [id, ...nextRecent.filter(x => x !== id)].slice(0, RECENT_TASKS_CAP);
+      try { localStorage.setItem(LS_RECENT_TASKS, JSON.stringify(nextRecent)); } catch {}
+    }
     set({
       activeTaskId: id,
       view: { page: id ? "dashboard" : get().view.page },
       mountedTasks: nextMounted,
       collapsedProjects: nextCollapsed,
       collapsedGroups: nextCollapsedGroups,
+      recentTasks: nextRecent,
     });
     if (id) {
       // Mark the WHOLE task as read on activation. Previously we

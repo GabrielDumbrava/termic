@@ -105,6 +105,15 @@
   --color-palette-purple: #9d6ee8;
   --color-palette-pink:   #d6409f;
 
+  /* Pull-request state tints. Both were hard-coded hex at the point of use
+     in the sidebar's PR glyph, which broke the "no hex outside @theme" rule
+     and left light mode with two colours tuned for a dark background.
+     Matched to the forge's own palette so the glyph reads the way the PR
+     page does. Merged is GitHub's purple, open its green; `closed` reuses
+     --color-err and `draft` --color-fg-faint, which already exist. */
+  --color-pr-merged: #a371f7;
+  --color-pr-open:   #3fb950;
+
   /* Task location glyph tint (worktree + main checkout share it). A neutral
      warm-gray sitting a step below the task title (between fg-dim and
      fg-faint) so it reads as a faded hint, not a badge. The glyph shape
@@ -237,6 +246,10 @@
     --color-palette-blue:   #2273bd;
     --color-palette-purple: #7c4dbc;
     --color-palette-pink:   #b03585;
+    /* Same two PR hues, darkened for cream: the dark-mode green in
+       particular sits at ~2:1 on #faf9f6. */
+    --color-pr-merged: #8250df;
+    --color-pr-open:   #1a7f37;
     color-scheme: light;
   }
 

@@ -10,7 +10,7 @@ import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, GitPullRequest, GitPullRequestDraft, GitPullRequestClosed, GitMerge, Activity, Waypoints, Square, Play } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -19,7 +19,6 @@ import { newScratchTab } from "@/lib/scratchTabs";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { useUI } from "@/store/ui";
-import { usePr } from "@/store/pr";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { useIsArchiving } from "@/store/archivingTasks";
 import { cn } from "@/lib/utils";
@@ -41,7 +40,11 @@ import { SandboxIcon, SANDBOX_VISUALS, DockerSandboxIcon } from "@/components/Sa
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { useTaskLabel } from "@/lib/taskLabel";
 import { useProfilesSync } from "@/components/ProfileChip";
-import { ACCENTS, accentCss } from "@/lib/accents";
+import { accentCss } from "@/lib/accents";
+import { TaskWorkBadge } from "@/components/TaskWorkBadge";
+import { TaskPrBadge } from "@/components/TaskPrBadge";
+import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
+import { taskNeedsAttention, taskWorkDone, taskWorking } from "@/lib/taskWorkState";
 
 /** Pick a default name for a freshly-created task (repo-root OR worktree).
  *  Format: "<agent>-N" where N is the next unused index for that CLI among
@@ -68,10 +71,10 @@ function defaultTaskName(cli: string, taskList: Task[]): string {
   return `${slug}-${n}`;
 }
 
-// Group folder accent palette. Shared with profiles (GH #280) and therefore
-// lifted into @/lib/accents; the aliases below keep this file's call sites
-// reading the way they always did.
-const GROUP_COLORS = ACCENTS;
+// Group folder accent resolution. Shared with profiles (GH #280) and therefore
+// lifted into @/lib/accents; the alias below keeps this file's call sites
+// reading the way they always did. (The palette itself, GROUP_COLORS, moved
+// with the swatch row into GroupActionsMenuItems.)
 const groupColorCss = accentCss;
 
 // `compact` is normally read from the store, but the Arc-style hover reveal
@@ -162,21 +165,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
    *  user). Gated on the same `settledHighlight` pref so the check
    *  disappears entirely when the user disables the work-done UI. */
   const isWorkDone = (taskId: string) =>
-    settledHighlight &&
-    (tabs[taskId] || []).some(t =>
-      // Authoritative per-tab work state (driven by OSC 9;4 / 133 / 9
-      // / title in TerminalPane). Replaces the old `unread.reason="done"`
-      // edge — see the workState state machine.
-      t.type === "terminal" && t.workState === "done",
-    );
+    taskWorkDone(tabs[taskId] || [], { settledHighlight });
   // Distinct from work-done: the agent is explicitly blocked on the
   // user (Gemini ✋ Action Required, Codex Waiting, OSC 1337
   // RequestAttention). Different sidebar icon (bell vs check).
   const needsAttention = (taskId: string) =>
-    settledHighlight &&
-    (tabs[taskId] || []).some(t =>
-      t.type === "terminal" && t.unread?.reason === "attention",
-    );
+    taskNeedsAttention(tabs[taskId] || [], { settledHighlight });
   const isLoaded = (taskId: string) =>
     (tabs[taskId] || []).some(t => t.type === "terminal" && t.ptyId);
 
@@ -1688,56 +1682,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
-                    <ContextMenuLabel>{name}</ContextMenuLabel>
-                    {/* Finder-tag-style inline swatch row — no submenu to
-                        aim through, the dots ARE the menu entry. Label-less
-                        by design (a "Red" label would lie if a theme ever
-                        re-tunes the hue); names survive as aria-labels.
-                        Default leads as a fg-faint swatch — the muted tint
-                        an uncolored folder actually renders with — and the
-                        active pick carries a ring. */}
-                    <div className="flex items-center gap-0.5 px-1 pb-1">
-                      <ContextMenuItem
-                        aria-label="Default"
-                        checked={!accent}
-                        onSelect={() => setGroupColor(name, null)}
-                        className="rounded-full p-1"
-                      >
-                        <span
-                          className={cn(
-                            "block h-4 w-4 rounded-full",
-                            !accent && "ring-1 ring-[var(--color-fg)] ring-offset-1 ring-offset-[var(--color-bg-1)]",
-                          )}
-                          style={{ backgroundColor: "var(--color-fg-faint)" }}
-                        />
-                      </ContextMenuItem>
-                      {GROUP_COLORS.map(c => (
-                        <ContextMenuItem
-                          key={c.key}
-                          aria-label={c.label}
-                          checked={accent === c.css}
-                          onSelect={() => setGroupColor(name, c.key)}
-                          className="rounded-full p-1"
-                        >
-                          <span
-                            className={cn(
-                              "block h-4 w-4 rounded-full",
-                              accent === c.css && "ring-1 ring-[var(--color-fg)] ring-offset-1 ring-offset-[var(--color-bg-1)]",
-                            )}
-                            style={{ backgroundColor: c.css }}
-                          />
-                        </ContextMenuItem>
-                      ))}
-                    </div>
-                    <ContextMenuSeparator />
-                    <ContextMenuItem onSelect={() => setRenaming({ kind: "group", id: name, value: name })}>
-                      <Pencil />
-                      Rename group
-                    </ContextMenuItem>
-                    <ContextMenuItem onSelect={() => dissolveGroup(name)}>
-                      <FolderMinus />
-                      Ungroup projects
-                    </ContextMenuItem>
+                    <GroupActionsMenuItems
+                      name={name}
+                      accent={accent}
+                      onSetColor={key => setGroupColor(name, key)}
+                      onUngroup={() => dissolveGroup(name)}
+                      onRename={() => setRenaming({ kind: "group", id: name, value: name })}
+                    />
                   </ContextMenuContent>
                 </ContextMenuRoot>
                 {/* Indented members with a tree guide line — reads as
@@ -2050,7 +2001,7 @@ function PendingTaskRow({ pending }: { pending: import("@/store/pendingTasks").P
         </div>
         <Tip content={isError ? (pending.err ?? "Creation failed") : "Creating worktree…"}>
           <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-            {isError ? <TabBadge reason="attention" /> : <TabBadge reason="working" />}
+            {isError ? <TaskWorkBadge reason="attention" /> : <TaskWorkBadge reason="working" />}
           </span>
         </Tip>
       </div>
@@ -2149,50 +2100,6 @@ function RunTabControl({ taskId, tab, title, isMounted }: {
  *  next to a name in a narrow sidebar; past that the row reads as a toolbar,
  *  and the task expands to reach them instead. */
 const COLLAPSED_RUN_BUTTON_CAP = 3;
-
-function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
-  if (reason === "working") {
-    return (
-      <span
-        data-testid="work-badge"
-        data-work-state="working"
-        className="shrink-0 text-[var(--color-fg-faint)]"
-        title="Agent working"
-        aria-label="Working"
-      >
-        <Spinner size={12} />
-      </span>
-    );
-  }
-  if (reason === "attention") {
-    return (
-      <span
-        data-testid="work-badge"
-        data-work-state="attention"
-        className="shrink-0 text-[var(--color-warn)]"
-        title="Agent needs your input"
-      >
-        <Bell className="h-3 w-3" strokeWidth={2.5} />
-      </span>
-    );
-  }
-  // done — solid blue bullet, iTerm2-style, in --color-info (defined in
-  // @theme; themes can override). h-3.5 visually matches the bell + spinner.
-  return (
-    <span
-      data-testid="work-badge"
-      data-work-state="done"
-      className="shrink-0 flex items-center justify-center"
-      title="Agent finished a turn"
-      aria-label="Work done"
-    >
-      <span
-        className="block h-2 w-2 rounded-full"
-        style={{ backgroundColor: "var(--color-info)" }}
-      />
-    </span>
-  );
-}
 
 // ─── TaskRow ────────────────────────────────────────────────────────────
 // Extracted component so each task subscribes only to its own tab state
@@ -2350,14 +2257,15 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
 
   // Aggregated work status shown on the row header when collapsed.
   // Priority: attention > done. ("working" intentionally not surfaced.)
-  const hasAttention = settledHighlight && tabs.some(t => t.unread?.reason === "attention");
-  const hasDone = settledHighlight && !hasAttention
-    && tabs.some(t => t.type === "terminal" && t.workState === "done");
+  // Shared with the dashboard (src/lib/taskWorkState.ts) so the two surfaces
+  // showing one task can never disagree about its badge.
+  const workPrefs = { settledHighlight, workingIndicator };
+  const hasAttention = taskNeedsAttention(tabs, workPrefs);
+  const hasDone = !hasAttention && taskWorkDone(tabs, workPrefs);
   // Working aggregate is independent of settledHighlight (it's its own
   // opt-in pref) but yields to attention/done — a finished or blocked agent
   // is more actionable than one still chugging.
-  const hasWorking = workingIndicator && !hasAttention && !hasDone
-    && tabs.some(t => t.type === "terminal" && t.workState === "working");
+  const hasWorking = !hasAttention && !hasDone && taskWorking(tabs, workPrefs);
   // Why no badge is drawn, which the work-state trace cannot answer: it records
   // DETECTION, and a correct `working` can still render nothing here. Four
   // independent ways that happens (the pref is off, attention or done outranks
@@ -2620,7 +2528,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
         <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
           {collapsed && (hasAttention || hasDone || hasWorking) && (
             <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0">
-              {hasAttention ? <TabBadge reason="attention" /> : hasDone ? <TabBadge reason="done" /> : <TabBadge reason="working" />}
+              {hasAttention ? <TaskWorkBadge reason="attention" /> : hasDone ? <TaskWorkBadge reason="done" /> : <TaskWorkBadge reason="working" />}
             </span>
           )}
           <DropdownRoot open={menuOpen} onOpenChange={setMenuOpen}>
@@ -3003,7 +2911,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             <span className="group/badge relative flex h-4 w-4 shrink-0 items-center justify-center">
               {(showBell || showDone || showWorking) && (
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/badge:opacity-0">
-                  {showBell ? <TabBadge reason="attention" /> : showDone ? <TabBadge reason="done" /> : <TabBadge reason="working" />}
+                  {showBell ? <TaskWorkBadge reason="attention" /> : showDone ? <TaskWorkBadge reason="done" /> : <TaskWorkBadge reason="working" />}
                 </span>
               )}
               <button
@@ -3154,37 +3062,3 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
  *  has polled the task (colored), otherwise the persisted identity only
  *  (muted glyph - "there is a PR, state unknown"). Click opens it on the
  *  forge; that's the sidebar's link-out (issue #21). */
-function TaskPrBadge({ task }: { task: import("@/lib/types").Task }) {
-  const pr = usePr(s => s.byTask[task.id]?.lookup?.pr ?? null);
-  const url = pr?.url ?? task.pr_url ?? null;
-  if (!url) return null;
-  const noun = (pr?.provider ?? task.pr_provider) === "gitlab" ? "MR" : "PR";
-  const num = pr?.number ?? task.pr_number;
-  const state = pr?.state ?? null;
-  // Failing checks override the state color for open/draft: this glyph is
-  // the only PR signal visible without opening the Git tab, and an all-green
-  // "open" icon next to a red CI failure (visible only in the full card) is
-  // exactly the confusing case - a broken build shouldn't look identical to
-  // a healthy one at a glance. Merged/closed keep their own color; the PR
-  // is already done, so CI at HEAD stops being the thing worth flagging.
-  const failing = pr?.checks === "failing" && (state === "open" || state === "draft");
-  const { Icon, color, label } =
-    state === "merged" ? { Icon: GitMerge, color: "#a371f7", label: "merged" } :
-    state === "closed" ? { Icon: GitPullRequestClosed, color: "var(--color-err)", label: "closed" } :
-    state === "draft"  ? { Icon: GitPullRequestDraft, color: failing ? "var(--color-err)" : "var(--color-fg-faint)", label: failing ? "draft · checks failing" : "draft" } :
-    state === "open"   ? { Icon: GitPullRequest, color: failing ? "var(--color-err)" : "#3fb950", label: failing ? "open · checks failing" : "open" } :
-    { Icon: GitPullRequest, color: "var(--color-fg-faint)", label: "" };
-  return (
-    <Tip content={`${noun}${num ? ` ${noun === "MR" ? "!" : "#"}${num}` : ""}${label ? ` · ${label}` : ""}. Open on ${noun === "MR" ? "GitLab" : "GitHub"}`} delay={0}>
-      <button
-        data-no-drag
-        data-testid="task-pr-badge"
-        data-pr-state={state ?? "unknown"}
-        onClick={(e) => { e.stopPropagation(); openPath(url).catch(() => {}); }}
-        className="shrink-0 rounded p-px hover:bg-[var(--color-bg-3)]"
-      >
-        <Icon className="h-3 w-3" style={{ color }} />
-      </button>
-    </Tip>
-  );
-}

@@ -672,6 +672,62 @@ Two honesty rules, because a confidently wrong author is worse than none:
 
 A git tick is deliberately NOT a re-fetch. `gitRevision` bumps on every stage and unstage, not just on commits, so it dispatches `markBlameStale`: the annotation on screen stays put and the refetch rides the reader's next cursor move. Re-blaming per tick forks git once per open editor to redraw one line that usually did not change, and it measurably slowed the e2e suite when it was written that way.
 
+## The dashboard
+
+The home screen: hero, three action cards, a Recent row, and the project list.
+Rendered by `MainArea` as an OVERLAY whenever no task is active and the view is
+not History, with every visited task still mounted underneath so its PTYs
+survive. That is why it can afford live signals at all: it is not on screen
+while you are driving an agent.
+
+**It shows the same structure the sidebar does.** Project groups render as
+folders here too, through the same `projectSections()` in
+`src/lib/projectGroups.ts` and, critically, the same `collapsedGroups` map.
+Collapsing a folder in either view collapses it in both, because one folder in
+two states is a bug the user would read as a rendering fault.
+
+**Section first, then sort.** The dashboard floats projects with live tasks to
+the top and the sidebar does not (it folds inactive ones into a trailing
+section instead). Applying that sort to the flat project list before sectioning
+splits a folder: a group is anchored at its FIRST member's index, so moving
+members moves the folder and reorders it internally. `sortSectionsActiveFirst`
+sorts whole sections, which keeps a folder intact and its members in the order
+every other surface shows them. The worked counter-example is in that
+function's comment.
+
+**Rename and drag stay in the sidebar.** Both are inline edits on a row the
+sidebar owns; a second way to do them here would be two sources of truth for
+one gesture. The dashboard's folder right-click menu is the shared
+`GroupActionsMenuItems` WITHOUT its `onRename`.
+
+**Live signals are read-only.** The work badge and the PR chip are the sidebar's
+own components (`TaskWorkBadge`, `TaskPrBadge`), fed by the same
+`src/lib/taskWorkState.ts` predicates and the same precedence
+(attention > done > working). The PR chip renders what the poller already
+resolved and never starts a lookup, so listing every task costs nothing.
+
+### `work-badge` is no longer a unique testid
+
+The sidebar is always mounted and the dashboard sits on top of it, so a task
+with a live agent renders the badge TWICE. A bare
+`[data-testid="work-badge"]` query returns the sidebar's, in document order.
+Every assertion must scope: `dashboardBadge()` goes through
+`[data-dashboard-task-id]`, `sidebarBadge()` through `[data-sidebar-task-row]`.
+
+### Recent is a way back in, not a second History
+
+`recentTasks` in `useApp`: task ids, newest first, capped at
+`RECENT_TASKS_CAP`, localStorage-backed and written inside the `set()` that
+`setActiveTask` was already doing (a separate write would copy the whole state
+again for a list nobody renders while a task is open). Archived and deleted ids
+are pruned in `loadAll` alongside the group maps, so the row never offers a
+dead link. It is hidden entirely when empty, so a fresh install sees the page
+it always saw.
+
+It is localStorage and not a `last_opened_at` on the `Task` record for the same
+reason folder colours are: it is a per-machine UI convenience, and a disk write
+on every task click would be the wrong trade.
+
 ## Settled detection / notifications
 
 TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible viewport, marks tab "settled" after 2 identical consecutive samples. Resets on user input. `markAttention(wsId, tabId, reason)` never marks the active tab in the active task. `useAttentionNotifier` suppresses OS notifications for every tab in the focused task. Desktop notifications off by default. Clicking a banner only brings the window forward: it never changes the active task or tab (the old focus-edge router jumped on any refocus within 15s of a notification, including a plain cmd-Tab). The unread dot is what points at the tab; the user does the switching.
