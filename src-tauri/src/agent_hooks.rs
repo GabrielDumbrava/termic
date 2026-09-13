@@ -76,7 +76,7 @@ use std::path::{Path, PathBuf};
 // hash the hooks.json ENTRY (command path, timeout, status message), none of
 // which this changes, so a reinstall re-asks codex and writes back the same
 // hashes rather than orphaning them.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Directory we create inside the agent's config dir. Also the prefix that
 /// identifies our entries for removal, which is why it must never be renamed
@@ -506,10 +506,18 @@ pub fn hooks_for(agent: &str) -> &'static [(&'static str, Signal)] {
         // too, which is the only way termic learns the slug to resume by:
         // devin mints its own ids and nothing accepts one at launch, so this
         // report IS the session binding, not a nicety.
+        //
+        // `ask_user_question` never reaches `PermissionRequest`: it is
+        // auto-decided and routed to an elicitation panel, which blocks on the
+        // user while only `PreToolUse` has fired (measured). The Working
+        // script reads `hook_event_name` + `tool_name` and reports Attention
+        // for exactly that edge; `PostToolUse` exists to hand Working back
+        // the moment the answer lands.
         "devin" => &[
             ("SessionStart", Signal::Ready),
             ("UserPromptSubmit", Signal::Working),
             ("PreToolUse", Signal::Working),
+            ("PostToolUse", Signal::Working),
             ("PermissionRequest", Signal::Attention),
             ("Stop", Signal::Done),
         ],
@@ -741,6 +749,27 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
             "  ''|*[!A-Za-z0-9_-]*) tool='' ;;\n",
             "esac\n",
         ),
+        // One Working script serves three events; the fields below are how the
+        // emit arm tells the question-tool edge (PreToolUse +
+        // ask_user_question) apart from the post-answer restore
+        // (PostToolUse) and from every ordinary call.
+        ("devin", Signal::Working) => concat!(
+            "flat=$(cat | tr -d '[:space:]')\n",
+            "evt=''\n",
+            "tool=''\n",
+            "case \"$flat\" in\n",
+            "  *'\"hook_event_name\":\"'*)\n",
+            "    evt=${flat#*'\"hook_event_name\":\"'}\n",
+            "    evt=${evt%%'\"'*}\n",
+            "    ;;\n",
+            "esac\n",
+            "case \"$flat\" in\n",
+            "  *'\"tool_name\":\"'*)\n",
+            "    tool=${flat#*'\"tool_name\":\"'}\n",
+            "    tool=${tool%%'\"'*}\n",
+            "    ;;\n",
+            "esac\n",
+        ),
         _ => "",
     };
 
@@ -806,6 +835,21 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
              fi\n\
              emit() {{ printf '\\033]{NOTIFY_PREFIX}%s\\007' \"$body\" > \"$1\" 2>/dev/null; }}\n\
              emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true"
+        )
+    } else if matches!((agent, sig), ("devin", Signal::Working)) {
+        // `ask_user_question` is devin's blocking input edge: the panel it
+        // paints is pixel-identical to working, and no other hook fires until
+        // the answer arrives. Exact-matched, so the name reaching the OSC body
+        // is always that one literal.
+        format!(
+            "[ -n \"$TERMIC_PTY\" ] || exit 0\n\
+             if [ \"$evt\" = PreToolUse ] && [ \"$tool\" = ask_user_question ]; then\n\
+               emit() {{ printf '\\033]{NOTIFY_PREFIX}%s\\007' \"needs your answer: $tool\" > \"$1\" 2>/dev/null; }}\n\
+             else\n\
+               emit() {{ printf '\\033]{payload}\\007' > \"$1\" 2>/dev/null; }}\n\
+             fi\n\
+             emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true",
+            payload = Signal::Working.payload()
         )
     } else {
         format!(
@@ -2824,7 +2868,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // before the current set must read as stale, or `agent_hooks_sync`
         // skips it and the user keeps that set forever: v3 types into startup
         // dialogs, v4 holds a tab on `working` for the rest of the session.
-        assert_eq!(SCHEMA_VERSION, 8, "bump me with the hook set, or installs go stale silently");
+        assert_eq!(SCHEMA_VERSION, 9, "bump me with the hook set, or installs go stale silently");
     }
 
     #[test]
@@ -3290,6 +3334,106 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         }
     }
 
+    /// Run devin's generated WORKING script against a payload and return
+    /// everything it put on the pty. Same harness as `ready_output_for`: the
+    /// extraction is shell, and shell is where the bugs are.
+    ///
+    /// The counter is load-bearing: parallel tests can share a nanos tick, and
+    /// a shared dir means one test's `remove_dir_all` deletes another's pty.
+    #[cfg(unix)]
+    fn devin_working_output_for(payload: &str) -> String {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "termic-working-test-{}-{}-{:?}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("working.sh");
+        let pty = dir.join("pty");
+        std::fs::write(&script, script_body("devin", Signal::Working)).unwrap();
+        std::fs::write(&pty, "").unwrap();
+        let mut child = Command::new("/bin/sh")
+            .arg(&script)
+            .env("TERMIC_TASK_ID", "t1")
+            .env("TERMIC_PTY", &pty)
+            .env_remove("GROK_HOOK_EVENT")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+        }
+        assert!(child.wait().unwrap().success(), "a hook must never exit non-zero");
+        let mut out = String::new();
+        std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    /// devin's tool-event payload, transcribed from a live 3000.10.21.
+    /// `hook_event_name` is snake_case in the payload even though the docs
+    /// camelCase the `hookSpecificOutput` field of the same name.
+    #[cfg(unix)]
+    fn devin_tool_payload(evt: &str, tool: &str) -> String {
+        format!(
+            r#"{{"hook_event_name":"{evt}","tool_name":"{tool}",
+               "tool_input":{{}},"tool_use_id":"{tool}_0",
+               "session_id":"s1","prompt_id":"p1","cwd":"/Users/u/proj"}}"#
+        )
+    }
+
+    // `ask_user_question` paints a blocking panel and never emits
+    // `PermissionRequest` (measured: the panel sat up with only PreToolUse
+    // logged). Without this the tab spins working for the whole time the
+    // question waits on an answer.
+    #[test]
+    #[cfg(unix)]
+    fn devin_question_tool_reports_attention_not_working() {
+        let out = devin_working_output_for(&devin_tool_payload("PreToolUse", "ask_user_question"));
+        assert!(
+            out.contains(&format!("{NOTIFY_PREFIX}needs your answer: ask_user_question")),
+            "the question edge must raise attention: {out:?}"
+        );
+        assert!(!out.contains("133;C"), "a blocked question is not working: {out:?}");
+    }
+
+    // The same script on the SAME tool's PostToolUse hands working back the
+    // moment the answer lands, rather than leaving the tab badged while the
+    // resumed turn runs.
+    #[test]
+    #[cfg(unix)]
+    fn devin_question_answer_restores_working() {
+        let out = devin_working_output_for(&devin_tool_payload("PostToolUse", "ask_user_question"));
+        assert!(out.contains("133;C"), "answer landed, turn resumed: {out:?}");
+        assert!(!out.contains(NOTIFY_PREFIX), "an answered question is not attention: {out:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn devin_working_stays_working_for_ordinary_events() {
+        for payload in [
+            // A prompt submit carries no tool_name at all.
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"hi","session_id":"s1"}"#.to_string(),
+            devin_tool_payload("PreToolUse", "exec"),
+            devin_tool_payload("PostToolUse", "exec"),
+            // Garbage parses to empty fields, which must still mean working.
+            String::new(),
+        ] {
+            let out = devin_working_output_for(&payload);
+            assert!(out.contains("133;C"), "working lost for {payload:?}: {out:?}");
+            assert!(!out.contains(NOTIFY_PREFIX), "not attention for {payload:?}: {out:?}");
+        }
+    }
+
     // The body must survive the TS side, which is the failure mode with no
     // symptom: the hook fires correctly and termic drops it on the floor.
     #[test]
@@ -3638,7 +3782,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     /// UserPromptSubmit made the same clear permanent for the whole turn.
     #[test]
     fn working_has_a_heartbeat_wherever_one_is_safe() {
-        for agent in ["claude", "grok"] {
+        for agent in ["claude", "grok", "devin"] {
             let working: Vec<&str> = hooks_for(agent)
                 .iter()
                 .filter(|(_, s)| *s == Signal::Working)

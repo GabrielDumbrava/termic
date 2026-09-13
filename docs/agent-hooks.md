@@ -38,7 +38,7 @@ target.
 | agy | not measured | `PreInvocation` | none exists (see below) | `Stop`, guarded on `fullyIdle` | none exists |
 | opencode | not measured | `chat.message`, `permission.replied` | `permission.asked` | `session.idle` | `session.idle`, on the SECOND escape |
 | codex | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | `PermissionRequest` | `Stop` | none exists |
-| devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | `PermissionRequest` | `Stop` | none exists |
+| devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest`, plus `PreToolUse` on `ask_user_question` | `Stop` | none exists |
 
 **Ready is the only signal that is not a correction.** Everything else here
 replaces a state the terminal reports WRONG. Ready reports one the terminal
@@ -145,9 +145,9 @@ run as a side effect of dropping approval.
 config is `~/.config/devin/config.json`, a shared user file like claude's
 `settings.json`, with the same `"hooks"` map and the same entry shape
 (`statusMessage` included — verified live: the hook fires with it present).
-`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest` and
-`Stop` all fire in `-p` mode and in the TUI, and every payload carries
-`session_id`. Measured on 3000.10.21:
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PermissionRequest` and `Stop` all fire in `-p` mode and in the TUI, and every
+payload carries `session_id`. Measured on 3000.10.21:
 
 - **`session_id` is a slug, not a UUID** — `brassy-polish`, not
   `aaaaaaaa-…`. It is exactly what `devin --resume` wants, so the ready
@@ -161,6 +161,12 @@ config is `~/.config/devin/config.json`, a shared user file like claude's
 - **`Stop` has `stop_hook_active` but no `background_tasks`**, so it takes
   the plain done body — devin runs no claude-style background agents that
   would need the whitelist.
+- **`ask_user_question` never emits `PermissionRequest`.** The question is
+  auto-decided and routed to an elicitation panel, so while it sits blocking,
+  the only event on the wire is `PreToolUse`. The Working script reads
+  `hook_event_name` and `tool_name` and reports attention for exactly that
+  pair; `PostToolUse` on the same tool hands working back when the answer
+  lands. Without this the tab spins through the whole wait.
 - **The title carries no state.** A live turn flips `devin: <dir>` to
   `devin: <prompt>` to `devin: <generated title>` and emits no `OSC 9`
   anywhere, including on a permission prompt. Signals stay empty and hooks
