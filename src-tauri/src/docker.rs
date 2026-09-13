@@ -2192,6 +2192,10 @@ mod tests {
         // the host store is a symlink farm back to the primary dir. A host
         // symlink is dangling inside a container, so Docker shares the same
         // entries as bind MOUNTS instead.
+        // `agent_config_host_dir` and `build_spec` both resolve through
+        // `TERMIC_DATA_DIR`, so the path resolved here and the one resolved
+        // inside `build_spec` must not be repointed mid-test.
+        let _g = DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("termic-docker-share-{}", uuid::Uuid::new_v4()));
         let primary = crate::docker::agent_config_host_dir("claude");
         // Only entries that EXIST are mounted, so seed one and check both

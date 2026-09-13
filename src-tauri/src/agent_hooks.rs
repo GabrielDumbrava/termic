@@ -2970,6 +2970,23 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert!(!script_body("claude", Signal::Attention).contains("background_tasks"));
     }
 
+    /// A fresh empty directory per call. The script harnesses below each run
+    /// the generated shell against a `TERMIC_PTY` file inside one, and cargo
+    /// runs them in parallel: pid+nanos lands two tests on the same path often
+    /// enough that one reads (or deletes) the other's pty mid-run.
+    #[cfg(unix)]
+    fn unique_test_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "termic-{tag}-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// Run claude's generated Done script against a real `Stop` payload and
     /// report whether it emitted. `TERMIC_PTY` points at a temp file, which is
     /// exactly how the script addresses a pty: a plain path it redirects into.
@@ -2982,12 +2999,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
-        let dir = std::env::temp_dir().join(format!(
-            "termic-hook-test-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_test_dir("hook");
         let script = dir.join("done.sh");
         let pty = dir.join("pty");
         std::fs::write(&script, script_body("claude", Signal::Done)).unwrap();
@@ -3028,12 +3040,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
-        let dir = std::env::temp_dir().join(format!(
-            "termic-attn-test-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_test_dir("attn");
         let script = dir.join("attention.sh");
         let pty = dir.join("pty");
         std::fs::write(&script, script_body(agent, Signal::Attention)).unwrap();
@@ -3183,12 +3190,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
-        let dir = std::env::temp_dir().join(format!(
-            "termic-ready-test-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_test_dir("ready");
         let script = dir.join("ready.sh");
         let pty = dir.join("pty");
         std::fs::write(&script, script_body(agent, Signal::Ready)).unwrap();
@@ -3337,23 +3339,12 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     /// Run devin's generated WORKING script against a payload and return
     /// everything it put on the pty. Same harness as `ready_output_for`: the
     /// extraction is shell, and shell is where the bugs are.
-    ///
-    /// The counter is load-bearing: parallel tests can share a nanos tick, and
-    /// a shared dir means one test's `remove_dir_all` deletes another's pty.
     #[cfg(unix)]
     fn devin_working_output_for(payload: &str) -> String {
         use std::io::Read;
         use std::process::{Command, Stdio};
-        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "termic-working-test-{}-{}-{:?}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_test_dir("working");
         let script = dir.join("working.sh");
         let pty = dir.join("pty");
         std::fs::write(&script, script_body("devin", Signal::Working)).unwrap();
