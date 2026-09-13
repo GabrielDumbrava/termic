@@ -500,6 +500,19 @@ pub fn hooks_for(agent: &str) -> &'static [(&'static str, Signal)] {
             ("PermissionRequest", Signal::Attention),
             ("Stop", Signal::Done),
         ],
+        // devin speaks the same claude-shaped hook protocol (its docs call it
+        // claude-compatible, and a live 3000.10.21 fired every one of these
+        // against a file in `.devin/`). `SessionStart` carries `session_id`
+        // too, which is the only way termic learns the slug to resume by:
+        // devin mints its own ids and nothing accepts one at launch, so this
+        // report IS the session binding, not a nicety.
+        "devin" => &[
+            ("SessionStart", Signal::Ready),
+            ("UserPromptSubmit", Signal::Working),
+            ("PreToolUse", Signal::Working),
+            ("PermissionRequest", Signal::Attention),
+            ("Stop", Signal::Done),
+        ],
         _ => &[],
     }
 }
@@ -689,7 +702,30 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
             "  *[!0-9a-fA-F-]*) sid='' ;;\n",
             "esac\n",
         ),
-        ("claude", Signal::Attention) | ("codex", Signal::Attention) => concat!(
+        // Same report as codex's, with a wider alphabet: a devin session id is
+        // a slug (`brassy-polish`), not a uuid. Captured from a live
+        // 3000.10.21: `session_id` is in every payload, `SessionStart`'s
+        // included, and it is the value `-r` takes verbatim. The check is
+        // what the id ends up inside - a `--resume <id>` command line - so a
+        // leading dash or a shell-active byte means dropped, not escaped.
+        ("devin", Signal::Ready) => concat!(
+            "flat=$(cat | tr -d '[:space:]')\n",
+            "sid=''\n",
+            "case \"$flat\" in\n",
+            "  *'\"session_id\":\"'*)\n",
+            "    sid=${flat#*'\"session_id\":\"'}\n",
+            "    sid=${sid%%'\"'*}\n",
+            "    ;;\n",
+            "esac\n",
+            "case \"$sid\" in\n",
+            "  [0-9a-zA-Z]*) ;;\n",
+            "  *) sid='' ;;\n",
+            "esac\n",
+            "case \"$sid\" in\n",
+            "  *[!0-9a-zA-Z_-]*) sid='' ;;\n",
+            "esac\n",
+        ),
+        ("claude", Signal::Attention) | ("codex", Signal::Attention) | ("devin", Signal::Attention) => concat!(
             "flat=$(cat | tr -d '[:space:]')\n",
             "tool=''\n",
             "case \"$flat\" in\n",
@@ -737,7 +773,7 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
     //     format string would be a bug waiting for the first one that is not.
     //   - the fallback is `HOOK_OSC_BODY` verbatim (`lib/agentHooks.ts`), so a
     //     payload this cannot read behaves exactly as it did before.
-    let emit = if (agent, sig) == ("codex", Signal::Ready) {
+    let emit = if matches!((agent, sig), ("codex", Signal::Ready) | ("devin", Signal::Ready)) {
         // TWO sequences, ONE write. Ready keeps its exact body because the TS
         // side routes it on an exact match; the id rides a second sequence with
         // its own prefix, concatenated into the same `printf`.
@@ -760,7 +796,7 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
              emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true",
             ready = Signal::Ready.payload()
         )
-    } else if sig == Signal::Attention && matches!(agent, "claude" | "codex") {
+    } else if sig == Signal::Attention && matches!(agent, "claude" | "codex" | "devin") {
         format!(
             "[ -n \"$TERMIC_PTY\" ] || exit 0\n\
              if [ -n \"$tool\" ]; then\n\
@@ -1127,6 +1163,11 @@ fn settings_rel(agent: &str) -> &'static str {
         // `source: "user"`. config.toml is still touched, but only for the
         // TRUST entry (codex_trust.rs), never for the hooks themselves.
         "codex" => "hooks.json",
+        // Devin's user config, whose `hooks` key is the claude-compatible
+        // event map. Documented locations also include `.devin/hooks.v1.json`
+        // in the project, but that is per-repo and user-owned; the global
+        // config is the install termic can stand behind.
+        "devin" => "config.json",
         _ => "settings.json",
     }
 }
@@ -1749,7 +1790,7 @@ pub fn remove(target: &Target) -> Result<(), String> {
 /// row can say "not supported yet" rather than offering a button that fails.
 /// Agents this build can wire. Each needs a measured event AND a transport
 /// that reaches termic; see `event_for` / `uses_terminal_sequence`.
-pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex"];
+pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin"];
 
 fn check_supported(agent_id: &str) -> Result<(), String> {
     // A duplicated agent is supported when what it was cloned FROM is. It runs
@@ -1826,7 +1867,9 @@ pub fn agent_hooks_plan(agent_id: String) -> Result<HookPlan, String> {
         })
         .collect();
 
-    let shared = settings_rel(&base) == "settings.json";
+    // Both names are the agent's own user-level settings file, which termic
+    // merges into rather than owns outright.
+    let shared = matches!(settings_rel(&base), "settings.json" | "config.json");
     let fragment = if hooks.is_empty() {
         String::new()
     } else {
@@ -2804,7 +2847,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     fn done_comes_from_a_hook_on_every_agent_that_can_report_it() {
         for agent in SUPPORTED {
             let h = hooks_for(agent);
-            if *agent == "agy" || *agent == "opencode" || *agent == "claude" || *agent == "grok" {
+            if *agent == "agy" || *agent == "opencode" || *agent == "claude" || *agent == "grok" || *agent == "codex" || *agent == "devin" {
                 assert!(
                     h.iter().any(|(_, s)| *s == Signal::Done),
                     "{agent} must report done via a hook, not the title"
@@ -2823,7 +2866,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
 
     #[test]
     fn attention_comes_from_a_hook_wherever_the_agent_has_such_an_event() {
-        for agent in ["claude", "grok", "opencode"] {
+        for agent in ["claude", "grok", "opencode", "codex", "devin"] {
             assert!(
                 hooks_for(agent).iter().any(|(_, s)| *s == Signal::Attention),
                 "{agent} has an attention-shaped event and must use it"
@@ -3089,10 +3132,10 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         );
     }
 
-    /// Run codex's generated READY script and return everything it put on the
-    /// pty, both sequences.
+    /// Run the agent's generated READY script and return everything it put on
+    /// the pty, both sequences.
     #[cfg(unix)]
-    fn ready_output_for(payload: &str) -> String {
+    fn ready_output_for(agent: &str, payload: &str) -> String {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
@@ -3104,7 +3147,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("ready.sh");
         let pty = dir.join("pty");
-        std::fs::write(&script, script_body("codex", Signal::Ready)).unwrap();
+        std::fs::write(&script, script_body(agent, Signal::Ready)).unwrap();
         std::fs::write(&pty, "").unwrap();
         let mut child = Command::new("/bin/sh")
             .arg(&script)
@@ -3148,7 +3191,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     #[cfg(unix)]
     fn codex_ready_reports_the_session_id_alongside_ready() {
         let sid = "01a06adc-eeb5-77a0-b603-d7b670dd11e7";
-        let out = ready_output_for(&codex_session_start_payload(sid));
+        let out = ready_output_for("codex", &codex_session_start_payload(sid));
         assert!(
             out.contains(&format!("{NOTIFY_PREFIX}{READY_BODY}")),
             "ready must still be sent, unchanged: {out:?}"
@@ -3180,7 +3223,65 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             codex_session_start_payload("../../etc/passwd"),
             codex_session_start_payload("$(rm -rf /)"),
         ] {
-            let out = ready_output_for(&payload);
+            let out = ready_output_for("codex", &payload);
+            assert!(out.contains(READY_BODY), "ready lost for {payload:?}: {out:?}");
+            assert!(
+                !out.contains(SESSION_BODY_PREFIX),
+                "a bad id must not be reported: {out:?}"
+            );
+        }
+    }
+
+    /// devin's `SessionStart` payload, transcribed from a live 3000.10.21.
+    /// `session_id` is a slug (`brassy-polish`), not a uuid, and `source` is
+    /// `startup` on a fresh spawn / `resume` on `-r`.
+    #[cfg(unix)]
+    fn devin_session_start_payload(sid: &str) -> String {
+        format!(
+            r#"{{"session_id":"{sid}","hook_event_name":"SessionStart",
+               "source":"startup","cwd":"/Users/u/proj"}}"#
+        )
+    }
+
+    // Same contract as codex's pair above: the slug IS what `devin --resume`
+    // takes, so losing it strands repo-root resume on `--continue` and the
+    // wrong task's session.
+    #[test]
+    #[cfg(unix)]
+    fn devin_ready_reports_the_session_id_alongside_ready() {
+        let sid = "brassy-polish";
+        let out = ready_output_for("devin", &devin_session_start_payload(sid));
+        assert!(
+            out.contains(&format!("{NOTIFY_PREFIX}{READY_BODY}")),
+            "ready must still be sent, unchanged: {out:?}"
+        );
+        assert!(
+            out.contains(&format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}{sid}")),
+            "the session id never made it to the pty: {out:?}"
+        );
+        assert!(
+            out.find(READY_BODY).unwrap() < out.find(SESSION_BODY_PREFIX).unwrap(),
+            "ready must precede the session id: {out:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn devin_ready_still_reports_ready_when_there_is_no_usable_id() {
+        // Slugs take letters, digits, dash and underscore; anything else lands
+        // in a `--resume <id>` command line, so it is dropped not escaped.
+        // Whitespace inside the value is the one case that is NOT rejected:
+        // the script strips all whitespace before matching, so `"a b"` reads
+        // as `ab` — still shell-safe, and a slug that resolves to nothing
+        // fails the resume fast and respawns fresh rather than injecting.
+        for payload in [
+            String::new(),
+            r#"{"hook_event_name":"SessionStart","cwd":"/Users/u/p"}"#.to_string(),
+            devin_session_start_payload("--resume"),
+            devin_session_start_payload("../../etc/passwd"),
+            devin_session_start_payload("$(rm -rf /)"),
+        ] {
+            let out = ready_output_for("devin", &payload);
             assert!(out.contains(READY_BODY), "ready lost for {payload:?}: {out:?}");
             assert!(
                 !out.contains(SESSION_BODY_PREFIX),

@@ -184,8 +184,8 @@ silent. Verified by adding a fake agent and watching the suite pass, then fail.
 Six shapes, each because an agent measured that way: `ConfigDir` (claude,
 codex), `SelfHostingDir` (grok: the login follows the var but its binary lives
 in that tree, so Docker can never mount it), `ParentDir` (gemini appends
-`.gemini`), `XdgRoot` (opencode: broader than the agent, which the UI says out
-loud), `HomeOnly` (pi), `TokenVar` (no agent currently, kept because it is the
+`.gemini`), `XdgRoot` (opencode, devin: broader than the agent, which the UI
+says out loud), `HomeOnly` (pi), `TokenVar` (no agent currently, kept because it is the
 shape an agent that reads only a token variable would take).
 
 `None` is a THIRD answer, distinct from both a shape and an unmeasured agent,
@@ -315,6 +315,7 @@ against it, because the path-keyed agents stay path-keyed:
 | codex | libsecret, account key hashes `CODEX_HOME`; `auth.json` fallback | yes, both paths |
 | grok | `$GROK_HOME/auth.json` | yes |
 | opencode | `$XDG_DATA_HOME/opencode/auth.json` | yes |
+| devin | `$XDG_DATA_HOME/devin/credentials.toml` | yes |
 | pi | `~/.pi` | yes (via `HOME`) |
 | gemini | keytar `gemini-cli-oauth`, fixed name | only with the companion flag, same as macOS |
 | copilot | libsecret `copilot-cli`, fixed name | no, same as macOS |

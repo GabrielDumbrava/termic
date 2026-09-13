@@ -264,6 +264,11 @@ pub fn login_store(base_id: &str) -> Option<LoginStore> {
         // Measured: only XDG_DATA_HOME moved it. Generic, shared with other
         // tools in the same environment.
         "opencode" => Some(XdgRoot { env: "XDG_DATA_HOME", child: "opencode" }),
+        // Measured on a live 3000.10.21: `XDG_DATA_HOME=<empty> devin auth
+        // status` prints "Not logged in" and names
+        // `<empty>/devin/credentials.toml` as where it looked. The credential
+        // is a plain file in the data dir, so a relocated root carries it.
+        "devin" => Some(XdgRoot { env: "XDG_DATA_HOME", child: "devin" }),
         // NOT SUPPORTED until the keychain question is answered.
         //
         // Measured that XDG_CONFIG_HOME moves muse's metadata INDEX, and the
@@ -490,6 +495,13 @@ pub fn state_dirs(agent_id: &str) -> &'static [&'static str] {
         // allows the real path regardless); `docker::agent_config` still
         // declines to support it — see findings.md's "outlier" writeup.
         "grok" => &[".grok"],
+        // Devin (Cognition): config.json + hooks in `.config/devin` (FIRST,
+        // so it is where hooks install and what Docker would call the config
+        // dir), credentials + sessions + the CLI's own versioned binaries in
+        // `.local/share/devin`, user-level plans/extensions in `.devin`, and
+        // telemetry in `.cache/devin`. `.local/share/devin` holding the
+        // binary is exactly grok's collision, so Docker keeps declining it.
+        "devin" => &[".config/devin", ".local/share/devin", ".devin", ".cache/devin"],
         _ => &[],
     }
 }
@@ -671,6 +683,9 @@ mod instance_dir_tests {
             "GROK_HOME moves grok's login, but its binary lives in that tree: mounting over it in \
              Docker shadows the binary and the agent vanishes");
         assert_eq!(config_relocation_env("opencode"), None, "XDG_DATA_HOME is a generic root");
+        assert_eq!(config_relocation_env("devin"), None,
+            "XDG_DATA_HOME again; and .local/share/devin also holds the CLI's binaries, so a \
+             Docker mount there is grok's shadowing problem with a second path");
         assert_eq!(config_relocation_env("muse"), None, "muse has no login store at all");
         assert_eq!(config_relocation_env("copilot"), None,
             "copilot's keyring service name is fixed, so COPILOT_HOME does not move the credential");
@@ -708,7 +723,7 @@ mod instance_dir_tests {
         let broad: Vec<String> = built_ins().into_iter()
             .filter(|a| matches!(login_store(a), Some(LoginStore::XdgRoot { .. })))
             .collect();
-        assert_eq!(broad, vec!["opencode"]);
+        assert_eq!(broad, vec!["opencode", "devin"]);
 
         // HomeOnly is broader still: the store has to be a home-shaped dir.
         let home_only: Vec<String> = built_ins().into_iter()
@@ -727,6 +742,20 @@ mod instance_dir_tests {
         assert!(!login_env("grok", Path::new("/s")).is_empty(), "grok CAN hold a second account");
         assert_eq!(config_relocation_env("grok"), None, "and Docker must still decline it");
         assert!(!crate::docker::persist_offerable("grok"),
+            "docker's own refusal has to agree with this table");
+    }
+
+    #[test]
+    fn devin_relocates_its_login_but_is_never_a_docker_mount() {
+        // Same pair of facts as grok's test above, one shape over: the
+        // login follows XDG_DATA_HOME (an XdgRoot, so Docker never sees it
+        // as a mountable config dir), and `.local/share/devin` carries the
+        // versioned binaries next to credentials.toml, so even the opt-in
+        // persist path must decline it.
+        assert!(matches!(login_store("devin"), Some(LoginStore::XdgRoot { env: "XDG_DATA_HOME", child: "devin" })));
+        assert!(!login_env("devin", Path::new("/s")).is_empty(), "devin CAN hold a second account");
+        assert_eq!(config_relocation_env("devin"), None, "and Docker must still decline it");
+        assert!(!crate::docker::persist_offerable("devin"),
             "docker's own refusal has to agree with this table");
     }
 

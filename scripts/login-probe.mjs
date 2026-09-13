@@ -56,6 +56,10 @@ const AGENTS = [
   // still sit in one shared keychain item. Left here as a note rather than a
   // check, because a passing probe would be misleading.
   { id: "muse",     env: "XDG_CONFIG_HOME",   probe: ["exec", "say OK"],                   signedOut: null, note: "no second account: keychain keying unresolved" },
+  // `devin auth status` prints "Not logged in" and the credentials.toml path
+  // it resolved, so an empty relocated root showing both means the login
+  // followed. Measured on 3000.10.21.
+  { id: "devin",    env: "XDG_DATA_HOME",     probe: ["auth", "status"],                   signedOut: /not logged in/i },
 ];
 
 const TIMEOUT_MS = 45_000;

@@ -232,6 +232,29 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
       command: 'ls -td "${XDG_DATA_HOME:-$HOME/.local/share}/muse/sessions"/*/*/*/*/ 2>/dev/null | head -1 | sed "s:/*$::;s:.*/::"',
     },
   },
+  // Devin (Cognition). Mirrors the Rust seeded default in lib.rs; the two
+  // tables must agree, since this one is what runs before the registry loads.
+  // Session ids are devin-minted slugs, so this is the capture shape opencode
+  // uses: the id arrives from termic's SessionStart hook, and the `devin list`
+  // capture is the backstop when hooks are not installed.
+  devin: {
+    command: "devin", args: [],
+    capabilities: {
+      yolo_args: ["--permission-mode", "dangerous"],
+      runtime_yolo_command: "",
+      // `--continue` takes the most-recent session in this cwd: right for a
+      // worktree, wrong for the repo root where tasks share a cwd. The id
+      // below is what disambiguates there.
+      resume_args: ["--continue"],
+      resume_id_args: ["--resume", "{UUID}"],
+    },
+    post_launch_capture: {
+      // `devin list --format csv` prints a header row then this cwd's
+      // sessions newest-first, and is not trust-gated (a bare `devin list`
+      // is an interactive picker).
+      command: "devin list --format csv 2>/dev/null | tail -n +2 | head -1 | cut -d, -f1",
+    },
+  },
 };
 
 /** Helper to get an agent's display name by its id. Consulting the registry first,
@@ -252,6 +275,7 @@ export function agentDisplayName(cli: string, agents: Agent[] = useApp.getState(
     case "codex":  return "Codex";
     case "agy":      return "Antigravity";
     case "opencode": return "opencode";
+    case "devin":    return "devin";
     case "shell":    return "Terminal";
     case "custom":   return "Command";
     default:         return cli;
@@ -416,11 +440,15 @@ export const BUILTIN_TITLE_SIGNALS: Record<string, Required<SignalPatterns>> = {
   //   agy      emits no OSC 0 at all. Not "a static title": nothing.
   //   opencode "OpenCode", then the session summary. No state, ever.
   //   pi       "π - proj", set once at boot and never updated.
+  //   devin    "devin: <dir>" → "devin: <prompt>" → "devin: <generated
+  //            title>" (measured on a live 3000.10.21 turn): the title moves
+  //            but carries no working/attention marker a pattern could catch.
   // Work state for these comes from their hooks; there is nothing to fall back
   // to, which is exactly why they were wired first.
   agy: { attention: [], busy: [], idle: [], pending: [] },
   opencode: { attention: [], busy: [], idle: [], pending: [] },
   pi: { attention: [], busy: [], idle: [], pending: [] },
+  devin: { attention: [], busy: [], idle: [], pending: [] },
 };
 
 /** How many rows up from the bottom of the viewport `pending` patterns are
@@ -1063,6 +1091,12 @@ export const UNATTENDED_SPAWN_ARGS: Record<string, string[]> = {
   // unattended launch cannot leave a workspace permanently trusted behind the
   // user's back. Attended spawns are untouched and still show the picker.
   muse: ["--trust-workspace"],
+  // Same trust picker as muse's: devin asks "Do you trust the authors of
+  // this directory?" in an untrusted cwd and the picker eats the injected
+  // prompt's keystrokes. `--respect-workspace-trust false` is run-scoped
+  // (the same dir prompts again without it), so it cannot permanently trust
+  // a directory behind the user's back. Measured on a live 3000.10.21.
+  devin: ["--respect-workspace-trust", "false"],
 };
 
 export function spawnArgsForCli(

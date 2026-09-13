@@ -1685,6 +1685,21 @@ pub fn render_filter_for(task: &Task, agent_override: Option<&str>) -> String {
             r"^accountscenter\.meta\.com$".into(),
             r"^lookaside\.facebook\.com$".into(),
         ]),
+        // Devin (Cognition). Out of `strings` on the shipped binary, same
+        // method as muse's list: `api.devin.ai` is the API, `cli.devin.ai`
+        // serves install.sh and the versioned binaries a self-update fetches,
+        // and `app`/`static` cover the links it opens. The CLI is the Windsurf
+        // codebase under a new name, so `server.codeium.com` +
+        // `unleash.codeium.com` are its backend and feature flags, and
+        // `codeium-i5.sentry.io`/`us.sentry.io` its crash reporting.
+        // `openrouter.ai` is the BYOK model gateway it can be pointed at.
+        "devin" => hosts.extend([
+            r"^devin\.ai$".into(),
+            r"^.+\.devin\.ai$".into(),
+            r"^.+\.codeium\.com$".into(),
+            r"^.+\.sentry\.io$".into(),
+            r"^.+\.openrouter\.ai$".into(),
+        ]),
         _ => { /* custom agents: user must list hosts explicitly */ }
     }
 

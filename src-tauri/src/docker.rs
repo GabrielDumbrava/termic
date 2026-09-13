@@ -133,7 +133,11 @@ pub const KNOWN_SAFE_AGENTS: &[&str] = &["claude", "codex", "copilot", "agy", "a
 /// exception) - `true` for everything else, including agents this module
 /// has genuinely never heard of, since it can't rule those out.
 pub fn persist_offerable(agent_id: &str) -> bool {
-    agent_id != "grok"
+    // devin is grok's exact collision with a different layout: its binaries
+    // live under `~/.local/share/devin/cli/_versions/` and its login
+    // (`credentials.toml`) sits in the SAME tree, so the dir a user would
+    // mount to keep the login is the one that shadows the binary.
+    !matches!(agent_id, "grok" | "devin")
 }
 
 /// The agent id whose Docker SHAPE applies: an agent's own id, unless it is a
@@ -150,7 +154,7 @@ pub fn persist_offerable(agent_id: &str) -> bool {
 /// agent's config shape. `a_new_builtin_agent_is_registered_in_every_table_that_needs_it`
 /// (agent_dirs.rs) is what makes that loud.
 pub(crate) const BASE_BUILTINS: &[&str] =
-    &["claude", "codex", "copilot", "agy", "antigravity", "opencode", "pi", "grok", "gemini", "muse"];
+    &["claude", "codex", "copilot", "agy", "antigravity", "opencode", "pi", "grok", "gemini", "muse", "devin"];
 
 /// Is this a base id `base_agent_id_str` actually knows, rather than one it
 /// would quietly answer "claude" for?
@@ -219,7 +223,11 @@ fn agent_config(base_id: &str, user_extra_dirs: &[String], persist_enabled: bool
     // reachable through the front door instead of a guess. No warning
     // text can fully substitute for actually knowing this in advance, so
     // it's blocked outright rather than left to the opt-in + warning.
-    if base_id == "grok" {
+    // devin is the same case one level deeper: the credential lives in
+    // `~/.local/share/devin` next to the versioned binaries the install script
+    // unpacks there, so the only mount that keeps its login is the one that
+    // hides its binary.
+    if base_id == "grok" || base_id == "devin" {
         return None;
     }
     let sanitized: Vec<String> = user_extra_dirs.iter().filter_map(|d| sanitize_extra_dir(d)).collect();
@@ -2127,9 +2135,15 @@ mod tests {
         assert!(!spec.env.iter().any(|(k, _)| k.starts_with("PI_")),
             "no PI_* var should be invented here without one in pi's docs");
 
-        // grok stays excluded, deliberately.
+        // grok stays excluded, deliberately. So does devin: the install
+        // script unpacks versioned binaries into ~/.local/share/devin next to
+        // credentials.toml, which is grok's shadowing collision one level
+        // deeper.
         assert!(!KNOWN_SAFE_AGENTS.contains(&"grok"));
         assert!(!persist_offerable("grok"));
+        assert!(!KNOWN_SAFE_AGENTS.contains(&"devin"));
+        assert!(!persist_offerable("devin"));
+        assert!(agent_config("devin", &[".config/devin".to_string()], true).is_none());
     }
 
     #[test]

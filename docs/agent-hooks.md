@@ -38,6 +38,7 @@ target.
 | agy | not measured | `PreInvocation` | none exists (see below) | `Stop`, guarded on `fullyIdle` | none exists |
 | opencode | not measured | `chat.message`, `permission.replied` | `permission.asked` | `session.idle` | `session.idle`, on the SECOND escape |
 | codex | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | `PermissionRequest` | `Stop` | none exists |
+| devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | `PermissionRequest` | `Stop` | none exists |
 
 **Ready is the only signal that is not a correction.** Everything else here
 replaces a state the terminal reports WRONG. Ready reports one the terminal
@@ -139,6 +140,37 @@ workspace trusted afterwards, and an attended spawn still gets the picker and
 answers it itself. A caged task never sees any of this: `isTaskCaged(task) ||
 task.yolo` means it always gets `--yolo`, which trusts the workspace for the
 run as a side effect of dropping approval.
+
+**Devin is a claude-shaped hooks agent whose session ids are slugs.** The
+config is `~/.config/devin/config.json`, a shared user file like claude's
+`settings.json`, with the same `"hooks"` map and the same entry shape
+(`statusMessage` included — verified live: the hook fires with it present).
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest` and
+`Stop` all fire in `-p` mode and in the TUI, and every payload carries
+`session_id`. Measured on 3000.10.21:
+
+- **`session_id` is a slug, not a UUID** — `brassy-polish`, not
+  `aaaaaaaa-…`. It is exactly what `devin --resume` wants, so the ready
+  script reports it through the same OSC channel codex uses and the tab
+  stores it verbatim. The charset guard is slug-shaped (first byte
+  alphanumeric, then `[0-9a-zA-Z_-]*`): a leading dash or a shell metachar
+  is dropped, never escaped, because the value lands in a `--resume <id>`
+  command line. `devin list --format csv | tail -n +2 | head -1 | cut -d, -f1`
+  is the post-launch backstop for when hooks are off; plain `devin list` is
+  an interactive picker and captures nothing.
+- **`Stop` has `stop_hook_active` but no `background_tasks`**, so it takes
+  the plain done body — devin runs no claude-style background agents that
+  would need the whitelist.
+- **The title carries no state.** A live turn flips `devin: <dir>` to
+  `devin: <prompt>` to `devin: <generated title>` and emits no `OSC 9`
+  anywhere, including on a permission prompt. Signals stay empty and hooks
+  are the only state source.
+- **The trust picker blocks an unattended first prompt.** A directory devin
+  has never run in gets `Yes, trust / No, exit` and it eats the injected
+  prompt's keystrokes, so the unattended path passes
+  `--respect-workspace-trust false`. The flag trusts for that run only
+  (verified: the next spawn without it prompts again), so it cannot leave a
+  workspace trusted afterwards.
 
 **`PreToolUse` is a heartbeat, not a duplicate.** Working is the only sustained
 state here; every other signal is an edge. The title re-asserted working on
