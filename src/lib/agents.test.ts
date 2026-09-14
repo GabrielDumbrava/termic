@@ -288,6 +288,7 @@ describe("decideResume", () => {
       isAgent: true,
       idCapable: true,
       isPrimary: true,
+      runsTaskAgent: true,
       isRepoRoot: false,
       hasResumableHistory: false,
       failedResume: false,
@@ -305,6 +306,32 @@ describe("decideResume", () => {
 
   it("ignores the override on secondary tabs (falls through to mint)", () => {
     expect(d({ isPrimary: false, resumeOverride: "--resume foo" }).kind).toBe("mint");
+  });
+
+  // A "+" tab running a DIFFERENT agent is still the first tab of its own
+  // cli, so `isPrimary` is true for it. The task's override belongs to the
+  // task's own agent and is written in that agent's flag spelling: claude's
+  // `--resume <name>` handed to codex is `unexpected argument '--resume'`,
+  // and the tab died on argv before it drew a frame, on every retry.
+  it("ignores the override on a tab running a DIFFERENT agent than the task", () => {
+    // Worktree with history: codex's own correct answer is `resume --last`.
+    expect(d({
+      idCapable: false, runsTaskAgent: false, hasResumableHistory: true,
+      resumeOverride: "--resume {WORKSPACE_NAME}",
+    }).kind).toBe("cwd-resume");
+  });
+
+  it("a second agent with no history of its own starts fresh, not overridden", () => {
+    expect(d({
+      idCapable: false, runsTaskAgent: false, hasResumableHistory: false,
+      resumeOverride: "--resume {WORKSPACE_NAME}",
+    }).kind).toBe("fresh");
+  });
+
+  it("an id-capable second agent mints its own session instead of overriding", () => {
+    expect(d({ runsTaskAgent: false, resumeOverride: "--resume foo" }).kind).toBe("mint");
+    expect(d({ runsTaskAgent: false, storedUuid: "u2", resumeOverride: "--resume foo" }).kind)
+      .toBe("resume-id");
   });
 
   it("blank override is not treated as an override", () => {
@@ -389,8 +416,8 @@ describe("pi resume", () => {
   const args = (o: Parameters<typeof spawnArgsForCli>[1]) => spawnArgsForCli("pi", o);
   const d = (o: Partial<Parameters<typeof decideResume>[0]> = {}) =>
     decideResume({
-      isAgent: true, idCapable: true, isPrimary: true, isRepoRoot: false,
-      hasResumableHistory: false, failedResume: false, ...o,
+      isAgent: true, idCapable: true, isPrimary: true, runsTaskAgent: true,
+      isRepoRoot: false, hasResumableHistory: false, failedResume: false, ...o,
     });
 
   it("mints with --session-id on a first spawn", () => {
@@ -886,7 +913,8 @@ describe("attaching an externally-started session", () => {
 
   it("a seeded tab sessionId resolves to resume-id, not mint", () => {
     const d = decideResume({
-      isAgent: true, idCapable: true, isPrimary: true, isRepoRoot: false,
+      isAgent: true, idCapable: true, isPrimary: true, runsTaskAgent: true,
+      isRepoRoot: false,
       // Import seeds has_resumable_history=true alongside the id; the
       // stored uuid must win over the legacy cwd-continue path.
       hasResumableHistory: true,

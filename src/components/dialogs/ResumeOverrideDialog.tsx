@@ -98,6 +98,11 @@ export function ResumeOverrideDialog() {
         is set: renaming the session on every relaunch would break this
         override's lookup on the next one.
       </p>
+      <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
+        Only {task?.cli ? <span className="font-mono">{task.cli}</span> : "this task's agent"}{" "}
+        uses it. Another agent opened from the + tab menu keeps its own resume
+        arguments, since the flag spelling is not shared between CLIs.
+      </p>
 
       <label className="block text-[13.5px]">
         Resume arguments

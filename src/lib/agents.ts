@@ -917,7 +917,10 @@ export function spawnCommandForCli(cli: string): string {
  *  resumes now; the per-tab `storedUuid` is what makes that safe, so two
  *  agents in one task never share a session.
  *
- *    override    → user's verbatim resume block (primary tab only).
+ *    override    → user's verbatim resume block (primary tab of the task's
+ *                  OWN agent only — the string is written in one CLI's
+ *                  spelling, so handing it to a different agent is a
+ *                  guaranteed argv error, see `runsTaskAgent`).
  *    resume-id   → `--resume {storedUuid}` (id-capable, uuid already minted).
  *    mint        → `--session-id {newUuid}` (id-capable, first spawn — caller
  *                  generates the uuid and persists it once the spawn survives).
@@ -947,11 +950,22 @@ export function decideResume(opts: {
   /** Primary = the auto-created default tab OR the first tab of its cli.
    *  Gates the override + cwd-resume paths (see above). */
   isPrimary: boolean;
+  /** `tab.cli === task.cli` — this tab runs the task's OWN agent rather than
+   *  a second agent added from the "+" menu.
+   *
+   *  Only that agent may use `resumeOverride`. `isPrimary` alone does not
+   *  say it: it means "first tab of THIS cli", so the first codex tab added
+   *  to a claude task is primary-for-codex and was handed claude's override
+   *  verbatim. `--resume <name>` is claude's spelling; codex's is
+   *  `resume <name>`, so the spawn died on `unexpected argument '--resume'`
+   *  before it drew a frame, on every retry. `spawnArgsForCli` already gates
+   *  `task.agent_args` on the same equality for the same reason. */
+  runsTaskAgent: boolean;
   isRepoRoot: boolean;
   hasResumableHistory: boolean;
   /** This tab's own stored session uuid (TerminalTab.sessionId), if minted. */
   storedUuid?: string;
-  /** Raw `task.resume_override` (gated to the primary tab here). */
+  /** Raw `task.resume_override` (gated to the task's own primary agent tab). */
   resumeOverride?: string;
   /** A resume attempt for this tab just rapid-exited → skip the stored
    *  uuid / cwd-resume and start fresh on the immediate retry. */
@@ -959,7 +973,9 @@ export function decideResume(opts: {
 }): ResumeDecision {
   if (!opts.isAgent) return { kind: "fresh" };
 
-  const override = opts.isPrimary ? opts.resumeOverride?.trim() : undefined;
+  const override = opts.isPrimary && opts.runsTaskAgent
+    ? opts.resumeOverride?.trim()
+    : undefined;
   if (override) return { kind: "override", override };
 
   if (opts.idCapable) {

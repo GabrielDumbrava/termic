@@ -621,3 +621,34 @@ until it has been through the prefix.** If you add a git command that prints
 paths, it needs `--relative` or a strip; if you add one that takes a path, ask
 whether that argument is a pathspec (cwd-relative, fine) or part of a revision
 (root-relative, needs `./`).
+
+## "Primary tab" means first-of-its-CLI, not the task's agent
+
+`isPrimaryTab` in `TerminalPane` is `tab.is_default || firstTabOfThisCli === tab`.
+That second clause is what lets a second agent in the same task resume its own
+session instead of being treated as a throwaway, and it is correct for that.
+It is NOT an answer to "is this the task's agent", and reading it as one is how
+a task-level setting written in ONE CLI's spelling reached another CLI.
+
+`Task.resume_override` is that setting. Someone types `--resume {WORKSPACE_NAME}`
+for a claude task, then opens codex from the + tab menu; the codex tab is the
+first codex tab, so it was primary, so it got claude's flags:
+
+```
+error: unexpected argument '--resume' found
+  tip: a similar argument exists: '--remote'
+```
+
+Dead before the first frame, and identical on every Restart, because nothing
+about the argv depends on the failure. `decideResume` now takes `runsTaskAgent`
+(`tab.cli === task.cli`) and gates the override on BOTH, which is the gate
+`spawnArgsForCli` already had on `task.agent_args`.
+
+Two rules fall out of this:
+
+- **A per-task string that names flags belongs to exactly one agent.** The
+  registry is the only place a resume/yolo/name spelling is per-CLI; anything
+  the user types against a TASK is written against whatever agent that task
+  shows, so it has to be gated on that agent's id, not on a tab's position.
+- **Check what a boolean is named after, not what it is used for.** `isPrimary`
+  gates four things in `decideResume` and was right for three of them.

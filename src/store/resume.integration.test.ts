@@ -33,6 +33,7 @@ function argvFor(tab: TerminalTab, task: Task, isPrimary = true): string[] {
     isAgent: true,
     idCapable: cliSupportsIdSession(tab.cli),
     isPrimary,
+    runsTaskAgent: tab.cli === task.cli,
     isRepoRoot: !!task.is_main_checkout,
     hasResumableHistory: !!task.has_resumable_history,
     storedUuid: tab.sessionId,
@@ -157,7 +158,8 @@ describe("worktree main agent resumes across a restart", () => {
     useApp.getState().ensureDefaultTab("ws1", "claude");
     const seeded = firstTab();
     expect(decideResume({
-      isAgent: true, idCapable: true, isPrimary: true, isRepoRoot: false,
+      isAgent: true, idCapable: true, isPrimary: true, runsTaskAgent: true,
+      isRepoRoot: false,
       hasResumableHistory: false, storedUuid: seeded.sessionId, failedResume: false,
     }).kind).toBe("mint");
 
@@ -200,7 +202,8 @@ describe("a fast-exit resume drops the dead uuid and starts fresh", () => {
     expect(firstTab().sessionId).toBeUndefined();
     // With no uuid the decision is a fresh mint, not another doomed resume.
     expect(decideResume({
-      isAgent: true, idCapable: true, isPrimary: true, isRepoRoot: true,
+      isAgent: true, idCapable: true, isPrimary: true, runsTaskAgent: true,
+      isRepoRoot: true,
       hasResumableHistory: true, storedUuid: firstTab().sessionId, failedResume: true,
     }).kind).toBe("mint");
 
@@ -215,5 +218,50 @@ describe("a fast-exit resume drops the dead uuid and starts fresh", () => {
     useApp.getState().ensureDefaultTab("ws1", "claude");
     expect(firstTab().sessionId).toBe(NEW);
     expect(argvFor(firstTab(), useApp.getState().tasks[0])).toEqual(["--resume", NEW, "--name", "seo-improvements"]);
+  });
+});
+
+// A task's resume override belongs to the task's OWN agent. A "+" tab running
+// a different CLI is still the FIRST tab of that CLI, so `isPrimary` is true
+// for it, and it was handed the override verbatim. The strings are not
+// interchangeable: claude spells it `--resume <name>`, codex spells it
+// `resume <name>`, and codex answers the first with
+//
+//   error: unexpected argument '--resume' found
+//   tip: a similar argument exists: '--remote'
+//
+// i.e. the tab is dead before it draws a frame, and every Restart repeats it.
+describe("a second agent ignores the task's resume override", () => {
+  const OVERRIDE = "--resume {WORKSPACE_NAME}";
+
+  /** The "+" menu's shape: a non-default tab, first of its own cli. */
+  const plusTab = (cli: string): TerminalTab =>
+    ({ id: `t-${cli}`, type: "terminal", cli, title: cli, is_default: false } as TerminalTab);
+
+  it("codex added to an overridden claude task never sees claude's flag", () => {
+    const task = makeTask({
+      cli: "claude", is_main_checkout: false, has_resumable_history: true,
+      resume_override: OVERRIDE,
+    });
+    const argv = argvFor(plusTab("codex"), task);
+    expect(argv).not.toContain("--resume");
+    // Codex's own worktree answer instead: its subcommand-form resume.
+    expect(argv).toEqual(["resume", "--last"]);
+  });
+
+  it("the task's own agent still gets the override, expanded", () => {
+    const task = makeTask({
+      cli: "claude", is_main_checkout: false, has_resumable_history: true,
+      resume_override: OVERRIDE,
+    });
+    // `--name` is deliberately absent under an override (renaming the session
+    // on every relaunch moves the target the override points at).
+    expect(argvFor(plusTab("claude"), task)).toEqual(["--resume", "seo improvements"]);
+  });
+
+  it("a second CLAUDE tab is not primary, so it mints rather than colliding", () => {
+    const task = makeTask({ cli: "claude", resume_override: OVERRIDE });
+    const argv = argvFor(plusTab("claude"), task, /* isPrimary */ false);
+    expect(argv).toEqual(["--session-id", "MINTED-UUID"]);
   });
 });

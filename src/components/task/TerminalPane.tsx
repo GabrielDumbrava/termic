@@ -2007,6 +2007,11 @@ const captureArmedRef = useRef(false);
       isAgent,
       idCapable,
       isPrimary: isPrimaryTab,
+      // The task's resume override is written in ONE agent's flag spelling, so
+      // only that agent may be handed it. A "+" tab running a different CLI is
+      // still primary-for-its-cli, which is how `codex` came to be launched
+      // with claude's `--resume <name>` and died on argv.
+      runsTaskAgent: tab.cli === task.cli,
       isRepoRoot: !!task.is_main_checkout,
       hasResumableHistory: !!task.has_resumable_history,
       storedUuid,
@@ -2270,10 +2275,21 @@ const captureArmedRef = useRef(false);
         // notification filter, and every later line will look inexplicable.
         // Once per PTY.
         const base = builtinBaseId(tab.cli, useApp.getState().agents);
+        // The resume half of the line is here for the same reason the rest is:
+        // "it came back empty" is only diagnosable after the fact, and the
+        // three facts that separate the causes apart are the shape of the
+        // decision, the id it pointed at, and the argv that came out.
+        // `decision.kind` alone is not enough — a capture-resume agent
+        // (codex, opencode) resumes through `captureResumeOverride`, which
+        // decideResume never sees and reports as `fresh`.
         logWorkState("spawn",
           `task=${JSON.stringify(task.name)} cli=${tab.cli} base=${base}`
           + ` inherited=${base !== tab.cli} hooksInstalled=${hooksOwnStateRef.current}`
           + ` hookProven=${hookSeenRef.current}`
+          + ` mainCheckout=${!!task.is_main_checkout} primary=${isPrimaryTab}`
+          + ` resume=${decision.kind}${captureResumeOverride ? "+capture" : ""}`
+          + ` session=${sessionUuid ?? storedUuid ?? "none"}`
+          + ` args=${JSON.stringify(spawnArgs)}`
           + ` ptyId=${ptyId}`);
         // Sandbox truth lands synchronously with the spawn (no event
         // race possible). Render the warning chip immediately when the
@@ -2438,6 +2454,18 @@ const captureArmedRef = useRef(false);
             }
           }
           const fastExit = Date.now() - spawnStartedAtRef.current < RESUME_FAILURE_MS;
+          // Every resume that dies gets a line, INCLUDING the ones too slow to
+          // qualify as a fast exit. A resume that takes longer than
+          // RESUME_FAILURE_MS to fail gets no toast, no cleared id and no
+          // retry — it lands on the exited banner, and Restart reruns the same
+          // doomed argv — so "did this exit at 400ms or at 2100ms" is the
+          // first question to ask of a session that never comes back.
+          if (lastSpawnWasResumeRef.current) {
+            logWorkState("resume-exit",
+              `task=${JSON.stringify(task.name)} cli=${tab.cli} code=${code}`
+              + ` afterMs=${Date.now() - spawnStartedAtRef.current} fastExit=${fastExit}`
+              + ` storedId=${resumeShape.usedStoredSessionId}`);
+          }
           if (fastExit && lastSpawnWasResumeRef.current) {
             // Rapid exit during a resume attempt = the stored session
             // doesn't resolve anymore (id-CLI: log rotated / deleted;
