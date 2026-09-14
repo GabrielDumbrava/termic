@@ -2847,7 +2847,13 @@ const captureArmedRef = useRef(false);
     // ABSOLUTE ceiling — see the check below. Resolved here rather than per
     // tick: the tick is already the hot path (it hashes the viewport), and a
     // debug knob has no business adding a storage read to it.
-    const absoluteCeilingMs = ceilingOverrideMs() ?? 600_000;
+    // TWENTY minutes, not ten. An agent orchestrating staged background agents
+    // runs well past ten on a single turn (measured: 818s and still going),
+    // so ten fired routinely on healthy work. The ceiling is a backstop
+    // against a dead hook transport, not a guess at how long a turn should
+    // take, and now that firing it costs nothing but a cleared spinner (see
+    // below) there is no reason to keep it tight.
+    const absoluteCeilingMs = ceilingOverrideMs() ?? 1_200_000;
     const id = window.setInterval(() => {
       // Same gate as the rest of the state machine — workDoneCapable reads
       // the LIVE registry, so a Settings toggle (or a kind change) takes
@@ -2950,8 +2956,21 @@ const captureArmedRef = useRef(false);
         // here and this code cannot see it anyway). The backstop still bounds
         // every period; it just stops spending its whole budget on the first.
         workingStartedAtRef.current = 0;
+        // `seen: true`, which is the difference between clearing a spinner and
+        // making a claim.
+        //
+        // This path fires because termic does NOT know what the agent is
+        // doing: a hook done never arrived and the clock ran out. Stopping the
+        // spinner on that basis is honest. Announcing "your agent is done" on
+        // it is not, and that notification is the one that pulls someone away
+        // from what they are doing. Reported from a real turn: the badge
+        // self-corrected on the next heartbeat, the notification could not.
+        //
+        // `seen` also routes to `idle` rather than `done`, which is the state
+        // this deserves. `done` asserts the turn ended; `idle` says only that
+        // nothing is spinning, which is all a backstop ever established.
         fireDone(`absolute ceiling (${absoluteCeilingMs}ms, hooksOwn=${hooksOwn})`,
-          fallbackReason, false, true);
+          fallbackReason, true, true);
         return;
       }
       if (hooksOwn) return;

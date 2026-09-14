@@ -933,6 +933,17 @@ describe("a hook-owned turn whose done never arrives still ends", () => {
       interval: 500,
       message: "a hook done never came and the ceiling never fired - tab pinned to working",
     });
+
+    // And it clears the spinner WITHOUT claiming the turn finished. The
+    // ceiling fires because termic does not know what the agent is doing, so a
+    // "done" badge (and the notification that rides with it) states as fact
+    // something it only guessed. `idle` is the honest end state: nothing is
+    // spinning, nothing is claimed. Reported from a real turn, where the badge
+    // corrected itself on the next heartbeat and the notification could not.
+    const after = await workBadges(taskId);
+    if (after.includes("done")) {
+      throw new Error(`the ceiling announced done rather than going idle (badges: ${after.join()})`);
+    }
     await snap("agent-hook-ceiling.png");
   });
 
