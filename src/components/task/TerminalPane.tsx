@@ -1317,6 +1317,12 @@ const captureArmedRef = useRef(false);
         dbg("state→working", reason);
         localBusy = true;
         workingStartedAtRef.current = Date.now();
+      } else if (workingStartedAtRef.current === 0) {
+        // The absolute ceiling fired mid-turn and cleared the clock. It does
+        // not go through here (it calls `fireDone` directly, so `localBusy` is
+        // still true), which is why this is an `else`: without it the ceiling
+        // latched and killed every later heartbeat about a second in.
+        workingStartedAtRef.current = Date.now();
       }
       setWorkState(task.id, tab.id, "working", reason);
     };
@@ -2918,6 +2924,32 @@ const captureArmedRef = useRef(false);
         logWorkState("ceiling-backstop",
           `cli=${tab.cli} hooksOwn=${hooksOwn} ageMs=${Date.now() - workingStartedAtRef.current}`
           + " forcing done; a hook done never arrived");
+        // Stand the backstop back up before firing, or it LATCHES.
+        //
+        // This path calls `fireDone` directly rather than going through
+        // `goIdle`, and `fireDone` touches neither of these. So the first
+        // ceiling used to leave `localBusy` true and the clock parked on a
+        // turn start from ten minutes ago: the next heartbeat re-armed
+        // working, `goBusy`'s `if (!localBusy)` skipped the reset, and the
+        // ceiling fired again on the same stale timestamp about a second
+        // later. Measured on an orchestrator turn running staged subagents,
+        // from termic-workstate.log: working at :18.177, done at :19.303,
+        // working at :42.859, done at :43.339, same `turn` id throughout,
+        // forever.
+        //
+        // That makes the comment above wrong in the case it matters. "A
+        // spinner that clears early and is re-armed by the next PreToolUse
+        // heartbeat" is a frame of wrong only if the re-arm STICKS; latched,
+        // it is a tab that reads done for the rest of a turn that may run for
+        // half an hour, which is the exact failure the ceiling exists to
+        // prevent, wearing the other mask.
+        //
+        // Clearing the clock means the next working period starts its own
+        // ten minutes (see `goBusy`, which restarts it whenever it has been
+        // cleared, not only on a busy EDGE, because `localBusy` is still true
+        // here and this code cannot see it anyway). The backstop still bounds
+        // every period; it just stops spending its whole budget on the first.
+        workingStartedAtRef.current = 0;
         fireDone(`absolute ceiling (${absoluteCeilingMs}ms, hooksOwn=${hooksOwn})`,
           fallbackReason, false, true);
         return;

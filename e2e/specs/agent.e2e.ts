@@ -32,6 +32,7 @@ import {
   setHooksOwnState,
   waitForWorkBadge,
   waitForWorkBadgeGone,
+  workBadges,
   setWindowPresence,
 } from "../helpers";
 
@@ -933,6 +934,50 @@ describe("a hook-owned turn whose done never arrives still ends", () => {
       message: "a hook done never came and the ceiling never fired - tab pinned to working",
     });
     await snap("agent-hook-ceiling.png");
+  });
+
+  // The ceiling must be a BACKSTOP, not a latch.
+  //
+  // It calls `fireDone` directly rather than going through `goIdle`, and
+  // `fireDone` resets neither `localBusy` nor the clock. So the first firing
+  // used to leave the clock parked on a turn start from a full ceiling ago:
+  // the next heartbeat re-armed working, `goBusy`'s busy-EDGE check skipped
+  // the reset, and the ceiling fired again on the same stale timestamp about a
+  // second later. For the rest of the turn.
+  //
+  // Found in the wild on a claude orchestrator running staged subagents, from
+  // termic-workstate.log: working :18.177, done :19.303, working :42.859, done
+  // :43.339, the same `turn` id throughout. The tab read done while a
+  // subagent was visibly working, which is the exact failure the ceiling is
+  // there to prevent.
+  //
+  // Asserts on DURATION rather than on a state, because the latched version
+  // reached "working" too. What it could not do is stay there.
+  it("re-arms after the ceiling instead of latching done", async function () {
+    this.timeout(120_000);
+    await waitForWorkBadgeGone(taskId, "working", {
+      timeout: CEILING_MS + 30_000,
+      message: "the first ceiling never fired, so there is nothing to re-arm from",
+    });
+
+    // A second hook turn, after the ceiling has already spent itself once.
+    await submitToAgent(taskId, "#hookturn");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 30_000,
+      message: "the re-armed hook turn never reached working at all",
+    });
+
+    // Survive comfortably longer than the ~1s the latch allowed, and stop well
+    // short of the ceiling so a correct fire cannot be mistaken for the bug.
+    const held = Math.floor(CEILING_MS / 2);
+    await browser.pause(held);
+    // Both surfaces, because the latch showed up on the sidebar row first.
+    const badges = await workBadges(taskId);
+    if (!badges.includes("working")) {
+      throw new Error(
+        `working lasted under ${held}ms after the ceiling (badges: ${badges.join()}), so it latched`,
+      );
+    }
   });
 });
 
