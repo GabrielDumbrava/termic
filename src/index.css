@@ -134,6 +134,10 @@
      the dark theme takes the lighter step of Meta's own blue ramp and light
      mode gets the brand value back below. */
   --color-cli-muse:    #4599ff;
+  /* Devin's brand blue (#3969ca) reads dark on this ground, same problem as
+     muse's; the dark theme takes a lighter step of it and light mode gets
+     the brand value back below. */
+  --color-cli-devin:   #7aa2f0;
 
   --radius-pill: 999px;
   /* Default mono. Overridden at runtime by the font picker (writes the
@@ -236,6 +240,7 @@
     --color-cli-opencode: #6b6965;
     --color-cli-pi:      #09090b;
     --color-cli-muse:    #0064e0;
+    --color-cli-devin:   #3969ca;
     /* Palette ramp: the dark-bg defaults (esp. yellow/teal) wash out
        on cream, so shift every hue darker. */
     --color-palette-red:    #c2403f;

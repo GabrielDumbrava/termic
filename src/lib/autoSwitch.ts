@@ -51,8 +51,8 @@ export function isSpent(reading: AccountReading | undefined, now: number): boole
   // No reset clock and over the line: still spent. The alternative is to guess
   // it recovered and rotate onto a maxed-out account, which fails in a way the
   // user cannot see (the switch reports success, the next turn dies anyway).
-  // Both claude and codex do send a reset clock, so this is the edge, not the
-  // path, and the manual switch is always still there.
+  // All three reporting agents send a reset clock, so this is the edge, not
+  // the path, and the manual switch is always still there.
   return true;
 }
 

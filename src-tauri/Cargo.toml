@@ -68,7 +68,7 @@ percent-encoding = "2"
 # via tauri-plugin-updater, so pinning them direct does not change resolution.
 # reqwest for the fetch, sha2 to verify the pinned digest BEFORE anything is
 # executed, flate2 + tar to unpack the two archive shapes upstream publishes.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "http2", "json"] }
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"

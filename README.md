@@ -272,7 +272,7 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   busy.
 - **Bring your own agent.** Settings → Agents is an editable registry.
   Drop in aider, ollama, a shell script — 30 seconds. Claude, Codex,
-  Antigravity, Copilot, Grok, opencode, pi, and Muse Code ship as
+  Antigravity, Copilot, Grok, opencode, pi, Muse Code, and Devin ship as
   built-ins.
 - **Keyboard-first.** ⌘K command palette, ⌘1..9 swaps tabs, ⌥↑/↓ walks the
   visible sidebar tree, ⌥⌘↑/↓ hops task-only, ⌘D / ⇧⌘D split right /

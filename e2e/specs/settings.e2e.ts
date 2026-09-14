@@ -3076,6 +3076,39 @@ describe("agent hooks", () => {
     rmSync(`${dataDir}/.claude`, { recursive: true, force: true });
   });
 
+  it("installs into devin's config.json and restores it byte-for-byte", async () => {
+    // devin is the one agent whose settings_rel is `config.json` rather than
+    // `settings.json`: same claude-shaped `hooks` merge, different file. The
+    // user's own keys (here `devin.org_id`) must survive the round trip.
+    const devinDir = `${dataDir}/.config/devin`;
+    const devinConfig = `${devinDir}/config.json`;
+    const devinScripts = `${devinDir}/termic-hooks`;
+    const userDevinConfig = `{
+  "devin": { "org_id": "org-e2e" },
+  "theme_mode": "dark"
+}
+`;
+    mkdirSync(devinDir, { recursive: true });
+    writeFileSync(devinConfig, userDevinConfig);
+
+    const after = await browser.execute(async () =>
+      await window.__termic!.invoke("agent_hooks_install", { agentId: "devin" }));
+    expect((after as { host: { installed: boolean } }).host.installed).toBe(true);
+
+    const merged = JSON.parse(readFileSync(devinConfig, "utf8"));
+    expect(merged.hooks.SessionStart[0].hooks[0].command).toContain("termic-hooks");
+    expect(merged.hooks.PermissionRequest[0].hooks[0].command).toContain("termic-hooks");
+    expect(merged.devin.org_id).toBe("org-e2e");
+    expect(merged.theme_mode).toBe("dark");
+    expect(existsSync(`${devinScripts}/ready.sh`)).toBe(true);
+
+    await browser.execute(async () =>
+      await window.__termic!.invoke("agent_hooks_remove", { agentId: "devin" }));
+    expect(readFileSync(devinConfig, "utf8")).toBe(userDevinConfig);
+    expect(existsSync(devinScripts)).toBe(false);
+    rmSync(devinDir, { recursive: true, force: true });
+  });
+
   it("refuses a malformed config rather than clobbering it", async () => {
     mkdirSync(`${dataDir}/.claude`, { recursive: true });
     writeFileSync(settingsPath, "{ this is not json");

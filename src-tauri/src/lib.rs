@@ -7104,7 +7104,9 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 
 #[tauri::command]
 fn task_set_cli(id: String, cli: String) -> Result<Task, String> {
-    if !["claude", "codex", "agy", "grok", "copilot", "opencode"].contains(&cli.as_str()) {
+    if !["claude", "codex", "agy", "grok", "copilot", "opencode", "devin"]
+        .contains(&cli.as_str())
+    {
         return Err(format!("unknown cli: {cli}"));
     }
     let mut list = load_tasks_all();
@@ -18401,13 +18403,19 @@ fn open_url_default(url: &str) -> Result<(), String> {
 // are serde(default) so old files keep parsing as we grow it.
 
 /// Repo-root config paths symlinked into each new worktree by default: the
-/// common per-project agent-config dirs (Claude Code, Gemini, Codex) plus
-/// `.mcp.json`, which is a FILE and plays the same role — project-scoped MCP
-/// servers that a plain worktree checkout omits (GH #251). Each is only linked
-/// when it actually exists in the repo, so listing one a given repo lacks is
-/// harmless. Just the pre-filled starting point - users edit the list.
+/// common per-project agent-config dirs (Claude Code, Gemini, Codex, Devin)
+/// plus `.mcp.json`, which is a FILE and plays the same role — project-scoped
+/// MCP servers that a plain worktree checkout omits (GH #251). Each is only
+/// linked when it actually exists in the repo, so listing one a given repo
+/// lacks is harmless. Just the pre-filled starting point - users edit the list.
 fn default_worktree_symlink_paths() -> Vec<String> {
-    vec![".claude".into(), ".gemini".into(), ".codex".into(), ".mcp.json".into()]
+    vec![
+        ".claude".into(),
+        ".gemini".into(),
+        ".codex".into(),
+        ".mcp.json".into(),
+        ".devin".into(),
+    ]
 }
 
 /// The default as it shipped before `.mcp.json` joined it. A stored list equal
@@ -18416,6 +18424,13 @@ fn default_worktree_symlink_paths() -> Vec<String> {
 /// alone. Delete once no profile can still carry the old list.
 fn legacy_worktree_symlink_paths_v0_29() -> Vec<String> {
     vec![".claude".into(), ".gemini".into(), ".codex".into()]
+}
+
+/// The default as it shipped before `.devin` joined it, for the same reason
+/// as the v0_29 list above: a stored list equal to this one means the user
+/// never edited it, so the upgrade may replace it.
+fn legacy_worktree_symlink_paths_v1_3() -> Vec<String> {
+    vec![".claude".into(), ".gemini".into(), ".codex".into(), ".mcp.json".into()]
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -19436,6 +19451,105 @@ fn default_agents() -> Vec<Agent> {
                     .into(),
             }),
         },
+        Agent {
+            // Devin (Cognition). Measured against a live 3000.10.21, not the
+            // help text:
+            //   --permission-mode dangerous  auto-approves every tool; the
+            //                                other modes are auto /
+            //                                accept-edits / smart / plan.
+            //   --continue / -c              most-recent session in this cwd.
+            //   --resume / -r <id>           resumes THAT session with its
+            //                                history: `-r fifth-woolen -p
+            //                                "what word did I ask for"`
+            //                                answered the word an earlier
+            //                                turn was asked to remember.
+            //   `-r <bogus>`                 prints "No session found
+            //                                matching" and exits fast, which
+            //                                is the clean failure
+            //                                TerminalPane's failedResume path
+            //                                respawns fresh from.
+            //   NO mint                      session ids are devin-minted
+            //                                slugs (`brassy-polish`), so no
+            //                                flag accepts an id at launch.
+            //                                That makes it the capture shape
+            //                                opencode uses: the id comes back
+            //                                from termic's own SessionStart
+            //                                hook (agent_hooks.rs), and the
+            //                                `devin list` capture below is the
+            //                                backstop for when hooks are not
+            //                                installed.
+            id: "devin".into(),
+            display_name: "devin".into(),
+            command: "devin".into(),
+            // No base args. Devin's workspace-trust picker is unattended-spawn
+            // only, composed in lib/agents.ts (UNATTENDED_SPAWN_ARGS), so an
+            // attended first run in a new directory still asks.
+            args: vec![],
+            icon_id: "devin".into(),
+            color: "#3969ca".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                yolo_args: vec!["--permission-mode".into(), "dangerous".into()],
+                runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
+                resume_args: vec!["--continue".into()],
+                session_id_args: vec![],
+                resume_id_args: vec!["--resume".into(), "{UUID}".into()],
+                // No --name flag; devin generates its own session title and
+                // puts it on the terminal title as `devin: <title>`.
+                name_args: vec![],
+                // Its title carries no working/attention marker: measured on
+                // a live turn, OSC 0 goes `devin: <dir>` -> `devin: <prompt>`
+                // -> `devin: <generated title>` with nothing a busy rule could
+                // latch onto, and no OSC 9 at all. State comes from the hooks
+                // or the byte-quiet fallback.
+                signals: AgentSignals::default(),
+                match_output: false,
+            },
+            env: std::collections::HashMap::new(),
+            // Empty = a Docker spawn uses `env` above, unchanged.
+            docker_env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                // User-level plans, extensions and argv state.
+                "$HOME/.devin".into(),
+                // config.json (settings + hooks) and mcp_config.json.
+                "$HOME/.config/devin".into(),
+                // credentials.toml, the session database, and the CLI's own
+                // versioned binaries under cli/_versions/.
+                "$HOME/.local/share/devin".into(),
+                "$HOME/.cache/devin".into(),
+                "$HOME/.local/state/devin".into(),
+                // The `devin` launcher shim in the SHARED install dir, scoped
+                // to its own name the way muse's is: ~/.local/bin holds every
+                // other agent's binary too, so the whole subpath is too wide
+                // a grant.
+                "regex:^$HOME/\\.local/bin/devin$".into(),
+                // NOT granted: ~/Library/Application Support/Devin is the
+                // desktop app's dir; the CLI reads an enterprise proxy policy
+                // from it only when one is deployed, and a denied read is
+                // non-fatal (measured: zero accesses under the cage).
+            ],
+            sandbox_allowed_hosts: vec![],
+            work_done: true,
+            accounts: Vec::new(),
+            default_account: None,
+            adopted_account: None,
+            auto_switch_account: false,
+            extends: None,
+            kind: "agent".into(),
+            // Backstop for the hook path: `devin list --format csv` prints a
+            // header row then this cwd's sessions newest-first, and is not
+            // trust-gated (a bare `devin list` is an interactive picker).
+            // Same newest-is-not-this-tab caveat opencode's capture has; the
+            // SessionStart hook reports the exact id earlier and wins when it
+            // is installed.
+            post_launch_capture: Some(PostLaunchCapture {
+                command: "devin list --format csv 2>/dev/null \
+                          | tail -n +2 | head -1 | cut -d, -f1"
+                    .into(),
+            }),
+        },
     ]
 }
 
@@ -19510,7 +19624,9 @@ pub(crate) fn load_settings_in(id: &ProfileId) -> Settings {
     // user who never edited it, so this is honoring the "pre-filled starting
     // point" rather than overriding a choice. A user who removed an entry, or
     // added their own, keeps theirs untouched; so does one who cleared it.
-    if s.worktree_symlink_paths == legacy_worktree_symlink_paths_v0_29() {
+    if s.worktree_symlink_paths == legacy_worktree_symlink_paths_v0_29()
+        || s.worktree_symlink_paths == legacy_worktree_symlink_paths_v1_3()
+    {
         s.worktree_symlink_paths = default_worktree_symlink_paths();
         migrated = true;
     }
@@ -19898,6 +20014,11 @@ fn agent_session_marker(key: &str) -> bool {
             | "CLAUDE_PID"
             | "CLAUDE_JOB_DIR"
             | "CLAUDE_EFFORT"
+            // Devin sets this on its own sessions (the path of the session
+            // database the running CLI writes to). A termic spawned from
+            // inside a devin session would hand the launcher's session store
+            // to every agent it launches.
+            | "CHISEL_SESSION_DB"
     )
 }
 
@@ -21993,6 +22114,7 @@ pub fn run() {
             agent_hooks::agent_hooks_sync,
             agent_hooks::usage_status_line_owner,
             agent_usage::agent_usage_codex,
+            agent_usage::agent_usage_devin,
             perf_boot_elapsed_ms,
             deep_link_take_pending,
             agent_accounts, account_add, account_remove, account_set_default, account_set_auto_switch,
@@ -23883,6 +24005,7 @@ mod tests {
                     .any(|(k, _)| k.starts_with("XDG_"))
             };
             assert!(needs_pin("opencode"), "opencode relocates XDG_DATA_HOME");
+            assert!(needs_pin("devin"), "devin relocates XDG_DATA_HOME too");
             // Everything else sets an agent-specific variable that nothing
             // else reads, so no pin is needed and adding one would be noise.
             // muse and copilot have no store at all (see login_unsupported_reason).
@@ -25586,7 +25709,22 @@ mod tests {
             vec![".claude".into(), ".gemini".into(), ".codex".into(), ".envrc".into()],
         ] {
             assert_ne!(stored, legacy_worktree_symlink_paths_v0_29(), "{stored:?}");
+            assert_ne!(stored, legacy_worktree_symlink_paths_v1_3(), "{stored:?}");
         }
+
+        // The `.mcp.json`-era default is the OTHER untouched shape: a user who
+        // upgraded through that release and never edited the list must still
+        // be recognised, or `.devin` never reaches them.
+        let untouched_v1_3: Settings = serde_json::from_str(
+            r#"{"worktree_symlink_paths":[".claude",".gemini",".codex",".mcp.json"]}"#,
+        )
+        .unwrap();
+        assert_eq!(untouched_v1_3.worktree_symlink_paths, legacy_worktree_symlink_paths_v1_3());
+        // And the new default really is that list plus one entry, so the
+        // upgrade is an append rather than a rewrite.
+        let mut expected = legacy_worktree_symlink_paths_v1_3();
+        expected.push(".devin".into());
+        assert_eq!(default_worktree_symlink_paths(), expected);
     }
 
     #[test]
@@ -25633,6 +25771,7 @@ mod tests {
             "CLAUDE_CODE_MESSAGING_SOCKET",
             "CLAUDE_CODE_MESSAGING_TOKEN",
             "CLAUDE_PID",
+            "CHISEL_SESSION_DB",
         ] {
             assert!(agent_session_marker(k), "{k} must not reach a spawned agent");
         }
@@ -25764,6 +25903,60 @@ mod tests {
         // The line continuation above must not have eaten the separating
         // space; without it the glob and the redirect fuse into one word.
         assert!(!cap.command.contains("/*/2>"), "lost a space: {}", cap.command);
+    }
+
+    // Devin (Cognition) 3000.10.21, verified against a live binary rather than
+    // --help. Its one structural difference from the agents above: session ids
+    // are devin-minted slugs (`brassy-polish`), never uuids, so termic cannot
+    // mint one and `-r` takes the slug verbatim.
+    #[test]
+    fn devin_resumes_by_captured_slug_and_cannot_mint_a_session() {
+        let agents = seeded_defaults().agents;
+        let devin = agents.iter().find(|a| a.id == "devin").expect("devin seeded");
+        assert_eq!(devin.capabilities.resume_args, vec!["--continue"]);
+        // No MINT: nothing accepts an id at launch. The id arrives from
+        // termic's SessionStart hook, with `devin list` as the capture
+        // backstop, which is the capture shape and why resume_id_args is set.
+        assert!(devin.capabilities.session_id_args.is_empty());
+        assert_eq!(devin.capabilities.resume_id_args, vec!["--resume", "{UUID}"]);
+        // No --name flag in devin's help.
+        assert!(devin.capabilities.name_args.is_empty());
+        assert_eq!(devin.capabilities.yolo_args, vec!["--permission-mode", "dangerous"]);
+        // The title moves through `devin: <dir>` / `devin: <prompt>` /
+        // `devin: <generated title>` with no working/attention marker, and no
+        // OSC 9 at all: empty signals is a measured fact, not a gap.
+        assert!(devin.capabilities.signals.attention.is_empty());
+        assert!(devin.capabilities.signals.busy.is_empty());
+        assert!(devin.capabilities.signals.idle.is_empty());
+        assert!(devin.capabilities.signals.pending.is_empty());
+        // Config + credentials + the session database + the CLI's own
+        // versioned binaries all live under these roots; the cage needs every
+        // one or login and resume silently break inside it.
+        for p in [".config/devin", ".local/share/devin", ".devin", ".cache/devin"] {
+            assert!(devin.sandbox_allowed_paths.iter().any(|x| x.ends_with(p)),
+                "devin needs {p} writable");
+        }
+        // The binary shim shares ~/.local/bin with every other agent, so it
+        // gets a scoped regex rather than the directory.
+        assert!(!devin.sandbox_allowed_paths.iter().any(|p| p == "$HOME/.local/bin"),
+            "devin must not be granted write over the whole shared bin dir");
+        let bin_rule = devin.sandbox_allowed_paths.iter()
+            .find(|p| p.contains(".local/bin"))
+            .expect("devin still needs its own shim in the install dir");
+        assert!(bin_rule.starts_with("regex:"), "must be scoped, got {bin_rule}");
+        let re = regex::Regex::new(&bin_rule["regex:".len()..].replace("$HOME", "/Users/u")).unwrap();
+        assert!(re.is_match("/Users/u/.local/bin/devin"), "devin's own shim must stay writable");
+        for f in ["claude", "codex", "muse", "devin-bin-x"] {
+            assert!(!re.is_match(&format!("/Users/u/.local/bin/{f}")),
+                "{f} is not devin's shim and must NOT be writable by devin");
+        }
+        assert_eq!(devin.icon_id, "devin");
+        let cap = devin.post_launch_capture.as_ref().expect("devin captures its session slug");
+        // `devin list --format csv`: header row, then this cwd's sessions
+        // newest-first. A bare `devin list` is an interactive picker, which is
+        // why the capture names the format.
+        assert!(cap.command.contains("devin list --format csv"), "{}", cap.command);
+        assert!(cap.command.contains("cut -d, -f1"), "{}", cap.command);
     }
 
     #[test]

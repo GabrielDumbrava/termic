@@ -85,6 +85,17 @@ RUN npm install -g @earendil-works/pi-coding-agent
 # unavailable in the container; a failed build is all of them.
 RUN curl -fsSL https://dev.meta.ai/install.sh | bash \
     || echo "WARNING: muse install failed, Muse Code will be missing from this image"
+# https://devin.ai/docs/cli - curl is the only install path Cognition
+# publishes (no npm package). The binary lands in ~/.local/bin (already on
+# PATH above) and its real assets under ~/.local/share/devin, which is also
+# where credentials.toml lives - the grok problem, so Docker keeps no
+# persist toggle for it (docker.rs's decline is the enforcement).
+#
+# NON-FATAL like muse above, for a different reason: the script's last step
+# is `devin setup`, an interactive wizard that exits 1 on the EOF a Docker
+# RUN hands it. That failure is EXPECTED here and must not fail the image.
+RUN curl -fsSL https://cli.devin.ai/install.sh | bash \
+    || echo "WARNING: devin install failed, Devin will be missing from this image"
 
 # ── Add your own MCP servers, CLI tools and skills here ────────────────
 # RUN npm install -g @some/mcp-server

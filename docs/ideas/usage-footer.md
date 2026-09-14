@@ -31,6 +31,13 @@ free, but it is a different number and would need its own label.
   agent hooks (schema v7). It prints nothing and writes one OSC 777 on the
   hook channel, so the agent looks unchanged.
 - **codex** is asked, over `account/rateLimits/read` on `codex app-server`.
+- **devin** is asked too, over Connect `GetUserStatus` on the seat-management
+  service named in the account's own `credentials.toml` - the same call the
+  TUI's "Pro · N% remaining" header makes. No child process at all: the
+  request is one HTTPS JSON POST carrying the account's API key, and it
+  answers cold with no agent running. The response reports REMAINING percent
+  on a daily and a weekly quota, so `agent_usage.rs` inverts it before it
+  reaches the windows the footer draws.
 - **claude also reports SESSION COST in USD**, `cost.total_cost_usd`, from the
   same status line payload. It arrives on every turn, on an account with or
   without a plan, and reading it costs nothing extra: the script was already
@@ -78,8 +85,11 @@ them.
 | --- | --- |
 | claude `statusLine` stdin payload | BUILT |
 | codex `account/rateLimits/read` RPC | BUILT |
+| devin Connect `GetUserStatus` | BUILT |
 | claude OAuth usage endpoint | works, but needs the keychain on a Mac host |
 | codex rollout JSONL `token_count` | works, but the RPC dominates it |
+| devin `user_status.*.bin` disk cache | works, but stale between devin runs and keyed by an opaque digest |
+| devin `/usage` TUI command | DEAD: renders inside the TUI, no print-mode output |
 | claude hook payloads | DEAD: no usage fields |
 | claude transcript JSONL | DEAD: written only once already rejected |
 | claude OTEL metrics | DEAD: no such metric, and needs a collector |
@@ -166,7 +176,7 @@ These are why this is still an idea.
   chip asks every two minutes, for the visible task only. That is a guess,
   not a measurement. If it ever matters the honest fix is to drive it off the
   `Stop` hook termic already receives rather than to tune the interval.
-- **Scope.** claude and codex only. The other agents have no measured source,
-  and Orca's answer for them is a hidden PTY that runs the agent's own `/usage`
-  and scrapes the TUI, which is the part of their implementation that would be
-  worst to copy.
+- **Scope.** claude, codex and devin. The other agents have no measured
+  source, and Orca's answer for them is a hidden PTY that runs the agent's own
+  `/usage` and scrapes the TUI, which is the part of their implementation that
+  would be worst to copy.

@@ -286,6 +286,171 @@ pub async fn agent_usage_codex(
         .map_err(|e| format!("usage task failed: {e}"))?
 }
 
+// ---------------------------------------------------------------------------
+// devin
+//
+// **devin is asked too**, but not through the binary: `devin acp` answers ACP
+// session traffic, not account state, and `auth status` prints the plan NAME
+// without the quota. What the TUI's "Pro · 99% remaining" header reads is
+// `GetUserStatus` on the Connect service in credentials.toml, which answers
+// COLD over plain HTTPS with the account's own API key - the same "ask the
+// agent's backend" shape as codex, minus the child process.
+//
+// The request is Codeium-lineage (`exa.seat_management_pb`, public in
+// Exafunction/CodeiumJetBrains): Connect JSON POST, and `metadata` must carry
+// all five fields or the service answers invalid_argument. Verified against a
+// live Pro account on devin 3000.10.21.
+//
+// `user_status.*.bin` in `~/.cache/devin/cli` was the alternative and loses:
+// it is devin's own read-through cache, written only when devin refreshes it,
+// so a footer that read it would show numbers as stale as the last time the
+// user happened to run devin - and it is keyed by an identity digest termic
+// cannot recompute, so a second account's file cannot be told apart from the
+// first's.
+
+/// Where devin's `credentials.toml` lives for this agent entry. Mirrors
+/// `codex_home`: the account's store wins, and the entry's own
+/// `XDG_DATA_HOME` override is how a clone's login is found.
+fn devin_credentials(agent_id: &str, docker: bool, account: Option<&str>) -> Result<PathBuf, String> {
+    // devin declines a Docker config mount (its data dir also holds the CLI
+    // binaries), so a container login stays inside the container. Nothing on
+    // the host can answer for it - including a named account's store, which
+    // Docker never receives.
+    if docker {
+        return Err(format!("{agent_id} in Docker signs in inside the container"));
+    }
+    if let Some(a) = account {
+        let agents = crate::load_settings_inner().agents;
+        let adopted = agents.iter().find(|x| x.id == agent_id)
+            .and_then(|x| x.adopted_account.as_deref());
+        if adopted != Some(a) {
+            // XdgRoot: the store IS XDG_DATA_HOME and devin appends `devin`.
+            if let Some(dir) = crate::login_store_dir(agent_id, Some(a), crate::LoginRealm::Host) {
+                return Ok(dir.join("devin").join("credentials.toml"));
+            }
+        }
+    }
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let agents = crate::load_settings_inner().agents;
+    let root = agents.iter().find(|a| a.id == agent_id)
+        .and_then(|a| a.env.get("XDG_DATA_HOME"))
+        .map(|v| crate::agent_dirs::expand_home(v, &home))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| home.join(".local/share"));
+    Ok(root.join("devin").join("credentials.toml"))
+}
+
+/// `(api_key, api_server_url)` out of the agent's own credential file.
+/// The server comes from the file so an enterprise deployment's endpoint is
+/// honoured rather than assumed.
+///
+/// The key is read, sent once over TLS to the server the file itself names,
+/// and dropped: never stored, never logged, never sent anywhere else. That is
+/// the same trust position as spawning the agent, which reads this file for
+/// every launch.
+fn devin_credential(path: &Path) -> Result<(String, String), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let doc = text.parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let key = doc.get("windsurf_api_key").and_then(|v| v.as_str())
+        .ok_or_else(|| format!("{} has no windsurf_api_key", path.display()))?
+        .to_string();
+    let server = doc.get("api_server_url").and_then(|v| v.as_str())
+        .unwrap_or("https://server.codeium.com")
+        .trim_end_matches('/')
+        .to_string();
+    Ok((key, server))
+}
+
+/// proto3-JSON emits int64 as strings and int32 as numbers; take both.
+fn as_f64(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str()?.parse().ok())
+}
+
+/// `planStatus` into termic's two windows. Devin reports REMAINING percent,
+/// so the number is inverted: the footer and the warn thresholds are all
+/// written against "how much is spent", and a 1%-used day must not render as
+/// a 99% bar.
+pub fn parse_devin_result(result: &serde_json::Value) -> AgentUsage {
+    let us = result.get("userStatus");
+    let ps = us.and_then(|u| u.get("planStatus"));
+    let window = |remaining_key: &str, reset_key: &str| -> Option<UsageWindow> {
+        let ps = ps?;
+        let remaining = ps.get(remaining_key).and_then(as_f64)?;
+        Some(UsageWindow {
+            used_percent: (100.0 - remaining).clamp(0.0, 100.0),
+            resets_at: ps.get(reset_key).and_then(as_f64).map(|v| v as i64),
+        })
+    };
+    AgentUsage {
+        session: window("dailyQuotaRemainingPercent", "dailyQuotaResetAtUnix"),
+        weekly: window("weeklyQuotaRemainingPercent", "weeklyQuotaResetAtUnix"),
+        plan_type: ps
+            .and_then(|p| p.get("planInfo"))
+            .and_then(|i| i.get("planName"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        account_id: us
+            .and_then(|u| u.get("userId"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    }
+}
+
+/// POST `GetUserStatus` with the account's key and parse the plan windows.
+/// async rather than spawn_blocking: the only wait is a network await, which
+/// is what the runtime is for.
+pub async fn fetch_devin(agent_id: &str, docker: bool, account: Option<&str>)
+    -> Result<AgentUsage, String>
+{
+    let path = devin_credentials(agent_id, docker, account)?;
+    let (api_key, server) = devin_credential(&path)?;
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("termic/", env!("CARGO_PKG_VERSION")))
+        .timeout(RPC_TIMEOUT)
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+    let resp = client
+        .post(format!("{server}/exa.seat_management_pb.SeatManagementService/GetUserStatus"))
+        .header("Connect-Protocol-Version", "1")
+        .json(&serde_json::json!({
+            "metadata": {
+                // All five fields are required: with only apiKey the service
+                // answers invalid_argument. The name identifies termic, not
+                // devin - the apiKey is what makes this the account's answer.
+                "apiKey": api_key,
+                "ideName": "termic",
+                "ideVersion": env!("CARGO_PKG_VERSION"),
+                "extensionName": "termic",
+                "extensionVersion": env!("CARGO_PKG_VERSION"),
+                "locale": "en",
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("GetUserStatus: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GetUserStatus: HTTP {}", resp.status()));
+    }
+    let body = resp.json::<serde_json::Value>().await
+        .map_err(|e| format!("GetUserStatus response: {e}"))?;
+    if let Some(msg) = body.get("message").and_then(|m| m.as_str()) {
+        return Err(format!("GetUserStatus refused: {msg}"));
+    }
+    Ok(parse_devin_result(&body))
+}
+
+/// Ask devin's API for this agent entry's usage.
+#[tauri::command]
+pub async fn agent_usage_devin(
+    agent_id: String,
+    docker: bool,
+    account: Option<String>,
+) -> Result<AgentUsage, String> {
+    fetch_devin(&agent_id, docker, account.as_deref()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +603,112 @@ mod tests {
             "rateLimits": { "primary": { "usedPercent": 140.0, "windowDurationMins": 300 } }
         });
         assert_eq!(parse_codex_result(&over).session.unwrap().used_percent, 100.0);
+    }
+
+    // -- devin ---------------------------------------------------------------
+
+    /// The shape GetUserStatus answers with on a paid devin plan: daily and
+    /// weekly REMAINING percents, reset epochs as int64-strings, the plan name
+    /// nested under planInfo. Field names transcribed from the measured
+    /// response; values are invented (see CLAUDE.md on fixtures).
+    fn devin_pro() -> serde_json::Value {
+        serde_json::json!({
+            "userStatus": {
+                "userId": "user-0000000000000000000000000000dead",
+                "planStatus": {
+                    "planInfo": { "planName": "Pro" },
+                    "dailyQuotaRemainingPercent": 87,
+                    "weeklyQuotaRemainingPercent": 62,
+                    "dailyQuotaResetAtUnix": "1790000000",
+                    "weeklyQuotaResetAtUnix": "1790500000"
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn devin_remaining_percents_become_used() {
+        let u = parse_devin_result(&devin_pro());
+        // 87 remaining -> 13 used. Reporting the raw field would paint a
+        // nearly-empty day as a nearly-full bar.
+        assert_eq!(u.session.as_ref().unwrap().used_percent, 13.0);
+        assert_eq!(u.weekly.as_ref().unwrap().used_percent, 38.0);
+        assert_eq!(u.session.unwrap().resets_at, Some(1790000000));
+        assert_eq!(u.weekly.unwrap().resets_at, Some(1790500000));
+        assert_eq!(u.plan_type.as_deref(), Some("Pro"));
+        assert_eq!(u.account_id.as_deref(), Some("user-0000000000000000000000000000dead"));
+    }
+
+    #[test]
+    fn devin_windows_tolerate_number_or_string_fields() {
+        // proto3-JSON renders int64 as strings and int32 as numbers; a server
+        // or version that flips one must not blank the footer.
+        let mut v = devin_pro();
+        v["userStatus"]["planStatus"]["dailyQuotaRemainingPercent"] =
+            serde_json::json!("40");
+        let u = parse_devin_result(&v);
+        assert_eq!(u.session.unwrap().used_percent, 60.0);
+    }
+
+    #[test]
+    fn devin_plan_status_absent_is_empty_not_an_error() {
+        // A plan without quota windows (or an error response shaped like
+        // `{"code":..,"message":..}`) yields no windows rather than a fake 0%.
+        assert_eq!(parse_devin_result(&serde_json::json!({})), AgentUsage::default());
+        let u = parse_devin_result(&serde_json::json!({ "userStatus": {} }));
+        assert!(u.session.is_none() && u.weekly.is_none() && u.plan_type.is_none());
+    }
+
+    /// The credential path is the whole per-account story: two named accounts
+    /// must resolve to different credentials.toml, or both chips would report
+    /// the primary login's quota under two names.
+    #[test]
+    fn each_devin_account_is_asked_at_its_own_store() {
+        crate::test_support::with_scratch_data_dir(|_| {
+            let work = devin_credentials("devin", false, Some("Work")).expect("a named account resolves");
+            let other = devin_credentials("devin", false, Some("Personal")).expect("...and so does another");
+            assert_ne!(work, other, "two accounts must not share one credentials.toml");
+            assert!(work.to_string_lossy().contains("/logins/"), "{work:?}");
+            // XDG_DATA_HOME=<store>, devin appends `devin/credentials.toml`.
+            assert!(work.ends_with("devin/credentials.toml"), "{work:?}");
+
+            let plain = devin_credentials("devin", false, None).expect("the plain path resolves");
+            assert!(plain.ends_with(".local/share/devin/credentials.toml"), "{plain:?}");
+        });
+    }
+
+    /// devin declines a Docker config mount, so a container login is inside
+    /// the container and the host cannot answer for it. An honest error beats
+    /// reporting the host's quota under the task's name.
+    #[test]
+    fn a_docker_devin_has_no_host_credential() {
+        assert!(devin_credentials("devin", true, None).is_err());
+    }
+
+    /// The full call against a REAL devin login: reads the actual
+    /// credentials.toml and posts GetUserStatus to the actual server.
+    /// `#[ignore]`d like `codex_rate_limits_live` - CI has no credential and
+    /// must not see network. Run it with
+    ///
+    /// ```sh
+    /// cargo test devin_user_status_live -- --ignored --nocapture
+    /// ```
+    ///
+    /// Asserts SHAPE, never a number: the percentages belong to whoever runs
+    /// it and change by the hour.
+    #[test]
+    #[ignore = "needs a real, logged-in devin credential on this machine"]
+    fn devin_user_status_live() {
+        let usage = tauri::async_runtime::block_on(fetch_devin("devin", false, None))
+            .expect("devin's API should answer GetUserStatus");
+        println!("{}", serde_json::to_string_pretty(&usage).unwrap());
+        assert!(
+            usage.session.is_some() || usage.weekly.is_some(),
+            "a logged-in plan reports at least one window"
+        );
+        for w in [usage.session.as_ref(), usage.weekly.as_ref()].into_iter().flatten() {
+            assert!((0.0..=100.0).contains(&w.used_percent), "{w:?}");
+        }
     }
 
     /// A window with no duration at all still shows up, as the session one.

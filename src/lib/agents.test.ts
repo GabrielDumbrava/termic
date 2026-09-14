@@ -604,6 +604,66 @@ describe("muse resume", () => {
   });
 });
 
+// Devin (Cognition). Every fact below was measured on a live 3000.10.21:
+// `-r <slug>` resumed a session and answered a question only that session's
+// history could answer, `-r <bogus>` failed fast with "No session found
+// matching", and `devin list --format csv` prints this cwd's sessions
+// newest-first without touching the trust gate.
+describe("devin resume", () => {
+  beforeEach(() => { mockAgents.length = 0; });
+  const args = (o: Parameters<typeof spawnArgsForCli>[1]) => spawnArgsForCli("devin", o);
+
+  it("resumes by cwd with --continue", () => {
+    expect(args({ yolo: false, resume: true })).toEqual(["--continue"]);
+  });
+
+  it("emits --permission-mode dangerous as its yolo flag, after the resume", () => {
+    expect(args({ yolo: true, resume: true }))
+      .toEqual(["--continue", "--permission-mode", "dangerous"]);
+    expect(args({ yolo: true, resume: false })).toEqual(["--permission-mode", "dangerous"]);
+  });
+
+  it("is the capture shape: no id can be minted, a slug can be resumed", () => {
+    expect(cliSupportsIdSession("devin")).toBe(false);
+    expect(cliSupportsResumeById("devin")).toBe(true);
+    expect(cliSupportsCaptureResume("devin")).toBe(true);
+    // A stored id must not leak into the plain spawn line as a half-supported
+    // flag; it only ever reaches the agent through resume_id_args.
+    expect(args({ yolo: false, resume: true, sessionUuid: "s-1", resumeKnown: true }))
+      .toEqual(["--continue"]);
+  });
+
+  it("resumes a stored slug verbatim through resume_id_args", () => {
+    // Session ids are devin's own slugs, and `--resume` takes them as-is:
+    // the {UUID} placeholder name is historical, the substitution is a
+    // plain string.
+    expect(resumeIdArgsForCli("devin", "brassy-polish"))
+      .toEqual(["--resume", "brassy-polish"]);
+  });
+
+  it("adds --respect-workspace-trust false ONLY on an unattended spawn", () => {
+    // Same reason as muse's --trust-workspace: devin's trust picker eats the
+    // injected prompt's keystrokes, and the flag is run-scoped so it cannot
+    // permanently trust a directory behind the user's back.
+    expect(args({ yolo: false, resume: false, unattended: true }))
+      .toEqual(["--respect-workspace-trust", "false"]);
+    expect(args({ yolo: false, resume: true, unattended: true }))
+      .toEqual(["--respect-workspace-trust", "false", "--continue"]);
+    expect(args({ yolo: false, resume: true, unattended: false }))
+      .toEqual(["--continue"]);
+  });
+
+  it("captures its session slug off `devin list`", () => {
+    // The backstop for when hooks are not installed: csv output is a header
+    // row then sessions newest-first, so row 2 column 1 is the slug. A bare
+    // `devin list` is an interactive picker, which is why the capture does
+    // not use it.
+    const cap = postLaunchCaptureForCli("devin");
+    expect(cap?.command).toContain("devin list --format csv");
+    expect(cap?.command).toContain("cut -d, -f1");
+  });
+});
+
 // ── defaultCliFirst ───────────────────────────────────────────────────
 
 describe("defaultCliFirst", () => {

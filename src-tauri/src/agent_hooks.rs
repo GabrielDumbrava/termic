@@ -76,7 +76,7 @@ use std::path::{Path, PathBuf};
 // hash the hooks.json ENTRY (command path, timeout, status message), none of
 // which this changes, so a reinstall re-asks codex and writes back the same
 // hashes rather than orphaning them.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Directory we create inside the agent's config dir. Also the prefix that
 /// identifies our entries for removal, which is why it must never be renamed
@@ -500,6 +500,27 @@ pub fn hooks_for(agent: &str) -> &'static [(&'static str, Signal)] {
             ("PermissionRequest", Signal::Attention),
             ("Stop", Signal::Done),
         ],
+        // devin speaks the same claude-shaped hook protocol (its docs call it
+        // claude-compatible, and a live 3000.10.21 fired every one of these
+        // against a file in `.devin/`). `SessionStart` carries `session_id`
+        // too, which is the only way termic learns the slug to resume by:
+        // devin mints its own ids and nothing accepts one at launch, so this
+        // report IS the session binding, not a nicety.
+        //
+        // `ask_user_question` never reaches `PermissionRequest`: it is
+        // auto-decided and routed to an elicitation panel, which blocks on the
+        // user while only `PreToolUse` has fired (measured). The Working
+        // script reads `hook_event_name` + `tool_name` and reports Attention
+        // for exactly that edge; `PostToolUse` exists to hand Working back
+        // the moment the answer lands.
+        "devin" => &[
+            ("SessionStart", Signal::Ready),
+            ("UserPromptSubmit", Signal::Working),
+            ("PreToolUse", Signal::Working),
+            ("PostToolUse", Signal::Working),
+            ("PermissionRequest", Signal::Attention),
+            ("Stop", Signal::Done),
+        ],
         _ => &[],
     }
 }
@@ -689,7 +710,30 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
             "  *[!0-9a-fA-F-]*) sid='' ;;\n",
             "esac\n",
         ),
-        ("claude", Signal::Attention) | ("codex", Signal::Attention) => concat!(
+        // Same report as codex's, with a wider alphabet: a devin session id is
+        // a slug (`brassy-polish`), not a uuid. Captured from a live
+        // 3000.10.21: `session_id` is in every payload, `SessionStart`'s
+        // included, and it is the value `-r` takes verbatim. The check is
+        // what the id ends up inside - a `--resume <id>` command line - so a
+        // leading dash or a shell-active byte means dropped, not escaped.
+        ("devin", Signal::Ready) => concat!(
+            "flat=$(cat | tr -d '[:space:]')\n",
+            "sid=''\n",
+            "case \"$flat\" in\n",
+            "  *'\"session_id\":\"'*)\n",
+            "    sid=${flat#*'\"session_id\":\"'}\n",
+            "    sid=${sid%%'\"'*}\n",
+            "    ;;\n",
+            "esac\n",
+            "case \"$sid\" in\n",
+            "  [0-9a-zA-Z]*) ;;\n",
+            "  *) sid='' ;;\n",
+            "esac\n",
+            "case \"$sid\" in\n",
+            "  *[!0-9a-zA-Z_-]*) sid='' ;;\n",
+            "esac\n",
+        ),
+        ("claude", Signal::Attention) | ("codex", Signal::Attention) | ("devin", Signal::Attention) => concat!(
             "flat=$(cat | tr -d '[:space:]')\n",
             "tool=''\n",
             "case \"$flat\" in\n",
@@ -703,6 +747,27 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
             "# payload into the wrong fields, so reject rather than sanitise.\n",
             "case \"$tool\" in\n",
             "  ''|*[!A-Za-z0-9_-]*) tool='' ;;\n",
+            "esac\n",
+        ),
+        // One Working script serves three events; the fields below are how the
+        // emit arm tells the question-tool edge (PreToolUse +
+        // ask_user_question) apart from the post-answer restore
+        // (PostToolUse) and from every ordinary call.
+        ("devin", Signal::Working) => concat!(
+            "flat=$(cat | tr -d '[:space:]')\n",
+            "evt=''\n",
+            "tool=''\n",
+            "case \"$flat\" in\n",
+            "  *'\"hook_event_name\":\"'*)\n",
+            "    evt=${flat#*'\"hook_event_name\":\"'}\n",
+            "    evt=${evt%%'\"'*}\n",
+            "    ;;\n",
+            "esac\n",
+            "case \"$flat\" in\n",
+            "  *'\"tool_name\":\"'*)\n",
+            "    tool=${flat#*'\"tool_name\":\"'}\n",
+            "    tool=${tool%%'\"'*}\n",
+            "    ;;\n",
             "esac\n",
         ),
         _ => "",
@@ -737,7 +802,7 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
     //     format string would be a bug waiting for the first one that is not.
     //   - the fallback is `HOOK_OSC_BODY` verbatim (`lib/agentHooks.ts`), so a
     //     payload this cannot read behaves exactly as it did before.
-    let emit = if (agent, sig) == ("codex", Signal::Ready) {
+    let emit = if matches!((agent, sig), ("codex", Signal::Ready) | ("devin", Signal::Ready)) {
         // TWO sequences, ONE write. Ready keeps its exact body because the TS
         // side routes it on an exact match; the id rides a second sequence with
         // its own prefix, concatenated into the same `printf`.
@@ -760,7 +825,7 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
              emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true",
             ready = Signal::Ready.payload()
         )
-    } else if sig == Signal::Attention && matches!(agent, "claude" | "codex") {
+    } else if sig == Signal::Attention && matches!(agent, "claude" | "codex" | "devin") {
         format!(
             "[ -n \"$TERMIC_PTY\" ] || exit 0\n\
              if [ -n \"$tool\" ]; then\n\
@@ -770,6 +835,21 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
              fi\n\
              emit() {{ printf '\\033]{NOTIFY_PREFIX}%s\\007' \"$body\" > \"$1\" 2>/dev/null; }}\n\
              emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true"
+        )
+    } else if matches!((agent, sig), ("devin", Signal::Working)) {
+        // `ask_user_question` is devin's blocking input edge: the panel it
+        // paints is pixel-identical to working, and no other hook fires until
+        // the answer arrives. Exact-matched, so the name reaching the OSC body
+        // is always that one literal.
+        format!(
+            "[ -n \"$TERMIC_PTY\" ] || exit 0\n\
+             if [ \"$evt\" = PreToolUse ] && [ \"$tool\" = ask_user_question ]; then\n\
+               emit() {{ printf '\\033]{NOTIFY_PREFIX}%s\\007' \"needs your answer: $tool\" > \"$1\" 2>/dev/null; }}\n\
+             else\n\
+               emit() {{ printf '\\033]{payload}\\007' > \"$1\" 2>/dev/null; }}\n\
+             fi\n\
+             emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true",
+            payload = Signal::Working.payload()
         )
     } else {
         format!(
@@ -1127,6 +1207,11 @@ fn settings_rel(agent: &str) -> &'static str {
         // `source: "user"`. config.toml is still touched, but only for the
         // TRUST entry (codex_trust.rs), never for the hooks themselves.
         "codex" => "hooks.json",
+        // Devin's user config, whose `hooks` key is the claude-compatible
+        // event map. Documented locations also include `.devin/hooks.v1.json`
+        // in the project, but that is per-repo and user-owned; the global
+        // config is the install termic can stand behind.
+        "devin" => "config.json",
         _ => "settings.json",
     }
 }
@@ -1749,7 +1834,7 @@ pub fn remove(target: &Target) -> Result<(), String> {
 /// row can say "not supported yet" rather than offering a button that fails.
 /// Agents this build can wire. Each needs a measured event AND a transport
 /// that reaches termic; see `event_for` / `uses_terminal_sequence`.
-pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex"];
+pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin"];
 
 fn check_supported(agent_id: &str) -> Result<(), String> {
     // A duplicated agent is supported when what it was cloned FROM is. It runs
@@ -1826,7 +1911,9 @@ pub fn agent_hooks_plan(agent_id: String) -> Result<HookPlan, String> {
         })
         .collect();
 
-    let shared = settings_rel(&base) == "settings.json";
+    // Both names are the agent's own user-level settings file, which termic
+    // merges into rather than owns outright.
+    let shared = matches!(settings_rel(&base), "settings.json" | "config.json");
     let fragment = if hooks.is_empty() {
         String::new()
     } else {
@@ -2781,7 +2868,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // before the current set must read as stale, or `agent_hooks_sync`
         // skips it and the user keeps that set forever: v3 types into startup
         // dialogs, v4 holds a tab on `working` for the rest of the session.
-        assert_eq!(SCHEMA_VERSION, 8, "bump me with the hook set, or installs go stale silently");
+        assert_eq!(SCHEMA_VERSION, 9, "bump me with the hook set, or installs go stale silently");
     }
 
     #[test]
@@ -2804,7 +2891,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     fn done_comes_from_a_hook_on_every_agent_that_can_report_it() {
         for agent in SUPPORTED {
             let h = hooks_for(agent);
-            if *agent == "agy" || *agent == "opencode" || *agent == "claude" || *agent == "grok" {
+            if *agent == "agy" || *agent == "opencode" || *agent == "claude" || *agent == "grok" || *agent == "codex" || *agent == "devin" {
                 assert!(
                     h.iter().any(|(_, s)| *s == Signal::Done),
                     "{agent} must report done via a hook, not the title"
@@ -2823,7 +2910,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
 
     #[test]
     fn attention_comes_from_a_hook_wherever_the_agent_has_such_an_event() {
-        for agent in ["claude", "grok", "opencode"] {
+        for agent in ["claude", "grok", "opencode", "codex", "devin"] {
             assert!(
                 hooks_for(agent).iter().any(|(_, s)| *s == Signal::Attention),
                 "{agent} has an attention-shaped event and must use it"
@@ -2883,6 +2970,23 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert!(!script_body("claude", Signal::Attention).contains("background_tasks"));
     }
 
+    /// A fresh empty directory per call. The script harnesses below each run
+    /// the generated shell against a `TERMIC_PTY` file inside one, and cargo
+    /// runs them in parallel: pid+nanos lands two tests on the same path often
+    /// enough that one reads (or deletes) the other's pty mid-run.
+    #[cfg(unix)]
+    fn unique_test_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "termic-{tag}-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// Run claude's generated Done script against a real `Stop` payload and
     /// report whether it emitted. `TERMIC_PTY` points at a temp file, which is
     /// exactly how the script addresses a pty: a plain path it redirects into.
@@ -2895,12 +2999,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
-        let dir = std::env::temp_dir().join(format!(
-            "termic-hook-test-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_test_dir("hook");
         let script = dir.join("done.sh");
         let pty = dir.join("pty");
         std::fs::write(&script, script_body("claude", Signal::Done)).unwrap();
@@ -2941,12 +3040,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
-        let dir = std::env::temp_dir().join(format!(
-            "termic-attn-test-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_test_dir("attn");
         let script = dir.join("attention.sh");
         let pty = dir.join("pty");
         std::fs::write(&script, script_body(agent, Signal::Attention)).unwrap();
@@ -3089,22 +3183,17 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         );
     }
 
-    /// Run codex's generated READY script and return everything it put on the
-    /// pty, both sequences.
+    /// Run the agent's generated READY script and return everything it put on
+    /// the pty, both sequences.
     #[cfg(unix)]
-    fn ready_output_for(payload: &str) -> String {
+    fn ready_output_for(agent: &str, payload: &str) -> String {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
-        let dir = std::env::temp_dir().join(format!(
-            "termic-ready-test-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_test_dir("ready");
         let script = dir.join("ready.sh");
         let pty = dir.join("pty");
-        std::fs::write(&script, script_body("codex", Signal::Ready)).unwrap();
+        std::fs::write(&script, script_body(agent, Signal::Ready)).unwrap();
         std::fs::write(&pty, "").unwrap();
         let mut child = Command::new("/bin/sh")
             .arg(&script)
@@ -3148,7 +3237,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     #[cfg(unix)]
     fn codex_ready_reports_the_session_id_alongside_ready() {
         let sid = "01a06adc-eeb5-77a0-b603-d7b670dd11e7";
-        let out = ready_output_for(&codex_session_start_payload(sid));
+        let out = ready_output_for("codex", &codex_session_start_payload(sid));
         assert!(
             out.contains(&format!("{NOTIFY_PREFIX}{READY_BODY}")),
             "ready must still be sent, unchanged: {out:?}"
@@ -3180,12 +3269,159 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             codex_session_start_payload("../../etc/passwd"),
             codex_session_start_payload("$(rm -rf /)"),
         ] {
-            let out = ready_output_for(&payload);
+            let out = ready_output_for("codex", &payload);
             assert!(out.contains(READY_BODY), "ready lost for {payload:?}: {out:?}");
             assert!(
                 !out.contains(SESSION_BODY_PREFIX),
                 "a bad id must not be reported: {out:?}"
             );
+        }
+    }
+
+    /// devin's `SessionStart` payload, transcribed from a live 3000.10.21.
+    /// `session_id` is a slug (`brassy-polish`), not a uuid, and `source` is
+    /// `startup` on a fresh spawn / `resume` on `-r`.
+    #[cfg(unix)]
+    fn devin_session_start_payload(sid: &str) -> String {
+        format!(
+            r#"{{"session_id":"{sid}","hook_event_name":"SessionStart",
+               "source":"startup","cwd":"/Users/u/proj"}}"#
+        )
+    }
+
+    // Same contract as codex's pair above: the slug IS what `devin --resume`
+    // takes, so losing it strands repo-root resume on `--continue` and the
+    // wrong task's session.
+    #[test]
+    #[cfg(unix)]
+    fn devin_ready_reports_the_session_id_alongside_ready() {
+        let sid = "brassy-polish";
+        let out = ready_output_for("devin", &devin_session_start_payload(sid));
+        assert!(
+            out.contains(&format!("{NOTIFY_PREFIX}{READY_BODY}")),
+            "ready must still be sent, unchanged: {out:?}"
+        );
+        assert!(
+            out.contains(&format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}{sid}")),
+            "the session id never made it to the pty: {out:?}"
+        );
+        assert!(
+            out.find(READY_BODY).unwrap() < out.find(SESSION_BODY_PREFIX).unwrap(),
+            "ready must precede the session id: {out:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn devin_ready_still_reports_ready_when_there_is_no_usable_id() {
+        // Slugs take letters, digits, dash and underscore; anything else lands
+        // in a `--resume <id>` command line, so it is dropped not escaped.
+        // Whitespace inside the value is the one case that is NOT rejected:
+        // the script strips all whitespace before matching, so `"a b"` reads
+        // as `ab` — still shell-safe, and a slug that resolves to nothing
+        // fails the resume fast and respawns fresh rather than injecting.
+        for payload in [
+            String::new(),
+            r#"{"hook_event_name":"SessionStart","cwd":"/Users/u/p"}"#.to_string(),
+            devin_session_start_payload("--resume"),
+            devin_session_start_payload("../../etc/passwd"),
+            devin_session_start_payload("$(rm -rf /)"),
+        ] {
+            let out = ready_output_for("devin", &payload);
+            assert!(out.contains(READY_BODY), "ready lost for {payload:?}: {out:?}");
+            assert!(
+                !out.contains(SESSION_BODY_PREFIX),
+                "a bad id must not be reported: {out:?}"
+            );
+        }
+    }
+
+    /// Run devin's generated WORKING script against a payload and return
+    /// everything it put on the pty. Same harness as `ready_output_for`: the
+    /// extraction is shell, and shell is where the bugs are.
+    #[cfg(unix)]
+    fn devin_working_output_for(payload: &str) -> String {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+
+        let dir = unique_test_dir("working");
+        let script = dir.join("working.sh");
+        let pty = dir.join("pty");
+        std::fs::write(&script, script_body("devin", Signal::Working)).unwrap();
+        std::fs::write(&pty, "").unwrap();
+        let mut child = Command::new("/bin/sh")
+            .arg(&script)
+            .env("TERMIC_TASK_ID", "t1")
+            .env("TERMIC_PTY", &pty)
+            .env_remove("GROK_HOOK_EVENT")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+        }
+        assert!(child.wait().unwrap().success(), "a hook must never exit non-zero");
+        let mut out = String::new();
+        std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    /// devin's tool-event payload, transcribed from a live 3000.10.21.
+    /// `hook_event_name` is snake_case in the payload even though the docs
+    /// camelCase the `hookSpecificOutput` field of the same name.
+    #[cfg(unix)]
+    fn devin_tool_payload(evt: &str, tool: &str) -> String {
+        format!(
+            r#"{{"hook_event_name":"{evt}","tool_name":"{tool}",
+               "tool_input":{{}},"tool_use_id":"{tool}_0",
+               "session_id":"s1","prompt_id":"p1","cwd":"/Users/u/proj"}}"#
+        )
+    }
+
+    // `ask_user_question` paints a blocking panel and never emits
+    // `PermissionRequest` (measured: the panel sat up with only PreToolUse
+    // logged). Without this the tab spins working for the whole time the
+    // question waits on an answer.
+    #[test]
+    #[cfg(unix)]
+    fn devin_question_tool_reports_attention_not_working() {
+        let out = devin_working_output_for(&devin_tool_payload("PreToolUse", "ask_user_question"));
+        assert!(
+            out.contains(&format!("{NOTIFY_PREFIX}needs your answer: ask_user_question")),
+            "the question edge must raise attention: {out:?}"
+        );
+        assert!(!out.contains("133;C"), "a blocked question is not working: {out:?}");
+    }
+
+    // The same script on the SAME tool's PostToolUse hands working back the
+    // moment the answer lands, rather than leaving the tab badged while the
+    // resumed turn runs.
+    #[test]
+    #[cfg(unix)]
+    fn devin_question_answer_restores_working() {
+        let out = devin_working_output_for(&devin_tool_payload("PostToolUse", "ask_user_question"));
+        assert!(out.contains("133;C"), "answer landed, turn resumed: {out:?}");
+        assert!(!out.contains(NOTIFY_PREFIX), "an answered question is not attention: {out:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn devin_working_stays_working_for_ordinary_events() {
+        for payload in [
+            // A prompt submit carries no tool_name at all.
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"hi","session_id":"s1"}"#.to_string(),
+            devin_tool_payload("PreToolUse", "exec"),
+            devin_tool_payload("PostToolUse", "exec"),
+            // Garbage parses to empty fields, which must still mean working.
+            String::new(),
+        ] {
+            let out = devin_working_output_for(&payload);
+            assert!(out.contains("133;C"), "working lost for {payload:?}: {out:?}");
+            assert!(!out.contains(NOTIFY_PREFIX), "not attention for {payload:?}: {out:?}");
         }
     }
 
@@ -3537,7 +3773,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     /// UserPromptSubmit made the same clear permanent for the whole turn.
     #[test]
     fn working_has_a_heartbeat_wherever_one_is_safe() {
-        for agent in ["claude", "grok"] {
+        for agent in ["claude", "grok", "devin"] {
             let working: Vec<&str> = hooks_for(agent)
                 .iter()
                 .filter(|(_, s)| *s == Signal::Working)

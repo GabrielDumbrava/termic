@@ -30,7 +30,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { cn } from "@/lib/utils";
 import { useAgentUsage, usageKey, costTotal, costChipVisible, type UsageEntry } from "@/store/agentUsage";
 import {
-  formatPercent, formatReset, formatUsd, usageLevel, drivingWindow,
+  formatPercent, formatReset, formatUsd, usageLevel, drivingWindow, shortWindowWords,
   USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
   blocksUsageFeed, blockedReason, statusLineAgentPrompt,
   type UsageLevel, type UsageWindow, type StatusLineOwner,
@@ -44,13 +44,15 @@ import { KeyRound, ArrowRightLeft } from "lucide-react";
 import type { AgentAccountsView, TerminalTab } from "@/lib/types";
 import { useApp } from "@/store/app";
 
-/** How long a codex reading stands before the chip asks again.
+/** How long a pulled reading stands before the chip asks again.
  *
- *  Each refresh SPAWNS `codex app-server` and waits for a cold start, so this
- *  is not a poll interval to tune downwards. It is a ceiling on staleness for
- *  the one visible task; claude pays nothing for the equivalent because its
- *  status line pushes on every turn. */
-const CODEX_REFRESH_MS = 120_000;
+ *  Each codex refresh SPAWNS `app-server` and waits for a cold start, so this
+ *  is not a poll interval to tune downwards. devin's is one HTTPS call and
+ *  could be asked more often, but a quota moves at the speed of agent work,
+ *  not of polling. It is a ceiling on staleness for the one visible task;
+ *  claude pays nothing for the equivalent because its status line pushes on
+ *  every turn. */
+const POLL_REFRESH_MS = 120_000;
 
 /** A reading older than this is called out as stale, with its age. The claude
  *  feed only speaks while a turn runs, so a task sitting idle overnight would
@@ -155,7 +157,12 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   // A clone of codex runs codex, so the base decides the transport, not the
   // entry id. `docker.rs` documents the same distinction on the Rust side.
   const base = builtinBaseId(agentId, agents);
-  const isCodex = base === "codex";
+  const words = shortWindowWords(base);
+  // The pull transports: codex spawns `app-server`, devin POSTs its Connect
+  // API. claude needs no ask at all: it pushes through the status line.
+  const askUsage = base === "codex" ? ipc.agentUsageCodex
+    : base === "devin" ? ipc.agentUsageDevin
+    : null;
 
   // Why the feed cannot run, when it cannot. claude ONLY: it is the only
   // agent whose usage arrives through a status line, so it is the only one
@@ -177,38 +184,40 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
     return () => { cancelled = true; };
   }, [agentId, base, cwd, visible, known]);
 
-  // codex only. claude arrives on its own through the terminal, and asking it
-  // as well would spend a request to learn what it already told us.
+  // The pull transports only. claude arrives on its own through the terminal,
+  // and asking it as well would spend a request to learn what it already told
+  // us.
   useEffect(() => {
-    if (!isCodex || !visible) return;
+    if (!askUsage || !visible) return;
     let cancelled = false;
     const ask = () => {
-      ipc.agentUsageCodex(agentId, docker, liveAccount)
+      askUsage(agentId, docker, liveAccount)
         .then(u => {
           if (cancelled) return;
           // `report` bails on an unchanged reading, so a refresh that moved
           // nothing costs no store write and no re-render.
           useAgentUsage.getState().report(
             agentId, liveAccount,
-            // No cost from codex: `account/rateLimits/read` answers plan
-            // windows, and codex's own spend data is a TOKEN count. Turning
-            // that into dollars would mean a per-model price table in termic,
-            // which goes silently wrong the day prices move.
+            // No cost from the pull transports: they answer plan windows, and
+            // the agents' own spend data is token counts and ACUs, not
+            // dollars. Turning that into USD would mean a per-model price
+            // table in termic, which goes silently wrong the day prices move.
             { session: u.session, weekly: u.weekly, sessionCostUsd: null },
             "rpc");
         })
-        // No banner: codex may not be installed, may not be logged in, or may
-        // be an older build without the method, and none of those is worth
-        // interrupting anyone over a footer number. But it is LOGGED, because
-        // a silently swallowed failure here is exactly how a release shipped
-        // with the chip never appearing for codex at all (the packaged app's
-        // PATH could not find the binary, and nothing anywhere said so).
-        .catch(err => console.warn("[usage] codex refused:", agentId, err));
+        // No banner: the agent may not be installed, may not be logged in, or
+        // may be an older build without the method, and none of those is
+        // worth interrupting anyone over a footer number. But it is LOGGED,
+        // because a silently swallowed failure here is exactly how a release
+        // shipped with the chip never appearing for codex at all (the
+        // packaged app's PATH could not find the binary, and nothing anywhere
+        // said so).
+        .catch(err => console.warn(`[usage] ${base} refused:`, agentId, err));
     };
     ask();
-    const id = window.setInterval(ask, CODEX_REFRESH_MS);
+    const id = window.setInterval(ask, POLL_REFRESH_MS);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [agentId, docker, isCodex, liveAccount, visible]);
+  }, [agentId, docker, askUsage, liveAccount, visible]);
 
   // Nothing known yet: render nothing at all rather than a placeholder. An
   // account that has not spoken has no honest number to show, and a row of
@@ -317,7 +326,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               never ambiguous about which of the two it means. */}
           {entry?.session && (
             <span className={driver?.label === "5h" ? LEVEL_TEXT[level] : undefined}>
-              {formatPercent(entry.session)} <Unit>5h</Unit>
+              {formatPercent(entry.session)} <Unit>{words.chip}</Unit>
             </span>
           )}
           {entry?.session && entry?.weekly && <span className="text-[var(--color-fg-faint)]">·</span>}
@@ -401,6 +410,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
   const age = entry ? Date.now() - entry.updatedAt : 0;
   const stale = !!entry && age > STALE_AFTER_MS;
   const display = agentDisplayName(agentId, agents);
+  const words = shortWindowWords(builtinBaseId(agentId, agents));
 
   return (
     <div data-testid="usage-detail" className="text-[12.5px]">
@@ -421,7 +431,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
       <div className="flex flex-col gap-2.5 px-3 py-2.5">
         {!entry ? null : (entry.session || entry.weekly) ? (
           <>
-            <UsageRow label="Session" sub="rolling 5 hours" window={entry.session}
+            <UsageRow label={words.label} sub={words.sub} window={entry.session}
               driving={driver?.label === "5h"} level={level} source={entry.source} />
             <UsageRow label="Weekly" sub="rolling 7 days" window={entry.weekly}
               driving={driver?.label === "wk"} level={level} source={entry.source} />
@@ -474,7 +484,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
         {level !== "normal" && driver && (
           <div className={cn("mb-1", LEVEL_TEXT[level])}>
             Over {level === "critical" ? USAGE_CRITICAL_PERCENT : USAGE_WARN_PERCENT}% of the{" "}
-            {driver.label === "5h" ? "session" : "weekly"} limit.
+            {driver.label === "5h" ? words.limit : "weekly"} limit.
           </div>
         )}
         {/* Where it came from, and how old. Both matter: the claude feed only
@@ -483,7 +493,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
         <div>
           {entry.source === "statusline"
             ? "Reported by the agent as it works."
-            : "Read from codex in the background."}
+            : `Read from ${display} in the background.`}
           {stale ? ` Last updated ${describeAge(age)} ago.` : ""}
         </div>
       </div>

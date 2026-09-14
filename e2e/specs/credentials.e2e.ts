@@ -17,10 +17,12 @@ import {
 
 const AGENT = "claude";
 /** Fixture agents that EXTEND the real ones, so they inherit their login
- *  SHAPE through `base_agent_id` while spawning a script. Two of them because
- *  the shape differs: claude relocates CLAUDE_CONFIG_DIR, codex CODEX_HOME. */
+ *  SHAPE through `base_agent_id` while spawning a script. Three of them
+ *  because the shape differs: claude relocates CLAUDE_CONFIG_DIR, codex
+ *  CODEX_HOME, devin XDG_DATA_HOME. */
 const FAKE_CLAUDE = "fakeclaude";
 const FAKE_CODEX = "fakecodex";
+const FAKE_DEVIN = "fakedevin";
 /** The plain fixture agent, which has NO measured login store. */
 const FAKE_AGENT = "fakeagent";
 
@@ -221,7 +223,7 @@ describe("agent credentials", () => {
     await clearAccounts();
     // The login stores this spec created by hand. `clearAccounts` cannot do
     // it: removing an account deliberately leaves the store alone.
-    for (const a of [AGENT, FAKE_CLAUDE, FAKE_CODEX]) signOutAll(a);
+    for (const a of [AGENT, FAKE_CLAUDE, FAKE_CODEX, FAKE_DEVIN]) signOutAll(a);
     await dismissOverlays();
   });
 
@@ -470,6 +472,43 @@ describe("agent credentials", () => {
       await waitForText("Agents & Terminals");
     } finally {
       await removeTask(taskId);
+      await dismissOverlays();
+    }
+  });
+
+  it("calls devin's short window a day, and offers the automatic switch", async () => {
+    // Devin's quota resets DAILY, so the footer's "5h" would misname the one
+    // number it leads with. The transport is a pull on devin's own API, which
+    // needs a credential the fixture cannot have, so the reading is seeded -
+    // what this pins is the WIRING: a devin-based agent must reach the chip
+    // with its own window name, keyed to the account it SPAWNED on, and with
+    // `reportsUsage` set, which is what offers the opt-in.
+    await resetUsage();
+    await addAccounts(FAKE_DEVIN);
+    signIn(FAKE_DEVIN, "Work");
+    const taskId = await openTaskWith(FAKE_DEVIN, "devin-usage");
+    try {
+      // The report keys to the account the process is running as, so it has
+      // to land after the spawn did: seeding on `null` while the process runs
+      // on Work is a chip that never finds its reading.
+      await waitForSpawnOn(taskId, "Work");
+      await seedUsage(FAKE_DEVIN, "Work", 12);
+      await waitVisible('[data-testid="usage-chip"]');
+      const chip = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.textContent ?? "");
+      expect(chip).toContain("day");
+      expect(chip).not.toContain("5h");
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitForText("Daily");
+      await waitForText("resets daily");
+      // `reportsUsage` flowing end to end is what puts the opt-in in this
+      // panel; a devin row that forgot it would render the numbers alone.
+      await waitVisible('[data-testid="account-auto-toggle"]');
+      await snap("credentials-11-devin-day.png");
+    } finally {
+      await removeTask(taskId);
+      await clearAccounts(FAKE_DEVIN);
+      signOutAll(FAKE_DEVIN);
       await dismissOverlays();
     }
   });
