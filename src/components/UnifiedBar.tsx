@@ -97,6 +97,13 @@ export function UnifiedBar() {
   return (
     <header
       data-tauri-drag-region
+      // Which task the chrome has actually RENDERED, which is not the same
+      // fact as useApp's activeTaskId. The store setter is synchronous but
+      // React 19 renders concurrently, so between the two the archive button
+      // below still closes over the PREVIOUS task. A test that drives the
+      // store and then clicks was archiving the wrong task on any machine
+      // slow enough to lose that race (e2e/helpers.ts ensureActiveTask).
+      data-active-task={task?.id ?? ""}
       // Imperative fallback: data-tauri-drag-region + -webkit-app-region: drag
       // both *should* work, but for whatever reason the WKWebView in this build
       // ignores both. onMouseDown → startDragging() is the bulletproof escape

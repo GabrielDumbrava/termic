@@ -445,17 +445,21 @@ describe("archive confirmation", () => {
   /** Create a worktree task on `branch` and make it the active one, so the
    *  unified bar's archive button acts on it. A worktree task (not a repo-root
    *  entry) is what puts the delete-branch checkbox in the dialog. */
-  const createWorktreeTask = (name: string, branch: string) =>
-    browser.execute(async (n, b) => {
+  const createWorktreeTask = async (name: string, branch: string) => {
+    const id = await browser.execute(async (n, b) => {
       const t = window.__termic!;
       const proj = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
       const task = await t.ipc.taskCreate({
         project_id: proj.id, name: n, cli: "fakeagent", base_branch: "main", branch: b,
       });
       await t.useApp.getState().loadAll();
-      t.useApp.getState().setActiveTask((task as any).id);
       return (task as any).id as string;
     }, name, branch);
+    // Not setActiveTask: the caller's next move is to click a button in the
+    // chrome, and that button closes over whatever task React last RENDERED.
+    await ensureActiveTask(id);
+    return id;
+  };
 
   /** The archive dialog, found by its title. Never a bare [role="dialog"]:
    *  a closing dialog from an earlier case can still be in the DOM. */
@@ -614,17 +618,21 @@ describe("non-blocking archive (GH #246)", () => {
   let prefsOriginal: { confirm: boolean; deleteBranch: boolean } | undefined;
   let taskId = "";
 
-  const createWorktreeTask = (name: string, branch: string) =>
-    browser.execute(async (n, b) => {
+  const createWorktreeTask = async (name: string, branch: string) => {
+    const id = await browser.execute(async (n, b) => {
       const t = window.__termic!;
       const proj = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
       const task = await t.ipc.taskCreate({
         project_id: proj.id, name: n, cli: "fakeagent", base_branch: "main", branch: b,
       });
       await t.useApp.getState().loadAll();
-      t.useApp.getState().setActiveTask((task as any).id);
       return (task as any).id as string;
     }, name, branch);
+    // Not setActiveTask: the caller's next move is to click a button in the
+    // chrome, and that button closes over whatever task React last RENDERED.
+    await ensureActiveTask(id);
+    return id;
+  };
 
   const isArchived = (id: string) =>
     browser.execute((i) =>

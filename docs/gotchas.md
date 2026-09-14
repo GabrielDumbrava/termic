@@ -499,6 +499,34 @@ same session, because each failure named an innocent test and passed on rerun:
 a shared-state bug, not a flake.** Look at what the tests share before looking
 at the test that failed.
 
+## Waiting on a Zustand value is not a barrier for the click that follows
+
+`ensureActiveTask` wrote `setActiveTask(id)` and then waited for
+`useApp.getState().activeTaskId === id`. That wait can never fail: the setter
+is synchronous, so it was already true on the line that wrote it, and the
+helper returned having barred nothing.
+
+What the next line then clicks is a button in UnifiedBar whose handler closes
+over the task from its last RENDER (`onClick={() => confirmAndArchive(task)}`),
+and React 19 renders concurrently. Measured on an idle Mac, 40 switches out of
+40 still had the OLD task in the DOM on the same tick as the setter, with the
+real render landing 5-14ms later. The click usually won that race only because
+a WebDriver round-trip happens to be slower than a render; on a loaded 3-core
+CI runner both stretch and the click sometimes lands first, invoking the
+handler for the PREVIOUS task. That was `silent archive never landed` in
+`task.e2e.ts`: it archived the wrong task, so the right one never archived.
+
+**Wait on the DOM whenever the next step is a click.** UnifiedBar's
+`data-active-task` publishes which task the chrome has actually rendered,
+which is a different fact from which task the store considers active. A store
+assertion is fine to check a RESULT; it is worthless as a barrier before an
+interaction.
+
+Note the shape, because it generalises past this helper: a wait whose
+condition was made true synchronously by the line above it is not a wait. If
+you cannot describe the state it is waiting to LEAVE, it is not barring
+anything.
+
 ## A poll that lives in a component only covers what is mounted (GH #281)
 
 The sidebar draws a PR/MR badge on every task with a PR, coloured from the

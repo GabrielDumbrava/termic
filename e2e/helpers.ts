@@ -455,13 +455,23 @@ export async function ensureActiveTask(taskId: string): Promise<void> {
       window.__termic!.useApp.getState().setActiveTask(id);
     }
   }, taskId);
+  // Wait for the DOM, not the store. setActiveTask is synchronous, so the
+  // old store-only wait passed on the same tick it was called and barred
+  // nothing: React had not rendered yet, and every button in the chrome still
+  // closed over the previous task. Clicking one then acted on the WRONG task,
+  // which is what made "silent archive never landed" flake on loaded runners.
+  // UnifiedBar's data-active-task is the rendered answer.
   await browser.waitUntil(
     () =>
       browser.execute(
-        (id) => window.__termic!.useApp.getState().activeTaskId === id,
+        (id) =>
+          window.__termic!.useApp.getState().activeTaskId === id &&
+          document
+            .querySelector("header[data-active-task]")
+            ?.getAttribute("data-active-task") === id,
         taskId,
       ),
-    { timeout: 8_000, timeoutMsg: `task ${taskId} never became active` },
+    { timeout: 8_000, timeoutMsg: `task ${taskId} never became active on screen` },
   );
 }
 
