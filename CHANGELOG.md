@@ -4,6 +4,20 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.4.1] - 2026-09-14
+
+A long agent turn no longer reads as finished while it is still working.
+
+### Bug fixes
+- **A task could show as done while its agent was still working.** A safety
+  net that force-clears the spinner after ten minutes, so a tab can never spin
+  forever, was clearing it over and over instead of once: after the first time
+  it fired, every later signal from the agent was cancelled about a second
+  later, for the rest of that turn. An agent orchestrating background agents
+  runs well past ten minutes on one turn, so the tab sat on "done" while
+  subagents were visibly working. The net still bounds every stretch of work,
+  it just no longer spends its whole budget on the first one.
+
 ## [1.4.0] - 2026-09-14
 
 Devin joins the built-in agents, project groups reach the dashboard, and two fixes.

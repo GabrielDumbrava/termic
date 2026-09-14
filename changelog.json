@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.4.1",
+      "date": "2026-09-14",
+      "summary": "A long agent turn no longer reads as finished while it is still working."
+    },
+    {
       "version": "1.4.0",
       "date": "2026-09-14",
       "summary": "Devin joins the built-in agents, project groups reach the dashboard, and two fixes."
