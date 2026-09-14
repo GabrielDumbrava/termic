@@ -318,22 +318,36 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               {hasNumbers && <span className="text-[var(--color-fg-faint)]">·</span>}
             </>
           )}
-          {driver && <UsageBar percent={driver.window.usedPercent} level={level} stale={stale} />}
-          {/* Two fixed labels rather than one adaptive string: the footer must
-              not reflow as the numbers tick, and "58% 5h" next to "41% wk" is
-              read as two things at a glance where "58/41" is read as neither.
-              The DRIVING window's number takes the colour too, so a red bar is
-              never ambiguous about which of the two it means. */}
+          {/* ONE GAUGE PER WINDOW, each touching the number it belongs to.
+              There used to be a single bar here, showing whichever window was
+              closest to its limit (`drivingWindow`). The reasoning was sound,
+              30% of five hours beside 95% of the week has to read as a
+              warning, but the bar sat hard against the 5h number and silently
+              displayed the OTHER one, so it read as that number's gauge and
+              was wrong most of the time. Reported by someone looking straight
+              at it, which is the only evidence that counts for a footer you
+              are meant to take at a glance.
+
+              Two bars instead, each with its OWN level and colour, so a red
+              week bar beside a calm 5h one says both things at once and
+              neither borrows the other's identity. `drivingWindow` stays: it
+              is still the right question for `autoSwitch`, which wants to know
+              which limit will stop you, and for the popover's own colouring.
+              Narrower than the old single bar (24px against 32px) so two of
+              them cost the footer 16px rather than 36.
+              Two fixed labels rather than one adaptive string, unchanged: the
+              footer must not reflow as the numbers tick, and "58% 5h" next to
+              "41% wk" is read as two things where "58/41" is read as neither. */}
           {entry?.session && (
-            <span className={driver?.label === "5h" ? LEVEL_TEXT[level] : undefined}>
-              {formatPercent(entry.session)} <Unit>{words.chip}</Unit>
-            </span>
+            <UsageWindowReadout
+              window={entry.session} unit={words.chip} stale={stale} testid="5h"
+            />
           )}
           {entry?.session && entry?.weekly && <span className="text-[var(--color-fg-faint)]">·</span>}
           {entry?.weekly && (
-            <span className={driver?.label === "wk" ? LEVEL_TEXT[level] : undefined}>
-              {formatPercent(entry.weekly)} <Unit>wk</Unit>
-            </span>
+            <UsageWindowReadout
+              window={entry.weekly} unit="wk" stale={stale} testid="wk"
+            />
           )}
           {/* Spend since launch, and ONLY for an account with no plan, which
               is the case this feed exists for. On a subscription the
@@ -733,6 +747,23 @@ const LEVEL_TEXT: Record<UsageLevel, string | undefined> = {
  * so an animation has nothing to smooth: it would only ever be caught
  * mid-flight by a screenshot or by someone glancing over.
  */
+/** One window's gauge and its number, as a single unit so they cannot drift
+ *  apart on a reflow. The percentage takes the bar's colour, which is what
+ *  makes a warn/critical bar unambiguous about which window it is about. */
+function UsageWindowReadout({ window: w, unit, stale, testid }: {
+  window: UsageWindow; unit: string; stale: boolean; testid: string;
+}) {
+  const level = usageLevel(w.usedPercent);
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1" data-usage-window={testid}>
+      <UsageBar percent={w.usedPercent} level={level} stale={stale} />
+      <span className={LEVEL_TEXT[level]}>
+        {formatPercent(w)} <Unit>{unit}</Unit>
+      </span>
+    </span>
+  );
+}
+
 function UsageBar({ percent, level, stale }: {
   percent: number; level: UsageLevel; stale: boolean;
 }) {
@@ -748,7 +779,9 @@ function UsageBar({ percent, level, stale }: {
       // bar that had failed to render rather than one that was nearly empty. A
       // gauge has to show its EMPTY part too, or the fill has nothing to be a
       // fraction of.
-      className="h-2.5 w-8 shrink-0 overflow-hidden rounded-full bg-[var(--color-border)]"
+      // 24px, not the 32px this was when it was the only gauge on the chip:
+      // there are two now, and width is the axis the footer is short of.
+      className="h-2.5 w-6 shrink-0 overflow-hidden rounded-full bg-[var(--color-border)]"
     >
       <span
         data-testid="usage-bar-fill"

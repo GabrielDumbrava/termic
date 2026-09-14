@@ -1319,10 +1319,15 @@ describe("agent notifications", () => {
   // not already said.
   //
   // The body is chosen to prove two things at once: the chip renders both
-  // numbers, and the colour follows the window CLOSEST TO ITS LIMIT rather
-  // than the session one. 30% of five hours in front of 95% of the week has to
-  // read as critical, or the footer reports comfort until the turn that fails.
-  it("shows plan usage in the footer, coloured by the window nearest its limit", async () => {
+  // numbers, and each one carries its OWN gauge and colour. 30% of five hours
+  // in front of 95% of the week has to read as a calm bar beside a red one.
+  //
+  // There used to be a single bar here, showing whichever window was closest
+  // to its limit. It sat against the 5h number and displayed the other one,
+  // so it read as that number's gauge and was wrong most of the time.
+  // `data-usage-level` still reports the DRIVING window, because that is what
+  // `autoSwitch` acts on; it is no longer what the chip draws.
+  it("shows plan usage in the footer, one gauge per window", async () => {
     await ensureActiveTask(taskId!);
     await submitToAgent(taskId!, "#usage usage 30 95 - -");
 
@@ -1335,7 +1340,13 @@ describe("agent notifications", () => {
     expect(await chip.getAttribute("data-usage-level")).toBe("critical");
     expect(await chip.getText()).toContain("30%");
     expect(await chip.getText()).toContain("95%");
-    expect(await (await browser.$('[data-testid="usage-bar-fill"]')).isExisting()).toBe(true);
+    // One gauge per window now, each inside its own readout, so the 5h number
+    // can never be sitting next to the week's bar.
+    expect(await (await browser.$$('[data-testid="usage-bar-fill"]')).length).toBe(2);
+    const fiveH = await browser.$('[data-usage-window="5h"]');
+    const week = await browser.$('[data-usage-window="wk"]');
+    expect(await fiveH.getText()).toContain("30%");
+    expect(await week.getText()).toContain("95%");
   });
 
   // The half that is easy to get wrong and expensive to ship wrong. A trusted
