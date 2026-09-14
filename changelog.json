@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.4.2",
+      "date": "2026-09-14",
+      "summary": "No more \"your agent is done\" while it is still working."
+    },
+    {
       "version": "1.4.1",
       "date": "2026-09-14",
       "summary": "A long agent turn no longer reads as finished while it is still working."

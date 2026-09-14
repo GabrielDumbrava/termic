@@ -4,6 +4,20 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.4.2] - 2026-09-14
+
+No more "your agent is done" while it is still working.
+
+### Bug fixes
+- **A long turn no longer announces itself as finished.** The safety net that
+  stops a tab spinning forever fires when Termic cannot tell what an agent is
+  doing, and it was sending you a notification when it did. That is a guess
+  announced as a fact, and it is the half that cannot take itself back: the
+  badge corrected on the agent's next signal, the notification had already
+  pulled you away. It now just stops the spinner and says nothing. The net also
+  waits twenty minutes rather than ten, because an agent running background
+  agents passes ten minutes on a single turn routinely.
+
 ## [1.4.1] - 2026-09-14
 
 A long agent turn no longer reads as finished while it is still working.
