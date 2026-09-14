@@ -4,6 +4,39 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.4.0] - 2026-09-14
+
+Devin joins the built-in agents, project groups reach the dashboard, and two fixes.
+
+### Features
+- **Devin is a built-in agent.** Launch it like any other: its own login (with
+  several accounts if you keep them), its own sandbox profile, hooks so it
+  reports when it is working and when it needs you, and its plan quota in the
+  task footer. Resume works the way Devin itself works, by the slug it mints
+  for a session rather than an id Termic hands it. Thanks to
+  [@bohdan-shulha](https://github.com/bohdan-shulha), who measured every table
+  in the runbook against a live install rather than guessing at it.
+- **The dashboard shows what your fleet is doing.** Project groups render as
+  folders there, collapsing in step with the sidebar because both read the one
+  map. Task rows carry the same work badge and pull request chip the sidebar
+  has, and a Recent row lists the tasks you were last in, so the home screen is
+  somewhere you can see and re-enter work instead of a list of names. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+
+### Bug fixes
+- **Korean input could delete text you had already typed.** A jamo that arrived
+  between the key going down and the browser reporting it going up was dropped
+  on the floor, and because Termic had already moved its mark forward, the next
+  correction ate the characters in front of it instead. Thanks to
+  [@yb-yu](https://github.com/yb-yu), who found it, fixed it, and tested it by
+  hand on two machines.
+  ([#293](https://github.com/simion/termic/issues/293))
+- **The usage bar in the footer could report the wrong window.** There was one
+  bar for two numbers, and it showed whichever of the two was closest to its
+  limit while sitting hard against the five hour figure. So it read as that
+  number's gauge and was usually about the other one. Each number has its own
+  bar and its own colour now.
+
 ## [1.3.7] - 2026-09-11
 
 Terraform support, per-task agent parameters, and two fixes worth having.
