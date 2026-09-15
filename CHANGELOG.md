@@ -4,6 +4,35 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.4.3] - 2026-09-15
+
+Closing an agent tab always leaves a way back, and a quieter usage chip.
+
+### Improvements
+- **The usage chip reads as two numbers, not four marks.** Each window's gauge
+  is now the fill behind its own percentage rather than a separate bar in front
+  of it, so `85% wk` sits on a box filled to 85% with the unused part left as a
+  visible track. The chip is 45px narrower, which is width a short footer was
+  spending on instrumentation. The figure goes neutral on an amber or red fill
+  instead of taking that colour itself, because a number tinted the same hue as
+  the thing behind it gets hardest to read exactly when it matters most.
+
+### Bug fixes
+- **A second agent no longer inherits the task's resume override.** The
+  override is written in one agent's flag spelling, and any agent opened from
+  the + menu was handed it verbatim: a Codex tab in a task set up for Claude
+  launched with `--resume`, which Codex rejects, so the tab died before drawing
+  a frame and did the same on every restart. The task's own agent still uses
+  it; everything else now falls back to its own resume behaviour.
+- **Closing the main agent tab no longer strands its session.** Closing it is
+  meant to end the agent for now and bring the conversation back when the task
+  reopens, but that only happened for a task with nothing else open. Leave a
+  shell, a run or a diff open alongside it and the task never went to sleep, so
+  nothing ever woke it: the session stayed on disk, unreachable, and opening
+  the agent again from + started a fresh one. It now appears in the + menu's
+  Resume list, on the same tab it was closed from. Most visible in a main
+  checkout, where there is no directory fallback quietly covering for it.
+
 ## [1.4.2] - 2026-09-14
 
 No more "your agent is done" while it is still working.

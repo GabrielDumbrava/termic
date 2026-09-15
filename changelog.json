@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.4.3",
+      "date": "2026-09-15",
+      "summary": "Closing an agent tab always leaves a way back, and a quieter usage chip."
+    },
+    {
       "version": "1.4.2",
       "date": "2026-09-14",
       "summary": "No more \"your agent is done\" while it is still working."
