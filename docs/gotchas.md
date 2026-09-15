@@ -690,3 +690,34 @@ The general rule: **"it is persisted" is not "it is reachable".** Any code that
 promises a record will come back has to name the event that brings it back, and
 then check that the event can actually fire in the states the user can get the
 app into. `agent.e2e.ts` drives all three states against the real window.
+
+## An agent's title is not a vocabulary, and an unanchored pattern inherits its prose
+
+Codex 0.154.0 started renaming the thread mid-turn and rendering the generated
+name through the same `activity` item that carries its state, so the terminal
+title became part state, part model-written prose:
+
+```text
+⠼ Explain Action Required | proj
+```
+
+`BUILTIN_TITLE_SIGNALS.codex.attention` was `\bAction Required\b`, matched
+anywhere in the title, and `classifyAgentTitle` tests attention BEFORE busy, so
+the braille spinner could not win it back. One question about approvals named the
+thread, and the tab claimed to need you for the rest of the session while the
+agent worked. Reported as a false attention icon; nothing in the suite caught it,
+because every fixture predated the rename.
+
+Anchored to the start of the title now. The lesson generalises past codex: a
+title pattern is matched against a string the VENDOR composes, and the parts
+they add later are not required to be a fixed vocabulary. Anchor on the position
+the state actually occupies, and treat any span that can hold user or model text
+as hostile. The same file still has unanchored word patterns in `busy`
+(`\b(Working|Thinking)\b`); they are left alone deliberately, because no false
+busy has been measured and a pattern rewritten from reasoning is what the last
+sweep had to undo.
+
+Bounding the regression to a build was worth more than the fix: the twelve
+releases cached under `~/.codex/packages/standalone/releases` let `strings` find
+`renaming...` in 0.154.0 and nowhere earlier, which named the version rather than
+guessing at it. See [agent-hooks.md](agent-hooks.md).

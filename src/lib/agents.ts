@@ -386,10 +386,30 @@ export const BUILTIN_TITLE_SIGNALS: Record<string, Required<SignalPatterns>> = {
     ],
   },
   codex: {
-    // Real, captured: "[ ! ] Action Required | proj" alternating with
-    // "[ . ] Action Required | proj" (it blinks). Anchored on the words, not
-    // the brackets, since the decoration is cosmetic.
-    attention: ["\\bAction Required\\b"],
+    // Captured shape: "[ ! ] Action Required | <thread title> | proj",
+    // alternating with "[ . ] …" (it blinks).
+    //
+    // ANCHORED AT THE START, and that is the whole point. Codex 0.154.0 renames
+    // the thread mid-turn and renders the generated name through the same
+    // `activity` title item, so the title now carries MODEL-WRITTEN PROSE:
+    //
+    //   ⠧ Create out.txt with hello | proj        busy, thread title
+    //   ⠼ Explain Action Required | proj          busy, and those two words
+    //
+    // An unanchored `\bAction Required\b` matched that second one, and since
+    // attention is tested BEFORE busy the spinner could never win it back: one
+    // question about approvals or CI badged the tab needs-you for the rest of
+    // the session while the agent worked. Genuine attention always leads the
+    // title, behind the blink; the prose never does, because the activity item
+    // precedes it.
+    //
+    // The bracket stays OPTIONAL rather than required (grok demands its `⚠`).
+    // Older builds were measured emitting the bare words and nothing here has
+    // re-measured them, so narrowing further would drop a form on reasoning
+    // alone. Residual, accepted: a thread title that BEGINS "Action Required"
+    // still matches. Codex's own attention hook is the authoritative source
+    // for this agent either way (see docs/agent-hooks.md).
+    attention: ["^\\s*(?:\\[\\s*[!.]\\s*\\]\\s*)?Action Required\\b"],
     // Braille as a RANGE, not the ten-frame list this used to spell out: a
     // spinner alphabet is not a stable contract, and a missed busy is the worse
     // failure because it ends the turn early.

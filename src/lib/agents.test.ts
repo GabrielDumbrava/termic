@@ -1301,6 +1301,20 @@ describe("classifyAgentTitle", () => {
       ["codex", "[ ! ] Action Required | proj", "attention"],
       ["codex", "[ . ] Action Required | proj", "attention"],
 
+      // 0.154.0 renames the thread mid-turn and renders the generated name
+      // through the same `activity` item, so the title carries model-written
+      // prose after the leading state. The attention words appearing INSIDE
+      // that prose must not win: the agent is working, and the spinner says so.
+      ["codex", "⠧ Create out.txt with hello | proj", "busy"],
+      ["codex", "Create out.txt with hello | proj", "idle"],
+      ["codex", "⠼ Explain Action Required | proj", "busy"],
+      ["codex", "Explain Action Required | proj", "idle"],
+      // The real prompt still leads, behind the blink, with the prose trailing.
+      ["codex", "[ ! ] Action Required | Create out.txt with hello | proj", "attention"],
+      ["codex", "[ . ] Action Required | Create out.txt with hello | proj", "attention"],
+      // Transient, emitted while the rename itself is in flight.
+      ["codex", "⠋ renaming... ⠋ | proj", "busy"],
+
       // grok: the important one. Its two blocked states look nothing alike.
       ["grok", "grok", "idle"],
       ["grok", "Exact One Word Pong Reply Request - grok", "idle"],

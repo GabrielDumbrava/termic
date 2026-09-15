@@ -352,6 +352,33 @@ permission prompt now marks attention twice, once from each source. That is the
 same shape as claude's hook-then-`OSC 9` pair and it is handled by the same
 `ATTENTION_ECHO_MS` window, so it costs one banner, not two.
 
+**0.154.0 put model-written prose in that title, and the second source went
+bad.** Codex renames the thread mid-turn and renders the generated name through
+the same `activity` title item. Captured across one turn, in a real pty:
+
+```text
+⠋ renaming... ⠋ | proj                                    the rename, in flight
+⠧ Create out.txt with hello | proj                        busy, thread title
+[ ! ] Action Required | Create out.txt with hello | proj   the real prompt
+```
+
+So the title carries whatever the model decided to call the conversation. The
+attention pattern was `\bAction Required\b`, unanchored, and `classifyAgentTitle`
+tests attention BEFORE busy: a thread the model named `Explain Action Required`
+badged needs-you for the rest of the session, spinner running, with no prompt on
+screen. Asking codex about approvals or CI was enough to trigger it.
+
+The pattern is anchored to the START of the title now. Genuine attention always
+leads, behind the `[ ! ]`/`[ . ]` blink; the prose never does, because the
+activity item precedes it. `renaming...` is only in 0.154.0 (checked against the
+twelve releases cached under `~/.codex/packages/standalone/releases`), so 0.153.4
+and earlier are unaffected.
+
+The same free text reaches the `busy` patterns, where `\b(Working|Thinking)\b` is
+also unanchored. NOT changed here, because no false busy has actually been
+measured and this file's own rule is that a pattern written from reasoning is
+what the last sweep had to replace. Worth a capture before touching it.
+
 ## agy has no attention event, so it is read from the screen
 
 Measured against Antigravity CLI 1.1.24 at a live permission prompt: **no
