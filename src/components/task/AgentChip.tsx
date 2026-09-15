@@ -318,32 +318,37 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               {hasNumbers && <span className="text-[var(--color-fg-faint)]">·</span>}
             </>
           )}
-          {/* ONE GAUGE PER WINDOW, each touching the number it belongs to.
+          {/* ONE GAUGE PER WINDOW, and each one IS its number's background.
               There used to be a single bar here, showing whichever window was
               closest to its limit (`drivingWindow`). The reasoning was sound,
               30% of five hours beside 95% of the week has to read as a
               warning, but the bar sat hard against the 5h number and silently
               displayed the OTHER one, so it read as that number's gauge and
-              was wrong most of the time. Reported by someone looking straight
-              at it, which is the only evidence that counts for a footer you
-              are meant to take at a glance.
+              was wrong most of the time. The fix was two bars, which fixed the
+              mis-pairing and left the footer reading as instrumentation: four
+              marks for two facts, 56px of a bar that starts hiding chips at
+              780px. Both reports came from someone looking straight at it,
+              which is the only evidence that counts for a footer you are meant
+              to take at a glance.
 
-              Two bars instead, each with its OWN level and colour, so a red
-              week bar beside a calm 5h one says both things at once and
-              neither borrows the other's identity. `drivingWindow` stays: it
-              is still the right question for `autoSwitch`, which wants to know
-              which limit will stop you, and for the popover's own colouring.
-              Narrower than the old single bar (24px against 32px) so two of
-              them cost the footer 16px rather than 36.
+              A window's gauge is now the fill behind its own figure, so there
+              is nothing beside a number that could belong to the other one and
+              nothing to shed when the bar gets narrow. `drivingWindow` stays:
+              it is still the right question for `autoSwitch`, which wants to
+              know which limit will stop you, and for the popover's colouring.
               Two fixed labels rather than one adaptive string, unchanged: the
               footer must not reflow as the numbers tick, and "58% 5h" next to
-              "41% wk" is read as two things where "58/41" is read as neither. */}
+              "41% wk" is read as two things where "58/41" is read as neither.
+
+              No separator between them any more. Two filled boxes already
+              delimit themselves, and a dot in the gap read as a third mark
+              competing with the two it was separating. The dot after the
+              ACCOUNT stays: bare text against a filled box does need one. */}
           {entry?.session && (
             <UsageWindowReadout
               window={entry.session} unit={words.chip} stale={stale} testid="5h"
             />
           )}
-          {entry?.session && entry?.weekly && <span className="text-[var(--color-fg-faint)]">·</span>}
           {entry?.weekly && (
             <UsageWindowReadout
               window={entry.weekly} unit="wk" stale={stale} testid="wk"
@@ -713,88 +718,142 @@ function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?:
   );
 }
 
-/** Fill colour per level. Tokens only: a hex outside `@theme` in index.css is
- *  a theme that cannot be themed (CLAUDE.md).
+/** Fill colour per level, for the POPOVER's full-width bars. Tokens only: a
+ *  hex outside `@theme` in index.css is a theme that cannot be themed
+ *  (CLAUDE.md).
  *
  *  `normal` is NEUTRAL, not green. This number only goes up, so green is not
  *  good news, and a window of green bars trains you to ignore the one that
  *  turns amber. */
 const LEVEL_FILL: Record<UsageLevel, string> = {
-  // `--color-fg-dim`, not `--color-fg-faint`: faint against the new track was
-  // two greys a shade apart, which is not a reading you can take at a glance.
+  // `--color-fg-dim`, not `--color-fg-faint`: faint against the track was two
+  // greys a shade apart, which is not a reading you can take at a glance.
   normal:   "bg-[var(--color-fg-dim)]",
   warn:     "bg-[var(--color-warn)]",
   critical: "bg-[var(--color-err)]",
 };
 
-/** Text colour for the driving window's percentage. `normal` is undefined so
- *  it inherits, which is what keeps the quiet case quiet. */
+/** The CHIP's gauge is the number's own background, so these are the same
+ *  three hues mixed into whatever the footer's ground is rather than painted
+ *  solid. Raw tokens (not Tailwind classes) because they go through
+ *  `color-mix` in a computed gradient. */
+const LEVEL_TINT: Record<UsageLevel, string> = {
+  normal:   "var(--color-fg-dim)",
+  warn:     "var(--color-warn)",
+  critical: "var(--color-err)",
+};
+
+/** How much of that hue the fill carries, as a percentage mixed over the
+ *  track. Not taste: these are the strongest values at which the number on
+ *  top still clears 4.5:1 in BOTH themes, computed against every
+ *  level/theme/track pairing rather than eyeballed on this machine's screen.
+ *
+ *    dark   normal 4.91  warn 5.87  critical 7.22
+ *    light  normal 4.78  warn 9.20  critical 7.73
+ *
+ *  Push `critical` past ~40 and the red number starts to disappear into its
+ *  own fill, which is the one reading that must never be hard to take. */
+const FILL_MIX: Record<UsageLevel, number> = { normal: 18, warn: 34, critical: 40 };
+
+/** The unused part of the gauge. A gauge has to show its EMPTY part too, or
+ *  the fill has nothing to be a fraction of. Kept neutral at every level: the
+ *  track is the same at 3% and 97%, only the fill says anything. */
+const TRACK_MIX = 10;
+
+/** Ink for the number sitting ON the fill.
+ *
+ *  Warn and critical go NEUTRAL-BRIGHT rather than taking their own hue, and
+ *  that is the trade this design makes on purpose. Amber text on an amber
+ *  fill measures 3.3:1 in dark mode, i.e. the number gets hardest to read
+ *  exactly when it matters most, and no amount of tuning the mix fixes it
+ *  (22% still only reaches 4.08). So the BOX carries the severity and the
+ *  text carries the reading: a red-filled box is louder than red text ever
+ *  was, and the figure inside it stays legible at 7:1.
+ *
+ *  `normal` stays dim, because a quiet reading brightening to full `fg` would
+ *  make every calm chip in the footer shout. */
+const LEVEL_INK: Record<UsageLevel, string> = {
+  normal:   "text-[var(--color-fg-dim)]",
+  warn:     "text-[var(--color-fg)]",
+  critical: "text-[var(--color-fg)]",
+};
+
+/** Text colour by level, for the POPOVER: its header and its per-window rows,
+ *  which have room for a coloured figure beside a full-width bar. `normal` is
+ *  undefined so it inherits, which is what keeps the quiet case quiet.
+ *
+ *  The CHIP no longer uses this. Its figure sits ON the gauge, where taking
+ *  the level's own hue costs it half its contrast; see `LEVEL_INK`. */
 const LEVEL_TEXT: Record<UsageLevel, string | undefined> = {
   normal:   undefined,
   warn:     "text-[var(--color-warn)]",
   critical: "text-[var(--color-err)]",
 };
 
-/**
- * The chip's fill bar.
+/** One window's gauge, which IS its number's background.
  *
- * FIXED width, always, whatever the number: the track is the same width at 3%
- * and at 97%, and only the fill inside it moves. A bar sized to its value
- * would reflow the two percentages and the sandbox status beside it on every
- * turn, which in this footer is a visible twitch rather than a layout detail.
+ *  There used to be a 24x10 pill in FRONT of each percentage. Two of them in a
+ *  row read as instrumentation rather than as a reading, and they cost 56px of
+ *  a bar that starts hiding chips at 780px: the same chip measures 264px with
+ *  the pills and 219px without them. Reported by someone looking straight at
+ *  it, which is the only evidence that counts for a footer meant to be taken
+ *  at a glance.
  *
- * No transition either. The value changes about once per turn, seconds apart,
- * so an animation has nothing to smooth: it would only ever be caught
- * mid-flight by a screenshot or by someone glancing over.
- */
-/** One window's gauge and its number, as a single unit so they cannot drift
- *  apart on a reflow. The percentage takes the bar's colour, which is what
- *  makes a warn/critical bar unambiguous about which window it is about. */
+ *  So the gauge moved BEHIND the number: a hard-stop gradient across the
+ *  readout's own box, filled to the percentage, with the unused part left as a
+ *  visible track. Nothing sits beside the number that could belong to the
+ *  other window, which is the failure the two pills were themselves a fix for.
+ *
+ *  A hard stop, not a fade. A gradient that eases out has no readable edge, so
+ *  the one thing the shape is for (where does the fill end) becomes a guess.
+ *
+ *  No transition, for the same reason the old bar had none: the value changes
+ *  about once per turn, seconds apart, so an animation has nothing to smooth
+ *  and would only ever be caught mid-flight. `transition-colors` would be
+ *  worse than useless here, since it never repaints a themed colour in
+ *  WKWebView at all (docs/gotchas.md).
+ *
+ *  The BOX is fixed-content, not fixed-width: it is exactly as wide as
+ *  "85% wk", so the footer does not reflow as the fill moves. Only the stop
+ *  position changes. */
 function UsageWindowReadout({ window: w, unit, stale, testid }: {
   window: UsageWindow; unit: string; stale: boolean; testid: string;
 }) {
   const level = usageLevel(w.usedPercent);
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1" data-usage-window={testid}>
-      <UsageBar percent={w.usedPercent} level={level} stale={stale} />
-      <span className={LEVEL_TEXT[level]}>
-        {formatPercent(w)} <Unit>{unit}</Unit>
-      </span>
-    </span>
-  );
-}
-
-function UsageBar({ percent, level, stale }: {
-  percent: number; level: UsageLevel; stale: boolean;
-}) {
+  // Floored at 2% so a barely-used account still shows a sliver of fill: a
+  // box with no fill at all is indistinguishable from one that failed to
+  // render, and the exact figure is spelled out in words on top of it.
+  // Clamped to 0-100 on the way in, and never a string from the payload.
+  const fill = Math.max(2, Math.round(w.usedPercent));
+  // A stale reading gets a fainter gauge rather than a dimmer number: the
+  // figure is still the figure, it is the confidence that has dropped. Half
+  // the mix, not a flat value, so a stale critical still reads as critical.
+  const mix = stale ? Math.round(FILL_MIX[level] / 2) : FILL_MIX[level];
   return (
     <span
-      aria-hidden
-      // SHORT and THICK: 10px tall, 32px wide. It shares the chip with an
-      // account name now, so length is the wrong axis to spend on, and a long
-      // thin bar reads as a divider rather than as a gauge.
-      //
-      // The track is `--color-border`, not `--color-bg-3`: against the footer
-      // the old track was nearly invisible, so a low percentage looked like a
-      // bar that had failed to render rather than one that was nearly empty. A
-      // gauge has to show its EMPTY part too, or the fill has nothing to be a
-      // fraction of.
-      // 24px, not the 32px this was when it was the only gauge on the chip:
-      // there are two now, and width is the axis the footer is short of.
-      className="h-2.5 w-6 shrink-0 overflow-hidden rounded-full bg-[var(--color-border)]"
+      data-usage-window={testid}
+      data-testid="usage-gauge"
+      // The gauge's own value, so a spec can assert what was DRAWN rather than
+      // counting elements. The old `usage-bar-fill` testid went with the pill.
+      data-usage-fill={fill}
+      // NOT `inline-flex`: the number and its unit are two inline children
+      // with a space between them, and flex layout discards whitespace between
+      // items, so the chip rendered "95%wk". There is nothing to lay out in a
+      // row here anyway; the chip's own flex centres this box vertically.
+      className={cn("shrink-0 rounded px-1.5 py-px", LEVEL_INK[level])}
+      // Genuinely dynamic (the stop moves with the number), so it cannot be a
+      // Tailwind class. Two layers: the fill gradient over a flat track, both
+      // mixed with `transparent` so they composite over whatever the footer's
+      // ground is and a custom theme's tokens carry through untouched.
+      style={{
+        background:
+          `linear-gradient(to right,`
+          + ` color-mix(in srgb, ${LEVEL_TINT[level]} ${mix}%, transparent) 0 ${fill}%,`
+          + ` transparent ${fill}% 100%),`
+          + ` color-mix(in srgb, var(--color-fg-dim) ${TRACK_MIX}%, transparent)`,
+      }}
     >
-      <span
-        data-testid="usage-bar-fill"
-        className={cn("block h-full rounded-full", LEVEL_FILL[level], stale && "opacity-50")}
-        // Width is genuinely dynamic, so it cannot be a Tailwind class. The
-        // value was clamped to 0-100 on the way in, and is never a string from
-        // the payload.
-        //
-        // Floored at 2% so a barely-used account still shows a sliver: an
-        // empty track is indistinguishable from a bar that failed to render,
-        // and the exact figure is spelled out in words right beside it.
-        style={{ width: `${Math.max(2, Math.round(percent))}%` }}
-      />
+      {formatPercent(w)} <Unit>{unit}</Unit>
     </span>
   );
 }

@@ -748,6 +748,47 @@ It is localStorage and not a `last_opened_at` on the `Task` record for the same
 reason folder colours are: it is a per-machine UI convenience, and a disk write
 on every task click would be the wrong trade.
 
+## A gauge that is a background, and what it costs the text on it
+
+The task footer's usage chip (GH #277) draws each window's gauge as the fill
+behind its own figure: `85% wk` sits on a box filled 85% of the way across,
+with the unused part left as a visible track. It has been three designs, and
+the reasons are worth keeping because they are not about this chip.
+
+One bar, showing whichever window was closest to its limit, sat hard against
+the 5h number and displayed the OTHER one. Two bars fixed that and left four
+marks for two facts, costing 56px of a bar that starts hiding chips at 780px
+(264px with the pills, 219px without). Both were reported by someone looking
+straight at the thing, which is the only evidence that counts for a footer
+meant to be read at a glance.
+
+**A fill behind text costs that text contrast, and the cost lands where you
+can least afford it.** Amber text on an amber fill measures 3.3:1 in dark
+mode, so the number gets hardest to read exactly when it matters most, and
+tuning the mix does not rescue it (22% still only reaches 4.08). So the BOX
+carries the severity and the text carries the reading: warn and critical inks
+go neutral-bright instead of taking their own hue, which puts every
+level/theme pairing above 4.5:1 and in light mode actually improves on what
+shipped before (warn was 3.71:1 on cream). A red-filled box is louder than red
+text ever was.
+
+**The quiet end is where the real constraint binds.** `normal` keeps a dim ink
+so a calm chip does not shout, and dim ink falls through 4.5:1 once its fill
+passes 18%. That caps how visible a calm gauge's fill EDGE can be (1.40 in
+dark against 5.87 for warn). The trade is stated rather than hidden: the box
+is always plainly a box, so a nearly-empty one is never mistaken for a failed
+render, and the fill earns visibility as it grows.
+
+Two mechanics that generalise: the fill is a **hard stop**, not a fade, because
+a gradient that eases out has no readable edge and "where does it end" is the
+whole question the shape answers; and both layers are `color-mix(...,
+transparent)` over the footer's own ground, so a custom theme's tokens carry
+through without the component knowing any of them.
+
+Measurements live next to the constants in `AgentChip.tsx`. Re-derive them
+before moving a number, and do it in both themes: every one of these values is
+the ceiling of something.
+
 ## Settled detection / notifications
 
 TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible viewport, marks tab "settled" after 2 identical consecutive samples. Resets on user input. `markAttention(wsId, tabId, reason)` never marks the active tab in the active task. `useAttentionNotifier` suppresses OS notifications for every tab in the focused task. Desktop notifications off by default. Clicking a banner only brings the window forward: it never changes the active task or tab (the old focus-edge router jumped on any refocus within 15s of a notification, including a plain cmd-Tab). The unread dot is what points at the tab; the user does the switching.

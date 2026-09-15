@@ -1399,13 +1399,64 @@ describe("agent notifications", () => {
     expect(await chip.getAttribute("data-usage-level")).toBe("critical");
     expect(await chip.getText()).toContain("30%");
     expect(await chip.getText()).toContain("95%");
-    // One gauge per window now, each inside its own readout, so the 5h number
-    // can never be sitting next to the week's bar.
-    expect(await (await browser.$$('[data-testid="usage-bar-fill"]')).length).toBe(2);
+    // One gauge per window, and each one is the BACKGROUND of its own number,
+    // so the 5h figure can never be sitting next to the week's bar. Assert the
+    // value each gauge was drawn to rather than counting elements: a gauge
+    // pointed at the wrong window is the bug this readout exists to prevent,
+    // and two elements of any kind would satisfy a count.
+    expect(await (await browser.$$('[data-testid="usage-gauge"]')).length).toBe(2);
     const fiveH = await browser.$('[data-usage-window="5h"]');
     const week = await browser.$('[data-usage-window="wk"]');
     expect(await fiveH.getText()).toContain("30%");
     expect(await week.getText()).toContain("95%");
+    expect(await fiveH.getAttribute("data-usage-fill")).toBe("30");
+    expect(await week.getAttribute("data-usage-fill")).toBe("95");
+    // The fill is a gradient with a hard stop at the percentage, so the stop
+    // is the thing that has to be there: a background that lost its gradient
+    // (a dropped inline style, a theme token that resolved to nothing) still
+    // renders a perfectly plausible chip.
+    expect((await week.getCSSProperty("background-image")).value).toContain("gradient");
+  });
+
+  // Its own `it`, and the reason is the budget the case above is written
+  // against: that one spends most of 60s on a real agent round trip, and two
+  // screenshots on top of it tipped it into mocha's timeout. Tests in a file
+  // share the window and run in order, so the 30/95 state is still on screen
+  // here and this costs one render plus two captures.
+  //
+  // Screenshots only. Nothing is asserted from a pixel (see the e2e skill);
+  // these exist so a person can check that a gauge which is a BACKGROUND still
+  // renders as one, which is the class of thing no assertion catches and which
+  // this footer has already been burned by once (`transition-colors` never
+  // repaints a themed colour in WKWebView, docs/gotchas.md).
+  it("draws a gauge at each level for a human to look at", async () => {
+    await ensureActiveTask(taskId!);
+    await snap("usage-gauge-critical.png");
+
+    // The WARN ink, which is the step this design added: the figure goes
+    // neutral-bright on a hued fill instead of taking the hue itself, because
+    // amber on amber measures 3.3:1 in dark mode.
+    //
+    // Rewrites the reading the chip is ALREADY showing rather than reporting a
+    // new one: `report` files under `usageKey(agentId, account)` and the
+    // account is the one the PROCESS spawned with, so a spec that passes
+    // `null` quietly creates a second entry the chip never reads.
+    await browser.execute(() => {
+      const store = window.__termic!.useAgentUsage;
+      const byAgent = { ...store.getState().byAgent };
+      const key = Object.keys(byAgent)[0];
+      byAgent[key] = {
+        ...byAgent[key],
+        session: { usedPercent: 75, resetsAt: null },
+        weekly: { usedPercent: 20, resetsAt: null },
+      };
+      store.setState({ byAgent });
+    });
+    await browser.waitUntil(
+      async () => (await (await browser.$('[data-usage-window="5h"]')).getAttribute("data-usage-fill")) === "75",
+      { timeout: 10_000, timeoutMsg: "the 5h gauge never redrew at 75%" },
+    );
+    await snap("usage-gauge-warn.png");
   });
 
   // The half that is easy to get wrong and expensive to ship wrong. A trusted
