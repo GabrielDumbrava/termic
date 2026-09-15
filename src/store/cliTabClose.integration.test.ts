@@ -168,8 +168,32 @@ describe("termic tab close: the default tab", () => {
     expect(durableIds()).toContain("main");
   });
 
-  it("gets no closedTabs entry, because it was never forgotten", async () => {
+  // "Reopens it" above means WAKES it: `ensureDefaultTab` restores from
+  // `persisted_tabs` only for a task that owns no main tabs. This close left
+  // `second` standing, so the task never sleeps and nothing ever wakes it —
+  // the durable record stays perfect and unreachable, and "+" gives you a new
+  // tab id on a new session. So the closed main tab is snapshotted too, under
+  // its OWN id, and Resume re-attaches to the record already on disk.
+  it("gets a Resume entry when the task is left awake, keyed to the same tab", async () => {
     await closeTabHandler({ taskId: "ws1", tabId: "main" });
+    const entries = useApp.getState().closedTabs.ws1 ?? [];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ tabId: "main", isDefault: true, sessionId: "SESSION-A" });
+
+    useApp.getState().resumeClosedTab("ws1", entries[0].id);
+    const back = (useApp.getState().tabs.ws1 ?? []).find(t => t.id === "main");
+    expect(back).toMatchObject({ id: "main", is_default: true, sessionId: "SESSION-A" });
+    // One durable record for that session, not two.
+    expect(durableIds().filter(id => id === "main")).toHaveLength(1);
+  });
+
+  it("gets NO entry when closing it sleeps the task, which already resumes it", async () => {
+    await closeTabHandler({ taskId: "ws1", tabId: "second" });
+    useApp.setState({ closedTabs: {} } as never);
+    await closeTabHandler({ taskId: "ws1", tabId: "main" });
+    expect(tabIds()).toEqual([]);
+    expect(durableIds()).toContain("main");
+    // A second way back would just be a duplicate of the wake.
     expect(useApp.getState().closedTabs.ws1 ?? []).toHaveLength(0);
   });
 });

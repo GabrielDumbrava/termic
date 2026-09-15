@@ -374,10 +374,30 @@ dialog was the only other feedback that anything happened.
 
 Copy follows what is actually recoverable, and only a genuinely one-way action
 gets `destructive: true` (the red button). An archive keeps the task in History
-and the branch in git; a main agent tab auto-resumes; a secondary tab comes
-back from Resume. A **pane** tab is never snapshotted into `closedTabs`, so
-that one is one-way and says so. Red buttons everywhere teach people to ignore
-red buttons.
+and the branch in git; a secondary tab comes back from Resume. A **pane** tab
+is never snapshotted into `closedTabs`, so that one is one-way and says so. Red
+buttons everywhere teach people to ignore red buttons.
+
+The main agent tab has TWO answers, and the dialog picks between them rather
+than always claiming the first:
+
+- **This close empties the task's main strip.** The task sleeps, and waking it
+  restores the tab from `persisted_tabs` with its session. "The session resumes
+  when you reopen the task" is literally true, and no `closedTabs` entry is
+  taken (it would be a duplicate way back).
+- **Another main tab is still open** (a shell, a Run tab, a diff). The task
+  never sleeps, so nothing ever wakes it, and `ensureDefaultTab` bails on any
+  task that owns main tabs. The durable record stays on disk, perfect and
+  unreachable. So this close DOES take a `closedTabs` entry, keyed to the tab's
+  own id and carrying `is_default`, and the copy points at the Resume list like
+  a secondary tab's does. Resuming reuses that id, which re-attaches to the
+  existing durable record instead of adding a second one aimed at the same
+  session.
+
+The split matters most in a main checkout, where there is no cwd resume to
+paper over a lost session id: a replacement agent from `+` there comes back
+with nothing at all. See docs/gotchas.md, "A durable tab is only restored by a
+WAKE".
 
 A **scratchpad** (GH #244) gets its own three-outcome prompt instead
 (`ScratchCloseDialog`, Save… / Discard / Cancel, dismissal = Cancel), because

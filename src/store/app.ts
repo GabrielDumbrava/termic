@@ -23,14 +23,39 @@ import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName, STICKY_DONE_MS } from "@/lib/agents";
 import { scoped } from "@/lib/profileScope";
 
-/** A secondary agent tab closed via the "X", snapshotted just before it's
- *  dropped from `persisted_tabs` (see `syncDurableTabs`'s forget rule).
- *  Powers the "+" menu's Resume section — in-memory only, cleared on app
- *  restart. Main/default tabs are excluded: they already auto-resume via
- *  `persisted_tabs` when the task wakes, so listing them here would
- *  be redundant. */
+/** An agent tab closed via the "X", snapshotted just before its session
+ *  becomes unreachable. Powers the "+" menu's Resume section — in-memory
+ *  only, cleared on app restart.
+ *
+ *  Two tabs get an entry, for two different reasons:
+ *
+ *  - a SECONDARY tab, because `syncDurableTabs` forgets it on close (× on a
+ *    "+" agent is "get rid of it for good"), so this is the only copy of its
+ *    session id left anywhere.
+ *  - the MAIN tab, but ONLY when closing it leaves the task awake. A close
+ *    that empties the task puts it to sleep, and waking it restores the tab
+ *    from `persisted_tabs` with its session — an entry there would be a
+ *    confusing duplicate. A close that leaves ANY other main tab standing
+ *    (a shell, a Run tab, a diff) does not sleep the task, and
+ *    `ensureDefaultTab` bails while a task owns main tabs, so nothing ever
+ *    restores it: the durable record sits on disk, correct and complete, and
+ *    the only route back is "+" → a NEW agent on a NEW tab id. In a worktree
+ *    that replacement quietly resumes from the cwd and nobody notices; in the
+ *    main checkout, where cwd resume is off by design, the conversation is
+ *    simply gone. Measured end to end in `agent.e2e.ts`.
+ *
+ *  `tabId` is the id of the tab that was closed, NOT this entry's own `id`.
+ *  Resuming reuses it, so the restored tab re-attaches to its existing
+ *  `persisted_tabs` record instead of minting a second one pointed at the
+ *  same session. */
 export interface ClosedTabEntry {
   id: string;
+  /** The closed tab's own id, reused on resume (see above). */
+  tabId?: string;
+  /** Whether it was the task's main agent, so resuming restores that too:
+   *  `is_default` is what `seedPrompt`, `sendComments`, the CLI and the race
+   *  board all resolve "the task's agent" by. */
+  isDefault?: boolean;
   cli: string;
   title: string;
   customTitle?: boolean;
@@ -2055,24 +2080,7 @@ export const useApp = create<AppState>((set, get) => ({
     const closing = list[idx];
     // Best-effort PTY kill; ignore failures (already-dead PTYs etc.).
     if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
-    // Snapshot secondary agent tabs into closedTabs before syncDurableTabs
-    // forgets them for good (see the merge rule below) — this is the only
-    // point their session_id survives, so the "+" menu's Resume section can
-    // still reopen them. Shells (no session) and the main tab (already
-    // auto-resumes via persisted_tabs) are excluded.
     const closingTerm = closing.type === "terminal" ? closing as TerminalTab : null;
-    const closedEntry: ClosedTabEntry | null =
-      closingTerm && closingTerm.cli !== "shell" && !closingTerm.is_default && !closingTerm.paneId
-        ? {
-            id: crypto.randomUUID(),
-            cli: closingTerm.cli,
-            title: closingTerm.customTitle ? closingTerm.title : (closingTerm.liveTitle || closingTerm.title),
-            customTitle: closingTerm.customTitle,
-            command: closingTerm.command ?? null,
-            sessionId: closingTerm.sessionId ?? null,
-            closedAt: new Date().toISOString(),
-          }
-        : null;
     const next = list.filter(t => t.id !== tabId);
     const wasActive = s.activeTab[taskId] === tabId;
     // Active-tab replacement considers only main tabs (no paneId).
@@ -2082,9 +2090,40 @@ export const useApp = create<AppState>((set, get) => ({
     const mainNext = mainList.filter(t => t.id !== tabId);
     let active = s.activeTab[taskId];
     if (wasActive) active = mainNext[Math.max(0, mainIdx - 1)]?.id || mainNext[0]?.id || "";
-    // Last main tab closed → put the task to sleep. Pane tabs
-    // are managed separately and should not keep the task alive with an empty main pane.
+    // Last main tab closed → put the task to sleep (the eviction is further
+    // down). Read HERE because the snapshot below turns on it too: sleeping is
+    // what makes the durable record restorable, and therefore what makes an
+    // entry redundant.
     const isLast = mainNext.length === 0;
+    // Snapshot the closed agent tab into closedTabs, so its session has a way
+    // back. Two cases, one rule: take the snapshot whenever nothing else will
+    // restore this tab.
+    //   - secondary tab: `syncDurableTabs` is about to forget it outright, so
+    //     this is the only copy of its session id left anywhere.
+    //   - main tab, task left AWAKE: the durable record survives, but
+    //     `ensureDefaultTab` only restores it when a task with no main tabs
+    //     wakes — and this close left one standing, so nothing ever will. See
+    //     ClosedTabEntry for what that looks like from the user's seat.
+    //   - main tab, task put to SLEEP: skipped. Waking restores it with its
+    //     session, and an entry would offer a second, duplicate way back.
+    // Shells are excluded throughout: no session, nothing to resume.
+    const closedEntry: ClosedTabEntry | null =
+      closingTerm && closingTerm.cli !== "shell" && !closingTerm.paneId
+        && !(closingTerm.is_default && isLast)
+        ? {
+            id: crypto.randomUUID(),
+            tabId: closingTerm.id,
+            isDefault: !!closingTerm.is_default,
+            cli: closingTerm.cli,
+            title: closingTerm.customTitle ? closingTerm.title : (closingTerm.liveTitle || closingTerm.title),
+            customTitle: closingTerm.customTitle,
+            command: closingTerm.command ?? null,
+            sessionId: closingTerm.sessionId ?? null,
+            closedAt: new Date().toISOString(),
+          }
+        : null;
+    // Pane tabs are managed separately and should not keep the task alive with
+    // an empty main pane, which is why `isLast` above counts main tabs only.
     // Closed the focused tab and another tab survives → focus follows
     // to the tab that takes over (the previous one), so ⌘W-ing through
     // tabs keeps keyboard focus in the main pane.
@@ -2144,12 +2183,22 @@ export const useApp = create<AppState>((set, get) => ({
     set(s => ({
       closedTabs: { ...s.closedTabs, [taskId]: (s.closedTabs[taskId] ?? []).filter(e => e.id !== entryId) },
     }));
+    // Reuse the CLOSED TAB's id when we have it, rather than minting a fresh
+    // one. The id is free (the tab is gone) and it is the key `persisted_tabs`
+    // is written against: a new id would leave the old durable record in place
+    // and add a second one pointing at the same session, so the next wake
+    // would restore two agents onto one conversation. A legacy entry from
+    // before `tabId` existed still mints.
     const tab: TerminalTab = {
-      id: crypto.randomUUID(),
+      id: entry.tabId ?? crypto.randomUUID(),
       type: "terminal",
       title: entry.title,
       customTitle: entry.customTitle,
       cli: entry.cli,
+      // The task's agent is resolved by this flag (seedPrompt, sendComments,
+      // the CLI, the race board), so restoring the main tab without it would
+      // leave the task with no agent as far as any of them can tell.
+      ...(entry.isDefault ? { is_default: true } : {}),
       command: entry.command ?? undefined,
       sessionId: entry.sessionId ?? undefined,
     };

@@ -399,21 +399,27 @@ export async function waitForTextGone(needle: string, timeout = 15_000): Promise
  * Create a repo-root task in the seeded `fixture-repo` via the app's own IPC
  * (fast + robust vs. the create wizard) using the claude-like `fakeagent`.
  * Repo-root: archiving/deleting it never touches a worktree. Returns its id.
+ *
+ * `cli` picks a different fixture agent. It matters for resume: the repo root
+ * is the ONE task shape with no cwd fallback, so an agent's resume behaviour
+ * there is entirely a function of its registry capabilities (`fakecapture` is
+ * codex's shape, `fakeagent` claude's).
  */
-export async function openTask(name: string, activate = true): Promise<string> {
+export async function openTask(name: string, activate = true, cli = "fakeagent"): Promise<string> {
   return browser.execute(
-    async (n, act) => {
+    async (n, act, c) => {
       const t = window.__termic!;
       const proj = t.useApp
         .getState()
         .projects.find((p: any) => p.name === "fixture-repo");
-      const task = await t.ipc.taskOpenRepo(proj.id, "fakeagent", n);
+      const task = await t.ipc.taskOpenRepo(proj.id, c, n);
       await t.useApp.getState().loadAll();
       if (act) t.useApp.getState().setActiveTask(task.id);
       return task.id as string;
     },
     name,
     activate,
+    cli,
   );
 }
 

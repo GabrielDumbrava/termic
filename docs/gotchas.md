@@ -652,3 +652,41 @@ Two rules fall out of this:
   shows, so it has to be gated on that agent's id, not on a tab's position.
 - **Check what a boolean is named after, not what it is used for.** `isPrimary`
   gates four things in `decideResume` and was right for three of them.
+
+## A durable tab is only restored by a WAKE, and a shell prevents one
+
+Closing the main agent tab is documented as "end it for now": the entry stays
+in `persisted_tabs` with its session id, and the task auto-resumes it. Every
+word of that is true and it still leaves a hole, because "auto-resumes" means
+`ensureDefaultTab`, and `ensureDefaultTab` bails on the first line:
+
+```ts
+if (mainTabs.length) return;   // already visited this session
+```
+
+That bail is for re-seeding, but it reads the whole main strip. A shell, a Run
+tab or a diff left open satisfies it, so a task that keeps ANY main tab never
+sleeps and is therefore never woken. Close the agent next to a shell and the
+durable record sits there, complete and correct, reachable by nothing: the
+`+` menu's Resume list used to exclude the main tab *precisely because* it
+auto-resumes, and `+` → the agent again makes a tab with a NEW id, hence a new
+session.
+
+In a worktree nobody sees this, because the replacement tab's cwd resume
+(`--continue` / `resume --last`) picks the same conversation back up. The repo
+root is where it bites: cwd resume is off there by design (several tasks share
+one directory, so "most recent" is somebody else's conversation), so the agent
+comes back empty, with no error and nothing on screen to say a session was
+lost. It reads as "auto resume in the main checkout doesn't work".
+
+Fixed by snapshotting the main tab into `closedTabs` too, but ONLY when the
+close leaves the task awake — a close that sleeps it still auto-resumes and a
+second entry would just be a duplicate. The entry carries the closed tab's own
+`tabId`, and `resumeClosedTab` reuses it: minting a fresh id would leave the
+old durable record in place and add a second one pointing at the same session,
+so the next real wake would restore two agents onto one conversation.
+
+The general rule: **"it is persisted" is not "it is reachable".** Any code that
+promises a record will come back has to name the event that brings it back, and
+then check that the event can actually fire in the states the user can get the
+app into. `agent.e2e.ts` drives all three states against the real window.

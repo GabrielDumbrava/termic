@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { dataDir } from "../../wdio.conf.js";
 // Agent work-state, attention and queue flows.
 //
 // These cases assert on the BADGE the user sees (`[data-testid="work-badge"]`
@@ -1691,5 +1694,281 @@ describe("agent notifications", () => {
       )).not.toContain("✳");
       expect(await taskViewBadge(taskId!)).not.toBe("done");
     });
+  });
+});
+
+// ── resume in the main checkout, for an agent that reports its own id ──────
+//
+// The repo root is the one task shape with NO cwd fallback: several tasks
+// share a directory, so `--continue` / `resume --last` would lasso somebody
+// else's conversation and termic deliberately never sends them there. Resume
+// is therefore entirely a function of the stored session id, and if that id
+// is missing or never reaches the command line the task comes back empty with
+// nothing on screen to say why.
+//
+// `fakecapture` is codex's shape, measured against a live codex 0.154.0:
+// it cannot be TOLD an id at launch (no `--session-id`), it CAN resume one
+// (`resume <uuid>`), and its `SessionStart` fires on the FIRST PROMPT rather
+// than at spawn, so the id arrives mid-session over termic's hook OSC.
+describe("main-checkout resume for a capture-resume agent", () => {
+  /** Matches `TERMIC_FAKE_SESSION_ID` on the fixture's registry entry. */
+  const SESSION = "11111111-2222-4333-8444-555555555555";
+  let taskId: string | null = null;
+
+  /** Argv of every spawn this task has made, oldest first, read from the log
+   *  the fixture appends to. The command line is the assertion that matters:
+   *  the store can hold a session id while the flag that would have used it
+   *  never reaches the process, and that is exactly the bug shape here. */
+  function spawnArgv(id: string): string[] {
+    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
+    return raw.split("\n")
+      .filter(l => l.startsWith(id + "\t"))
+      .map(l => l.slice(id.length + 1));
+  }
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("starts fresh, then learns the id the agent reports on the first prompt", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-capture-resume", true, "fakecapture");
+    await waitForAgentReady(taskId);
+
+    // Nothing to resume yet, so the first spawn carries no resume block.
+    expect(spawnArgv(taskId)).toHaveLength(1);
+    expect(spawnArgv(taskId)[0]).not.toContain("resume");
+
+    await submitToAgent(taskId, "hello");
+    await browser.waitUntil(
+      () => browser.execute(
+        (t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.sessionId ?? null,
+        taskId!,
+      ).then(v => v === SESSION),
+      { timeout: 20_000, timeoutMsg: "the agent reported its session id and termic did not store it" },
+    );
+  });
+
+  it("resumes that id after the agent tab is closed and the task reopened", async () => {
+    const id = taskId!;
+    const tabId = await browser.execute(
+      (t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.id as string,
+      id,
+    );
+    // The main agent tab's × — "end it for now", not "forget it": the durable
+    // entry survives so the task auto-resumes when it wakes.
+    await browser.execute((t, tb) => {
+      window.__termic!.useApp.getState().closeTab(t, tb);
+    }, id, tabId);
+    await browser.waitUntil(
+      () => browser.execute(
+        (t) => (window.__termic!.useApp.getState().tabs[t] ?? []).length === 0,
+        id,
+      ),
+      { timeout: 10_000, timeoutMsg: "the agent tab never closed" },
+    );
+
+    // Reopen the task the way clicking its sidebar row does.
+    await browser.execute((t) => {
+      const s = window.__termic!.useApp.getState();
+      s.setActiveTask(t);
+      s.ensureDefaultTab(t, "fakecapture");
+    }, id);
+    await waitForAgentReady(id);
+
+    await browser.waitUntil(
+      () => Promise.resolve(spawnArgv(id).length >= 2),
+      { timeout: 20_000, timeoutMsg: "the reopened task never spawned a second agent" },
+    );
+    const second = spawnArgv(id)[1];
+    expect(second).toContain(`resume ${SESSION}`);
+  });
+});
+
+// The same agent, added to a task from the + menu instead of being the task's
+// own. That tab is the FIRST of its cli, so every "primary" test in the spawn
+// path says yes to it, and it reports and stores a session id exactly like the
+// default tab above. What differs is the CLOSE: a secondary agent tab is
+// dropped from the durable set on ×, which in a worktree is invisible (the
+// next one picks the conversation back up from the cwd) and in the repo root
+// is total (there is no cwd fallback there, by design).
+describe("a secondary capture-resume tab in the main checkout", () => {
+  const SESSION = "11111111-2222-4333-8444-555555555555";
+  let taskId: string | null = null;
+
+  function argvFor(id: string): string[] {
+    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
+    return raw.split("\n").filter(l => l.startsWith(id + "\t")).map(l => l.slice(id.length + 1));
+  }
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("is forgotten on close, and the Resume list is what carries its session", async () => {
+    taskId = await openTask("e2e-capture-secondary", true, "fakeagent");
+    const id = taskId;
+    await waitForAgentReady(id);
+
+    // "+" → a second agent of a different cli.
+    const tabId = await browser.execute((t) => {
+      const s = window.__termic!.useApp.getState();
+      const tab = { id: crypto.randomUUID(), type: "terminal", cli: "fakecapture", title: "FakeCapture" };
+      s.addTab(t, tab as never);
+      return tab.id;
+    }, id);
+    await browser.waitUntil(
+      () => browser.execute(
+        (t, tb) => !!(window.__termic!.useApp.getState().tabs[t] ?? []).find((x: any) => x.id === tb)?.lastOutputAt,
+        id, tabId,
+      ),
+      { timeout: 30_000, timeoutMsg: "the secondary agent never produced output" },
+    );
+    // Stand in for the agent's own report, which the first describe proves
+    // end to end through the real OSC. `submitToAgent` drives the task's
+    // VISIBLE terminal and guards on tab[0], so it cannot speak to a second
+    // tab; the question here is what the CLOSE does to a stored id, not how
+    // the id got stored.
+    await browser.execute((t, tb, sid) => {
+      window.__termic!.useApp.getState().setTabSessionId(t, tb, sid);
+    }, id, tabId, SESSION);
+    await browser.waitUntil(
+      () => browser.execute(
+        (t, tb) => (window.__termic!.useApp.getState().tabs[t] ?? []).find((x: any) => x.id === tb)?.sessionId ?? null,
+        id, tabId,
+      ).then(v => v === SESSION),
+      { timeout: 20_000, timeoutMsg: "the secondary agent's session id was not stored" },
+    );
+
+    // It IS in the durable set while open.
+    expect(await browser.execute(
+      (t, tb) => (window.__termic!.useApp.getState().tasks.find((w: any) => w.id === t)
+        ?.persisted_tabs ?? []).some((p: any) => p.id === tb && p.session_id),
+      id, tabId,
+    )).toBe(true);
+
+    const before = argvFor(id).length;
+    await browser.execute((t, tb) => window.__termic!.useApp.getState().closeTab(t, tb), id, tabId);
+
+    // Closing it FORGETS it: nothing durable is left pointing at the session.
+    expect(await browser.execute(
+      (t) => (window.__termic!.useApp.getState().tasks.find((w: any) => w.id === t)
+        ?.persisted_tabs ?? []).map((p: any) => p.cli),
+      id,
+    )).not.toContain("fakecapture");
+
+    // Open another one from the + menu: a new tab, so a fresh session.
+    await browser.execute((t) => {
+      const s = window.__termic!.useApp.getState();
+      s.addTab(t, { id: crypto.randomUUID(), type: "terminal", cli: "fakecapture", title: "FakeCapture" } as never);
+    }, id);
+    await browser.waitUntil(
+      () => Promise.resolve(argvFor(id).length > before),
+      { timeout: 30_000, timeoutMsg: "the replacement tab never spawned" },
+    );
+    // A NEW tab is a new session: no resume block, and in the repo root no cwd
+    // fallback either, so this agent genuinely starts from nothing. That is
+    // the × contract for a secondary tab and it is not the bug.
+    expect(argvFor(id)[argvFor(id).length - 1]).not.toContain("resume");
+
+    // The way back is the + menu's Resume list, which still holds the session.
+    const entry = await browser.execute(
+      (t) => (window.__termic!.useApp.getState().closedTabs[t] ?? [])[0] ?? null, id);
+    expect(entry).toMatchObject({ cli: "fakecapture", sessionId: SESSION, tabId });
+    const at = argvFor(id).length;
+    await browser.execute((t, e) => {
+      window.__termic!.useApp.getState().resumeClosedTab(t, e);
+    }, id, (entry as { id: string }).id);
+    await browser.waitUntil(
+      () => Promise.resolve(argvFor(id).length > at),
+      { timeout: 30_000, timeoutMsg: "the resumed tab never spawned" },
+    );
+    expect(argvFor(id)[argvFor(id).length - 1]).toContain(`resume ${SESSION}`);
+  });
+});
+
+// The task's OWN agent tab, closed while ANOTHER main tab is still open.
+//
+// Closing the main agent is documented as "end it for now": the durable entry
+// survives and the session comes back when the task wakes. That last clause is
+// the catch, and it is invisible until you look for it: waking is what
+// `ensureDefaultTab` does, and `ensureDefaultTab` no-ops while the task owns
+// any main tab at all. A shell, a Run tab or a diff left open is enough.
+//
+// So the entry stays on disk, correct and complete, and nothing can reach it:
+// it is excluded from the + menu's Resume list precisely BECAUSE it is
+// supposed to auto-resume, and the + menu's own "new agent" makes a tab with a
+// fresh id. In a worktree the replacement quietly picks the conversation back
+// up from the cwd. In the main checkout, where cwd resume is off by design,
+// the agent comes back with nothing and no message.
+describe("closing the main agent tab while another tab is open", () => {
+  const SESSION = "11111111-2222-4333-8444-555555555555";
+  let taskId: string | null = null;
+
+  function argvFor(id: string): string[] {
+    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
+    return raw.split("\n").filter(l => l.startsWith(id + "\t")).map(l => l.slice(id.length + 1));
+  }
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("is not restored by waking the task, so it goes in the Resume list", async () => {
+    taskId = await openTask("e2e-capture-stranded", true, "fakecapture");
+    const id = taskId;
+    await waitForAgentReady(id);
+    const agentTab = await browser.execute(
+      (t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.id as string, id);
+    await browser.execute((t, tb, sid) => {
+      window.__termic!.useApp.getState().setTabSessionId(t, tb, sid);
+    }, id, agentTab, SESSION);
+
+    // A plain shell alongside it — the ordinary thing to have open.
+    await browser.execute((t) => {
+      window.__termic!.useApp.getState().addTab(t, {
+        id: crypto.randomUUID(), type: "terminal", cli: "shell", title: "shell",
+      } as never);
+    }, id);
+
+    await browser.execute((t, tb) => window.__termic!.useApp.getState().closeTab(t, tb), id, agentTab);
+
+    // The shell keeps the task awake, so the promised route does nothing: this
+    // is the hole. Assert it, so a future change that makes waking work here
+    // has to come and say so.
+    const before = argvFor(id).length;
+    await browser.execute((t) => {
+      window.__termic!.useApp.getState().ensureDefaultTab(t, "fakecapture");
+    }, id);
+    expect(await browser.execute(
+      (t) => (window.__termic!.useApp.getState().tabs[t] ?? []).map((x: { cli: string }) => x.cli), id,
+    )).toEqual(["shell"]);
+    expect(argvFor(id)).toHaveLength(before);
+
+    // So the close put it in the Resume list instead, under its own tab id and
+    // still flagged as the task's agent.
+    const entry = await browser.execute(
+      (t) => (window.__termic!.useApp.getState().closedTabs[t] ?? [])[0] ?? null, id);
+    expect(entry).toMatchObject({ tabId: agentTab, isDefault: true, sessionId: SESSION });
+
+    await browser.execute((t, e) => {
+      window.__termic!.useApp.getState().resumeClosedTab(t, e);
+    }, id, (entry as { id: string }).id);
+    await browser.waitUntil(
+      () => Promise.resolve(argvFor(id).length > before),
+      { timeout: 30_000, timeoutMsg: "the resumed main agent never spawned" },
+    );
+    expect(argvFor(id)[argvFor(id).length - 1]).toContain(`resume ${SESSION}`);
+
+    // Back as the task's agent, on its original tab id, with ONE durable
+    // record for that session rather than a second one beside it.
+    expect(await browser.execute((t) => {
+      const st = window.__termic!.useApp.getState();
+      const durable = (st.tasks.find((w: { id: string }) => w.id === t) as
+        { persisted_tabs?: { id: string; session_id?: string | null; is_default?: boolean }[] })
+        ?.persisted_tabs ?? [];
+      return durable.filter(d => d.session_id).map(d => ({ id: d.id, def: !!d.is_default }));
+    }, id)).toEqual([{ id: agentTab, def: true }]);
   });
 });

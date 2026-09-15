@@ -15,7 +15,10 @@
 #   - one busy -> idle cycle per submitted line, mirroring "type a prompt, it
 #     works, it goes idle".
 #   - echoes its argv so a test can assert resume flags (--session-id/--resume,
-#     --name) reached the spawn.
+#     --name) reached the spawn, and records it to e2e-agent-argv.log, which
+#     is the only place a spec can read it (terminal output is a canvas).
+#   - with TERMIC_FAKE_SESSION_ID set, reports that id over termic's hook OSC
+#     on the FIRST prompt: codex's shape, where the session is created lazily.
 
 set -u
 
@@ -61,6 +64,14 @@ if [ -n "${TERMIC_DATA_DIR:-}" ]; then
     "GEMINI_CLI_HOME=${GEMINI_CLI_HOME:-}" \
     "XDG_DATA_HOME=${XDG_DATA_HOME:-}" \
     >> "${TERMIC_DATA_DIR}/e2e-agent-login.log" 2>/dev/null || true
+  # And the ARGV, for the same reason and with the same trick. The resume
+  # block is composed frontend-side and only ever exists as a spawned
+  # process's arguments: the store can agree with itself about a session id
+  # while the flag that would have used it never reaches the command line.
+  # One line per spawn, task id first, so a spec can ask what the SECOND
+  # spawn in a task was told.
+  printf '%s\t%s\n' "${TERMIC_TASK_ID:-}" "$*" \
+    >> "${TERMIC_DATA_DIR}/e2e-agent-argv.log" 2>/dev/null || true
 fi
 
 # Cold start: banner + idle title (awaiting input == work done).
@@ -292,6 +303,17 @@ while IFS= read -r line; do
       osc777 "termic;agent needs your input"      # the hook, right behind it
       continue ;;
   esac
+  # Codex's shape: the session does not exist until the first prompt, so the
+  # id is reported on the FIRST submitted line and never at launch. Measured
+  # on a live codex 0.154.0 — `SessionStart` fires during the first turn, and
+  # not at all on a `codex resume <id>` spawn, which is why a spec that waits
+  # for this at spawn time waits forever. Only fires when the fixture entry
+  # sets the env var, so every other spec is untouched.
+  if [ -n "${TERMIC_FAKE_SESSION_ID:-}" ] && [ -z "${session_reported:-}" ]; then
+    session_reported=1
+    osc777 "termic;agent ready for input"
+    osc777 "termic;session ${TERMIC_FAKE_SESSION_ID}"
+  fi
   spin
   echo "FAKE-AGENT echo: ${line}"        # streamed "response"
   set_title "✳ ${name}"                  # done: idle glyph

@@ -39,6 +39,14 @@ async function confirmScratchClose(taskId: string, tab: ScratchTab): Promise<boo
 /** Shared confirm gate: resolves true when closing `tab` is safe (nothing to
  *  lose, or the user confirmed). `paneTab` tweaks the agent copy — pane tabs
  *  are never durable, so closing an agent there always forgets the session. */
+/** Does the task own a main-strip tab OTHER than `tabId`? That is the whole
+ *  difference between a close that puts the task to sleep (and so auto-resumes
+ *  on the next wake) and one that does not. */
+function otherMainTabsOpen(taskId: string, tabId: string): boolean {
+  return (useApp.getState().tabs[taskId] ?? [])
+    .some(t => t.id !== tabId && !(t as { paneId?: string }).paneId);
+}
+
 async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: boolean): Promise<boolean> {
   if (tab?.type === "scratch") return confirmScratchClose(taskId, tab);
   if (tab?.type === "edit" && tab.dirty) {
@@ -77,6 +85,12 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
       ? (tab.title || "this command")
       : agentDisplayName(tab.cli, useApp.getState().agents);
     const isMain = !paneTab && !!tab.is_default;
+    // "The session resumes when you reopen the task" is only true when this
+    // close EMPTIES the task: waking is what restores a durable tab, and a
+    // task with another main tab still open never sleeps, so nothing wakes it.
+    // Closing the main agent next to a shell puts it in the Resume list
+    // instead (see ClosedTabEntry), and the copy has to say which.
+    const sleeps = isMain && !otherMainTabsOpen(taskId, tab.id);
     // Only a PANE tab close is genuinely one-way: pane tabs are never
     // snapshotted into closedTabs (see app.ts's closeTab), so there is no
     // Resume entry to click afterwards. The main tab auto-resumes and a
@@ -87,7 +101,7 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
       title: `Close ${label}?`,
       message: termLike
         ? "Stops the running process and closes the tab."
-        : isMain
+        : sleeps
           ? "Stops the running process. The session resumes when you reopen the task."
           : gone
             ? "Ends this agent's session. A pane tab isn't kept, so this one can't be resumed."
@@ -157,8 +171,14 @@ function toastClosedTab(taskId: string, tab: Tab, paneTab: boolean) {
     useUI.getState().pushToast(`Closed "${label}".`, "info");
     return;
   }
-  const resumable = !tab.is_default;
-  if (!resumable) {
+  // Same split as the confirm dialog's copy: only a close that emptied the
+  // task auto-resumes. `toastClosedTab` runs AFTER the close, so an empty main
+  // strip now IS "it slept". Anything else went into the Resume list, main tab
+  // included, and the toast has to point there or it sends the user to a wake
+  // that will never happen.
+  const slept = !(useApp.getState().tabs[taskId] ?? [])
+    .some(t => !(t as { paneId?: string }).paneId);
+  if (slept) {
     useUI.getState().pushToast(`Closed "${label}". It resumes automatically when you reopen this task.`, "info");
     return;
   }
