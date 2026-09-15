@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.4.3] - 2026-09-15
+## [1.4.4] - 2026-09-15
 
 Closing an agent tab always leaves a way back, and a quieter usage chip.
 
@@ -32,6 +32,13 @@ Closing an agent tab always leaves a way back, and a quieter usage chip.
   the agent again from + started a fresh one. It now appears in the + menu's
   Resume list, on the same tab it was closed from. Most visible in a main
   checkout, where there is no directory fallback quietly covering for it.
+- **A Codex tab no longer claims to need you while it is working.** Codex
+  0.154.0 renames the conversation partway through a turn and puts that name in
+  the terminal title, so a thread it decided to call "Explain Action Required"
+  matched the words Termic watches for: the attention dot lit and stayed lit for
+  the rest of the session, spinner still turning, no prompt anywhere on screen.
+  Asking Codex about approvals or CI was enough to set it off. Termic now reads
+  that state only where Codex actually puts it, at the front of the title.
 
 ## [1.4.2] - 2026-09-14
 
