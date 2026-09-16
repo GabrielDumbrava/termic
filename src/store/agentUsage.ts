@@ -44,11 +44,20 @@ export interface UsageEntry extends AgentUsage {
    *  account. Without this the footer showed a dollar figure and then flipped
    *  to a percentage bar the moment the first response landed. */
   sawPlan: boolean;
-  /** How many readings in a row have arrived with cost and NO window. Two is
-   *  the threshold for "this account has no plan": a subscription reports its
-   *  windows on the very next payload, so a second window-less reading is
-   *  evidence rather than a race. */
-  windowless: number;
+  /** Has a reading PROVED this account has no plan? Sticky, and only ever
+   *  set by claude's status line.
+   *
+   *  The proof is a session whose cost ROSE with no window alongside it. A
+   *  rise means a turn reached the API, and a subscription reports its windows
+   *  in that same payload (measured on 2.1.273: `0` with no windows before the
+   *  first message, then windows and `0.119` together). Before that, a
+   *  subscription and a token-billed account send the same thing.
+   *
+   *  This replaced a count of window-less readings ACROSS sessions. Every
+   *  session sends one before its first message, so restoring two tasks after
+   *  a relaunch "proved" a Max account was billed per token: the second task's
+   *  footer showed `$0.00` and its panel said so. */
+  noPlan: boolean;
 }
 
 /** The store key for one agent-entry-and-account pair.
@@ -102,14 +111,19 @@ export interface CostEntry {
  *  chip is a second number competing with them; the popover still shows the
  *  spend, where it cannot flicker.
  *
- *  The `windowless >= 2` gate is what stops the flip. One window-less reading
- *  means nothing: claude sends cost on every payload but rate_limits only once
- *  a turn has reached the API, so every session's FIRST reading looks
- *  plan-less. A subscription reports its windows on the next payload, so a
- *  second one in a row is evidence.
+ *  `noPlan` is what stops the flip. A window-less reading means nothing by
+ *  itself: claude sends cost on every payload but rate_limits only once a turn
+ *  has reached the API, so every session's FIRST reading looks plan-less. See
+ *  `UsageEntry.noPlan` for what does count as proof.
  */
-/** How many window-less readings in a row prove there is no plan. */
-export const WINDOWLESS_FOR_NO_PLAN = 2;
+/** Is there anything REAL to show for this account yet?
+ *
+ *  Plan windows, or the proof that there is no plan (and so the spend is the
+ *  readout). Anything short of that is "usage unknown": a reading that has not
+ *  reached the API says nothing about the account. */
+export function usageKnown(entry: UsageEntry | undefined, spend: number): boolean {
+  return !!entry && (!!entry.session || !!entry.weekly || costChipVisible(entry, spend));
+}
 
 export function costChipVisible(entry: UsageEntry | undefined, spend: number): boolean {
   if (!entry) return false;
@@ -119,7 +133,7 @@ export function costChipVisible(entry: UsageEntry | undefined, spend: number): b
   // print "$0.00" for a number it never sent.
   if (entry.source !== "statusline") return false;
   if (!(spend >= 0)) return false;
-  return entry.windowless >= WINDOWLESS_FOR_NO_PLAN;
+  return entry.noPlan;
 }
 
 /** How long to wait before the FIRST pull for a credential, in ms.
@@ -205,13 +219,22 @@ export const useAgentUsage = create<AgentUsageState>((set, get) => ({
   cost: {},
   report: (agentId, account, usage, source, session) => {
     const key = usageKey(agentId, account);
+    // This session's total BEFORE the reading below folds in: the rise is the
+    // no-plan proof (`UsageEntry.noPlan`), so it has to be read first.
+    const lastSessionCost = session ? get().cost[key]?.bySession[session] : undefined;
+    // And this reading's OWN figure, before the carry below can substitute
+    // another session's total for a missing one.
+    const readCost = usage.sessionCostUsd;
     // Cost first, and independently of the bail below: a reading whose
     // percentages did not move can still carry a few more cents, and the
     // accumulator must see every one of them.
     if (usage.sessionCostUsd != null && session) {
       const prev = get().cost[key];
       const next = foldCost(prev, session, usage.sessionCostUsd);
-      if (costTotal(next) !== costTotal(prev)) {
+      // A NEW session is written even at an unchanged total: its first figure
+      // (usually 0) is the baseline the no-plan proof rises from. One write
+      // per session, not per turn.
+      if (costTotal(next) !== costTotal(prev) || prev?.bySession[session] === undefined) {
         set(s => ({ cost: { ...s.cost, [key]: next } }));
       }
     }
@@ -247,19 +270,16 @@ export const useAgentUsage = create<AgentUsageState>((set, get) => ({
     // an unchanged reading would defeat the bail entirely, and the staleness it
     // feeds is about the NUMBER's age, not the poll's.
     const hasWindow = !!(usage.session || usage.weekly);
-    // ...EXCEPT while the window-less evidence is still being gathered.
-    //
-    // Two readings with no window prove there is no plan. A per-token account
-    // repeats the SAME payload every turn until it spends something
-    // (`- - - - 0`, measured on an enterprise usage-based seat), so bailing on
-    // equality froze `windowless` at one and the evidence never arrived: the
-    // chip stayed hidden with nothing saying why, for the whole first turn.
-    //
-    // Bounded at one extra write per account per session, because the
-    // exemption stops the moment the count reaches the threshold. This is not
-    // a per-turn write and does not reopen bear trap 8.
-    const gathering = !hasWindow && !!cur && cur.windowless < WINDOWLESS_FOR_NO_PLAN;
-    if (cur && cur.source === source && sameUsage(cur, usage) && !gathering) return;
+    // A restored session can start from a total it already had, so the proof
+    // is a RISE within one session, never a nonzero figure on its own.
+    const rose = source === "statusline" && !hasWindow
+      && lastSessionCost !== undefined && readCost != null
+      && readCost > lastSessionCost;
+    const noPlan = (cur?.noPlan ?? false) || rose;
+    // `noPlan` is compared as well: two sessions of one account can land on the
+    // same total, and the one that PROVES something must not be dropped as a
+    // repeat of the other.
+    if (cur && cur.source === source && sameUsage(cur, usage) && cur.noPlan === noPlan) return;
     set(s => ({
       byAgent: {
         ...s.byAgent,
@@ -269,7 +289,7 @@ export const useAgentUsage = create<AgentUsageState>((set, get) => ({
           updatedAt: Date.now(),
           account,
           sawPlan: (cur?.sawPlan ?? false) || hasWindow,
-          windowless: hasWindow ? 0 : (cur?.windowless ?? 0) + 1,
+          noPlan,
         },
       },
     }));

@@ -1549,9 +1549,14 @@ pub fn status_line_owner(agent_id: &str, cwd: &Path) -> StatusLineOwner {
 }
 
 /// Why the usage feed is or is not running for one task.
+///
+/// The agent's OWN id, never its base: a clone relocates its config dir, and
+/// asking about the base read `~/.claude` for every clone. A clone with its own
+/// status line was then reported as termic's and got no explanation, and a
+/// free clone was reported as blocked by a status line it never reads.
 #[tauri::command]
 pub fn usage_status_line_owner(agent_id: String, cwd: String) -> StatusLineOwner {
-    status_line_owner(&base_of(&agent_id), Path::new(&cwd))
+    status_line_owner(&agent_id, Path::new(&cwd))
 }
 
 /// Claim claude's `statusLine`, but ONLY when it is free or already ours.
@@ -2808,6 +2813,34 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert_eq!(status_line_owner("claude", &dir).owner, "project");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A clone reads its OWN config dir, so that is the only file that can
+    /// own its status line. Asking about the base read `~/.claude` instead.
+    #[test]
+    fn a_clones_status_line_is_read_from_its_own_config_dir() {
+        crate::test_support::with_scratch_data_dir(|scratch| {
+            let cfg = scratch.join("next-claude-config");
+            std::fs::create_dir_all(&cfg).unwrap();
+            std::fs::write(cfg.join("settings.json"),
+                r#"{"statusLine":{"type":"command","command":"my-clone-bar"}}"#).unwrap();
+            let mut settings = crate::load_settings_inner();
+            let mut clone = crate::default_agents().into_iter().find(|a| a.id == "claude").unwrap();
+            clone.id = "next-claude".into();
+            clone.builtin = false;
+            clone.extends = Some("claude".into());
+            clone.env = [("CLAUDE_CONFIG_DIR".to_string(), cfg.to_string_lossy().into_owned())]
+                .into_iter().collect();
+            settings.agents.push(clone);
+            crate::save_settings_inner(&settings).unwrap();
+
+            let project = scratch.join("project");
+            std::fs::create_dir_all(&project).unwrap();
+            let owner = usage_status_line_owner("next-claude".into(), project.to_string_lossy().into_owned());
+            assert_eq!(owner.owner, "user", "{owner:?}");
+            assert_eq!(owner.command, "my-clone-bar");
+            assert!(owner.path.starts_with(&*cfg.to_string_lossy()), "{}", owner.path);
+        });
     }
 
     fn chk(is_docker: bool, host_installed: bool, ours_present: bool, stale: bool) -> SyncCheck {

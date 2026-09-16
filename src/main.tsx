@@ -41,7 +41,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -70,6 +70,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/lib/lsp/pageSession"),
         import("@/store/profiles"),
         import("@/store/agentUsage"),
+        import("@/store/usageUnknownDismissed"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -89,6 +90,9 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // Plan usage (GH #277). Exposed so a spec can seed a reading rather than
       // wait for a real agent to report one, which no fixture agent does.
       useAgentUsage: agentUsage.useAgentUsage,
+      // Which agents' "Usage unknown" label is dismissed, so a spec can put
+      // the footer back the way it found it.
+      useUsageUnknownDismissed: usageUnknownDismissed.useUsageUnknownDismissed,
       ipc,
       invoke: core.invoke,
       runTabs,
