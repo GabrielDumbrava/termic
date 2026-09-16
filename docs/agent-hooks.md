@@ -192,6 +192,47 @@ it silently risks blocking the tool.
 **Done and attention get no heartbeat.** A turn ends once, and repeating it
 would re-badge something the user just dismissed. There is a test saying so.
 
+## claude reports its session id only when it moves (GH #306)
+
+termic tells claude which session to run (`--session-id` on a first spawn,
+`--resume <id>` afterwards) and stores that id per tab. That was the whole
+story until `/clear`: it starts a NEW session with a new id inside the same
+process, and `/resume` switches to another. Everything after either lands under
+an id the tab never stored, so a relaunch resumed the session from before the
+`/clear`, and the agent said it had never worked on what the tab was doing.
+Every relaunch brought the original back and every `/clear` after it left one
+more branch nobody could find.
+
+claude's READY script (its `SessionStart`) therefore also reports the id, over
+the same `session <id>` OSC codex and devin use, but only when the session
+moved. Measured on 2.1.273 with a hook logging its stdin and env:
+
+| Action | `source` | `session_id` | `CLAUDE_CODE_ENTRYPOINT` |
+|---|---|---|---|
+| startup | `startup` | S1 | `cli` |
+| `/compact` | `compact` | S1, unchanged | `cli` |
+| `/clear` | `clear` | new every time | `cli` |
+| `/resume <S1>` | `resume` | S1, the resumed one | `cli` |
+| `/compact` on an empty conversation | no event | | |
+| `claude -p` inside the agent | `startup` | its own | `sdk-cli` |
+
+So the id is sent for `clear`, `resume` and `compact`, never for `startup`
+(termic passed that id itself), and only when the entrypoint is `cli`. The
+entrypoint half is what keeps a nested `claude -p` out: it inherits
+`TERMIC_TASK_ID` and `TERMIC_PTY`, so its hook writes into this tab's terminal,
+and claude sets its entrypoint to `sdk-cli` even when the parent env says
+`cli`. `CLAUDE_CODE_CHILD_SESSION` is no use as a nesting signal: claude sets it
+for every hook subprocess, the main session's included. An interactive claude
+started from inside the agent and then cleared is not covered; the agent has no
+interactive terminal to start one in.
+
+The id lands on the tab whose terminal it arrived in (`TERMIC_PTY` is per
+spawn), keyed by tab id, so several agent tabs in one task, in any order, each
+keep their own. On the TypeScript side a reported id also supersedes the id the
+spawn minted: that one is only held once the spawn survives `RESUME_FAILURE_MS`
+and only persisted on the first prompt, so a `/clear` before either used to be
+undone by the next Enter (`sessionReportedRef` in `TerminalPane`).
+
 ## claude's attention body names the tool, because that body is the one you read
 
 The hook wins the race and therefore composes the banner. Measured: it fires the

@@ -1837,6 +1837,169 @@ describe("main-checkout resume for a capture-resume agent", () => {
   });
 });
 
+// ── a claude session that moved: `/clear` and `/resume` (GH #306) ─────────
+//
+// claude IS told an id at launch (`--session-id`), so it never needed to report
+// one. But `/clear` and `/resume` move the conversation to another id inside
+// the running process, and a relaunch then resumed the session from before the
+// `/clear`: the agent said it had never worked on what the tab was doing.
+// claude's READY hook now reports the id on those moves; this replays that
+// report over the same OSC and asserts the command line of the next spawn.
+describe("a claude session that moves after /clear is the one resumed", () => {
+  /** Session ids as the hook reports them after `/clear`: new uuids. */
+  const CLEARED = ["22222222-3333-4444-8555-666666666666", "33333333-4444-4555-8666-777777777777", "44444444-5555-4666-8777-888888888888"];
+  /** Minted ids are only held once a spawn survives RESUME_FAILURE_MS (2s). */
+  const SURVIVE_MS = 2_500;
+  let taskId: string | null = null;
+  /** Tab ids, captured once at creation. Positions are not stable: tabs are
+   *  dragged in the tab bar, so everything below looks tabs up by id. */
+  let tabIds: string[] = [];
+
+  function spawnArgv(id: string): string[] {
+    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
+    return raw.split("\n")
+      .filter(l => l.startsWith(id + "\t"))
+      .map(l => l.slice(id.length + 1));
+  }
+  const sessions = (id: string) => browser.execute((t, ids) => {
+    const st = window.__termic!.useApp.getState();
+    const tabs = (st.tabs[t] ?? []) as any[];
+    const persisted = (st.tasks.find((w: any) => w.id === t)?.persisted_tabs ?? []) as any[];
+    return ids.map(tb => ({
+      tab: tabs.find(x => x.id === tb)?.sessionId ?? null,
+      persisted: persisted.find(x => x.id === tb)?.session_id ?? null,
+      lastInputAt: tabs.find(x => x.id === tb)?.lastInputAt ?? 0,
+    }));
+  }, id, tabIds);
+
+  /** Type a line into one tab by id: make it the active tab, type into the
+   *  visible terminal, and wait on THAT tab's input stamp. */
+  async function submitTo(id: string, tabId: string, line: string): Promise<void> {
+    await browser.execute((t, tb) => window.__termic!.useApp.getState().setActiveTabId(t, tb), id, tabId);
+    await browser.pause(150);
+    const idx = tabIds.indexOf(tabId);
+    const before = (await sessions(id))[idx].lastInputAt;
+    const ok = await browser.execute((t, text) => {
+      const host = document.querySelector(`[data-task-id="${t}"]`);
+      const ta = [...(host?.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea") ?? [])]
+        .find(el => { const r = (el.closest(".xterm") ?? el).getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+      if (!ta) return false;
+      ta.focus();
+      ta.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: text, bubbles: true }));
+      for (const type of ["keydown", "keyup"]) {
+        ta.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true } as KeyboardEventInit));
+      }
+      return true;
+    }, id, line);
+    expect(ok).toBe(true);
+    await browser.waitUntil(async () => (await sessions(id))[idx].lastInputAt > before,
+      { timeout: 10_000, timeoutMsg: `tab ${idx} never took "${line}"` });
+  }
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("stores the id each tab reports after /clear, over the id it minted, with three tabs in one task", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-claude-clear", true, "fakeclaude");
+    await waitForAgentReady(taskId);
+    const id = taskId;
+    tabIds = [await browser.execute((t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.id as string, id)];
+    for (let i = 1; i < 3; i++) {
+      tabIds.push(await browser.execute((t) => {
+        const tab = { id: crypto.randomUUID(), type: "terminal", cli: "fakeclaude", title: "FakeClaude" };
+        window.__termic!.useApp.getState().addTab(t, tab as never);
+        return tab.id;
+      }, id));
+    }
+    await browser.waitUntil(
+      () => browser.execute((t, ids) => ids.every(tb =>
+        !!(window.__termic!.useApp.getState().tabs[t] ?? []).find((x: any) => x.id === tb)?.lastOutputAt), id, tabIds),
+      { timeout: 30_000, timeoutMsg: "not every agent tab produced output" },
+    );
+    await browser.pause(SURVIVE_MS);
+
+    // Reorder, as dragging in the tab bar does: nothing below may depend on it.
+    await browser.execute((t, tb) => window.__termic!.useApp.getState().reorderTab(t, tb, 0), id, tabIds[2]);
+
+    // A first prompt in each tab persists the id that tab minted.
+    for (const tb of tabIds) await submitTo(id, tb, "hello");
+    await browser.waitUntil(async () => (await sessions(id)).every(s => !!s.persisted),
+      { timeout: 10_000, timeoutMsg: "a tab's minted id was never persisted" });
+    const minted = (await sessions(id)).map(s => s.tab);
+    expect(new Set(minted).size).toBe(3);
+
+    // `/clear` in the MIDDLE tab only: the hook reports its new session.
+    await submitTo(id, tabIds[1], `#usage session ${CLEARED[1]}`);
+    await browser.waitUntil(async () => (await sessions(id))[1].persisted === CLEARED[1],
+      { timeout: 10_000, timeoutMsg: "the id reported after /clear was not stored on its tab" });
+    let now = await sessions(id);
+    expect(now.map(s => s.tab)).toEqual([minted[0], CLEARED[1], minted[2]]);
+
+    // A later prompt in that tab must not put the minted id back.
+    await submitTo(id, tabIds[1], "after the clear");
+    await browser.pause(500);
+
+    // `/clear` in the other two as well, each with its own id.
+    await submitTo(id, tabIds[0], `#usage session ${CLEARED[0]}`);
+    await submitTo(id, tabIds[2], `#usage session ${CLEARED[2]}`);
+    await browser.waitUntil(async () => (await sessions(id)).every((s, i) => s.persisted === CLEARED[i]),
+      { timeout: 10_000, timeoutMsg: "each tab should hold the id reported in its own terminal" });
+    now = await sessions(id);
+    expect(now.map(s => [s.tab, s.persisted])).toEqual(CLEARED.map(c => [c, c]));
+  });
+
+  it("resumes each tab's post-/clear session when the task comes back", async () => {
+    const id = taskId!;
+    const before = spawnArgv(id).length;
+    await browser.execute((t) => {
+      const s = window.__termic!.useApp.getState();
+      s.stopTask(t);
+      s.setActiveTask(null);
+    }, id);
+    await browser.pause(300);
+    await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
+    await browser.waitUntil(
+      () => Promise.resolve(spawnArgv(id).length >= before + 3),
+      { timeout: 30_000, timeoutMsg: "the task did not respawn all three agent tabs" },
+    );
+    const respawned = spawnArgv(id).slice(before).join("\n");
+    for (const c of CLEARED) expect(respawned).toContain(`--resume ${c}`);
+    expect(respawned).not.toContain("--session-id");
+  });
+
+  it("keeps a /clear that lands before the first prompt, even inside the first two seconds", async () => {
+    // The minted id is held only once the spawn survives 2s, and persisted on
+    // the first prompt. A /clear before either used to lose to it: the timer
+    // armed the minted id after the report, and the first Enter wrote it back.
+    const id = taskId!;
+    const EARLY = "55555555-6666-4777-8888-999999999999";
+    const tb = await browser.execute((t) => {
+      const tab = { id: crypto.randomUUID(), type: "terminal", cli: "fakeclaude", title: "FakeClaude" };
+      window.__termic!.useApp.getState().addTab(t, tab as never);
+      return tab.id;
+    }, id);
+    tabIds.push(tb);
+    const idx = tabIds.length - 1;
+    await browser.waitUntil(
+      () => browser.execute((t, x) =>
+        !!(window.__termic!.useApp.getState().tabs[t] ?? []).find((y: any) => y.id === x)?.lastOutputAt, id, tb),
+      { timeout: 30_000, timeoutMsg: "the new agent tab produced no output" },
+    );
+    await submitTo(id, tb, `#usage session ${EARLY}`);
+    await browser.waitUntil(async () => (await sessions(id))[idx].tab === EARLY,
+      { timeout: 10_000, timeoutMsg: "the early /clear report was not stored" });
+    // Past the survive window, then the first real prompt.
+    await browser.pause(SURVIVE_MS);
+    await submitTo(id, tb, "first prompt after the clear");
+    await browser.pause(500);
+    const s = (await sessions(id))[idx];
+    expect([s.tab, s.persisted]).toEqual([EARLY, EARLY]);
+  });
+});
+
 // The same agent, added to a task from the + menu instead of being the task's
 // own. That tab is the FIRST of its cli, so every "primary" test in the spawn
 // path says yes to it, and it reports and stores a session id exactly like the
