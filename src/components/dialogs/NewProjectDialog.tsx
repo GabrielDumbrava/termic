@@ -9,8 +9,9 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { bulkAddSummary, pathsToAdd, type BulkAddResult } from "@/lib/bulkAdd";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { projectAdd, projectAddMulti, discoverRepos, discoveryDismiss, settingsLoad, pathIsGitRepo } from "@/lib/ipc";
+import { projectAdd, projectAddMulti, discoverRepos, discoveryDismiss, settingsLoad, pathIsGitRepo, pathExists, cachedHomeDir } from "@/lib/ipc";
 import { repoNameFromUrl } from "@/lib/cloneUrl";
+import { expandTilde } from "@/lib/pathMatch";
 import { AuxTerminal } from "@/components/task/AuxTerminal";
 import type { DiscoveredRepo, Project, ProjectMember } from "@/lib/types";
 import { Folder, FolderPlus, Layers, RotateCcw, X, Download } from "lucide-react";
@@ -62,6 +63,12 @@ export function NewProjectDialog() {
   // up, because the only other completion signal we have is the user, and they
   // are watching the terminal. See the comment on the poll effect.
   const [cloneLanded, setCloneLanded] = useState(false);
+  // Resolved once so `~` can be expanded while the user types, rather than
+  // only at submit: the destination line is a promise about where the repo
+  // will land, and showing them a `~` we have not resolved is how it landed
+  // somewhere else entirely.
+  const [homePath, setHomePath] = useState("");
+  useEffect(() => { void cachedHomeDir().then(setHomePath); }, []);
   // Issue #4: add a plain folder (not a git repo). In repo mode the
   // folder becomes a repo-root-only project (agent runs at the folder).
   // In multi mode it becomes a non-git HOST for the member repos.
@@ -144,9 +151,12 @@ export function NewProjectDialog() {
   // The directory `git clone` will create. `null` when the URL carries no
   // name, which leaves the field empty rather than proposing a wrong one.
   const cloneName = repoNameFromUrl(cloneUrl);
-  const cloneDest = cloneParent.trim() && cloneName
-    ? `${cloneParent.trim().replace(/\/+$/, "")}/${cloneName}`
-    : "";
+  // EXPANDED, not as typed. `~/r` is not a directory: handed to the spawn it
+  // silently fell back to the home directory, so the clone landed in `~` while
+  // the Add gate polled `~/r/<name>` and never lit. Shown expanded too, since
+  // the whole job of this line is to say where the repo is about to go.
+  const cloneParentAbs = expandTilde(cloneParent.trim().replace(/\/+$/, ""), homePath);
+  const cloneDest = cloneParentAbs && cloneName ? `${cloneParentAbs}/${cloneName}` : "";
 
   // Poll the destination while the terminal is up.
   //
@@ -177,11 +187,19 @@ export function NewProjectDialog() {
     if (typeof sel === "string") setCloneParent(sel);
   }
 
-  function startClone() {
-    const parent = cloneParent.trim().replace(/\/+$/, "");
+  async function startClone() {
+    const parent = cloneParentAbs;
     const name = cloneName;
     if (!parent || !name) return;
     setErr(null);
+    // A cwd that does not exist does not fail the spawn: it starts the shell
+    // in the home directory instead, and the clone lands somewhere the user
+    // never chose while this dialog waits for a repo that will never appear
+    // where it is looking. Refuse here, where it can still be said out loud.
+    if (!(await pathExists(parent))) {
+      setErr(`${parent} does not exist. Pick a folder that does.`);
+      return;
+    }
     // Single-quoted, because a URL can legally carry characters the shell
     // splits on and this string is about to be typed at a real prompt. The
     // name is `repoNameFromUrl`'s output, which already refuses anything with
@@ -530,7 +548,7 @@ export function NewProjectDialog() {
               <Button
                 variant="primary"
                 disabled={!cloneDest || busy}
-                onClick={startClone}
+                onClick={() => void startClone()}
                 data-testid="clone-start"
               >
                 <Download className="h-4 w-4" /> Clone

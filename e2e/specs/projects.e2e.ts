@@ -2253,6 +2253,34 @@ describe("new project from a git URL", () => {
     expect(dest).toBe(`${parent}/repo`);
   });
 
+  // Both of these shipped broken and neither was caught, because the spec fed
+  // an absolute path that already existed. A `~` path is what the user reached
+  // for first.
+  it("expands ~ in the destination instead of taking it literally", async () => {
+    await setDialogInput('[data-testid="clone-parent"]', "~");
+    const shown = await browser.execute(() =>
+      document.querySelector('[data-testid="clone-dest"]')?.textContent ?? "");
+    // The home directory, not a folder called "~". Taken literally this became
+    // a cwd that does not exist, the shell fell back to home, and the clone
+    // landed somewhere the user never picked.
+    expect(shown.startsWith("~")).toBe(false);
+    expect(shown.endsWith("/repo")).toBe(true);
+  });
+
+  it("refuses a folder that does not exist rather than cloning somewhere else", async () => {
+    await setDialogInput('[data-testid="clone-parent"]', `${parent}/nope-not-here`);
+    await clickWhenVisible('[data-testid="clone-start"]');
+    // No terminal, and a reason. A missing cwd does not fail the spawn: it
+    // starts the shell in the home directory, which is how a clone ends up in
+    // a place nobody chose while the Add gate waits on a path that stays empty.
+    await waitForText("does not exist");
+    const spawned = await browser.execute(() =>
+      !!document.querySelector('[data-testid="clone-terminal"]'));
+    expect(spawned).toBe(false);
+    // Put the real destination back for the clone that follows.
+    await setDialogInput('[data-testid="clone-parent"]', parent);
+  });
+
   it("runs the clone on its own and waits for a repo before offering Add", async () => {
     await clickWhenVisible('[data-testid="clone-start"]');
     await waitVisible('[data-testid="clone-terminal"]');
