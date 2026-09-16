@@ -362,6 +362,10 @@ export function TerminalPane({ task, tab, active }: Props) {
   // never written to disk, and claude answers that with "No conversation
   // found". Cleared once persisted, and on every respawn.
   const pendingSessionUuidRef = useRef<string | null>(null);
+  // Set when THIS spawn's agent reported the session it is in (GH #306). The
+  // minted id is only held after the spawn survives RESUME_FAILURE_MS, so a
+  // `/clear` inside that window would otherwise be overwritten by it.
+  const sessionReportedRef = useRef(false);
   // True once the user has submitted (Enter) since THIS PTY spawned.
   // Stored as a ref so it survives across re-renders and can be set from
   // both the spawn effect (term.onData) and a lastInputAt watcher (broadcast).
@@ -1249,6 +1253,7 @@ const captureArmedRef = useRef(false);
     spawnStartedAtRef.current = Date.now();
     // Reset submit-window refs for this new PTY session.
     pendingSessionUuidRef.current = null;
+    sessionReportedRef.current = false;
     submitWindowUntilRef.current = 0;
     submitAtRef.current = 0;
     preSubmitHashRef.current = 0;
@@ -1779,8 +1784,10 @@ const captureArmedRef = useRef(false);
       }
       // The agent reporting the id of the session it is running, so termic can
       // resume THAT session later rather than "whatever ran last in this
-      // directory". codex only, today (lib/agentHooks.ts explains why it is the
-      // one agent that needs it).
+      // directory". codex and devin report it at every start (they cannot be
+      // told an id at launch); claude reports it only when the session MOVES
+      // inside a running process, on `/clear`, `/resume` and `/compact`
+      // (GH #306), because a relaunch otherwise resumes the pre-`/clear` one.
       //
       // Routed BEFORE notifyAttention, and that ordering is load-bearing: a
       // trusted body skips every notification filter by design, so an
@@ -1797,6 +1804,12 @@ const captureArmedRef = useRef(false);
         // docs/performance.md bear trap 8 is about.
         const live = useApp.getState().tabs[task.id]
           ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+        // The reported id supersedes the one this spawn minted and has not
+        // persisted yet. `persistMintedSession` writes that on the first
+        // submit, so a `/clear` BEFORE the first prompt would otherwise be
+        // undone by the next Enter, back to a session nothing was said in.
+        pendingSessionUuidRef.current = null;
+        sessionReportedRef.current = true;
         if (live?.sessionId !== reported) {
           logWorkState("session-reported",
             `cli=${tab.cli} task=${JSON.stringify(task.name)} id=${reported}`);
@@ -2328,7 +2341,7 @@ const captureArmedRef = useRef(false);
           // --session-id <uuid>. The agent only writes its session file once
           // there is a conversation, so persisting at spawn time hands the
           // next spawn a --resume id that does not exist yet.
-          if (decision.kind === "mint" && sessionUuid) {
+          if (decision.kind === "mint" && sessionUuid && !sessionReportedRef.current) {
             pendingSessionUuidRef.current = sessionUuid;
           }
           // Cwd-resume agents (codex) + legacy worktree continue: keep the

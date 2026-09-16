@@ -43,6 +43,10 @@ export const HOOK_OSC_READY_BODY = "agent ready for input";
  *  than minting like pi's does. So the id has to come back FROM the agent, and
  *  its `SessionStart` payload carries one at the earliest possible moment.
  *
+ *  claude uses it too, for the opposite reason: it IS told an id at launch,
+ *  but `/clear` and `/resume` move the conversation to another id inside the
+ *  running process. Its hook reports only those moves (GH #306).
+ *
  *  Delivered as a second OSC from the same hook rather than folded into the
  *  ready body, because ready is routed on an EXACT match and that is
  *  load-bearing (see `HOOK_OSC_READY_BODY`). A prefix match here, an exact

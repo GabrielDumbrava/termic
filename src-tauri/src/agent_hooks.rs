@@ -72,11 +72,18 @@ use std::path::{Path, PathBuf};
 // stale-and-quieter rather than stale-and-harmful: a v6 install keeps reporting
 // state correctly and shows no usage.
 //
+// v10 has claude's READY script report the session id after `/clear`,
+// `/resume` and `/compact` (GH #306). Each of those is a `SessionStart` in the
+// same process, and `/clear` and `/resume` move the conversation to another
+// session id that termic never heard about, so a relaunch resumed the session
+// from before the `/clear`. Stale-and-harmful: a v9 install keeps resuming the
+// wrong conversation.
+//
 // Safe to bump for an existing codex install: the trust entries in config.toml
 // hash the hooks.json ENTRY (command path, timeout, status message), none of
 // which this changes, so a reinstall re-asks codex and writes back the same
 // hashes rather than orphaning them.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Directory we create inside the agent's config dir. Also the prefix that
 /// identifies our entries for removal, which is why it must never be renamed
@@ -710,6 +717,55 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
             "  *[!0-9a-fA-F-]*) sid='' ;;\n",
             "esac\n",
         ),
+        // claude reports its session id only when it MOVES inside a running
+        // process (GH #306). termic already knows the id a spawn starts on: it
+        // passed `--session-id` or `--resume`. What it cannot see is `/clear`,
+        // which starts a new session in the same process, or `/resume`, which
+        // switches to another one; everything after either lands under an id
+        // the tab never stored, and the next relaunch resumes the old one.
+        //
+        // Measured on 2.1.273 with a SessionStart hook logging its stdin and
+        // env. `session_id` is the first field. `source` is `startup` at
+        // launch, `clear` with a NEW id on every `/clear`, `resume` with the
+        // resumed id on `/resume <id>`, `compact` with the SAME id. So the id
+        // is taken on those three and never on `startup`.
+        //
+        // `CLAUDE_CODE_ENTRYPOINT` must be `cli`. A `claude -p` started from
+        // inside the agent inherits `TERMIC_TASK_ID` and `TERMIC_PTY`, so its
+        // hook writes into this tab's pty too; it reports `startup` (already
+        // excluded) and claude sets its entrypoint to `sdk-cli` even when the
+        // parent env says `cli`. `CLAUDE_CODE_CHILD_SESSION` cannot tell them
+        // apart: claude sets it for every hook subprocess, the main session's
+        // included (measured).
+        ("claude", Signal::Ready) => concat!(
+            "flat=$(cat | tr -d '[:space:]')\n",
+            "sid=''\n",
+            "src=''\n",
+            "case \"$flat\" in\n",
+            "  *'\"source\":\"'*)\n",
+            "    src=${flat#*'\"source\":\"'}\n",
+            "    src=${src%%'\"'*}\n",
+            "    ;;\n",
+            "esac\n",
+            "case \"$src:$CLAUDE_CODE_ENTRYPOINT\" in\n",
+            "  clear:cli|resume:cli|compact:cli)\n",
+            "    case \"$flat\" in\n",
+            "      *'\"session_id\":\"'*)\n",
+            "        sid=${flat#*'\"session_id\":\"'}\n",
+            "        sid=${sid%%'\"'*}\n",
+            "        ;;\n",
+            "    esac\n",
+            "    ;;\n",
+            "esac\n",
+            "# A uuid and nothing else: it ends up in a `--resume <id>` command line.\n",
+            "case \"$sid\" in\n",
+            "  ????????-????-????-????-????????????) ;;\n",
+            "  *) sid='' ;;\n",
+            "esac\n",
+            "case \"$sid\" in\n",
+            "  *[!0-9a-fA-F-]*) sid='' ;;\n",
+            "esac\n",
+        ),
         // Same report as codex's, with a wider alphabet: a devin session id is
         // a slug (`brassy-polish`), not a uuid. Captured from a live
         // 3000.10.21: `session_id` is in every payload, `SessionStart`'s
@@ -802,7 +858,7 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
     //     format string would be a bug waiting for the first one that is not.
     //   - the fallback is `HOOK_OSC_BODY` verbatim (`lib/agentHooks.ts`), so a
     //     payload this cannot read behaves exactly as it did before.
-    let emit = if matches!((agent, sig), ("codex", Signal::Ready) | ("devin", Signal::Ready)) {
+    let emit = if matches!((agent, sig), ("claude", Signal::Ready) | ("codex", Signal::Ready) | ("devin", Signal::Ready)) {
         // TWO sequences, ONE write. Ready keeps its exact body because the TS
         // side routes it on an exact match; the id rides a second sequence with
         // its own prefix, concatenated into the same `printf`.
@@ -2901,7 +2957,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // before the current set must read as stale, or `agent_hooks_sync`
         // skips it and the user keeps that set forever: v3 types into startup
         // dialogs, v4 holds a tab on `working` for the rest of the session.
-        assert_eq!(SCHEMA_VERSION, 9, "bump me with the hook set, or installs go stale silently");
+        assert_eq!(SCHEMA_VERSION, 10, "bump me with the hook set, or installs go stale silently");
     }
 
     #[test]
@@ -3220,6 +3276,13 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     /// the pty, both sequences.
     #[cfg(unix)]
     fn ready_output_for(agent: &str, payload: &str) -> String {
+        ready_output_with_env(agent, payload, &[])
+    }
+
+    /// `ready_output_for` with extra env for the hook process. The entrypoint
+    /// is always cleared first: the test runner may itself be running under
+    /// claude, whose value would otherwise decide the case.
+    fn ready_output_with_env(agent: &str, payload: &str, extra: &[(&str, &str)]) -> String {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
@@ -3233,6 +3296,8 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             .env("TERMIC_TASK_ID", "t1")
             .env("TERMIC_PTY", &pty)
             .env_remove("GROK_HOOK_EVENT")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
+            .envs(extra.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -3247,6 +3312,67 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         out
+    }
+
+    /// claude's `SessionStart` payload: the shape measured on 2.1.273, with
+    /// placeholder paths. `session_id` first, `source` near the end.
+    fn claude_session_start_payload(sid: &str, source: &str) -> String {
+        format!(
+            r#"{{"session_id":"{sid}",
+               "transcript_path":"/Users/u/.claude/projects/-Users-u-proj/{sid}.jsonl",
+               "cwd":"/Users/u/proj","scratchpad_dir":"/tmp/u/scratchpad",
+               "hook_event_name":"SessionStart","source":"{source}","model":"m"}}"#
+        )
+    }
+
+    /// GH #306. `/clear` and `/resume` move the conversation to another id in
+    /// the same process; the tab has to hear about it or the next relaunch
+    /// resumes the session from before the `/clear`.
+    #[test]
+    #[cfg(unix)]
+    fn claude_ready_reports_the_new_session_after_clear_resume_and_compact() {
+        let sid = "992f21c0-b227-4ae2-9c3c-245e63b4eeb8";
+        for source in ["clear", "resume", "compact"] {
+            let out = ready_output_with_env(
+                "claude", &claude_session_start_payload(sid, source),
+                &[("CLAUDE_CODE_ENTRYPOINT", "cli")],
+            );
+            assert!(out.contains(&format!("{NOTIFY_PREFIX}{READY_BODY}")), "{source}: ready must still be sent: {out:?}");
+            assert!(
+                out.contains(&format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}{sid}")),
+                "{source}: the new session id never reached the pty: {out:?}"
+            );
+            assert!(out.find(READY_BODY).unwrap() < out.find(SESSION_BODY_PREFIX).unwrap(), "{source}: {out:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claude_ready_keeps_quiet_about_the_id_it_already_knows_and_about_nested_runs() {
+        let sid = "b6d9e12e-f45c-442c-8d4e-f0725adb8c0d";
+        let cases: [(&str, &[(&str, &str)]); 5] = [
+            // termic passed this id itself (`--session-id` / `--resume`).
+            ("startup", &[("CLAUDE_CODE_ENTRYPOINT", "cli")]),
+            // A `claude -p` inside the agent inherits TERMIC_PTY; claude sets
+            // its entrypoint to sdk-cli (measured), whatever the source.
+            ("startup", &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]),
+            ("clear", &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]),
+            // No entrypoint at all: not provably the tab's own process.
+            ("clear", &[]),
+            // A source this build does not know.
+            ("fork", &[("CLAUDE_CODE_ENTRYPOINT", "cli")]),
+        ];
+        for (source, vars) in cases {
+            let out = ready_output_with_env("claude", &claude_session_start_payload(sid, source), vars);
+            assert!(out.contains(&format!("{NOTIFY_PREFIX}{READY_BODY}")), "{source} {vars:?}: ready must still be sent: {out:?}");
+            assert!(!out.contains(SESSION_BODY_PREFIX), "{source} {vars:?}: must not report an id: {out:?}");
+        }
+        // And an id that is not a uuid never reaches a `--resume` command line.
+        let out = ready_output_with_env(
+            "claude", &claude_session_start_payload("abc;rm -rf /", "clear"),
+            &[("CLAUDE_CODE_ENTRYPOINT", "cli")],
+        );
+        assert!(!out.contains(SESSION_BODY_PREFIX), "{out:?}");
     }
 
     /// codex's `SessionStart` payload, transcribed from a live 0.153.0 with
