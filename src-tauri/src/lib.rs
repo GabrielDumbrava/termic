@@ -5466,6 +5466,68 @@ fn normalized_resume_override(raw: Option<String>) -> Option<String> {
     raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// REPO-mode composition for a multi-repo project: make every member reachable
+/// at `<host>/<name>` and freeze it onto the task.
+///
+/// Two layouts reach the same result. A member living elsewhere gets a symlink
+/// pointing at its live checkout. A member that already IS `<host>/<name>` (the
+/// common "parent folder holding its repos" layout) needs no link at all, and
+/// must not be mistaken for foreign content: skipping it left the task with an
+/// empty composition, so the Git panel showed neither repo.
+fn link_repo_mode_members(host_dir: &Path, members: &[ProjectMember], first_port: u16) -> Vec<TaskMember> {
+    let mut composition: Vec<TaskMember> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut next_member_port = first_port;
+    for pm in members {
+        let dir_name = pm.name.clone();
+        if dir_name.is_empty() || dir_name.contains('/') { continue; }
+        if !seen.insert(dir_name.clone()) { continue; }
+        let target = host_dir.join(&dir_name);
+        // If the link already exists from a previous open-repo,
+        // leave it alone; if a real file/dir collides, skip with
+        // a warning rather than clobbering user content.
+        if let Ok(meta) = target.symlink_metadata() {
+            let is_our_link = meta.file_type().is_symlink()
+                && fs::read_link(&target).ok().map(|p| p.to_string_lossy().into_owned())
+                    == Some(pm.root_path.clone());
+            // Canonicalize both sides: the stored root_path and the host path
+            // can spell the same directory differently (/var vs /private/var).
+            let is_member_itself = !meta.file_type().is_symlink()
+                && matches!(
+                    (fs::canonicalize(&target), fs::canonicalize(&pm.root_path)),
+                    (Ok(a), Ok(b)) if a == b
+                );
+            if !is_our_link && !is_member_itself {
+                eprintln!("task_open_repo: {} exists and isn't our symlink; skipping {}", target.display(), pm.name);
+                continue;
+            }
+        } else if let Err(e) = std::os::unix::fs::symlink(&pm.root_path, &target) {
+            eprintln!("task_open_repo: symlink {} failed: {e}", pm.name);
+            continue;
+        }
+        let member_port = next_member_port;
+        next_member_port = next_member_port.saturating_add(1);
+        composition.push(TaskMember {
+            project_id: String::new(),
+            repo_path: pm.root_path.clone(),
+            dir_name,
+            mode: MemberMode::RepoRoot,
+            branch: String::new(),
+            path: pm.root_path.clone(),
+            port: member_port,
+            // Scripts come from the inline member's per-project entry,
+            // which may differ from the repo's standalone scripts.
+            setup_script:   pm.setup_script.clone(),
+            run_script:     pm.run_script.clone(),
+            archive_script: pm.archive_script.clone(),
+            // Frozen, not applied: repo mode symlinks the live checkout,
+            // which already holds its own gitignored files.
+            files_to_copy:  pm.files_to_copy.clone(),
+        });
+    }
+    composition
+}
+
 /// Open the project's main repo checkout as a task (no git worktree).
 /// NOT idempotent: several repo-root sessions may share one checkout, so
 /// every call seeds a new task pointing at `project.root_path`. A
@@ -5542,51 +5604,11 @@ fn task_open_repo(
     let mut composition: Vec<TaskMember> = Vec::new();
     if proj.project_type == ProjectType::Multi {
         let host_dir = Path::new(&proj.root_path);
-        let mut dir_names: Vec<String> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
         // Per-member port counter — same scheme as worktree-mode
         // multi-repo: task.port + i + 1 so members can run
         // PORT=$TERMIC_PORT npm run dev without colliding.
-        let mut next_member_port = port + 1;
-        for pm in &proj.members {
-            let dir_name = pm.name.clone();
-            if dir_name.is_empty() || dir_name.contains('/') { continue; }
-            if !seen.insert(dir_name.clone()) { continue; }
-            let target = host_dir.join(&dir_name);
-            // If the link already exists from a previous open-repo,
-            // leave it alone; if a real file/dir collides, skip with
-            // a warning rather than clobbering user content.
-            if target.symlink_metadata().is_ok() {
-                let link_target = fs::read_link(&target).ok();
-                if link_target.map(|p| p.to_string_lossy().into_owned()) != Some(pm.root_path.clone()) {
-                    eprintln!("task_open_repo: {} exists and isn't our symlink; skipping {}", target.display(), pm.name);
-                    continue;
-                }
-            } else if let Err(e) = std::os::unix::fs::symlink(&pm.root_path, &target) {
-                eprintln!("task_open_repo: symlink {} failed: {e}", pm.name);
-                continue;
-            }
-            let member_port = next_member_port;
-            next_member_port = next_member_port.saturating_add(1);
-            composition.push(TaskMember {
-                project_id: String::new(),
-                repo_path: pm.root_path.clone(),
-                dir_name: dir_name.clone(),
-                mode: MemberMode::RepoRoot,
-                branch: String::new(),
-                path: pm.root_path.clone(),
-                port: member_port,
-                // Scripts come from the inline member's per-project entry,
-                // which may differ from the repo's standalone scripts.
-                setup_script:   pm.setup_script.clone(),
-                run_script:     pm.run_script.clone(),
-                archive_script: pm.archive_script.clone(),
-                // Frozen, not applied: repo mode symlinks the live checkout,
-                // which already holds its own gitignored files.
-                files_to_copy:  pm.files_to_copy.clone(),
-            });
-            dir_names.push(dir_name);
-        }
+        composition = link_repo_mode_members(host_dir, &proj.members, port + 1);
+        let dir_names: Vec<String> = composition.iter().map(|m| m.dir_name.clone()).collect();
         // Don't error on gitignore write — host might be read-only or
         // the user might prefer to track these. Non-fatal.
         let _ = ensure_multirepo_gitignore(host_dir, &dir_names);
@@ -27133,6 +27155,55 @@ mod tests {
         assert!(s.contains("secrets.env"));
         assert!(s.contains("/y"));
         assert!(!s.contains("/x"));
+    }
+
+    fn repo_member(name: &str, root: &Path) -> ProjectMember {
+        ProjectMember { name: name.into(), root_path: root.to_string_lossy().into_owned(), ..Default::default() }
+    }
+
+    #[test]
+    fn repo_mode_accepts_members_nested_directly_in_the_host() {
+        // The "parent folder holding its repos" layout: each member IS
+        // <host>/<name>. Skipping it as foreign content left the task with no
+        // composition, so the Git panel listed neither repo.
+        let host = tempdir().unwrap();
+        let ui = host.path().join("ui");
+        let api = host.path().join("api");
+        fs::create_dir(&ui).unwrap();
+        fs::create_dir(&api).unwrap();
+        let comp = link_repo_mode_members(host.path(), &[repo_member("ui", &ui), repo_member("api", &api)], 20001);
+        let names: Vec<&str> = comp.iter().map(|m| m.dir_name.as_str()).collect();
+        assert_eq!(names, ["ui", "api"]);
+        assert_eq!(comp[0].path, ui.to_string_lossy());
+        assert_eq!((comp[0].port, comp[1].port), (20001, 20002));
+        assert!(comp.iter().all(|m| m.mode == MemberMode::RepoRoot));
+        // Nothing replaced the real directories.
+        assert!(!ui.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn repo_mode_links_members_living_outside_the_host() {
+        let host = tempdir().unwrap();
+        let elsewhere = tempdir().unwrap();
+        let comp = link_repo_mode_members(host.path(), &[repo_member("ui", elsewhere.path())], 20001);
+        assert_eq!(comp.len(), 1);
+        let link = host.path().join("ui");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), elsewhere.path());
+        // A second open reuses the link instead of skipping the member.
+        assert_eq!(link_repo_mode_members(host.path(), &[repo_member("ui", elsewhere.path())], 20001).len(), 1);
+    }
+
+    #[test]
+    fn repo_mode_skips_a_foreign_dir_in_the_members_slot() {
+        // <host>/ui is real content that is NOT the member: never clobber it.
+        let host = tempdir().unwrap();
+        let elsewhere = tempdir().unwrap();
+        fs::create_dir(host.path().join("ui")).unwrap();
+        fs::write(host.path().join("ui/keep.txt"), "x").unwrap();
+        let comp = link_repo_mode_members(host.path(), &[repo_member("ui", elsewhere.path())], 20001);
+        assert!(comp.is_empty());
+        assert!(host.path().join("ui/keep.txt").exists());
     }
 
     #[test]
