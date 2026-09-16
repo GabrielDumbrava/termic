@@ -4,9 +4,9 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.4.5] - 2026-09-16
+## [1.4.6] - 2026-09-16
 
-Read a changed file as itself, and a second account that stays added.
+Clone a project from a git URL, walk recent tabs, read changed files.
 
 ### Features
 - **Open a changed file, not just its diff.** A diff is the wrong reader for a
@@ -19,6 +19,31 @@ Read a changed file as itself, and a second account that stays added.
   is one tab however you got there. Thanks to
   [@nvkvin](https://github.com/nvkvin).
   ([#299](https://github.com/simion/termic/pull/299))
+- **Ctrl+Tab walks the tabs you actually used.** Every other way to move
+  around termic is positional: the sidebar rows, the tab strip, Cmd+1..9.
+  None of them answers "take me back to the thing I was just looking at",
+  which with several agents open is the question you ask most, and the tab
+  two slots to the left is not the tab you were in. Hold Ctrl and tap Tab to
+  step back through the places you were actually looking at, add Shift to
+  step the other way, release to land. The ring crosses tasks, so it reaches
+  a tab in another one; used inside a single task it cycles that task's
+  tabs. There is a toggle in Settings if you want the chord back. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+  ([#303](https://github.com/simion/termic/pull/303))
+- **Add a project by cloning a git URL.** New Project grows a third mode:
+  paste a repo URL, pick where it lands, and the clone runs in a real
+  terminal before the result is registered as a project. A terminal rather
+  than a progress bar, because a private clone needs a credential (an SSH
+  key passphrase, a credential helper, a host key prompt, a 2FA code), and
+  running it as you means every one of those works exactly as it does in
+  your own shell. The command is typed at the prompt but deliberately not
+  run, so you can add `--depth` or `--branch` first, and pressing Enter
+  stays your decision.
+  ([#285](https://github.com/simion/termic/issues/285))
+- **Check for updates from the version row.** The version line in the
+  Settings rail gains a refresh button, reporting the outcome in the same
+  words the command palette uses so the two surfaces read as one action.
+  The automatic check also drops from every six hours to hourly.
 
 ### Bug fixes
 - **A second account no longer vanishes from Settings.** Adding a second login
@@ -33,6 +58,33 @@ Read a changed file as itself, and a second account that stays added.
   mark-as-viewed eye on a changed row staged the file, because a button that
   swallows the click still lets the row see the double-click. Reading is never
   supposed to touch the index.
+- **Multi-repo members living inside the host folder are no longer skipped.**
+  Opening a multi-repo project on the main checkout symlinks every member into
+  place, and when a member already sat at exactly that path (a parent folder
+  holding its repos) the guard read the real directory as foreign content and
+  skipped it. The task then froze an empty composition and the Git panel
+  listed no member repos at all. Thanks to
+  [@GabrielDumbrava](https://github.com/GabrielDumbrava).
+  ([#301](https://github.com/simion/termic/issues/301))
+- **Usage says it is unknown instead of guessing a plan.** After a relaunch a
+  Max account could read as billed per token: every restored session sends one
+  window-less zero-cost report before its first message, and two of those
+  across sessions were taken as proof of no plan, so the first restored task
+  showed no chip and the second showed $0.00. No plan is now proved only by a
+  session whose cost rises with no window alongside it. Until usage is known
+  the chip says so, and its panel explains which of the two reasons applies,
+  hooks not installed or hooks installed and nothing reported yet. Thanks to
+  [@GabrielDumbrava](https://github.com/GabrielDumbrava).
+  ([#304](https://github.com/simion/termic/issues/304))
+
+### Improvements
+- **Switching tasks no longer re-asks for a usage figure it already has.** The
+  reading is shared by every task on one login, but the chip that owns the
+  poll timer is per task, so moving between two tasks on the same login
+  respawned `codex app-server` to re-learn a number that was seconds old, and
+  cost devin an HTTPS call for the same. The first poll now schedules against
+  the shared reading's age, so a cold entry still asks at once and a warm one
+  waits out the rest of the interval.
 
 ## [1.4.4] - 2026-09-15
 

@@ -1,9 +1,9 @@
 {
   "versions": [
     {
-      "version": "1.4.5",
+      "version": "1.4.6",
       "date": "2026-09-16",
-      "summary": "Read a changed file as itself, and a second account that stays added."
+      "summary": "Clone a project from a git URL, walk recent tabs, read changed files."
     },
     {
       "version": "1.4.4",
