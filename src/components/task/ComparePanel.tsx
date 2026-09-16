@@ -33,7 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight, ChevronDown, Check, Eye, Loader2, GitCompare as GitCompareIcon,
-  ArrowRight, MessageSquare, AlertTriangle,
+  ArrowRight, MessageSquare, AlertTriangle, FileText,
 } from "lucide-react";
 import type { GitCompare, GitFile, Task } from "@/lib/types";
 import { taskGitCompare, taskGitRefs } from "@/lib/ipc";
@@ -82,7 +82,7 @@ function Churn({ added, removed }: { added?: number; removed?: number }) {
   );
 }
 
-export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onOpenDiff }: {
+export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onOpenDiff, onOpenFile }: {
   task: Task;
   /** Which repo of a multi-repo task to compare. Owned by GitPanel's pills so
    *  the two views cannot disagree about which repo you are looking at. */
@@ -97,6 +97,9 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
   reloadToken: number;
   /** Open a diff for one file, sides = the compare base → the working tree. */
   onOpenDiff: (path: string, baseSha: string, title: string) => void;
+  /** Opens the whole file (an editor tab) instead of its diff. Takes a
+   *  task-relative path, like the Commit tab's opener. */
+  onOpenFile: (path: string) => void;
 }) {
   // No non-git check here on purpose. `Project.non_git` describes the HOST
   // folder, and a multi-repo project's host is routinely a plain folder full
@@ -197,6 +200,13 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
     const full = repoDir ? `${repoDir}/${path}` : path;
     onOpenDiff(full, cmp.base_sha, `Δ ${path.split("/").pop()}`);
   }, [cmp, repoDir, onOpenDiff]);
+
+  // The other reading of the same row: the file itself, not the comparison.
+  // Selection moves either way, so the list keeps your place when you switch.
+  const openWholeFile = useCallback((path: string) => {
+    setSelected(path);
+    onOpenFile(repoDir ? `${repoDir}/${path}` : path);
+  }, [repoDir, onOpenFile]);
 
   // ── virtual scroll (same fixed-height slice the Commit tab's list uses) ──
   const containerRef = useRef<HTMLDivElement>(null);
@@ -361,6 +371,7 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
             repoDir={repoDir}
             selected={row.kind === "file" && selected === row.file.path}
             onOpen={openFile}
+            onOpenWholeFile={openWholeFile}
             setCollapsed={setCollapsed}
           />
         ))}
@@ -398,13 +409,14 @@ function RefItem({ label, active, onSelect }: { label: string; active: boolean; 
   );
 }
 
-function Row({ row, taskId, root, repoDir, selected, onOpen, setCollapsed }: {
+function Row({ row, taskId, root, repoDir, selected, onOpen, onOpenWholeFile, setCollapsed }: {
   row: FlatRow;
   taskId: string;
   root: string;
   repoDir: string;
   selected: boolean;
   onOpen: (path: string) => void;
+  onOpenWholeFile: (path: string) => void;
   setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
   if (row.kind === "dirhdr") {
@@ -421,7 +433,7 @@ function Row({ row, taskId, root, repoDir, selected, onOpen, setCollapsed }: {
     <FileRow
       file={row.file} label={row.label} depth={row.depth}
       taskId={taskId} root={root} repoDir={repoDir}
-      selected={selected} onOpen={onOpen}
+      selected={selected} onOpen={onOpen} onOpenWholeFile={onOpenWholeFile}
     />
   );
 }
@@ -459,7 +471,7 @@ function DirRow({ row, setCollapsed }: {
  *  and plus a churn column: the same glyph, icon, strike-through-when-viewed
  *  and eye toggle, so moving between the two tabs never asks you to relearn
  *  a row. */
-function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen }: {
+function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen, onOpenWholeFile }: {
   file: GitFile;
   label: string;
   depth: number;
@@ -468,6 +480,7 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen }
   repoDir: string;
   selected: boolean;
   onOpen: (path: string) => void;
+  onOpenWholeFile: (path: string) => void;
 }) {
   const key = file.status;
   const fullPath = repoDir ? `${repoDir}/${file.path}` : file.path;
@@ -489,8 +502,12 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen }
           data-testid="compare-file-row"
           data-path={file.path}
           data-status={key}
+          data-selected={selected}
           title={`${LBL[key] || key}: ${file.path}`}
-          onClick={() => onOpen(file.path)}
+          // ⌥-click reads the file instead of the comparison, mirroring the
+          // Commit tab's row. Gated on canView for the same reason the eye
+          // is: a deleted file has no working-tree content to open.
+          onClick={e => (canView && e.altKey ? onOpenWholeFile(file.path) : onOpen(file.path))}
           style={{ height: ROW_H, paddingLeft: 6 + depth * 12 + 8 - 2 }}
           className={cn(
             "group flex w-full cursor-pointer items-center gap-2 border-l-2 pr-2.5 text-[13px]",
@@ -520,6 +537,21 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen }
           )}
           <Churn added={file.added} removed={file.removed} />
           {canView && (
+            <Tip side="left" content="Open the file (⌥-click the row)">
+              <button
+                onClick={e => { e.stopPropagation(); onOpenWholeFile(file.path); }}
+                aria-label="Open file"
+                className={cn(
+                  "flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded transition-colors",
+                  "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  selected ? "opacity-100" : "opacity-30 group-hover:opacity-100",
+                )}
+              >
+                <FileText className="h-3.5 w-3.5" />
+              </button>
+            </Tip>
+          )}
+          {canView && (
             <Tip side="left" content={viewed ? "Mark as not viewed" : "Mark as viewed"}>
               <button
                 onClick={e => { e.stopPropagation(); useFileViewed.getState().toggle(taskId, fullPath, file.fp); }}
@@ -541,12 +573,16 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen }
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        {canView && (
+        {canView && (<>
+          <ContextMenuItem onSelect={() => onOpenWholeFile(file.path)}>
+            <FileText />
+            Open file
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => useFileViewed.getState().toggle(taskId, fullPath, file.fp)}>
             <Check />
             {viewed ? "Mark as not viewed" : "Mark as viewed"}
           </ContextMenuItem>
-        )}
+        </>)}
         <ContextMenuSeparator />
         <CopyPathItems rel={fullPath} root={root} />
       </ContextMenuContent>
