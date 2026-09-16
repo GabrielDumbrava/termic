@@ -55,6 +55,27 @@ function accountsFor(agent: string): Promise<any> {
     window.__termic!.invoke("agent_accounts", { agentId: a, docker: false }), agent);
 }
 
+/** The open usage panel sits wholly inside the window and ABOVE its chip.
+ *  Measured rather than eyeballed: a panel whose content arrives after it
+ *  opens can be placed for its empty size and then grow off the bottom. */
+async function panelGeometry(): Promise<{ inside: boolean; aboveChip: boolean; detail?: string }> {
+  return await browser.execute(() => {
+    const panel = document.querySelector('[data-testid="usage-detail"]')?.parentElement;
+    // The chip that PAINTS: every task the user visited stays mounted with a
+    // footer of its own, and the first match in the DOM can be a hidden one.
+    const chip = [...document.querySelectorAll('[data-testid="usage-chip"]')]
+      .find(el => el.getClientRects().length > 0);
+    if (!panel || !chip) return { inside: false, aboveChip: false, detail: `panel=${!!panel} chip=${!!chip}` };
+    const p = panel.getBoundingClientRect();
+    const c = chip.getBoundingClientRect();
+    const inside = p.top >= 0 && p.bottom <= window.innerHeight;
+    const aboveChip = p.bottom <= c.top + 1;
+    return inside && aboveChip
+      ? { inside, aboveChip }
+      : { inside, aboveChip, detail: `panel=${Math.round(p.top)}..${Math.round(p.bottom)} chip.top=${Math.round(c.top)} vh=${window.innerHeight}` };
+  });
+}
+
 async function openTaskWith(agent: string, name: string): Promise<string> {
   return await browser.execute(async (a, n) => {
     const t = window.__termic!;
@@ -180,7 +201,10 @@ function signOutAll(agent: string): void {
  *  for the next one. Cost the first version of these cases three false
  *  failures, each looking like a different bug. */
 async function resetUsage(): Promise<void> {
-  await browser.execute(() => window.__termic!.useAgentUsage.setState({ byAgent: {} }));
+  // `cost` too: each session's first figure is the baseline the no-plan proof
+  // rises from, so a total left over from the previous case would prove
+  // something about this one.
+  await browser.execute(() => window.__termic!.useAgentUsage.setState({ byAgent: {}, cost: {} }));
 }
 
 /** Seed a reading carrying COST, with or without plan windows.
@@ -188,15 +212,15 @@ async function resetUsage(): Promise<void> {
  *  Two shapes because the same dollar figure means two different things, and
  *  `sawPlan` is sticky per key, so each shape needs its own account. */
 async function seedCost(
-  agent: string, account: string | null, usd: number, withPlan: boolean,
+  agent: string, account: string | null, usd: number, withPlan: boolean, session = "sess-1",
 ): Promise<void> {
-  await browser.execute((a, acct, c, plan) => {
+  await browser.execute((a, acct, c, plan, sess) => {
     window.__termic!.useAgentUsage.getState().report(a, acct, {
       session: plan ? { usedPercent: 9, resetsAt: Math.floor(Date.now() / 1000) + 3600 } : null,
       weekly: plan ? { usedPercent: 1, resetsAt: Math.floor(Date.now() / 1000) + 86400 } : null,
       sessionCostUsd: c,
-    }, "statusline", "sess-1");
-  }, agent, account, usd, withPlan);
+    }, "statusline", sess);
+  }, agent, account, usd, withPlan, session);
 }
 
 /** Seed a usage reading for one account, as the status line would.
@@ -727,44 +751,219 @@ describe("agent credentials", () => {
     }
   });
 
-  it("says why a per-token account has no bars, before it has spent anything", async () => {
+  it("says a per-token account has no plan once its first turn is billed", async () => {
     // The wire an enterprise usage-based seat actually sends, measured:
     //   usage - - - - 0          at session start
     //   usage - - - - 0.235401   after the first turn
-    // The chip used to need a POSITIVE figure, so between those two the whole
-    // thing was hidden and nothing said why. That gap is what "it does not
-    // report my account" looks like from the outside.
+    // The first line is also what a SUBSCRIPTION sends before its first
+    // message (claude 2.1.273 on Max), so it proves nothing: the chip says
+    // usage is unknown until the cost rises, and only then "billed per token".
     await resetUsage();
     await addAccounts(FAKE_CLAUDE);
     const taskId = await openTaskWith(FAKE_CLAUDE, "acct-planless");
     try {
       await waitVisible('[data-testid="usage-chip"]');
-      // TWO window-less readings, which is what proves there is no plan: one
-      // alone is every subscription's first payload of a session.
       await seedCost(FAKE_CLAUDE, "Work", 0, false);
-      await seedCost(FAKE_CLAUDE, "Work", 0, false);
+      await waitVisible('[data-testid="usage-unknown"]');
 
+      await seedCost(FAKE_CLAUDE, "Work", 0.235401, false);
+      await waitGone('[data-testid="usage-unknown"]');
       await clickWhenVisible('[data-testid="usage-chip"]');
       const panel = await browser.execute(() =>
         document.querySelector('[data-testid="usage-detail"]')?.textContent ?? "");
-      // The sentence exists already; it simply never got to render.
       expect(panel).toMatch(/billed per token/i);
-      // ...and the row is there at zero, rather than appearing a turn later.
-      await waitVisible('[data-testid="usage-spend-row"]');
-      await dismissOverlays();
-
-      // Then the first turn lands and the number moves. Nothing appears or
-      // disappears, which is the point: no layout flip mid-session.
-      await seedCost(FAKE_CLAUDE, "Work", 0.235401, false);
-      await clickWhenVisible('[data-testid="usage-chip"]');
-      const after = await browser.execute(() =>
+      const row = await browser.execute(() =>
         document.querySelector('[data-testid="usage-spend-row"]')?.textContent ?? "");
-      expect(after).toContain("0.24");
+      expect(row).toContain("Spent since launch");
+      expect(row).toContain("0.24");
       await snap("credentials-17-planless.png");
     } finally {
       await removeTask(taskId);
       await clearAccounts(FAKE_CLAUDE);
       signOutAll(FAKE_CLAUDE);
+      await resetUsage();
+      await dismissOverlays();
+    }
+  });
+
+  it("stays 'usage unknown' across restored sessions that have not reached the API", async () => {
+    // THE BUG. After a relaunch every restored task's session sends one
+    // window-less `0`, and two of them on one Max account used to count as
+    // proof of no plan: the first task had no chip, the second showed $0.00
+    // and "billed per token". Sessions that never reached the API prove
+    // nothing, however many there are.
+    await resetUsage();
+    const taskId = await openTaskWith(FAKE_CLAUDE, "usage-restored");
+    try {
+      await waitVisible('[data-testid="usage-unknown"]');
+      await seedCost(FAKE_CLAUDE, null, 0, false, "restored-1");
+      await seedCost(FAKE_CLAUDE, null, 0, false, "restored-2");
+      await seedCost(FAKE_CLAUDE, null, 0, false, "restored-3");
+      // Give a wrong flip the time it would need to render.
+      await browser.pause(300);
+      const state = await browser.execute(() => ({
+        unknown: !!document.querySelector('[data-testid="usage-unknown"]'),
+        spend: !!document.querySelector('[data-usage-spend]'),
+      }));
+      expect(state).toEqual({ unknown: true, spend: false });
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      const panel = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-detail"]')?.textContent ?? "");
+      expect(panel).not.toMatch(/billed per token/i);
+      await dismissOverlays();
+
+      // The first turn of a subscription: windows, and the chip is numbers.
+      await seedCost(FAKE_CLAUDE, null, 0.12, true, "restored-2");
+      await waitGone('[data-testid="usage-unknown"]');
+      const chip = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.getAttribute("data-usage-session") ?? "");
+      expect(chip).toBe("9");
+    } finally {
+      await removeTask(taskId);
+      await resetUsage();
+      await dismissOverlays();
+    }
+  });
+
+  it("sends an agent with no hooks to Settings, and drops that advice once they are in", async () => {
+    // claude reports usage through the status line the agent hooks install,
+    // so "unknown" has two different causes and two different next steps.
+    await resetUsage();
+    await browser.execute(async (a) => {
+      const t = window.__termic!;
+      try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+      await t.useApp.getState().refreshAgentHooks();
+    }, FAKE_CLAUDE);
+    const taskId = await openTaskWith(FAKE_CLAUDE, "usage-hooks");
+    try {
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="usage-unknown-detail"][data-usage-hooks="missing"]');
+      const missing = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-unknown-detail"]')?.textContent ?? "");
+      expect(missing).toMatch(/must have hooks enabled and a first response/i);
+      // Measured on the frame the content is there, not after a settle: the
+      // bug was a panel placed for its empty size that grew afterwards.
+      expect(await panelGeometry()).toMatchObject({ inside: true, aboveChip: true });
+      await snap("usage-unknown-no-hooks.png");
+
+      // To Settings, onto the hooks block, and the popover does not linger.
+      await clickWhenVisible('[data-testid="usage-install-hooks"]');
+      await browser.waitUntil(async () => await browser.execute(() => {
+        const v = window.__termic!.useApp.getState().view;
+        return v.settingsOpen === true && v.settingsTab === "agents";
+      }), { timeout: 8_000, timeoutMsg: "Install hooks did not open Settings on the Agents tab" });
+      await waitVisible("#setting-agent-hooks");
+      // Opened, not just scrolled to: the rows the reader came for are behind
+      // the toggle.
+      await browser.waitUntil(async () => await browser.execute(() =>
+        document.querySelector('[data-testid="agent-hooks-toggle"]')?.getAttribute("aria-expanded") === "true"),
+        { timeout: 5_000, timeoutMsg: "Install hooks landed on a collapsed hooks block" });
+      await snap("usage-install-hooks-settings.png");
+      expect(await browser.execute(() =>
+        !!document.querySelector('[data-testid="usage-detail"]'))).toBe(false);
+      await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+
+      // Hooks in: the button goes, the message is about the first reply.
+      // Settings refreshes the installed flag right after it writes; mirrored.
+      await browser.execute(async (a) => {
+        const t = window.__termic!;
+        await t.invoke("agent_hooks_install", { agentId: a });
+        await t.useApp.getState().refreshAgentHooks();
+      }, FAKE_CLAUDE);
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="usage-unknown-detail"][data-usage-hooks="active"]');
+      const active = await browser.execute(() => ({
+        text: document.querySelector('[data-testid="usage-unknown-detail"]')?.textContent ?? "",
+        button: !!document.querySelector('[data-testid="usage-install-hooks"]'),
+      }));
+      expect(active.text).toMatch(/appears after a first message/i);
+      expect(active.button).toBe(false);
+      // Measured on the frame the content is there, not after a settle: the
+      // bug was a panel placed for its empty size that grew afterwards.
+      expect(await panelGeometry()).toMatchObject({ inside: true, aboveChip: true });
+      await snap("usage-unknown-hooks-active.png");
+    } finally {
+      await browser.execute(async (a) => {
+        const t = window.__termic!;
+        try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+        await t.useApp.getState().refreshAgentHooks();
+      }, FAKE_CLAUDE);
+      await removeTask(taskId);
+      await resetUsage();
+      await dismissOverlays();
+    }
+  });
+
+  it("shrinks a dismissed 'Usage unknown' to an icon until hooks are installed", async () => {
+    // Someone who does not want hooks now should not keep paying a footer
+    // label for it, and should keep a way back to installing them.
+    await resetUsage();
+    await browser.execute(async (a) => {
+      const t = window.__termic!;
+      try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+      await t.useApp.getState().refreshAgentHooks();
+    }, FAKE_CLAUDE);
+    const taskId = await openTaskWith(FAKE_CLAUDE, "usage-dismiss");
+    try {
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="usage-unknown-detail"][data-usage-hooks="missing"]');
+      const label = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-dismiss"]')?.textContent ?? "");
+      expect(label).toBe("Dismiss for FakeClaude");
+      // A long agent name stays inside the fixed-width panel. Measured with
+      // the real name swapped for one with no break point, which is the case
+      // that cannot wrap.
+      const fits = await browser.execute(() => {
+        const btn = document.querySelector('[data-testid="usage-dismiss"]') as HTMLElement;
+        const span = btn.querySelector("span") as HTMLElement;
+        const original = span.textContent;
+        span.textContent = "Dismiss for " + "averyveryverylongagentnamewithnobreakpoint".repeat(2);
+        const panel = document.querySelector('[data-testid="usage-detail"]') as HTMLElement;
+        const b = btn.getBoundingClientRect();
+        const p = panel.getBoundingClientRect();
+        const ok = b.right <= p.right + 0.5 && btn.scrollWidth > 0 && b.height < 40;
+        span.textContent = original;
+        return ok;
+      });
+      expect(fits).toBe(true);
+      await clickWhenVisible('[data-testid="usage-dismiss"]');
+
+      // Label gone, brand icon swapped for the faint one, panel closed.
+      await waitVisible('[data-testid="usage-dismissed-icon"]');
+      const footer = await browser.execute(() => ({
+        label: !!document.querySelector('[data-testid="usage-unknown"]'),
+        panel: !!document.querySelector('[data-testid="usage-detail"]'),
+        chipText: (document.querySelector('[data-testid="usage-chip"]')?.textContent ?? "").trim(),
+        faint: document.querySelector('[data-testid="usage-chip"]')?.className.includes("color-fg-faint") ?? false,
+      }));
+      expect(footer).toEqual({ label: false, panel: false, chipText: "", faint: true });
+      await snap("usage-dismissed-icon.png");
+
+      // One click on the icon is the same panel, with no second Dismiss.
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="usage-install-hooks"]');
+      expect(await browser.execute(() =>
+        !!document.querySelector('[data-testid="usage-dismiss"]'))).toBe(false);
+
+      // Installing hooks is the answer the dismissal was waiting for: the label
+      // comes back on its own, with nothing to undo. Settings refreshes the
+      // installed flag right after it writes, which is what this mirrors.
+      await dismissOverlays();
+      await browser.execute(async (a) => {
+        const t = window.__termic!;
+        await t.invoke("agent_hooks_install", { agentId: a });
+        await t.useApp.getState().refreshAgentHooks();
+      }, FAKE_CLAUDE);
+      await waitVisible('[data-testid="usage-unknown"]');
+      await waitGone('[data-testid="usage-dismissed-icon"]');
+    } finally {
+      await browser.execute(async (a) => {
+        const t = window.__termic!;
+        t.useUsageUnknownDismissed.getState().setDismissed(a, false);
+        try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+        await t.useApp.getState().refreshAgentHooks();
+      }, FAKE_CLAUDE);
+      await removeTask(taskId);
       await resetUsage();
       await dismissOverlays();
     }
@@ -799,6 +998,8 @@ describe("agent credentials", () => {
       await setTaskAccount(taskId, FAKE_CLAUDE, "Client");
       await respawn(taskId);
       await waitForSpawnOn(taskId, "Client");
+      // Proved billed per token: the session's cost ROSE with no window.
+      await seedCost(FAKE_CLAUDE, "Client", 0, false);
       await seedCost(FAKE_CLAUDE, "Client", 11, false);
       await clickWhenVisible('[data-testid="usage-chip"]');
       await waitVisible('[data-testid="usage-spend-row"]');

@@ -60,11 +60,18 @@ export function AgentHooksBlock() {
   useEffect(() => {
     if (settingsHighlight !== AGENT_HOOKS_HIGHLIGHT) return;
     useApp.getState().clearSettingsHighlight();
-    document.getElementById(`setting-${AGENT_HOOKS_HIGHLIGHT}`)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Expanded as well: whoever sent the reader here (the usage chip's
+    // "Install hooks", the Notifications link) sent them to act on a row, and
+    // the rows are behind the toggle. Scrolled on the NEXT frame so the jump
+    // measures the block at its expanded height, and to its top, because
+    // centred the expanded block starts above the fold.
+    setExpanded(true);
+    const raf = window.requestAnimationFrame(() =>
+      document.getElementById(`setting-${AGENT_HOOKS_HIGHLIGHT}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }));
     setFlash(true);
     const t = window.setTimeout(() => setFlash(false), 1600);
-    return () => window.clearTimeout(t);
+    return () => { window.clearTimeout(t); window.cancelAnimationFrame(raf); };
   }, [settingsHighlight]);
 
   const toggleDetails = async (id: string) => {

@@ -69,6 +69,8 @@ export interface TermicApi {
   /** Plan usage (src/store/agentUsage.ts). Seeded by specs: no fixture agent
    *  reports a real reading. */
   useAgentUsage: { getState: () => any; setState: (p: any) => void };
+  /** Dismissed "Usage unknown" labels (src/store/usageUnknownDismissed.ts). */
+  useUsageUnknownDismissed: { getState: () => any; setState: (p: any) => void };
   ipc: any;
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any>;
   runTabs: any;

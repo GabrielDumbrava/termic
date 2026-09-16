@@ -708,10 +708,34 @@ committed one, so the file a user would go and edit is often the wrong one.
 
 Claude ONLY, and only on a POSITIVE detection. It is the only agent whose
 usage arrives through a status line, so the only one that can be shadowed;
-codex is asked directly and cannot hit this. "We know why this will never
-report" is worth showing, "nothing has reported yet" is not, so the ordinary
-empty case still renders nothing at all. The check is also asked only while
-there is nothing to show, so a working feed never pays for it.
+codex is asked directly and cannot hit this. The check is asked only while
+there is nothing to show, so a working feed never pays for it, and it reads the
+AGENT'S OWN config dir: a clone relocates it, and asking about the base read
+`~/.claude` for every clone.
+
+Short of a blocker, an agent that can report usage (`reports_usage`) and has
+not yet shows "Usage unknown" rather than nothing. Nothing at all read as a
+feature that does not apply, and it was indistinguishable from a clone whose
+hooks were never installed. Its panel says which of the two it is from `agentHooksInstalled` in the app
+store, which Settings refreshes as it installs or removes hooks. Not an IPC on
+open: that rendered the panel empty, placed it for that size and then grew it,
+which could clip it at the bottom of the window. Without
+hooks it says usage needs hooks and a first response and offers "Install
+hooks", which opens the hooks block in Settings rather than writing from the
+footer, because that block shows what it will write first; with hooks it says
+usage appears after the first response. codex and devin need no hooks and get
+neither message.
+
+Beside "Install hooks" sits "Dismiss for <agent>", for someone who does not
+want hooks now. It does not hide the chip: the brand icon and the label become
+one faint rising-line icon (`UsageRisingIcon`, which never dips, in the idle
+Terminal button's ink) that opens the same panel. It lasts only while the agent
+has no hooks, which is what was dismissed:
+installing them (Settings refreshes `agentHooksInstalled` on the spot) brings
+the label back until real usage replaces it, so there is nothing to undo. Per
+agent entry, since a clone has its own hooks, and per profile, in localStorage
+(`store/usageUnknownDismissed.ts`, its own store so a click re-runs no prefs
+selector).
 
 The chip offers a PROMPT to copy rather than instructions to follow. The user
 does not have to learn the wire format: they paste it at the agent that owns

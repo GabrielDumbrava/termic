@@ -28,7 +28,8 @@ import { CircleSlash, Copy, Check } from "lucide-react";
 import * as ipc from "@/lib/ipc";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { cn } from "@/lib/utils";
-import { useAgentUsage, usageKey, costTotal, costChipVisible, firstPollDelay, type UsageEntry } from "@/store/agentUsage";
+import { useAgentUsage, usageKey, costTotal, costChipVisible, firstPollDelay, usageKnown, type UsageEntry } from "@/store/agentUsage";
+import { AGENT_HOOKS_HIGHLIGHT } from "@/components/settings/AgentHooksBlock";
 import {
   formatPercent, formatReset, formatUsd, usageLevel, drivingWindow, shortWindowWords,
   USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
@@ -41,6 +42,7 @@ import { useAccountSwitching } from "@/hooks/useAccountSwitching";
 import { AccountSwitcher } from "@/components/task/AccountSwitcher";
 import { pillVisible } from "@/lib/accountPill";
 import { KeyRound, ArrowRightLeft } from "lucide-react";
+import { useUsageUnknownDismissed } from "@/store/usageUnknownDismissed";
 import type { AgentAccountsView, TerminalTab } from "@/lib/types";
 import { useApp } from "@/store/app";
 
@@ -174,7 +176,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   // open. The panel is unmounted most of the time; this chip is not.
   const sw = useAccountSwitching(taskId, agentId, accounts, visible);
   const [owner, setOwner] = useState<StatusLineOwner | null>(null);
-  const known = !!entry && (!!entry.session || !!entry.weekly);
+  const known = usageKnown(entry, spend);
   useEffect(() => {
     if (base !== "claude" || !visible || !cwd || known) { setOwner(null); return; }
     let cancelled = false;
@@ -245,10 +247,26 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   // The two halves self-hide independently: an agent with no usage feed still
   // has accounts to switch, and an agent with no named account still has
   // numbers. The chip renders when EITHER has something.
-  const hasNumbers = !!entry && (!!entry.session || !!entry.weekly || costChipVisible(entry, spend));
+  const hasNumbers = known;
   const hasAccounts = pillVisible(accountsView);
+  // An agent that CAN report usage and has not yet says so, rather than
+  // leaving a gap in the footer. Without it the first task restored after a
+  // relaunch had no chip while the second one had a wrong one, and a clone
+  // with no hooks looked exactly like a clone that would never report.
+  // A positively detected blocker still wins: it names the actual cause.
+  const blocked = blocksUsageFeed(owner);
+  const unknown = !!accountsView?.reportsUsage && !hasNumbers && !blocked;
+  // Dismissed: the same state and the same panel behind a faint icon, so the
+  // footer stops spending a label on it but the way to hooks is still one click.
+  // Only while this agent has NO hooks, which is what was dismissed: once they
+  // are installed (Settings refreshes `agentHooksInstalled` on the spot) the
+  // label comes back on its own until the first reading replaces it.
+  const dismissed = useUsageUnknownDismissed(s => s.byAgent[agentId] === true);
+  const hooksInstalled = useApp(s => s.agentHooksInstalled[agentId] === true);
+  const quiet = unknown && dismissed && !hooksInstalled;
   if (!hasNumbers && !hasAccounts) {
-    return blocksUsageFeed(owner) ? <BlockedChip owner={owner!} className={className} /> : null;
+    if (blocked) return <BlockedChip owner={owner!} className={className} />;
+    if (!unknown) return null;
   }
 
   const stale = !!entry && Date.now() - entry.updatedAt > STALE_AFTER_MS;
@@ -300,8 +318,11 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
                 ? `${agentId} is running as ${sw.shown.now}. It switches to ${sw.shown.next} when it next starts.`
                 : hasAccounts
                   ? `${agentDisplayName(agentId, agents)}, signed in as ${sw.shown.now}`
-                  : `${agentDisplayName(agentId, agents)} plan usage`
+                  : unknown
+                    ? `${agentDisplayName(agentId, agents)} usage is not known yet`
+                    : `${agentDisplayName(agentId, agents)} plan usage`
           }
+          data-usage-dismissed={quiet ? "1" : ""}
           className={cn(
             "flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 tabular-nums",
             "hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]",
@@ -310,7 +331,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
             // (docs/gotchas.md), which is how this would light up amber
             // everywhere except the machine it ships on.
             sw.alert ? "text-[var(--color-warn)]"
-              : stale ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg-dim)]",
+              : stale || quiet ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg-dim)]",
             className,
           )}
         >
@@ -320,9 +341,15 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               apart in the popover. Sized to the sandbox status icon beside it
               rather than to the 3.5 the text sits at, because a brand mark at
               3.5 is a smudge. */}
-          <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
-            <CliIcon cli={iconId} className="h-4 w-4" />
-          </span>
+          {quiet ? (
+            // Same faint ink as the footer's idle Terminal button: present,
+            // clickable, not asking for anything.
+            <UsageRisingIcon data-testid="usage-dismissed-icon" className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
+              <CliIcon cli={iconId} className="h-4 w-4" />
+            </span>
+          )}
           {/* The account, when there is one to name. A key glyph only while
               something needs attention: the brand icon already says which
               agent this is, so a second permanent icon would be width spent
@@ -331,7 +358,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
             <>
               {sw.alert && <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />}
               <span className="max-w-[14ch] truncate">{sw.shown.now}</span>
-              {hasNumbers && <span className="text-[var(--color-fg-faint)]">·</span>}
+              {(hasNumbers || (unknown && !quiet)) && <span className="text-[var(--color-fg-faint)]">·</span>}
             </>
           )}
           {/* ONE GAUGE PER WINDOW, and each one IS its number's background.
@@ -360,6 +387,9 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               delimit themselves, and a dot in the gap read as a third mark
               competing with the two it was separating. The dot after the
               ACCOUNT stays: bare text against a filled box does need one. */}
+          {unknown && !quiet && (
+            <span data-testid="usage-unknown" className="text-[var(--color-fg-faint)]">Usage unknown</span>
+          )}
           {entry?.session && (
             <UsageWindowReadout
               window={entry.session} unit={words.chip} stale={stale} testid="5h"
@@ -398,6 +428,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
       >
         <UsageDetail
           agentId={agentId} entry={entry} level={level} driver={driver} spend={spend}
+          unknown={unknown}
           accountsView={accountsView} refreshAccounts={refreshAccounts}
           onNavigate={() => setDetailOpen(false)}
         />
@@ -423,7 +454,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
  *  used, resets Wed 10:00 Reported by the agent as it works."), which is
  *  unreadable at exactly the moment you went looking for it. Rows, a bar per
  *  window, and the reset clock in its own column. */
-function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refreshAccounts, onNavigate }: {
+function UsageDetail({ agentId, entry, level, driver, spend, unknown, accountsView, refreshAccounts, onNavigate }: {
   agentId: string;
   /** Undefined for an account that has never reported: the panel is then
    *  purely the credentials half, and the usage rows are skipped rather than
@@ -434,6 +465,8 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
   driver: { window: UsageWindow; label: "5h" | "wk" } | null;
   /** USD spent on this account since launch. */
   spend: number;
+  /** The agent can report usage and has not yet: the panel explains why. */
+  unknown: boolean;
   accountsView: AgentAccountsView | null;
   refreshAccounts: () => void;
   /** Close the popover: a row that navigates away must not leave it hanging
@@ -464,20 +497,24 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
       </div>
 
       <div className="flex flex-col gap-2.5 px-3 py-2.5">
-        {!entry ? null : (entry.session || entry.weekly) ? (
+        {unknown ? (
+          <UsageUnknown agentId={agentId} onNavigate={onNavigate} />
+        ) : !entry ? null : (entry.session || entry.weekly) ? (
           <>
             <UsageRow label={words.label} sub={words.sub} window={entry.session}
               driving={driver?.label === "5h"} level={level} source={entry.source} />
             <UsageRow label="Weekly" sub="rolling 7 days" window={entry.weekly}
               driving={driver?.label === "wk"} level={level} source={entry.source} />
           </>
-        ) : (
+        ) : costChipVisible(entry, spend) ? (
           // No plan at all: say so, rather than showing two empty bars. This
           // is the API-key account, and its whole readout is the spend below.
+          // Only once it is PROVED (`UsageEntry.noPlan`): a subscription looks
+          // the same until its first turn reaches the API.
           <div className="text-[var(--color-fg-faint)]">
             This account is billed per token, so it has no plan limits.
           </div>
-        )}
+        ) : null}
         {/* `costChipVisible` as well as a positive figure: on an account
             known to have no plan, zero is a reading (nothing spent yet) and
             hiding the row leaves the panel with a single sentence and no
@@ -499,14 +536,18 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
                 did not happen, which is exactly how it read to the first
                 person who saw both on one panel. */}
             <span className="text-[var(--color-fg-dim)]">
-              {entry?.sawPlan ? "Would have cost" : "Spent since launch"}
+              {entry?.sawPlan ? "Would have cost" : entry?.noPlan ? "Spent since launch" : "Cost since launch"}
               {/* The reset is said out loud either way, because the number
                   goes back to zero when termic does and someone comparing it
                   against a provider dashboard needs to know that first. */}
               <span className="block text-[11px] text-[var(--color-fg-faint)]">
                 {entry?.sawPlan
                   ? "at API rates since launch. Your plan covers it."
-                  : "this agent, this account"}
+                  : entry?.noPlan
+                    ? "this agent, this account"
+                    // Neither proved yet: the same figure is a charge on one
+                    // kind of account and not on the other, so name neither.
+                    : "at API rates, this agent, this account"}
               </span>
             </span>
             <span className="tabular-nums font-medium text-[var(--color-fg)]">{formatUsd(spend)}</span>
@@ -514,7 +555,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
         )}
       </div>
 
-      {entry && (
+      {entry && !unknown && (
       <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[var(--color-fg-faint)]">
         {level !== "normal" && driver && (
           <div className={cn("mb-1", LEVEL_TEXT[level])}>
@@ -538,6 +579,102 @@ function UsageDetail({ agentId, entry, level, driver, spend, accountsView, refre
           checkbox lives there. Two copies of that checkbox is what the merge
           removed. */}
       <AccountRow agentId={agentId} view={accountsView} refresh={refreshAccounts} onNavigate={onNavigate} />
+    </div>
+  );
+}
+
+/** Usage only ever climbs within a window, so the dismissed chip's icon never
+ *  dips: lucide's `TrendingUp` zig-zags down in the middle, which read as usage
+ *  going down. Same grid and stroke as lucide, so it sits beside its icons. */
+function UsageRisingIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true" {...props}
+    >
+      <polyline points="2 19 9 12 14 12 22 4" />
+      <polyline points="16 4 22 4 22 10" />
+    </svg>
+  );
+}
+
+/** Why an agent that can report usage has not, and the way forward.
+ *
+ *  claude's feed rides the status line the agent hooks install, so the answer
+ *  turns on whether THIS agent's hooks are in: a clone relocates its config
+ *  dir and needs its own install. codex and devin are asked by termic and need
+ *  no hooks, so they never get the hooks advice. */
+function UsageUnknown({ agentId, onNavigate }: {
+  agentId: string;
+  onNavigate: () => void;
+}) {
+  const agents = useApp(a => a.agents);
+  const base = builtinBaseId(agentId, agents);
+  const display = agentDisplayName(agentId, agents);
+  // From the store, not an IPC on open. Asking `agent_hooks_status` when the
+  // panel opened rendered it empty first and then grew it, so it was placed
+  // for the empty size and could land clipped at the bottom of the window.
+  // Settings refreshes this right after it installs or removes hooks, and the
+  // chip already reads the same flag to decide whether a dismissal holds.
+  const hooksActive = useApp(s => s.agentHooksInstalled[agentId] === true);
+  const dismissed = useUsageUnknownDismissed(s => s.byAgent[agentId] === true);
+  const setDismissed = useUsageUnknownDismissed(s => s.setDismissed);
+
+  if (base !== "claude") {
+    return (
+      <div data-testid="usage-unknown-detail" data-usage-hooks="n/a" className="flex flex-col gap-1 text-[var(--color-fg-dim)]">
+        <p>Termic has not been able to read usage from {display} yet.</p>
+        <p className="text-[var(--color-fg-faint)]">It asks again every 2 minutes while this task is open.</p>
+      </div>
+    );
+  }
+  if (hooksActive) {
+    return (
+      <div data-testid="usage-unknown-detail" data-usage-hooks="active" className="flex flex-col gap-1 text-[var(--color-fg-dim)]">
+        <p>The usage appears after a first message is received from the agent.</p>
+        {/* claude reads its settings once, at start: hooks installed under a
+            running session change nothing until that tab restarts. */}
+        <p className="text-[var(--color-fg-faint)]">If you just installed hooks, restart this agent's tab first.</p>
+      </div>
+    );
+  }
+  return (
+    <div data-testid="usage-unknown-detail" data-usage-hooks="missing" className="flex flex-col gap-2 text-[var(--color-fg-dim)]">
+      <p>To see usage you must have hooks enabled and a first response from the agent.</p>
+      {/* To Settings, not an install from here: the hooks block shows exactly
+          which files it will write before it writes them, and a button in a
+          footer popover would skip that. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          data-testid="usage-install-hooks"
+          onClick={() => {
+            onNavigate();
+            useApp.getState().openSettings("agents", undefined, AGENT_HOOKS_HIGHLIGHT);
+          }}
+          className="rounded border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-bg-2)]"
+        >
+          Install hooks
+        </button>
+        {/* For someone who does not want hooks now: the footer label goes, a
+            faint icon stays, and this panel is still one click away. */}
+        {!dismissed && (
+          <button
+            type="button"
+            data-testid="usage-dismiss"
+            onClick={() => { setDismissed(agentId, true); onNavigate(); }}
+            title={`Dismiss for ${display}`}
+            // One line, truncated: the panel is a fixed 320px and an agent
+            // name is typed by the user, so a long one without a break point
+            // would otherwise run out of the panel. It wraps below "Install
+            // hooks" first, and only then truncates.
+            className="flex min-w-0 max-w-full rounded px-2 py-1 text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
+          >
+            <span className="truncate">{`Dismiss for ${display}`}</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }

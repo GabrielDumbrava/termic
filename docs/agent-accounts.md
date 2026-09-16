@@ -506,20 +506,24 @@ No rate limits, EVER: a zero rate-limit tier has no personal window
 allocation, because billing is per token at the org level. The cost is the
 entire reading, and it is zero until the session spends something.
 
-That gap used to render nothing at all. The chip needs a reason to appear and
-the only one available was a positive dollar figure, so between session start
-and the first completed turn the account with nothing BUT a dollar figure
-showed no chip and no explanation. It is exactly what "termic does not report
-my account" looks like from outside.
+The first line is ALSO what a subscription sends before its first message.
+Measured on claude 2.1.273 with a Max account, fresh session: `cost 0` and no
+`rate_limits` until the first message, then `rate_limits` and a cost of
+`0.119434` in the same payload. So a zero with no windows proves nothing about
+the account, and until something does the chip reads "Usage unknown".
 
-Zero is now a reading rather than an absence, once the account is KNOWN to
-have no plan. Two window-less readings are what proves that, and getting them
-took a second fix: `report` drops a reading identical to the last one (bear
-trap 8, the status line fires every turn), and a per-token account repeats the
-same payload for ever, so `windowless` froze at one and the evidence never
-arrived. The bail now makes an exception while the count is still below the
-threshold, which is bounded at one extra write per account per session and is
-not a per-turn write.
+The proof of no plan is a session whose cost ROSE with no window alongside it
+(`UsageEntry.noPlan`): a rise means a turn reached the API, and a subscription
+reports its windows in that very payload. It is a rise within ONE session,
+never a nonzero figure, because a restored session may start from a total it
+already had. Each session's first figure is written even when the account's
+total does not move, since it is the baseline the rise is measured from: one
+write per session, not per turn (bear trap 8).
+
+This replaced a count of window-less readings across sessions, two of which
+were taken as proof. After a relaunch every restored task sends one before its
+first message, so restoring two tasks on a Max account showed no chip on the
+first and `$0.00` with "billed per token" on the second.
 
 `costChipVisible` also requires `source === "statusline"`. codex answers plan
 windows and nothing else, so a window-less codex reading would otherwise print
@@ -537,7 +541,9 @@ have cost at API rates, and the subscription covered them. On an account with
 no plan it is money, because that account is billed per token.
 
 So the row reads "Would have cost ... at API rates since launch. Your plan
-covers it." when `sawPlan` is set, and "Spent since launch" when it is not.
+covers it." when `sawPlan` is set, "Spent since launch" once `noPlan` has been
+proved, and a neutral "Cost since launch ... at API rates" while neither is
+known.
 Reported from a real panel showing 9% and 1% next to "Spent since launch $11",
 which reads as eleven dollars charged for a month that charged nothing.
 
