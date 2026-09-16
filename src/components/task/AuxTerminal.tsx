@@ -35,7 +35,9 @@ import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 // `currentTerminalTheme()` picks the matching palette at mount; the
 // themeMode effect below pushes updates into live instances.
 
-export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExited, onTitle }: { taskId?: string; tabId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void }) {
+export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExited, onTitle, initialInput }: { taskId?: string; tabId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void;
+  /** Typed at the prompt on spawn and NOT executed. See the write below. */
+  initialInput?: string }) {
   // Keep the latest onTitle in a ref so the long-lived spawn effect's
   // onTitleChange handler always calls the current callback without
   // re-running (and respawning the PTY) when the parent re-renders.
@@ -70,6 +72,13 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
   }, []);
   // Visible when the PTY exits — overlays the dead terminal with a CTA.
   const [exited, setExited] = useState(false);
+  // Has `initialInput` reached the PTY? Surfaced on the host element because
+  // the alternative for anything waiting on it is a sleep: the spawn is async
+  // (login shell lookup, ptySpawn, attach) so the container exists well before
+  // the prompt is primed, and a keystroke sent into that gap is swallowed by
+  // an xterm that has not wired its handler yet. Same failure the agent specs
+  // hit before `waitForAgentReady` existed.
+  const [primed, setPrimed] = useState(false);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -81,6 +90,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     // unaffected: no taskId is consulted on that path.
     const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current, { taskId });
     setExited(false);
+    setPrimed(false);
     let cancelled = false;
     let unlistenData: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
@@ -248,6 +258,24 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           if (onExited) onExited();
           else setExited(true);
         });
+        // Type a command at the prompt WITHOUT running it (GH #285). The clone
+        // flow lands the user on `git clone <url> <dir>` ready to edit: flags
+        // like --depth, --branch or --recurse-submodules are exactly the kind
+        // of thing a form would have to grow a field for, and the shell already
+        // has an editor.
+        //
+        // No trailing newline, deliberately. Pressing Enter stays the user's
+        // decision, because this command reaches the network and may prompt for
+        // a credential. Same mechanic as dropping a file onto a scratch shell
+        // (lib/terminalDrop.ts), which inserts a path the same way.
+        //
+        // Sent after `ptyAttached`, or the shell would echo it before this side
+        // is listening and the prompt would come up looking empty.
+        if (initialInput) {
+          ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(initialInput)))
+            .then(() => { if (!cancelled) setPrimed(true); })
+            .catch(() => {});
+        }
         term.onData(d => {
           if (d.includes("\r")) scheduleFsBump();
           ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(d))).catch(() => {});
@@ -390,7 +418,13 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           onAction={() => setGen(g => g + 1)}
         />
       )}
-      <div ref={hostRef} className="min-h-0 w-full flex-1" />
+      <div
+        ref={hostRef}
+        className="min-h-0 w-full flex-1"
+        // Only meaningful when the caller primed the prompt; absent otherwise
+        // so an ordinary scratch shell grows no attribute it does not need.
+        data-initial-input={initialInput ? (primed ? "sent" : "pending") : undefined}
+      />
     </div>
   );
 }

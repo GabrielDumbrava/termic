@@ -2189,3 +2189,140 @@ describe("quick-create sandbox note", () => {
     await browser.keys("Escape");
   });
 });
+
+// Clone from a git URL (GH #285).
+//
+// Clones a LOCAL bare repo, so the spec is offline and deterministic: the
+// flow under test is identical for a remote, and a network clone in CI would
+// be the flakiest thing in the suite.
+//
+// Terminal output is a WebGL canvas and never reaches the DOM, so nothing here
+// asserts on what the terminal shows. What it asserts instead is the thing the
+// terminal is FOR: the command was typed into a real PTY, pressing Enter ran
+// it, and a repo appeared on disk as a result.
+describe("new project from a git URL", () => {
+  let origin = "";
+  let parent = "";
+  let addedId: string | null = null;
+
+  before(() => {
+    origin = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-origin-")));
+    const work = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-work-")));
+    // A bare repo with one real commit: an EMPTY remote clones into something
+    // indistinguishable from a clone still running, which is the exact case
+    // the Add gate cannot resolve on its own.
+    execSync(
+      `git -C "${work}" init -q `
+      + `&& git -C "${work}" -c user.email=e2e@termic.dev -c user.name=alice commit -q --allow-empty -m init `
+      + `&& git -C "${work}" clone -q --bare . "${origin}/repo.git"`,
+    );
+    rmSync(work, { recursive: true, force: true });
+    parent = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-into-")));
+  });
+
+  after(async () => {
+    if (addedId) {
+      await browser.execute(async (id) => {
+        await window.__termic!.invoke("project_remove", { id });
+        await window.__termic!.useApp.getState().loadAll();
+      }, addedId);
+    }
+    // Both are this spec's own temp dirs; the clone lands inside `parent`.
+    rmSync(origin, { recursive: true, force: true });
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  it("proposes a destination from the URL and refuses to guess without one", async () => {
+    await browser.execute(() => window.__termic!.useUI.getState().openNewProject());
+    await waitVisible('[data-testid="project-mode-clone"]');
+    await clickWhenVisible('[data-testid="project-mode-clone"]');
+    await waitVisible('[data-testid="clone-url"]');
+
+    // No URL yet: nothing to clone into, and Clone stays out of reach.
+    const disabledBefore = await browser.execute(() =>
+      (document.querySelector('[data-testid="clone-start"]') as HTMLButtonElement | null)?.disabled ?? null);
+    expect(disabledBefore).toBe(true);
+
+    await setDialogInput('[data-testid="clone-parent"]', parent);
+    await setDialogInput('[data-testid="clone-url"]', `${origin}/repo.git`);
+
+    // The name comes off the URL the way git would take it.
+    await waitVisible('[data-testid="clone-dest"]');
+    const dest = await browser.execute(() =>
+      document.querySelector('[data-testid="clone-dest"]')!.textContent);
+    expect(dest).toBe(`${parent}/repo`);
+  });
+
+  it("types the command without running it, and runs it on Enter", async () => {
+    await clickWhenVisible('[data-testid="clone-start"]');
+    await waitVisible('[data-testid="clone-terminal"]');
+
+    // Add is gated until a repo actually exists: the command is sitting at the
+    // prompt unrun, so nothing has been cloned yet.
+    const gated = await browser.execute(() =>
+      (document.querySelector('[data-testid="clone-add"]') as HTMLButtonElement | null)?.disabled ?? null);
+    expect(gated).toBe(true);
+
+    // The command has to be IN the pty before Enter is sent. The spawn is
+    // async, so the container renders first and a keystroke dispatched into
+    // that gap is swallowed: solo this passed, and in a full suite the extra
+    // load widened the gap until it did not.
+    await waitVisible('[data-testid="clone-terminal"] [data-initial-input="sent"]');
+
+    // Press Enter at the prompt, the way the user does. No text is typed here:
+    // the app already wrote the command into the PTY, so this proves BOTH that
+    // the prefill arrived and that Enter is what runs it.
+    const pressed = await browser.execute(() => {
+      const host = document.querySelector('[data-testid="clone-terminal"]');
+      if (!host) return "no clone terminal";
+      const ta = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
+      if (!ta) return "no xterm textarea";
+      ta.focus();
+      const enter = (type: string) => ta.dispatchEvent(new KeyboardEvent(type, {
+        key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
+      } as KeyboardEventInit));
+      enter("keydown");
+      enter("keyup");
+      return "ok";
+    });
+    expect(pressed).toBe("ok");
+
+    await browser.waitUntil(
+      async () => !(await browser.execute(() =>
+        (document.querySelector('[data-testid="clone-add"]') as HTMLButtonElement).disabled)),
+      { timeout: 30_000, timeoutMsg: "the clone never produced a repo at the destination" },
+    );
+    await snap("clone-from-url");
+  });
+
+  it("adds the clone as a project", async () => {
+    await clickWhenVisible('[data-testid="clone-add"]');
+    await browser.waitUntil(
+      async () => {
+        const p = (await browser.execute(
+          (d) => window.__termic!.useApp.getState()
+            .projects.find((x: any) => x.root_path === d) ?? null,
+          `${parent}/repo`,
+        )) as any;
+        if (!p) return false;
+        addedId = p.id;
+        return true;
+      },
+      { timeout: 15_000, timeoutMsg: "the cloned repo was never added as a project" },
+    );
+    // A successful add closes the dialog, same as every other path in it.
+    await waitGone('[data-testid="clone-url"]');
+  });
+});
+
+/** Set a controlled input the way React sees it, then fire its input event. */
+async function setDialogInput(selector: string, value: string): Promise<void> {
+  await browser.execute((sel, v) => {
+    const input = document.querySelector(sel) as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, "value",
+    )!.set!;
+    setter.call(input, v);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, selector, value);
+}

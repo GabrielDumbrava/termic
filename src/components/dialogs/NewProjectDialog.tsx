@@ -10,8 +10,10 @@ import { Input } from "@/components/ui/Input";
 import { bulkAddSummary, pathsToAdd, type BulkAddResult } from "@/lib/bulkAdd";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { projectAdd, projectAddMulti, discoverRepos, discoveryDismiss, settingsLoad, pathIsGitRepo } from "@/lib/ipc";
+import { repoNameFromUrl } from "@/lib/cloneUrl";
+import { AuxTerminal } from "@/components/task/AuxTerminal";
 import type { DiscoveredRepo, Project, ProjectMember } from "@/lib/types";
-import { Folder, FolderPlus, Layers, RotateCcw, X } from "lucide-react";
+import { Folder, FolderPlus, Layers, RotateCcw, X, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Where a non-git folder is being added — drives the confirm copy. We no
@@ -43,8 +45,23 @@ export function NewProjectDialog() {
   // Project type picker — defaults to "repo" (today's single-repo
   // flow). Switching to "multi" swaps the body to the host-picker +
   // member-multi-select form. Both flows reuse the same Add button.
-  const [mode, setMode] = useState<"repo" | "multi">("repo");
+  const [mode, setMode] = useState<"repo" | "multi" | "clone">("repo");
   const [path, setPath] = useState("");
+  // ── Clone from a git URL (GH #285) ───────────────────────────────────
+  const [cloneUrl, setCloneUrl] = useState("");
+  // The PARENT the clone lands in, not the repo directory. Proposed from
+  // `repos_dir` when the user has one and left EMPTY when they do not:
+  // inventing `~/termic/...` here would create a directory somewhere they
+  // never chose, and the clone command would carry that guess into a shell.
+  const [cloneParent, setCloneParent] = useState("");
+  // Set once the user commits, which is what mounts the terminal. Held
+  // separately from the field so editing the URL afterwards cannot re-point a
+  // clone that is already running.
+  const [cloneStarted, setCloneStarted] = useState<{ parent: string; dest: string; input: string } | null>(null);
+  // Does a git repo exist at the destination yet? Polled while the terminal is
+  // up, because the only other completion signal we have is the user, and they
+  // are watching the terminal. See the comment on the poll effect.
+  const [cloneLanded, setCloneLanded] = useState(false);
   // Issue #4: add a plain folder (not a git repo). In repo mode the
   // folder becomes a repo-root-only project (agent runs at the folder).
   // In multi mode it becomes a non-git HOST for the member repos.
@@ -85,10 +102,19 @@ export function NewProjectDialog() {
     setConfirm(null);
     setMemberRows([]);
     setMultiName("");
+    // Clone flow: cleared on every open so a previous URL, or a terminal from
+    // a clone the user walked away from, never reappears against a new one.
+    setCloneUrl(""); setCloneStarted(null); setCloneLanded(false);
+    setCloneParent("");
     (async () => {
       try {
         const s = await settingsLoad();
         setReposDir(s.repos_dir || "");
+        // PROPOSE the repos folder when there is one, and leave the field
+        // empty when there is not. Nothing is invented here: a default the
+        // user never chose would be carried straight into a shell command and
+        // create a directory somewhere they did not ask for.
+        setCloneParent(s.repos_dir || "");
         if (s.repos_dir) {
           const repos = await discoverRepos(s.repos_dir);
           setDiscovered(repos.filter(r => !r.already_added));
@@ -115,7 +141,67 @@ export function NewProjectDialog() {
     return (await confirmNonGit(kind)) ? true : null;
   }
 
-  async function add(p: string, asNonGit: boolean) {
+  // The directory `git clone` will create. `null` when the URL carries no
+  // name, which leaves the field empty rather than proposing a wrong one.
+  const cloneName = repoNameFromUrl(cloneUrl);
+  const cloneDest = cloneParent.trim() && cloneName
+    ? `${cloneParent.trim().replace(/\/+$/, "")}/${cloneName}`
+    : "";
+
+  // Poll the destination while the terminal is up.
+  //
+  // This gates the Add button; it is NOT a completion signal, and it cannot
+  // be one. Measured against a real clone: `rev-parse --git-dir` (what
+  // `path_is_git_repo` runs) succeeds 6ms in, while the clone still has
+  // seconds to run, and a repo cloned from an EMPTY remote is indistinguishable
+  // from one still downloading: both have an empty `refs/` and no packs. So
+  // the honest completion signal is the user, who is watching the terminal
+  // output that is the whole reason this runs in a terminal. What the poll
+  // buys is the opposite guarantee: a typo'd URL never creates a directory,
+  // so Add stays disabled and cannot register a project that is not there.
+  useEffect(() => {
+    if (!cloneStarted) { setCloneLanded(false); return; }
+    let cancelled = false;
+    const tick = () => {
+      pathIsGitRepo(cloneStarted.dest)
+        .then(ok => { if (!cancelled) setCloneLanded(ok); })
+        .catch(() => {});
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [cloneStarted]);
+
+  async function browseCloneParent() {
+    const sel = await openDialog({ directory: true, multiple: false });
+    if (typeof sel === "string") setCloneParent(sel);
+  }
+
+  function startClone() {
+    const parent = cloneParent.trim().replace(/\/+$/, "");
+    const name = cloneName;
+    if (!parent || !name) return;
+    setErr(null);
+    // Single-quoted, because a URL can legally carry characters the shell
+    // splits on and this string is about to be typed at a real prompt. The
+    // name is `repoNameFromUrl`'s output, which already refuses anything with
+    // a separator in it.
+    const url = cloneUrl.trim().replaceAll("'", `'\\''`);
+    setCloneStarted({
+      parent,
+      dest: `${parent}/${name}`,
+      input: `git clone '${url}' ${name}`,
+    });
+  }
+
+  /** Add one path as a project.
+   *
+   *  `closeAfter` defaults to "this is the path the repo-mode field holds",
+   *  which is what it has always inferred: the discovered-list sweep adds
+   *  several and must stay open, the single typed path is done. The clone flow
+   *  passes it explicitly, because its destination is never the `path` field
+   *  and inferring would leave the dialog open on a finished one-shot. */
+  async function add(p: string, asNonGit: boolean, closeAfter?: boolean) {
     setBusy(true); setErr(null);
     try {
       const proj = await projectAdd(p, asNonGit);
@@ -143,7 +229,7 @@ export function NewProjectDialog() {
           if (!stillVisible) setFilter("");
         }
       }
-      if (p === path) close();
+      if (closeAfter ?? (p === path)) close();
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   }
 
@@ -328,9 +414,10 @@ export function NewProjectDialog() {
           and the user reads "choose one of two", not "primary CTA +
           afterthought". Two-line tiles (icon + name + descriptor) make
           the difference obvious before committing. */}
-      <div className="mb-5 grid grid-cols-2 gap-2 text-[13px]">
+      <div className="mb-5 grid grid-cols-3 gap-2 text-[13px]">
         {([
           { id: "repo",  icon: Folder, label: "Repository",  hint: "One git repo. Worktrees branch off it." },
+          { id: "clone", icon: Download, label: "Clone from URL", hint: "Clone a remote repo, then add it." },
           { id: "multi", icon: Layers, label: "Multi-repo project", hint: "Several repos in one task. Shared memory across them." },
         ] as const).map(opt => {
           const active = mode === opt.id;
@@ -339,6 +426,7 @@ export function NewProjectDialog() {
             <button
               key={opt.id}
               type="button"
+              data-testid={`project-mode-${opt.id}`}
               onClick={() => setMode(opt.id)}
               className={cn(
                 "flex flex-col items-start gap-1 rounded-md border px-3 py-2.5 text-left transition-colors",
@@ -357,7 +445,98 @@ export function NewProjectDialog() {
         })}
       </div>
 
-      {mode === "multi" ? (
+      {mode === "clone" ? (
+        <>
+          <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
+            Clones the repo in a real terminal, then adds it as a project. The
+            clone runs as you, so SSH keys, credential helpers and any
+            two-factor prompt work exactly as they do in your own shell.
+          </p>
+
+          <label className="block">
+            <span className="mb-1.5 block text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">Repository URL</span>
+            <Input
+              value={cloneUrl}
+              onChange={e => setCloneUrl(e.target.value)}
+              placeholder="git@github.com:owner/repo.git"
+              disabled={!!cloneStarted}
+              data-testid="clone-url"
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            />
+          </label>
+
+          <label className="mt-4 block">
+            <span className="mb-1.5 block text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">Clone into</span>
+            <div className="flex gap-2">
+              <Input
+                value={cloneParent}
+                onChange={e => setCloneParent(e.target.value)}
+                placeholder="/path/to/your/repos"
+                disabled={!!cloneStarted}
+                className="flex-1"
+                data-testid="clone-parent"
+                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+              />
+              <Button variant="secondary" size="lg" onClick={browseCloneParent} disabled={!!cloneStarted}>Browse…</Button>
+            </div>
+            <span className="mt-1 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
+              {cloneDest
+                ? <>Clones into <code className="mono" data-testid="clone-dest">{cloneDest}</code>.</>
+                : reposDir
+                  ? <>The folder to clone into. Pre-filled from your repos folder.</>
+                  : <>The folder to clone into. You have no repos folder set, so pick one.</>}
+            </span>
+          </label>
+
+          {cloneStarted && (
+            <div className="mt-4">
+              <div className="mb-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">Terminal</div>
+              {/* The command is TYPED, not run: `initialInput` carries no
+                  newline, so it sits at the prompt for the user to edit
+                  (--depth, --branch, a different remote) and run themselves.
+                  A form field per flag is the alternative, and the shell is
+                  already a better editor than that. */}
+              <div className="h-64 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)]" data-testid="clone-terminal">
+                <AuxTerminal
+                  taskPath={cloneStarted.parent}
+                  active={true}
+                  autoFocus
+                  initialInput={cloneStarted.input}
+                />
+              </div>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
+                Press Enter to run it. Edit it first if you need flags. Add
+                becomes available once the repo exists on disk.
+              </p>
+            </div>
+          )}
+
+          {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
+
+          <div className="mt-3 flex justify-end gap-2">
+            <Button variant="ghost" onClick={close}>Cancel</Button>
+            {!cloneStarted ? (
+              <Button
+                variant="primary"
+                disabled={!cloneDest || busy}
+                onClick={startClone}
+                data-testid="clone-start"
+              >
+                <Download className="h-4 w-4" /> Clone
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                disabled={!cloneLanded || busy}
+                onClick={() => void add(cloneStarted.dest, false, true)}
+                data-testid="clone-add"
+              >
+                <FolderPlus className="h-4 w-4" /> {busy ? "Adding…" : "Add project"}
+              </Button>
+            )}
+          </div>
+        </>
+      ) : mode === "multi" ? (
         <>
           <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
             A multi-repo project groups several repos under one task
