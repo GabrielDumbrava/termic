@@ -4,6 +4,36 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.4.5] - 2026-09-16
+
+Read a changed file as itself, and a second account that stays added.
+
+### Features
+- **Open a changed file, not just its diff.** A diff is the wrong reader for a
+  file that is mostly prose: a markdown file has no rendered preview inside one,
+  and a file added in a single commit is an unbroken wall of `+`. Every changed
+  row in Commit and Compare now opens the file itself three ways, a button on
+  the row, the context menu, or an option-click, while a plain click still
+  opens the diff. A markdown file arrives in whichever view you last read one
+  in, and the file opens into the same tab the file tree would use, so one file
+  is one tab however you got there. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+  ([#299](https://github.com/simion/termic/pull/299))
+
+### Bug fixes
+- **A second account no longer vanishes from Settings.** Adding a second login
+  to an agent worked, signed in, and ran fine, and then editing anything else
+  on the Agents page silently deleted it: the page saves the whole agent list
+  from a copy it took when it opened, and that copy predated the account. The
+  account list, the default, and the auto-switch setting went together, so the
+  switcher disappeared from the footer and "+ Second account" was offered
+  again as though nothing had been added. Adding it a second time looked like
+  it did nothing, because the next save removed it again.
+- **Reading a changed file no longer stages it.** Double-clicking the
+  mark-as-viewed eye on a changed row staged the file, because a button that
+  swallows the click still lets the row see the double-click. Reading is never
+  supposed to touch the index.
+
 ## [1.4.4] - 2026-09-15
 
 Closing an agent tab always leaves a way back, and a quieter usage chip.
