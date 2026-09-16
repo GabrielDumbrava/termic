@@ -450,6 +450,37 @@ one repo rather than three places:
   proportion to length, which crushed the shorter ref to a single character.
 - **History** — the commit graph (issue #199), full height.
 
+### Two readings of one changed file
+
+A row in Commit or Compare opens the file's DIFF on a plain click, and the
+file ITSELF three ways: a button on the row (left of the eye), the row's
+context menu ("Open file"), or an ⌥-click. Both readings select the row, so
+switching between them never loses your place in the list.
+
+The row button is not redundant with the other two. A context item and a
+modifier are both invisible at rest, so the feature did not exist for anyone
+who did not already know it was there: the first person to use it went
+looking for an icon beside the eye and found nothing. Order on the row is
+open, then viewed, then stage: navigate, judge, act. It carries the same
+quiet-until-hover treatment the eye has, so the resting row is no busier.
+
+The diff is the right default and stays it: this panel exists to show what
+changed. But it is the wrong reader often enough to need an escape hatch. A
+file added in one commit renders as an unbroken wall of `+`, which is the
+worst possible way to read a spec somebody just wrote, and a markdown file in
+a diff loses its rendered preview entirely. Opening the file goes through the
+same `openPreviewTab` the file tree uses, so a file opened from a change row
+and the same file opened from the tree are ONE tab, and a markdown file
+arrives in whatever view you last read one in (`markdownDefaultView`).
+
+Both surfaces hide it on a DELETION, following the eye: there is no
+working-tree file to open, and an editor on a path that is gone is not a
+reading of anything. That is the ONLY condition. A repo_root member's files
+open like any other group's, because `task_file_read` resolves a
+`<dir_name>/…` path inside that member's own checkout even when the checkout
+sits outside the wrapper subtree. `DiffPane`'s own "Open" button is the third way in, for
+when you are already looking at the diff.
+
 Order of the chrome above them, outermost first: repo pills (multi-repo tasks),
 then the branch bar, then the sub-tabs. Which repo you are looking at is what
 the branch and all three sub-tabs are ABOUT, so it cannot sit inside them.

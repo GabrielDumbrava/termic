@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
 
 // Git integration is central to termic (every task is a worktree/checkout).
 // This guards the Git panel: switching to it shows the working-tree status.
@@ -292,6 +292,270 @@ describe("git dirty tree", () => {
     expect(
       await browser.execute(() => localStorage.getItem("gitStagedCollapsed")),
     ).toBe("0");
+  });
+});
+
+// A diff is not always the right reader for a changed file. A doc added in
+// one commit renders as an unbroken wall of `+`, and a markdown file loses
+// its preview entirely - so every row offers the file itself as well as its
+// diff, through the context menu and an ⌥-click fast path.
+describe("git open whole file", () => {
+  let taskId!: string;
+  /** Working tree this spec dirties. Captured at describe scope so teardown
+   *  can put it back after a throw ANYWHERE in the body, not only after the
+   *  happy path: the deletion below is staged, and the next describe in this
+   *  file makes a commit, which would otherwise commit it. */
+  let root = "";
+  /** Untracked file this spec adds. The fixture seed self-heals TRACKED
+   *  paths and deliberately leaves untracked ones alone, so this is ours to
+   *  remove or the NEXT run boots on a dirty tree (see the e2e skill). */
+  let addedDoc = "";
+
+  after(async () => {
+    if (addedDoc) rmSync(addedDoc, { force: true });
+    // Idempotent and correct whether or not the deletion was ever staged:
+    // restores index and worktree from HEAD in one step, and is a no-op if
+    // the body threw before touching README at all.
+    if (root) {
+      try { execSync("git checkout -q HEAD -- README.md", { cwd: root }); } catch { /* nothing to restore */ }
+    }
+    if (taskId) await archiveTask(taskId);
+  });
+
+  /** Dispatched, not driven: a WebDriver right-click does not reach Radix's
+   *  onContextMenu in this WKWebView, so the spec goes in through the real
+   *  trigger the way files.e2e.ts does. */
+  const openRowMenu = async (testid: string, rel: string) => {
+    // Tag whatever is already on screen, so the wait below can only be
+    // satisfied by a NEW menu. Waiting for menus to DISAPPEAR does not work
+    // here: helpers' dismissOverlays neutralises a stale Radix menu rather
+    // than removing it (detaching a React-managed node tears down the root),
+    // so "no menu in the DOM" is a state the app never reliably reaches.
+    await browser.execute(() => {
+      document.querySelectorAll('[role="menu"]').forEach(m => m.setAttribute("data-e2e-stale", "1"));
+    });
+    await browser.keys(["Escape"]);
+    await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el) throw new Error(`no row ${sel}`);
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true, cancelable: true, button: 2,
+        clientX: r.left + 10, clientY: r.top + 10,
+      }));
+    }, `[data-testid="${testid}"][data-path="${rel}"]`);
+    await browser.waitUntil(async () => (await menuItems()).length > 0,
+      { timeout: 8_000, timeoutMsg: `the context menu never opened for ${rel}` });
+  };
+
+  /** Scoped to the menu holding the path items, never a bare [role="menu"]:
+   *  menus stack and a closing one can linger. Read from innerText, because
+   *  ContextMenuItem leaves `role` undefined for plain items. */
+  const menuItems = () => browser.execute(() => {
+    const menu = [...document.querySelectorAll('[role="menu"]:not([data-e2e-stale])')]
+      .find(m => (m as HTMLElement).innerText.includes("Copy path")) as HTMLElement | undefined;
+    if (!menu) return [] as string[];
+    return menu.innerText.split("\n").map(t => t.trim()).filter(Boolean);
+  }) as Promise<string[]>;
+
+  /** Local, NOT the shared helper: that one queries `[role="menuitem"]`, and
+   *  ContextMenuItem leaves `role` undefined for plain items, so the ARIA
+   *  selector matches nothing here (files.e2e.ts measured the same). */
+  const clickItem = (label: string) => browser.execute((text) => {
+    const menu = [...document.querySelectorAll('[role="menu"]:not([data-e2e-stale])')]
+      .find(m => (m as HTMLElement).innerText.includes("Copy path")) as HTMLElement | undefined;
+    if (!menu) throw new Error("the file context menu is not open");
+    // Deepest node whose own text is exactly the label, so a wrapper that
+    // merely contains it is never clicked instead.
+    const item = [...menu.querySelectorAll("*")].reverse()
+      .find(i => (i as HTMLElement).innerText?.trim() === text) as HTMLElement | undefined;
+    if (!item) throw new Error(`no menu item "${text}"`);
+    item.click();
+  }, label);
+
+  /** Every tab open on the task, as `${type}:${path}` - the assertion is
+   *  about which READER opened, so the type is the whole point. */
+  const openTabs = () => browser.execute((id) =>
+    (window.__termic!.useApp.getState().tabs[id] ?? [])
+      .filter((t: any) => t.type === "edit" || t.type === "diff")
+      .map((t: any) => `${t.type}:${t.path}`), taskId) as Promise<string[]>;
+
+  const waitForTab = async (want: string, msg: string) => {
+    try {
+      await browser.waitUntil(async () => (await openTabs()).includes(want), { timeout: 8_000 });
+    } catch {
+      // Name what DID open: "no edit tab" is a much slower thing to debug
+      // than "a diff opened instead".
+      throw new Error(`${msg} (open: ${JSON.stringify(await openTabs())})`);
+    }
+  };
+
+  it("lists a new doc and a deleted file as changes", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-git-openfile");
+
+    root = await browser.execute((id) =>
+      (window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id))!.path as string, taskId) as string;
+    // A NEW markdown file is the case that motivates the feature: its diff
+    // is every line prefixed `+`, which is the worst way to read a spec.
+    addedDoc = path.join(root, "OPENFILE-NOTES.md");
+    writeFileSync(addedDoc, "# Notes\n\nA doc that reads better as itself.\n");
+    // A DELETION is the negative case: there is no working-tree file, so
+    // there is nothing to open and the item must not be offered.
+    //
+    // Deleted in the WORKING TREE, not staged (`git rm`): a staged row
+    // renders in the Staged pane, and the preceding describe toggles that
+    // pane's collapse state, so this spec would depend on which way it was
+    // left. Both of this spec's files now live in Unstaged.
+    rmSync(path.join(root, "README.md"), { force: true });
+
+    await openRightTab("Git");
+    await selectGitView("commit");
+    // A collapsed pane renders no rows, and the collapse flag is global and
+    // outlives the describe that set it, so ask rather than assume.
+    await browser.execute(() => {
+      const h = document.querySelector('[data-testid="git-pane-header"][data-pane="unstaged"]') as HTMLElement | null;
+      if (h?.getAttribute("data-collapsed") === "true") h.click();
+    });
+    await browser.execute((id) => window.__termic!.useApp.getState().bumpGitRevision(id), taskId);
+    await waitVisible('[data-testid="git-file-row"][data-path="OPENFILE-NOTES.md"]');
+    await waitVisible('[data-testid="git-file-row"][data-path="README.md"]');
+  });
+
+  it("offers Open file on a changed row, and opens the file rather than its diff", async () => {
+    await openRowMenu("git-file-row", "OPENFILE-NOTES.md");
+    expect(await menuItems()).toContain("Open file");
+
+    await clickItem("Open file");
+    await waitForTab("edit:OPENFILE-NOTES.md", "Open file did not open an editor tab");
+
+    // The point of the feature: this is NOT the diff reader. Nothing opened
+    // a diff for the same path.
+    expect(await openTabs()).not.toContain("diff:OPENFILE-NOTES.md");
+    await snap("git-open-whole-file.png");
+  });
+
+  it("keeps the row selected so the list does not lose your place", async () => {
+    // A state attribute, not the themed border class: the promise is "the
+    // row is still the selected one", and a class string is not that.
+    const selected = await browser.execute(() =>
+      document.querySelector('[data-testid="git-file-row"][data-path="OPENFILE-NOTES.md"]')
+        ?.getAttribute("data-selected"));
+    expect(selected).toBe("true");
+  });
+
+  it("does not offer Open file for a deleted file", async () => {
+    await openRowMenu("git-file-row", "README.md");
+    const items = await menuItems();
+    // The eye is hidden on a deletion for the same reason (no working-tree
+    // content to anchor to); Open file follows it, rather than opening an
+    // editor on a path that is gone.
+    expect(items).not.toContain("Open file");
+    // Proves the menu really is this row's and really opened, so the
+    // assertion above is a real absence rather than an empty read. The path
+    // items are split in two ("Copy path" alone is not an entry), and the
+    // git actions name the pane the deletion is staged in.
+    expect(items).toContain("Copy path (relative)");
+    expect(items).toContain("Discard changes");
+    // The next case clicks a row button for real, and an open menu is
+    // hit-tested over it. dismissOverlays neutralises the menu (it cannot
+    // remove it - see openRowMenu) which is exactly what a real click needs.
+    await dismissOverlays();
+  });
+
+  it("puts an Open file button on the row itself", async () => {
+    // The affordance the maintainer went looking for first: the menu and the
+    // modifier are both invisible at rest, so the row carries the action too.
+    const btn = '[data-testid="git-file-row"][data-path="OPENFILE-NOTES.md"] button[aria-label="Open file"]';
+    await waitVisible(btn);
+
+    // Drive it from a diff, so "it opened the file" is a real transition
+    // rather than something a previous case already left on screen.
+    await browser.execute((id) => {
+      window.__termic!.useApp.getState().openPreviewTab(id, {
+        type: "diff", path: "OPENFILE-NOTES.md", title: "Δ OPENFILE-NOTES.md", scope: "unstaged",
+      });
+    }, taskId);
+    await waitForTab("diff:OPENFILE-NOTES.md", "the diff never opened to switch away from");
+
+    await clickWhenVisible(btn);
+    await waitForTab("edit:OPENFILE-NOTES.md", "the row button did not open the file");
+  });
+
+  it("does not stage the file when its row buttons are double-clicked", async () => {
+    // The row's dblclick stages, so a read-only button that stops only
+    // `click` mutates the index on the second one. Asserted through the
+    // real staged/unstaged panes, which is what the user would see.
+    const paneOf = (rel: string) => browser.execute((r) => {
+      const row = document.querySelector(`[data-testid="git-file-row"][data-path="${r}"]`);
+      return row?.getAttribute("data-pane") ?? null;
+    }, rel);
+    const dblClick = (sel: string) => browser.execute((s2) => {
+      const el = document.querySelector(s2) as HTMLElement | null;
+      if (!el) throw new Error(`no element ${s2}`);
+      el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    }, sel);
+
+    const row = '[data-testid="git-file-row"][data-path="OPENFILE-NOTES.md"]';
+    expect(await paneOf("OPENFILE-NOTES.md")).toBe("unstaged");
+
+    await dblClick(`${row} button[aria-label="Open file"]`);
+    expect(await paneOf("OPENFILE-NOTES.md")).toBe("unstaged");
+
+    // The eye had the same hole before this change, so it is pinned too.
+    await dblClick(`${row} button[aria-pressed]`);
+    expect(await paneOf("OPENFILE-NOTES.md")).toBe("unstaged");
+  });
+
+  it("has no Open file button on a deleted row", async () => {
+    const gone = await browser.execute(() =>
+      document.querySelectorAll('[data-testid="git-file-row"][data-path="README.md"] button[aria-label="Open file"]').length);
+    expect(gone).toBe(0);
+  });
+
+  it("⌥-click opens the file, plain click still opens the diff", async () => {
+    const clickRow = (rel: string, alt: boolean) => browser.execute((sel, withAlt) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el) throw new Error(`no row ${sel}`);
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent("click", {
+        bubbles: true, cancelable: true, altKey: withAlt,
+        clientX: r.left + 10, clientY: r.top + 10,
+      }));
+    }, `[data-testid="git-file-row"][data-path="${rel}"]`, alt);
+
+    // Plain click: the diff, which is what this panel is for.
+    await clickRow("OPENFILE-NOTES.md", false);
+    await waitForTab("diff:OPENFILE-NOTES.md", "a plain click did not open the diff");
+
+    // ⌥-click: the file. It recycles the same preview slot, so the diff
+    // gives way to the editor rather than both piling up.
+    await clickRow("OPENFILE-NOTES.md", true);
+    await waitForTab("edit:OPENFILE-NOTES.md", "⌥-click did not open the file");
+    await browser.waitUntil(async () => !(await openTabs()).includes("diff:OPENFILE-NOTES.md"),
+      { timeoutMsg: "the diff tab was left behind instead of being recycled" });
+  });
+
+  it("offers the same reading from the Compare tab", async () => {
+    await selectGitView("compare");
+    await waitVisible('[data-testid="compare-file-row"][data-path="OPENFILE-NOTES.md"]');
+
+    await openRowMenu("compare-file-row", "OPENFILE-NOTES.md");
+    expect(await menuItems()).toContain("Open file");
+    await clickItem("Open file");
+    await waitForTab("edit:OPENFILE-NOTES.md", "Compare's Open file did not open an editor tab");
+    await selectGitView("commit");
+  });
+
+  // The happy-path restore. `after()` repeats it as the safety net, because
+  // this `it` never runs if an earlier one throws.
+  it("restores the fixture tree", async () => {
+    execSync("git checkout -q HEAD -- README.md", { cwd: root });
+    rmSync(addedDoc, { force: true });
+    addedDoc = "";
+    await browser.execute((id) => window.__termic!.useApp.getState().bumpGitRevision(id), taskId);
+    await waitGone('[data-testid="git-file-row"][data-path="OPENFILE-NOTES.md"]', 8_000);
   });
 });
 

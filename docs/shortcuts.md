@@ -113,6 +113,14 @@ The ids are `nav-back` / `nav-forward`. They were `task-prev` / `task-next`, and
 before that `workspace-prev` / `workspace-next`; `lib/lsMigration.ts` carries a
 user's rebind across both renames.
 
+## ⌥-click on a changed file row
+
+Not a rebindable binding (it is a mouse modifier on one surface, not a
+`useShortcuts` entry): ⌥-click on a row in the Git panel's Commit or Compare
+list opens the FILE rather than its diff. The context menu's "Open file" is
+the discoverable half of the same action; see docs/ui.md, "Two readings of one
+changed file", for why the diff is not always the right reader.
+
 ## Glyphs
 
 `bindingGlyphs(b)` returns `["⌥","⇧","⌘", key]`. Help modal uses raw glyphs (⌘ ⌥ ⇧); settings editor uses `glyphLabel` (Cmd/Ctrl, Option/Alt). `isValidBinding` requires Cmd/Ctrl or Option to prevent swallowing normal typing. The top-bar command-palette button (docs/ui.md) builds its tooltip the same way, so a rebind retitles it.

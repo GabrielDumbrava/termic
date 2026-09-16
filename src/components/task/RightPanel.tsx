@@ -554,6 +554,10 @@ export function RightPanel() {
             onOpenCompareDiff={(path, sha, title) =>
               useApp.getState().openPreviewTab(task.id, { type: "diff", path, scope: `base:${sha}`, title })}
             onOpenDiff={(path, pane) => useApp.getState().openPreviewTab(task.id, { type: "diff", path, scope: pane, title: `Δ ${path.split("/").pop()}` })}
+            // No `Δ`: that prefix marks a diff tab, and this is the file
+            // itself. Same opener the file tree uses, so a file opened from
+            // here and the same file opened from the tree are one tab.
+            onOpenFile={(path) => useApp.getState().openPreviewTab(task.id, { type: "edit", path, title: path.split("/").pop() || path })}
             onDoubleClickDiff={(path) => {
               const currentTabs = useApp.getState().tabs[task.id] || [];
               const existing = currentTabs.find(t => t.type === "diff" && t.path === path);

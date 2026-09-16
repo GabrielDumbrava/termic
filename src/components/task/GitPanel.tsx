@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare, Loader2, GitBranch, GitMerge, RotateCw,
+  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare, Loader2, GitBranch, GitMerge, RotateCw, FileText,
 } from "lucide-react";
 import type { Task, GitStatus, GitRepo, GitFile, UpdateMode, UpdateInfo } from "@/lib/types";
 import { taskStage, taskUnstage, taskCommit, taskDiscard, taskGitBranches, taskGitCheckout, taskGitUpdate, taskGitUpdateInfo, taskGitPush } from "@/lib/ipc";
@@ -103,7 +103,7 @@ function readRatio(key = LS_RATIO, fallback = 0.5): number {
   return fallback;
 }
 
-export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff, onOpenCommitDiff, onOpenCompareDiff, reloadToken = 0 }: {
+export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoubleClickDiff, onOpenCommitDiff, onOpenCompareDiff, reloadToken = 0 }: {
   task: Task;
   status: GitStatus | null;
   refresh: () => void;
@@ -111,6 +111,12 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
    *  `pane` picks the diff's sides (GH #122): staged → HEAD→index,
    *  unstaged → index→worktree. */
   onOpenDiff: (path: string, pane: "unstaged" | "staged") => void;
+  /** Opens the WHOLE file (an editor tab) for a task-relative path, instead
+   *  of its diff. A diff is the wrong reader for a file that is mostly new:
+   *  a doc added in one commit renders as an unbroken wall of `+`, and a
+   *  markdown file loses its preview entirely. Same path shape as
+   *  onOpenDiff, so member repos are already prefixed. */
+  onOpenFile: (path: string) => void;
   onDoubleClickDiff: (path: string) => void;
   /** Opens a diff of one file at one revision, for the Graph section:
    *  `sha^` against `sha`, no working-tree side. */
@@ -513,6 +519,16 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
     if (clickable) onOpenDiff(dir ? `${dir}/${p}` : p, pane);
   };
 
+  // The other half of a row: open the file itself rather than its diff. The
+  // row stays selected either way, so switching between the two readings of
+  // one file never loses your place in the list. Prefixing with `dir` here
+  // (not in the row) keeps every path this panel hands out task-relative,
+  // exactly like `activate`.
+  const openWholeFile = (pane: "unstaged" | "staged", p: string) => {
+    setSelected(`${pane} ${p}`);
+    if (clickable) onOpenFile(dir ? `${dir}/${p}` : p);
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* A main checkout sits on the project's default branch by definition
@@ -671,6 +687,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
             viewMode={viewMode}
             reloadToken={reloadToken}
             onOpenDiff={(path, sha, title) => onOpenCompareDiff?.(path, sha, title)}
+            onOpenFile={onOpenFile}
           />
         ) : (<>
         <Pane
@@ -681,6 +698,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
           taskId={task.id} viewedCount={countViewed(unstaged)}
           headerAction={unstaged.length > 0 ? { label: "Stage all", onClick: () => doStage(unstaged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("unstaged", p)}
+          onRowOpenFile={(p) => openWholeFile("unstaged", p)}
           onToggle={doStage}
           onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "unstaged" } : undefined)}
           rowActionIcon="down"
@@ -701,6 +719,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
           taskId={task.id} viewedCount={countViewed(staged)}
           headerAction={staged.length > 0 ? { label: "Unstage all", onClick: () => doUnstage(staged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("staged", p)}
+          onRowOpenFile={(p) => openWholeFile("staged", p)}
           onToggle={doUnstage}
           onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "staged" } : undefined)}
           rowActionIcon="up"
@@ -1049,6 +1068,8 @@ interface PaneProps {
   viewedCount?: number;
   headerAction?: { label: string; onClick: () => void };
   onRowClick: (path: string) => void;
+  /** Open the whole file (editor tab) for one repo-relative path. */
+  onRowOpenFile: (path: string) => void;
   /** Stage (unstaged pane) or unstage (staged pane) the given paths.
    *  Accepts many so a directory row can act on its whole subtree. */
   onToggle: (paths: string[]) => void;
@@ -1069,7 +1090,7 @@ interface PaneProps {
 
 function Pane({
   title, files, pane, viewMode, collapsed, setCollapsed, paneCollapsed, onTogglePane, clickable, selectedKey, stageGlyph,
-  taskId, viewedCount = 0, headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, truncated, className, style,
+  taskId, viewedCount = 0, headerAction, onRowClick, onRowOpenFile, onToggle, onDiscard, rowActionIcon, root, repoDir, truncated, className, style,
 }: PaneProps) {
   return (
     <div className={cn("flex flex-col overflow-hidden", className)} style={style}>
@@ -1120,7 +1141,7 @@ function Pane({
               files={files} pane={pane} viewMode={viewMode}
               collapsed={collapsed} setCollapsed={setCollapsed} clickable={clickable}
               selectedKey={selectedKey} stageGlyph={stageGlyph} taskId={taskId}
-              onRowClick={onRowClick}
+              onRowClick={onRowClick} onRowOpenFile={onRowOpenFile}
               onToggle={onToggle} onDiscard={onDiscard} rowActionIcon={rowActionIcon}
               root={root} repoDir={repoDir}
             />
@@ -1181,6 +1202,7 @@ function rowProps(p: FileListProps) {
     taskId: p.taskId,
     clickable: p.clickable,
     onClick: p.onRowClick,
+    onOpenFile: p.onRowOpenFile,
     onToggle: p.onToggle,
     onDiscard: p.onDiscard,
     rowActionIcon: p.rowActionIcon,
@@ -1495,9 +1517,12 @@ function TreeView(props: FileListProps) {
 // ── row ──
 // Single click selects (highlight + persistent action button) and opens
 // the diff preview. Double click stages / unstages (same as the trailing
-// arrow button). The arrow + the staging double-click work even on
-// non-clickable repo_root rows (no diff there, but staging is fine).
-function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId, clickable, onClick, onToggle, onDiscard, rowActionIcon, root, repoDir }: {
+// arrow button). `clickable` is `!!repo` — a task with no git repo at all,
+// which renders no rows anyway. It is NOT about repo_root members: those are
+// diffable and openable like any other group (see `clickable` above and
+// resolve_task_git_path), and a stale comment here claiming otherwise is
+// what talked a later reader into gating Open file on it.
+function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId, clickable, onClick, onOpenFile, onToggle, onDiscard, rowActionIcon, root, repoDir }: {
   file: GitFile;
   label: string;
   depth?: number;
@@ -1507,6 +1532,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
   taskId: string;
   clickable: boolean;
   onClick: (p: string) => void;
+  onOpenFile: (p: string) => void;
   onToggle: (paths: string[]) => void;
   onDiscard: (paths: string[]) => void;
   rowActionIcon: "up" | "down";
@@ -1537,6 +1563,15 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
     e.stopPropagation();
     useFileViewed.getState().toggle(taskId, fullPath, file.fp);
   };
+  // Same condition as the eye: a deletion has no working-tree file to open.
+  //
+  // NOT also gated on `clickable`. That reads like the careful choice and is
+  // the wrong one: `clickable` is `!!repo` (no git repo at all), which is
+  // nothing to do with repo_root members, and `task_file_read` resolves a
+  // `<dir_name>/…` path inside the member's own checkout even when that
+  // checkout lives outside the wrapper. A repo-less task renders no rows to
+  // gate anyway, so the extra condition only ever misled a reader.
+  const canOpenFile = canView;
   return (
     <ContextMenuRoot>
       <ContextMenuTrigger asChild>
@@ -1557,7 +1592,16 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
       data-testid="git-file-row"
       data-pane={pane}
       data-path={file.path}
-      onClick={() => onClick(file.path)}
+      // The row highlight is the feature's "you did not lose your place"
+      // promise, and it is carried by a themed border class. A state
+      // attribute is what a spec can assert without pinning a class string.
+      data-selected={selected}
+      // ⌥-click reads the file instead of its diff. Plain click keeps
+      // opening the diff, which is what this panel is for; the modifier is
+      // the fast path for the case where the diff is the wrong reader (a
+      // new doc, a rewritten markdown file), and the context menu is the
+      // discoverable one.
+      onClick={(e) => (canOpenFile && e.altKey ? onOpenFile(file.path) : onClick(file.path))}
       onDoubleClick={() => onToggle([file.path])}
     >
       <span
@@ -1578,10 +1622,37 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
           </span>
         </Tip>
       )}
+      {canOpenFile && (
+        <Tip side="left" content="Open the file (⌥-click the row)">
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenFile(file.path); }}
+            // The row's dblclick STAGES, and a button that stops only
+            // `click` still lets the second one through: double-clicking a
+            // read-only action would quietly mutate the index. Reading a
+            // file must never stage it, however fast you click.
+            onDoubleClick={(e) => e.stopPropagation()}
+            aria-label="Open file"
+            // Left of the eye: this navigates, the eye records a judgement,
+            // the arrow acts on the index. Same quiet-until-hover treatment
+            // as the eye, so a third control does not make the resting row
+            // any busier than it already was.
+            className={cn(
+              "flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded transition-colors",
+              "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+              selected ? "opacity-100" : "opacity-30 group-hover:opacity-100",
+            )}
+          >
+            <FileText className="h-3.5 w-3.5" />
+          </button>
+        </Tip>
+      )}
       {canView && (
         <Tip side="left" content={viewed ? "Mark as not viewed" : "Mark as viewed"}>
           <button
             onClick={toggleViewed}
+            // Same hole as the Open file button above, and it predates it:
+            // a double-click on the eye staged the file through the row.
+            onDoubleClick={(e) => e.stopPropagation()}
             aria-pressed={viewed}
             // An eye, not a checkbox: a tickbox next to the stage arrow reads
             // as "stage this" (every git client uses checkboxes for staging).
@@ -1635,6 +1706,12 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
           <Trash2 />
           Discard changes
         </ContextMenuItem>
+        {canOpenFile && (
+          <ContextMenuItem onSelect={() => onOpenFile(file.path)}>
+            <FileText />
+            Open file
+          </ContextMenuItem>
+        )}
         {canView && (
           <ContextMenuItem onSelect={() => useFileViewed.getState().toggle(taskId, fullPath, file.fp)}>
             <Check />

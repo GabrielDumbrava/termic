@@ -75,6 +75,21 @@
   managed paths above count), so this cannot be reproduced without root or an
   org account.
 
+## A row button that stops only `click` still fires the row's dblclick
+
+The Git panel's file row stages on `onDoubleClick`, so a button inside it
+that calls `e.stopPropagation()` in its `onClick` is only half-guarded: the
+first click is contained, and the `dblclick` event that follows the second
+one bubbles to the row and mutates the index. A read-only control (Open
+file, the mark-as-viewed eye) then stages or unstages the file as a side
+effect of being double-clicked, which nothing in the UI suggests.
+
+`click` and `dblclick` are separate events, so containing one says nothing
+about the other. Any button living inside a row that acts on double-click
+needs `onDoubleClick={e => e.stopPropagation()}` as well. The eye shipped
+with this hole and it went unnoticed until the Open file button was added
+beside it and a reviewer asked what a double-click there would do.
+
 ## Korean IME input can delete preceding text
 
 For modeless Korean input in WKWebView, xterm 5.5 drops `insertText`
