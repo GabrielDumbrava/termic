@@ -58,14 +58,21 @@ function accountsFor(agent: string): Promise<any> {
 /** The open usage panel sits wholly inside the window and ABOVE its chip.
  *  Measured rather than eyeballed: a panel whose content arrives after it
  *  opens can be placed for its empty size and then grow off the bottom. */
-async function panelGeometry(): Promise<{ inside: boolean; aboveChip: boolean }> {
+async function panelGeometry(): Promise<{ inside: boolean; aboveChip: boolean; detail?: string }> {
   return await browser.execute(() => {
     const panel = document.querySelector('[data-testid="usage-detail"]')?.parentElement;
-    const chip = document.querySelector('[data-testid="usage-chip"]');
-    if (!panel || !chip) return { inside: false, aboveChip: false };
+    // The chip that PAINTS: every task the user visited stays mounted with a
+    // footer of its own, and the first match in the DOM can be a hidden one.
+    const chip = [...document.querySelectorAll('[data-testid="usage-chip"]')]
+      .find(el => el.getClientRects().length > 0);
+    if (!panel || !chip) return { inside: false, aboveChip: false, detail: `panel=${!!panel} chip=${!!chip}` };
     const p = panel.getBoundingClientRect();
     const c = chip.getBoundingClientRect();
-    return { inside: p.top >= 0 && p.bottom <= window.innerHeight, aboveChip: p.bottom <= c.top + 1 };
+    const inside = p.top >= 0 && p.bottom <= window.innerHeight;
+    const aboveChip = p.bottom <= c.top + 1;
+    return inside && aboveChip
+      ? { inside, aboveChip }
+      : { inside, aboveChip, detail: `panel=${Math.round(p.top)}..${Math.round(p.bottom)} chip.top=${Math.round(c.top)} vh=${window.innerHeight}` };
   });
 }
 
@@ -823,7 +830,9 @@ describe("agent credentials", () => {
     // so "unknown" has two different causes and two different next steps.
     await resetUsage();
     await browser.execute(async (a) => {
-      try { await window.__termic!.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+      const t = window.__termic!;
+      try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+      await t.useApp.getState().refreshAgentHooks();
     }, FAKE_CLAUDE);
     const taskId = await openTaskWith(FAKE_CLAUDE, "usage-hooks");
     try {
@@ -832,8 +841,9 @@ describe("agent credentials", () => {
       const missing = await browser.execute(() =>
         document.querySelector('[data-testid="usage-unknown-detail"]')?.textContent ?? "");
       expect(missing).toMatch(/must have hooks enabled and a first response/i);
-      await browser.pause(400);
-      expect(await panelGeometry()).toEqual({ inside: true, aboveChip: true });
+      // Measured on the frame the content is there, not after a settle: the
+      // bug was a panel placed for its empty size that grew afterwards.
+      expect(await panelGeometry()).toMatchObject({ inside: true, aboveChip: true });
       await snap("usage-unknown-no-hooks.png");
 
       // To Settings, onto the hooks block, and the popover does not linger.
@@ -854,8 +864,12 @@ describe("agent credentials", () => {
       await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
 
       // Hooks in: the button goes, the message is about the first reply.
-      await browser.execute(async (a) =>
-        await window.__termic!.invoke("agent_hooks_install", { agentId: a }), FAKE_CLAUDE);
+      // Settings refreshes the installed flag right after it writes; mirrored.
+      await browser.execute(async (a) => {
+        const t = window.__termic!;
+        await t.invoke("agent_hooks_install", { agentId: a });
+        await t.useApp.getState().refreshAgentHooks();
+      }, FAKE_CLAUDE);
       await clickWhenVisible('[data-testid="usage-chip"]');
       await waitVisible('[data-testid="usage-unknown-detail"][data-usage-hooks="active"]');
       const active = await browser.execute(() => ({
@@ -864,12 +878,15 @@ describe("agent credentials", () => {
       }));
       expect(active.text).toMatch(/appears after a first message/i);
       expect(active.button).toBe(false);
-      await browser.pause(400);
-      expect(await panelGeometry()).toEqual({ inside: true, aboveChip: true });
+      // Measured on the frame the content is there, not after a settle: the
+      // bug was a panel placed for its empty size that grew afterwards.
+      expect(await panelGeometry()).toMatchObject({ inside: true, aboveChip: true });
       await snap("usage-unknown-hooks-active.png");
     } finally {
       await browser.execute(async (a) => {
-        try { await window.__termic!.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+        const t = window.__termic!;
+        try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+        await t.useApp.getState().refreshAgentHooks();
       }, FAKE_CLAUDE);
       await removeTask(taskId);
       await resetUsage();
@@ -882,7 +899,9 @@ describe("agent credentials", () => {
     // label for it, and should keep a way back to installing them.
     await resetUsage();
     await browser.execute(async (a) => {
-      try { await window.__termic!.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+      const t = window.__termic!;
+      try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+      await t.useApp.getState().refreshAgentHooks();
     }, FAKE_CLAUDE);
     const taskId = await openTaskWith(FAKE_CLAUDE, "usage-dismiss");
     try {

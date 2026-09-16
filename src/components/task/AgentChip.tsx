@@ -428,7 +428,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
       >
         <UsageDetail
           agentId={agentId} entry={entry} level={level} driver={driver} spend={spend}
-          unknown={unknown} docker={docker}
+          unknown={unknown}
           accountsView={accountsView} refreshAccounts={refreshAccounts}
           onNavigate={() => setDetailOpen(false)}
         />
@@ -454,7 +454,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
  *  used, resets Wed 10:00 Reported by the agent as it works."), which is
  *  unreadable at exactly the moment you went looking for it. Rows, a bar per
  *  window, and the reset clock in its own column. */
-function UsageDetail({ agentId, entry, level, driver, spend, unknown, docker, accountsView, refreshAccounts, onNavigate }: {
+function UsageDetail({ agentId, entry, level, driver, spend, unknown, accountsView, refreshAccounts, onNavigate }: {
   agentId: string;
   /** Undefined for an account that has never reported: the panel is then
    *  purely the credentials half, and the usage rows are skipped rather than
@@ -467,8 +467,6 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, docker, ac
   spend: number;
   /** The agent can report usage and has not yet: the panel explains why. */
   unknown: boolean;
-  /** Which install of the hooks this task runs under. */
-  docker: boolean;
   accountsView: AgentAccountsView | null;
   refreshAccounts: () => void;
   /** Close the popover: a row that navigates away must not leave it hanging
@@ -500,7 +498,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, docker, ac
 
       <div className="flex flex-col gap-2.5 px-3 py-2.5">
         {unknown ? (
-          <UsageUnknown agentId={agentId} docker={docker} onNavigate={onNavigate} />
+          <UsageUnknown agentId={agentId} onNavigate={onNavigate} />
         ) : !entry ? null : (entry.session || entry.weekly) ? (
           <>
             <UsageRow label={words.label} sub={words.sub} window={entry.session}
@@ -605,34 +603,23 @@ function UsageRisingIcon(props: React.SVGProps<SVGSVGElement>) {
  *
  *  claude's feed rides the status line the agent hooks install, so the answer
  *  turns on whether THIS agent's hooks are in: a clone relocates its config
- *  dir and needs its own install. Asked only when the panel opens, so a footer
- *  that nobody clicks costs no IO. codex and devin are asked by termic and
- *  need no hooks, so they never get the hooks advice. */
-function UsageUnknown({ agentId, docker, onNavigate }: {
+ *  dir and needs its own install. codex and devin are asked by termic and need
+ *  no hooks, so they never get the hooks advice. */
+function UsageUnknown({ agentId, onNavigate }: {
   agentId: string;
-  docker: boolean;
   onNavigate: () => void;
 }) {
   const agents = useApp(a => a.agents);
   const base = builtinBaseId(agentId, agents);
   const display = agentDisplayName(agentId, agents);
-  // null while asking. `undefined` never: an answer that failed reads as
-  // "not active", which offers the one step that can fix it.
-  const [hooks, setHooks] = useState<{ active: boolean; disabledAll: boolean } | null>(null);
+  // From the store, not an IPC on open. Asking `agent_hooks_status` when the
+  // panel opened rendered it empty first and then grew it, so it was placed
+  // for the empty size and could land clipped at the bottom of the window.
+  // Settings refreshes this right after it installs or removes hooks, and the
+  // chip already reads the same flag to decide whether a dismissal holds.
+  const hooksActive = useApp(s => s.agentHooksInstalled[agentId] === true);
   const dismissed = useUsageUnknownDismissed(s => s.byAgent[agentId] === true);
   const setDismissed = useUsageUnknownDismissed(s => s.setDismissed);
-  useEffect(() => {
-    if (base !== "claude") return;
-    let cancelled = false;
-    ipc.agentHooksStatus(agentId)
-      .then(st => {
-        if (cancelled) return;
-        const t = docker ? st.docker : st.host;
-        setHooks({ active: t.ours_present && !t.disabled_all, disabledAll: t.disabled_all });
-      })
-      .catch(() => { if (!cancelled) setHooks({ active: false, disabledAll: false }); });
-    return () => { cancelled = true; };
-  }, [agentId, base, docker]);
 
   if (base !== "claude") {
     return (
@@ -642,8 +629,7 @@ function UsageUnknown({ agentId, docker, onNavigate }: {
       </div>
     );
   }
-  if (!hooks) return null;
-  if (hooks.active) {
+  if (hooksActive) {
     return (
       <div data-testid="usage-unknown-detail" data-usage-hooks="active" className="flex flex-col gap-1 text-[var(--color-fg-dim)]">
         <p>The usage appears after a first message is received from the agent.</p>
@@ -656,11 +642,6 @@ function UsageUnknown({ agentId, docker, onNavigate }: {
   return (
     <div data-testid="usage-unknown-detail" data-usage-hooks="missing" className="flex flex-col gap-2 text-[var(--color-fg-dim)]">
       <p>To see usage you must have hooks enabled and a first response from the agent.</p>
-      {hooks.disabledAll && (
-        <p className="text-[var(--color-fg-faint)]">
-          Hooks are turned off in this agent's own settings (<code className="font-mono">disableAllHooks</code>).
-        </p>
-      )}
       {/* To Settings, not an install from here: the hooks block shows exactly
           which files it will write before it writes them, and a button in a
           footer popover would skip that. */}

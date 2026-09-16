@@ -716,8 +716,10 @@ AGENT'S OWN config dir: a clone relocates it, and asking about the base read
 Short of a blocker, an agent that can report usage (`reports_usage`) and has
 not yet shows "Usage unknown" rather than nothing. Nothing at all read as a
 feature that does not apply, and it was indistinguishable from a clone whose
-hooks were never installed. Its panel says which of the two it is, asking
-`agent_hooks_status` for that agent (Docker or host) only when opened: without
+hooks were never installed. Its panel says which of the two it is from `agentHooksInstalled` in the app
+store, which Settings refreshes as it installs or removes hooks. Not an IPC on
+open: that rendered the panel empty, placed it for that size and then grew it,
+which could clip it at the bottom of the window. Without
 hooks it says usage needs hooks and a first response and offers "Install
 hooks", which opens the hooks block in Settings rather than writing from the
 footer, because that block shows what it will write first; with hooks it says
