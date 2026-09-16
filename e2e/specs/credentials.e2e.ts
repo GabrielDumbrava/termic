@@ -1104,6 +1104,53 @@ describe("agent credentials", () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings?.());
     await dismissOverlays();
   });
+
+  it("keeps the account list when another Settings section saves after it changed", async () => {
+    // Last in the file on purpose: it clears the account list, and the cases
+    // above build on the list the earlier ones left.
+    //
+    // Reported: the footer switcher vanished and the agent's account list was
+    // gone from settings.json. General, Tasks, Sandbox and Docker save the
+    // WHOLE settings object from a snapshot taken when the section mounted,
+    // and that object carries the agent registry. An account added after the
+    // snapshot was written back out of existence by the next save.
+    await clearAccounts(AGENT);
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
+    await waitVisible('[data-testid="general-browser-preset"]');
+    // General has read its snapshot. Now an account arrives from elsewhere
+    // (the footer panel, another window, the Agents section).
+    await addAccounts(AGENT);
+    expect((await accountsFor(AGENT)).accounts.map((a: any) => a.name)).toEqual(["Personal", "Work", "Client"]);
+
+    // Save an unrelated field in General through its own UI.
+    const picked = await browser.execute(() => {
+      const sel = document.querySelector('[data-testid="general-browser-preset"]') as HTMLSelectElement;
+      const opt = [...sel.options].find(o => o.value && o.value !== sel.value);
+      if (!opt) return null;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(sel, opt.value);
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      return opt.value;
+    });
+    expect(picked).toBeTruthy();
+    await clickWhenVisible('[data-testid="general-browser-save"]');
+    await browser.waitUntil(async () => await browser.execute(async () =>
+      (await window.__termic!.ipc.settingsLoad()).preview_browser !== ""),
+      { timeout: 5_000, timeoutMsg: "the General save never landed" });
+
+    const after = await accountsFor(AGENT);
+    expect(after.accounts.map((a: any) => a.name)).toEqual(["Personal", "Work", "Client"]);
+    expect(after.accounts.find((a: any) => a.isDefault)?.name).toBe("Work");
+
+    // Put the field back and leave the section.
+    await browser.execute(async () => {
+      const t = window.__termic!;
+      const cur = await t.ipc.settingsLoad();
+      await t.ipc.settingsSave({ ...cur, preview_browser: "" });
+      t.useApp.getState().closeSettings();
+    });
+    await clearAccounts(AGENT);
+  });
 });
 
 /** Open Settings -> Agents. Each case does this rather than relying on the

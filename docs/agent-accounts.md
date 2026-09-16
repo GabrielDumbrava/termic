@@ -127,6 +127,18 @@ built from CLI detection and has the same problem. This is the same loss the
 TypeScript did not know about; `carriedOver` in `AgentsSection.tsx` is that
 earlier repair, and it is now belt and braces.
 
+**`settings_save` had the same hole, and it is the wider one.** It receives the
+WHOLE `Settings`, agent registry included, and General, Tasks, Sandbox and
+Docker build that object as `{ ...settings, field }` from a snapshot taken when
+the section mounted. So after the `agents_save` fix, an account added from the
+footer panel or the Agents section was still deleted by the next save of an
+unrelated field anywhere else in Settings: saving the browser in General emptied
+a three-account list (`credentials.e2e.ts` reproduces it). The registry cannot
+be ignored on that path, because Docker writes `docker_env` through it, so
+`settings_save` applies the same by-id carry (`keep_disk_account_fields`).
+Only the four account fields are protected; the rest of a stale agent entry is
+still written back, which is the general snapshot problem those sections have.
+
 ## Resolution, and where it is applied
 
 ```
