@@ -7,7 +7,7 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, SquareTerminal, Container, UsersRound } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, ListTodo, Bell, ShieldCheck, SquareTerminal, Container, UsersRound, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -185,16 +185,46 @@ export function Settings() {
  *  overlay's z-40. */
 function RailFooterVersion() {
   const version = useUpdate(s => s.currentVersion);
+  // Only while a check is in flight. The RESULT goes to a toast, matching the
+  // command palette's "Check for updates" exactly: two surfaces for one action
+  // that reported differently would read as two different actions.
+  const [checking, setChecking] = useState(false);
   if (!version) return null;
+  async function checkForUpdates() {
+    if (checking) return;
+    setChecking(true);
+    try {
+      const r = await useUpdate.getState().checkNow();
+      useUI.getState().pushToast(
+        r === "available" ? "Update available" : r === "error" ? "Update check failed" : "You're up to date",
+        r === "error" ? "error" : "success",
+      );
+    } finally {
+      setChecking(false);
+    }
+  }
   return (
-    <div className="mt-2 shrink-0 border-t border-[var(--color-border-soft)] pt-2">
+    <div className="mt-2 flex shrink-0 items-center gap-1 border-t border-[var(--color-border-soft)] pt-2">
       <button
         data-testid="settings-version"
         onClick={() => useUI.getState().openChangelog()}
         title="View the changelog"
-        className="w-full rounded-md px-2.5 py-1.5 text-left text-[11.5px] tabular-nums text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg-dim)]"
+        className="min-w-0 flex-1 rounded-md px-2.5 py-1.5 text-left text-[11.5px] tabular-nums text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg-dim)]"
       >
         Termic {version}
+      </button>
+      {/* Icon only: the row is the version line, and a labelled button here
+          would compete with it for a rail this narrow. The title carries the
+          name for anyone hovering or using a screen reader. */}
+      <button
+        data-testid="settings-check-updates"
+        onClick={() => void checkForUpdates()}
+        disabled={checking}
+        title="Check for updates"
+        aria-label="Check for updates"
+        className="shrink-0 rounded-md p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg-dim)] disabled:opacity-60"
+      >
+        <RefreshCw className={cn("h-3.5 w-3.5", checking && "animate-spin")} />
       </button>
     </div>
   );

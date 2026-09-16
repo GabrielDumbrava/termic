@@ -401,6 +401,53 @@ describe("settings rail", () => {
     );
   });
 
+  // The same action the command palette offers, on the row where the user is
+  // already looking at their version number.
+  it("checks for updates from the version row and reports the outcome", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
+    await waitVisible('[data-testid="settings-check-updates"]');
+
+    // Icon-only control: the accessible name is the only name it has, so it is
+    // worth pinning. Losing it leaves a button nobody can identify.
+    const label = await browser.execute(() =>
+      document.querySelector('[data-testid="settings-check-updates"]')!.getAttribute("aria-label"));
+    expect(label).toBe("Check for updates");
+
+    await clickWhenVisible('[data-testid="settings-check-updates"]');
+
+    // Every outcome reports: available, up to date, or the check failed. Which
+    // one depends on what the updater can reach from this machine, so the
+    // assertion is that the user is TOLD, not which answer they got. A silent
+    // button is the regression worth catching.
+    await browser.waitUntil(
+      async () => {
+        const txt = await browser.execute(() => document.body.innerText);
+        return /Update available|You're up to date|Update check failed/.test(txt);
+      },
+      { timeout: 20_000, timeoutMsg: "checking for updates reported nothing to the user" },
+    );
+
+    // The spinner stops and the control comes back, so a second check is
+    // possible without reopening settings.
+    await browser.waitUntil(
+      async () => !(await browser.execute(() =>
+        (document.querySelector('[data-testid="settings-check-updates"]') as HTMLButtonElement).disabled)),
+      { timeout: 20_000, timeoutMsg: "the check-for-updates button never re-enabled" },
+    );
+
+    // Let the toast go before handing the window to the next test. It is an
+    // overlay, and an overlay left up is how an earlier spec breaks a later
+    // one: the next case in this file waits on an agent row becoming VISIBLE,
+    // and a toast sitting over it fails that while the row is perfectly
+    // present. This case passed alone and took that one down in a full suite.
+    await browser.waitUntil(
+      async () => !(await browser.execute(() =>
+        /Update available|You're up to date|Update check failed/.test(document.body.innerText))),
+      { timeout: 20_000, timeoutMsg: "the update toast never cleared" },
+    );
+    await dismissOverlays();
+  });
+
   // A rail entry whose tab id has no route in Settings.tsx renders an empty
   // pane: the click "works", the page is blank. Walk the rail from the DOM
   // (not a hard-coded list) so a future entry is covered the day it is added.

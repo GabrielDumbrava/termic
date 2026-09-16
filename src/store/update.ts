@@ -38,7 +38,7 @@ import { getVersion } from "@tauri-apps/api/app";
 // by CI on release.
 const CHANGELOG_URL = "https://termic.dev/updates/changelog.json";
 const CHANGELOG_MD_URL = "https://termic.dev/updates/changelog.md";
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1h
 
 // localStorage keys. Kept here (not in prefs.ts) because this is app
 // state, not a user-facing Settings preference.
