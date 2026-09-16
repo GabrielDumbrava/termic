@@ -65,9 +65,12 @@ A scheduler does not reimplement any of that. It calls it.
 ## Constraints (not open questions)
 
 1. **No daemon.** The app is entirely on-device and adding a background
-   service is out (see CLAUDE.md). The honest ceiling is therefore "fires
-   while termic is running". Anything stronger means a user-installed
-   launchd agent, which is a documentation answer, not a code answer.
+   service is out (see CLAUDE.md). A schedule fires only while termic is
+   running, and that is the design, not a limitation to be worked around
+   later. **Headless scheduling is the CLI's job**: a user who needs a
+   prompt delivered with the app closed writes a launchd agent around
+   `termic send`, and that is a documentation answer, not a missing
+   feature. Nothing in this feature should try to close that gap.
 2. **The UI must not lie about that ceiling.** If the picker says "in 1
    week" and the app is closed on that day, the user has to already know
    what happens. This is a copy problem as much as a code one.
@@ -83,27 +86,31 @@ A scheduler does not reimplement any of that. It calls it.
    not `global_dir()`, like `tasks/` and `settings.json`. A schedule
    targets a task, and tasks are profile-scoped.
 
+## Decided: a fire that came due while the app was closed
+
+**It fires on next launch, as soon as the app comes up.** A week-out
+schedule is more likely than not to come due while termic is closed, so
+this is the case that decides whether the feature is useful at all, and a
+late delivery beats a dropped one: for the stated use case, reading the
+release logs three days later is still worth doing. Dropping it silently
+is the worst available answer, and asking on launch puts a decision in
+front of someone who just wanted their app open.
+
+The delay should be visible where the prompt lands, so a late fire reads
+as late rather than as the app having sat on it.
+
+One consequence to build for rather than rediscover: if several schedules
+came due while the app was closed, launch fires all of them, and each one
+can spawn an agent. A cold start that opens five agents at once is a bad
+morning. The fire pass needs a cap, or staggering, or both, and that is an
+implementation detail of this decision, not a reopening of it.
+
 ## The open design questions
 
 These are the reason this is an idea and not a plan. None of them is
 answered by picking a library.
 
-### 1. A fire that came due while the app was closed
-
-The central question, and the one the reporter will actually feel, since a
-week-out schedule is more likely than not to come due while termic is not
-running. Three defensible answers:
-
-- **Fire on next launch, with a visible "this was due 3 days ago" note.**
-  Most useful for the stated use case (read the release logs), least
-  surprising if the delay is visible.
-- **Drop it and tell the user.** Safest, most useless.
-- **Ask.** A modal on launch is hostile, but a non-blocking card is not.
-
-Note the second-order problem: firing on launch means an app start can
-spawn N agents at once. That needs a cap, or a staged rollout, or both.
-
-### 2. The target task no longer exists
+### 1. The target task no longer exists
 
 Archived, deleted, or its worktree removed by hand. Archiving is
 recoverable and a scheduled prompt about a release is plausibly still
@@ -111,14 +118,14 @@ wanted after one, so "silently drop on archive" is probably wrong, but
 "restore the task to deliver" is certainly wrong. Most likely answer: keep
 the schedule, skip the fire, surface it.
 
-### 3. Where a pending schedule is visible and cancellable
+### 2. Where a pending schedule is visible and cancellable
 
 A schedule that fires in a week and cannot be found in the meantime is a
 trap. It needs a list surface. Candidates: the task menu, a sidebar
 affordance, or a Settings section. This is the bulk of the UI work, and
 the part the request does not mention at all.
 
-### 4. Recurrence semantics (if cron is in scope at all)
+### 3. Recurrence semantics (if cron is in scope at all)
 
 - What happens when a run is still working and the next one comes due?
   Skip, queue, or run concurrently in a second tab?
@@ -136,25 +143,28 @@ One-shot only. Explicitly cut recurrence.
   Rust CRUD commands.
 - A single ticker as described above; a due pass calls the existing
   `sendPromptHandler` path, which already spawns unattended and unfocused.
+- A catch-up pass on launch, firing everything that came due while the app
+  was closed, capped or staggered so a cold start cannot open five agents
+  at once.
 - A creation surface offering relative presets (in 1 hour / tomorrow / in
   a week) plus an absolute date, with one line of copy stating the "only
-  while termic is running" ceiling.
+  while termic is running" ceiling and pointing at the CLI for headless.
 - A list surface showing pending schedules with a cancel affordance.
 - Docs: `data-model.md` gets the new entity, `ipc.md` gets the commands,
-  and an e2e spec covers create, fire, and cancel.
+  and an e2e spec covers create, fire, cancel, and the catch-up pass.
 
-Rough cost: a day for the one-shot feature if the missed-fire question is
-answered first, and rather more than that if it is not. The recurrence
-variant is a separate piece of work with its own design pass, not a flag
-on this one.
+Rough cost: about a day for the one-shot feature. The recurrence variant
+is a separate piece of work with its own design pass, not a flag on this
+one.
 
-## What a user can do today
+## Headless is the CLI's job
 
-The shipped CLI already covers the use case, minus the convenience. A
-launchd agent (or `at`) running:
+Not a workaround, the answer. A user who needs a prompt delivered with the
+app closed writes a launchd agent (or `at`) around:
 
     open -a Termic && "$TERMIC_CLI" send my-task --resume -p "check the release logs for ..."
 
-delivers the prompt, starting the agent if it is not running. The same
-"app has to come up" caveat applies, which is the point: the in-app
-version would be more discoverable, not more capable.
+which starts the agent if it is not running and delivers the prompt. The
+in-app feature is for discoverability, not capability: it saves writing a
+plist, and it deliberately does not try to reach further than the running
+app.
