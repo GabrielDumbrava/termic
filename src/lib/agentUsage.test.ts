@@ -4,6 +4,7 @@ import {
   usageLevel, drivingWindow, shortWindowWords, USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
   blocksUsageFeed, statusLineAgentPrompt, type StatusLineOwner,
 } from "./agentUsage";
+import { firstPollDelay } from "@/store/agentUsage";
 import { HOOK_OSC_BODY, HOOK_OSC_READY_BODY, parseNotifyBody, hookOscHandlerData } from "./agentHooks";
 import { useAgentUsage, usageKey, foldCost, costTotal, costChipVisible, type UsageEntry } from "@/store/agentUsage";
 
@@ -621,5 +622,42 @@ describe("the short window's name", () => {
     // it leads with.
     expect(shortWindowWords("devin").chip).toBe("day");
     expect(shortWindowWords("devin").label).toBe("Daily");
+  });
+});
+
+describe("firstPollDelay (the pull cadence follows the reading, not the mount)", () => {
+  const MS = 120_000;
+  const rpc = (updatedAt: number) => ({ updatedAt, source: "rpc" as const });
+
+  it("asks immediately when nothing has been fetched for this credential", () => {
+    expect(firstPollDelay(undefined, 1_000_000, MS)).toBe(0);
+  });
+
+  it("waits out the remainder when another task already fetched it", () => {
+    // 30s old: the number is shared, so this task owes only the other 90s.
+    expect(firstPollDelay(rpc(1_000_000 - 30_000), 1_000_000, MS)).toBe(90_000);
+  });
+
+  it("asks immediately once the shared reading is older than the interval", () => {
+    expect(firstPollDelay(rpc(1_000_000 - MS), 1_000_000, MS)).toBe(0);
+    expect(firstPollDelay(rpc(1_000_000 - MS * 3), 1_000_000, MS)).toBe(0);
+  });
+
+  it("never delays longer than the interval it is bounded by", () => {
+    // A clock that stepped backwards reads as a negative age. Treated as
+    // fresh, not as a reason to schedule beyond the staleness ceiling.
+    expect(firstPollDelay(rpc(1_000_000 + 60_000), 1_000_000, MS)).toBe(MS);
+  });
+
+  it("ignores a pushed reading, which is not evidence a pull would agree", () => {
+    // claude's status line can write this key. Suppressing another agent's
+    // fetch on it would let one transport silence the other.
+    const pushed = { updatedAt: 1_000_000 - 1_000, source: "statusline" as const };
+    expect(firstPollDelay(pushed, 1_000_000, MS)).toBe(0);
+  });
+
+  it("is the old behaviour for the case that matters: a cold first paint", () => {
+    // The regression this must not cause is a chip that stays empty on open.
+    expect(firstPollDelay(undefined, Date.now(), MS)).toBe(0);
   });
 });

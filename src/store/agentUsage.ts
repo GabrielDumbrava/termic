@@ -122,6 +122,41 @@ export function costChipVisible(entry: UsageEntry | undefined, spend: number): b
   return entry.windowless >= WINDOWLESS_FOR_NO_PLAN;
 }
 
+/** How long to wait before the FIRST pull for a credential, in ms.
+ *
+ *  The pull transports (codex, devin) poll from the chip, and the chip is
+ *  per AGENT PER TASK while the reading it fetches is per CREDENTIAL and shared
+ *  by every task on that login. The effect that owns the timer re-runs whenever
+ *  the task becomes visible, so it used to `ask()` immediately on every task
+ *  switch: switching between two tasks on one login respawned `codex
+ *  app-server` to re-learn a number already sitting in the store, seconds old.
+ *
+ *  So the cadence follows the DATA's age rather than the mount. A cold entry
+ *  still asks immediately (`Infinity` age, delay 0), which is the case that
+ *  matters for a first paint; a warm one waits out the remainder of the
+ *  interval, so staleness is still bounded by `intervalMs` rather than by
+ *  `intervalMs` plus however long ago somebody last switched tasks.
+ *
+ *  Only a reading from the SAME pull transport counts. A statusline entry
+ *  under this key is not evidence that a pull would return the same thing, and
+ *  suppressing a pull on it would let one agent's push silence another's fetch.
+ *
+ *  Pure and exported because the failure mode is silent either way: too eager
+ *  is a respawn nobody sees, too lazy is a number nobody notices is old. */
+export function firstPollDelay(
+  entry: { updatedAt: number; source: UsageEntry["source"] } | undefined,
+  now: number,
+  intervalMs: number,
+): number {
+  if (!entry || entry.source !== "rpc") return 0;
+  const age = now - entry.updatedAt;
+  // A clock that went backwards (NTP step, sleep/wake) reads as a negative
+  // age. Treat it as fresh rather than letting it schedule a delay longer than
+  // the interval it is bounded by.
+  if (age < 0) return intervalMs;
+  return Math.max(0, Math.min(intervalMs, intervalMs - age));
+}
+
 /** Everything spent on this account since launch. */
 export function costTotal(e: CostEntry | undefined): number {
   if (!e) return 0;

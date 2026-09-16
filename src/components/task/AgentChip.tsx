@@ -28,7 +28,7 @@ import { CircleSlash, Copy, Check } from "lucide-react";
 import * as ipc from "@/lib/ipc";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { cn } from "@/lib/utils";
-import { useAgentUsage, usageKey, costTotal, costChipVisible, type UsageEntry } from "@/store/agentUsage";
+import { useAgentUsage, usageKey, costTotal, costChipVisible, firstPollDelay, type UsageEntry } from "@/store/agentUsage";
 import {
   formatPercent, formatReset, formatUsd, usageLevel, drivingWindow, shortWindowWords,
   USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
@@ -214,9 +214,25 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
         // said so).
         .catch(err => console.warn(`[usage] ${base} refused:`, agentId, err));
     };
-    ask();
-    const id = window.setInterval(ask, POLL_REFRESH_MS);
-    return () => { cancelled = true; window.clearInterval(id); };
+    // The store entry is per CREDENTIAL and shared by every task on that
+    // login, so a task switch usually lands on a number another task already
+    // fetched. Read it NON-REACTIVELY: selecting it would re-run this effect
+    // on every reading, which resets the interval and defeats the timer.
+    const delay = firstPollDelay(
+      useAgentUsage.getState().byAgent[usageKey(agentId, liveAccount)],
+      Date.now(),
+      POLL_REFRESH_MS,
+    );
+    let id: number | undefined;
+    const first = window.setTimeout(() => {
+      ask();
+      id = window.setInterval(ask, POLL_REFRESH_MS);
+    }, delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(first);
+      if (id !== undefined) window.clearInterval(id);
+    };
   }, [agentId, docker, askUsage, liveAccount, visible]);
 
   // Nothing known yet: render nothing at all rather than a placeholder. An

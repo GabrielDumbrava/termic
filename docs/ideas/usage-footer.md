@@ -176,6 +176,16 @@ These are why this is still an idea.
   chip asks every two minutes, for the visible task only. That is a guess,
   not a measurement. If it ever matters the honest fix is to drive it off the
   `Stop` hook termic already receives rather than to tune the interval.
+
+  The MOUNT is no longer part of that cadence, which was a separate bug rather
+  than a tuning question. The timer lives in an effect keyed on `visible`, so
+  it re-ran on every task switch and asked immediately each time: two tasks on
+  one login respawned `app-server` to re-fetch a number already in the store,
+  seconds old, because the reading is per credential and the chip is per task.
+  `firstPollDelay` now schedules the first ask against the shared reading's
+  age, so a cold entry still asks at once and a warm one waits out the
+  remainder. Staleness stays bounded by the interval instead of the interval
+  plus however long ago somebody last switched tasks.
 - **Scope.** claude, codex and devin. The other agents have no measured
   source, and Orca's answer for them is a hidden PTY that runs the agent's own
   `/usage` and scrapes the TUI, which is the part of their implementation that
