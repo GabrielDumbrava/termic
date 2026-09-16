@@ -736,3 +736,39 @@ Bounding the regression to a build was worth more than the fix: the twelve
 releases cached under `~/.codex/packages/standalone/releases` let `strings` find
 `renaming...` in 0.154.0 and nowhere earlier, which named the version rather than
 guessing at it. See [agent-hooks.md](agent-hooks.md).
+
+## A form that SHIPS a field it never edits will eventually delete it
+
+`AgentsSection` loads the agent registry once (`useEffect(…, [])`) and saves the
+whole array back on a 500ms debounce after any edit. The account fields on that
+same entry are written only by the `account_*` Tauri commands, so the form never
+edits them, but it does send them: whatever the snapshot held at mount.
+
+Add a second account, then change any field in that section, and the pre-add
+array overwrote the post-add file. `accounts`, `default_account`,
+`adopted_account` and `auto_switch_account` went together. The reporting user saw
+a second Claude account that logged in, worked, and was then gone from Settings
+with "+ Second account" offered again and the footer switcher missing. Re-adding
+looked like it did nothing, because the next debounced save clobbered it again.
+
+The child `AgentAccountsRow` DOES subscribe to `termic://agent-accounts-changed`
+and refetch, so the row rendered correctly the whole time. Only the parent's
+array was stale, and the parent is what gets saved. A component being visibly
+up to date says nothing about the state its parent is about to write.
+
+Fixed in `agents_save`, which now carries those fields across from the stored
+entry by id, rather than in the form. **Put this defence at the boundary, not at
+the call site**: there was a second caller with the identical problem (the
+welcome dialog saves an array it built from CLI detection), and a field the
+frontend cannot legitimately write is one the backend should refuse from it.
+Fixing the form would have left the next caller to rediscover this.
+
+The general shape: **a read-modify-write of a shared record is only safe if the
+writer owns every field it sends.** Whenever one surface writes a record that
+another surface also writes, either the sender re-reads immediately before
+writing, or the receiver preserves the fields the sender does not own. Snapshot
+plus wholesale save is how the fields nobody was thinking about get dropped. Same
+family as the "Reset to defaults" loss that first put these fields in the TS type
+(a default entry spread over fields TypeScript did not know about) and as the
+clone-that-snapshots-its-parent trap in `agents.ts`. See
+[agent-accounts.md](agent-accounts.md).

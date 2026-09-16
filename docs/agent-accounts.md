@@ -106,6 +106,27 @@ does not.
 The STORES are global, because a login is a machine fact. A profile does not
 own logins; it owns which names it offers and which is default.
 
+**Living on the agent entry means the Settings form SHIPS these fields**, and
+that cost a second account once. `agentsSave` sends the whole registry array,
+and `AgentsSection` holds it as a snapshot taken when the section mounted: the
+load is a `useEffect(…, [])` that never re-runs and never listens for
+`termic://agent-accounts-changed` (the child `AgentAccountsRow` listens, which
+is why the row looked right while the parent array rotted). So adding a second
+account and then editing any field in that section wrote the pre-add array back
+and deleted `accounts`, `default_account`, `adopted_account` and
+`auto_switch_account` together. It reads as a second account that signs in,
+works, and is then simply absent from Settings with "+ Second account" offered
+again, because that button renders only while `accounts` is empty.
+
+`agents_save` now carries the four fields across from the stored entry, matched
+by id. The rule: **these are written by the `account_*` commands and by nothing
+else**, so the backend does not accept them from the form at all. Fixing it
+there rather than in the form covers the welcome dialog, which saves an array it
+built from CLI detection and has the same problem. This is the same loss the
+"Reset to defaults" bug had, where a default entry was spread over fields
+TypeScript did not know about; `carriedOver` in `AgentsSection.tsx` is that
+earlier repair, and it is now belt and braces.
+
 ## Resolution, and where it is applied
 
 ```

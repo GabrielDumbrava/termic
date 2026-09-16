@@ -20233,13 +20233,52 @@ fn discovery_dismiss(window: tauri::Window, path: String, dismissed: bool) -> Re
 /// welcomed, etc.). Used by the Settings → Agents page so the user can edit
 /// CLI commands, args, and YOLO flags without us shipping a new release every
 /// time an agent CLI changes a flag.
+/// Carry the ACCOUNT fields across a registry save (GH #278).
+///
+/// `accounts`, `default_account`, `adopted_account` and `auto_switch_account`
+/// are user DATA, written only by the `account_*` commands. The Settings form
+/// never edits them, but it SHIPS them: `agentsSave` sends the whole array, and
+/// that array is a snapshot taken when the Agents section mounted. It never
+/// reloads and never listens for `termic://agent-accounts-changed`, so adding a
+/// second account and then touching any field in that section wrote the pre-add
+/// array back and deleted the account list, the default, the adopted name and
+/// the auto-switch flag in one go.
+///
+/// That is the reported bug: a second account that logs in, works, and then is
+/// simply gone from Settings with "+ Second account" offered again (the button
+/// renders only while `accounts` is empty), and the footer's switcher with it.
+/// Re-adding it appeared to do nothing because the next save clobbered it
+/// again.
+///
+/// Fixed HERE rather than in the form, for two reasons. Every caller has the
+/// same stale-snapshot problem: the welcome dialog also saves an array it built
+/// itself. And a field the frontend cannot legitimately write is one the
+/// backend should not accept from it, which makes the next caller safe too,
+/// rather than the next caller's author having to know this.
+///
+/// Matched by id, so an agent being ADDED keeps what it came with (nothing) and
+/// one being DELETED stays deleted. This is the same class of loss as the
+/// "Reset to defaults" bug that put these fields in the TS type: there the
+/// default entry was spread over a field TypeScript did not know about.
+fn carry_account_fields(existing: &[Agent], incoming: &mut [Agent]) {
+    for a in incoming.iter_mut() {
+        let Some(prev) = existing.iter().find(|p| p.id == a.id) else { continue };
+        a.accounts = prev.accounts.clone();
+        a.default_account = prev.default_account.clone();
+        a.adopted_account = prev.adopted_account.clone();
+        a.auto_switch_account = prev.auto_switch_account;
+    }
+}
+
 #[tauri::command]
 fn agents_save(window: tauri::Window, agents: Vec<Agent>) -> Result<(), String> {
     let mut s = load_settings_in(&window_profile(&window));
     // Defensive: ensure no two agents share an id (would break task.cli
     // lookups). If duplicates, keep the first occurrence.
     let mut seen = std::collections::HashSet::new();
-    s.agents = agents.into_iter().filter(|a| seen.insert(a.id.clone())).collect();
+    let mut next: Vec<Agent> = agents.into_iter().filter(|a| seen.insert(a.id.clone())).collect();
+    carry_account_fields(&s.agents, &mut next);
+    s.agents = next;
     save_settings_in(&window_profile(&window), &s)
 }
 
@@ -30344,5 +30383,72 @@ filename f.rs
         };
         let back: ProjectMember = serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
         assert_eq!(back.files_to_copy, vec!["app/google-services.json".to_string()]);
+    }
+}
+#[cfg(test)]
+mod agents_save_account_fields_tests {
+    use super::*;
+
+    fn claude() -> Agent {
+        default_agents().into_iter().find(|a| a.id == "claude").expect("claude is a built-in")
+    }
+
+    /// The shape the bug report arrived in: the login works, the agent works,
+    /// and the account list is gone from Settings afterwards.
+    #[test]
+    fn a_stale_form_snapshot_does_not_delete_a_second_account() {
+        // On disk: the user has added a second account, so `account_add` has
+        // written all four fields.
+        let mut stored = claude();
+        stored.accounts = vec!["personal".into(), "work".into()];
+        stored.default_account = Some("work".into());
+        stored.adopted_account = Some("personal".into());
+        stored.auto_switch_account = true;
+
+        // In the Settings form: the array it loaded when the section mounted,
+        // which predates the add and therefore carries none of that. The user
+        // edits an unrelated field and it is saved wholesale.
+        let mut incoming = vec![claude()];
+        incoming[0].command = "claude-beta".into();
+        assert!(incoming[0].accounts.is_empty(), "precondition: the snapshot is pre-add");
+
+        carry_account_fields(&[stored], &mut incoming);
+
+        assert_eq!(incoming[0].accounts, vec!["personal".to_string(), "work".to_string()]);
+        assert_eq!(incoming[0].default_account.as_deref(), Some("work"));
+        assert_eq!(incoming[0].adopted_account.as_deref(), Some("personal"));
+        assert!(incoming[0].auto_switch_account);
+        // The edit the user actually made still lands.
+        assert_eq!(incoming[0].command, "claude-beta");
+    }
+
+    /// A newly added agent has no stored entry to carry from, and must not
+    /// inherit another agent's logins.
+    #[test]
+    fn a_new_agent_keeps_its_own_empty_account_list() {
+        let mut stored = claude();
+        stored.accounts = vec!["work".into()];
+
+        let mut fresh = claude();
+        fresh.id = "claude-clone".into();
+        let mut incoming = vec![fresh];
+
+        carry_account_fields(&[stored], &mut incoming);
+
+        assert!(incoming[0].accounts.is_empty(), "a clone must not adopt the parent's logins");
+        assert_eq!(incoming[0].default_account, None);
+    }
+
+    /// Removing an agent from the registry still removes it: carrying fields
+    /// across must not resurrect an entry the user deleted.
+    #[test]
+    fn a_deleted_agent_stays_deleted() {
+        let mut stored = claude();
+        stored.accounts = vec!["work".into()];
+        let mut incoming: Vec<Agent> = vec![];
+
+        carry_account_fields(&[stored], &mut incoming);
+
+        assert!(incoming.is_empty());
     }
 }
