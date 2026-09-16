@@ -36,7 +36,7 @@ import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 // themeMode effect below pushes updates into live instances.
 
 export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExited, onTitle, initialInput }: { taskId?: string; tabId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void;
-  /** Typed at the prompt on spawn and NOT executed. See the write below. */
+  /** Typed at the prompt on spawn. Runs only if it ends with a CR. */
   initialInput?: string }) {
   // Keep the latest onTitle in a ref so the long-lived spawn effect's
   // onTitleChange handler always calls the current callback without
@@ -245,7 +245,24 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
         ptyRef.current = ptyId;
-        unlistenData = await ipc.onPtyData(ptyId, u8 => term.write(u8));
+        // The prefill waits for the shell's FIRST OUTPUT, which is its prompt.
+        //
+        // Writing it right after the spawn puts it into the tty before zsh has
+        // started. The line discipline echoes it raw there and then, zsh comes
+        // up, reads the same bytes as type-ahead, and renders them AGAIN at its
+        // prompt: the user sees the command twice, once as a stray line above
+        // the prompt and once in it. Reported with a screenshot of exactly
+        // that. Waiting for the prompt means ZLE is running and renders it
+        // once, where the user can edit it.
+        let sentInitial = false;
+        unlistenData = await ipc.onPtyData(ptyId, u8 => {
+          term.write(u8);
+          if (!initialInput || sentInitial || cancelled) return;
+          sentInitial = true;
+          ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(initialInput)))
+            .then(() => { if (!cancelled) setPrimed(true); })
+            .catch(() => {});
+        });
         // Output is held Rust-side until this lands: anything emitted before
         // the listener exists is dropped (see ipc.ptyAttached).
         ipc.ptyAttached(ptyId).catch(() => {});
@@ -258,24 +275,19 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           if (onExited) onExited();
           else setExited(true);
         });
-        // Type a command at the prompt WITHOUT running it (GH #285). The clone
-        // flow lands the user on `git clone <url> <dir>` ready to edit: flags
-        // like --depth, --branch or --recurse-submodules are exactly the kind
-        // of thing a form would have to grow a field for, and the shell already
-        // has an editor.
+        // `initialInput` types a command at the prompt WITHOUT running it
+        // (GH #285). The clone flow lands the user on `git clone <url> <dir>`
+        // ready to edit: flags like --depth, --branch or --recurse-submodules
+        // are exactly the kind of thing a form would have to grow a field for,
+        // and the shell already has an editor.
         //
-        // No trailing newline, deliberately. Pressing Enter stays the user's
-        // decision, because this command reaches the network and may prompt for
-        // a credential. Same mechanic as dropping a file onto a scratch shell
-        // (lib/terminalDrop.ts), which inserts a path the same way.
-        //
-        // Sent after `ptyAttached`, or the shell would echo it before this side
-        // is listening and the prompt would come up looking empty.
-        if (initialInput) {
-          ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(initialInput)))
-            .then(() => { if (!cancelled) setPrimed(true); })
-            .catch(() => {});
-        }
+        // Whether it RUNS is the caller's choice and is carried by the string:
+        // ending it with a CR runs it, leaving it bare types it and waits. The
+        // clone flow ends it with a CR, because clicking Clone is already the
+        // decision. Same mechanic as dropping a file onto a scratch shell
+        // (lib/terminalDrop.ts), which inserts a path the same way and never
+        // runs it. The write itself is in the data handler above, on the first
+        // byte the shell sends, for the reason documented there.
         term.onData(d => {
           if (d.includes("\r")) scheduleFsBump();
           ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(d))).catch(() => {});

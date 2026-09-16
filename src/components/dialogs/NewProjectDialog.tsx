@@ -190,7 +190,17 @@ export function NewProjectDialog() {
     setCloneStarted({
       parent,
       dest: `${parent}/${name}`,
-      input: `git clone '${url}' ${name}`,
+      // Trailing CR: the command RUNS on its own. Clicking Clone is the
+      // decision to clone, and making the user press Enter at a prompt they
+      // did not ask to be at was friction for no safety, since the button
+      // above already said what it was about to do.
+      //
+      // The terminal is still the point: a credential prompt, a host-key
+      // confirmation or an error all land here and are answerable. Ctrl-C then
+      // editing the line is the escape hatch for flags (--depth, --branch,
+      // --recurse-submodules), which is why the command is still typed out in
+      // full rather than run out of sight.
+      input: `git clone '${url}' ${name}\r`,
     });
   }
 
@@ -505,8 +515,9 @@ export function NewProjectDialog() {
                 />
               </div>
               <p className="mt-1.5 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-                Press Enter to run it. Edit it first if you need flags. Add
-                becomes available once the repo exists on disk.
+                Answer any credential prompt here. Ctrl-C stops it if you need
+                to change the command. Add becomes available once the repo
+                exists on disk.
               </p>
             </div>
           )}

@@ -2253,40 +2253,19 @@ describe("new project from a git URL", () => {
     expect(dest).toBe(`${parent}/repo`);
   });
 
-  it("types the command without running it, and runs it on Enter", async () => {
+  it("runs the clone on its own and waits for a repo before offering Add", async () => {
     await clickWhenVisible('[data-testid="clone-start"]');
     await waitVisible('[data-testid="clone-terminal"]');
 
-    // Add is gated until a repo actually exists: the command is sitting at the
-    // prompt unrun, so nothing has been cloned yet.
-    const gated = await browser.execute(() =>
-      (document.querySelector('[data-testid="clone-add"]') as HTMLButtonElement | null)?.disabled ?? null);
-    expect(gated).toBe(true);
-
-    // The command has to be IN the pty before Enter is sent. The spawn is
-    // async, so the container renders first and a keystroke dispatched into
-    // that gap is swallowed: solo this passed, and in a full suite the extra
-    // load widened the gap until it did not.
+    // The command reaches the pty only once the shell has sent its prompt.
+    // Writing it before that put it into the tty ahead of zsh, which echoed it
+    // raw and then rendered it AGAIN when it read the type-ahead: the user saw
+    // the command twice. This hook is the app saying the write has happened.
     await waitVisible('[data-testid="clone-terminal"] [data-initial-input="sent"]');
 
-    // Press Enter at the prompt, the way the user does. No text is typed here:
-    // the app already wrote the command into the PTY, so this proves BOTH that
-    // the prefill arrived and that Enter is what runs it.
-    const pressed = await browser.execute(() => {
-      const host = document.querySelector('[data-testid="clone-terminal"]');
-      if (!host) return "no clone terminal";
-      const ta = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
-      if (!ta) return "no xterm textarea";
-      ta.focus();
-      const enter = (type: string) => ta.dispatchEvent(new KeyboardEvent(type, {
-        key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
-      } as KeyboardEventInit));
-      enter("keydown");
-      enter("keyup");
-      return "ok";
-    });
-    expect(pressed).toBe("ok");
-
+    // Nothing is typed or pressed here, deliberately. Clicking Clone is the
+    // whole gesture: the command carries its own CR, so a repo appearing at
+    // the destination is proof it reached a real shell and ran.
     await browser.waitUntil(
       async () => !(await browser.execute(() =>
         (document.querySelector('[data-testid="clone-add"]') as HTMLButtonElement).disabled)),
