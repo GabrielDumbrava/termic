@@ -20203,7 +20203,9 @@ fn run_capture_command_blocking(
 #[tauri::command]
 fn settings_save(app: AppHandle, window: tauri::Window, s: Settings) -> Result<(), String> {
     let tray_on = tray_enabled_pref(&s);
-    save_settings_in(&window_profile(&window), &s)?;
+    let profile = window_profile(&window);
+    let s = keep_disk_account_fields(&load_settings_in(&profile), s);
+    save_settings_in(&profile, &s)?;
     // Applies live: flipping the toggle in Settings shouldn't need a restart
     // to show/hide the menu-bar item, matching close_action/cli_enabled's
     // "re-read per use" behavior.
@@ -20255,6 +20257,22 @@ fn discovery_dismiss(window: tauri::Window, path: String, dismissed: bool) -> Re
 /// welcomed, etc.). Used by the Settings → Agents page so the user can edit
 /// CLI commands, args, and YOLO flags without us shipping a new release every
 /// time an agent CLI changes a flag.
+/// The same carry for the WHOLE-settings writer.
+///
+/// `settings_save` receives the entire `Settings`, agent registry included,
+/// and General, Tasks, Sandbox and Docker build that object from a snapshot
+/// taken when the section mounted. An account added after the snapshot (from
+/// the footer panel, the Agents section, another window) was deleted by the
+/// next save of an unrelated field: reproduced by `credentials.e2e.ts`, where
+/// saving the browser in General emptied a three-account list. The registry
+/// cannot simply be ignored here, because Docker writes `docker_env` through
+/// this path, so the account fields are carried by id exactly as in
+/// `agents_save`.
+fn keep_disk_account_fields(disk: &Settings, mut incoming: Settings) -> Settings {
+    carry_account_fields(&disk.agents, &mut incoming.agents);
+    incoming
+}
+
 /// Carry the ACCOUNT fields across a registry save (GH #278).
 ///
 /// `accounts`, `default_account`, `adopted_account` and `auto_switch_account`
@@ -30459,6 +30477,37 @@ filename f.rs
 #[cfg(test)]
 mod agents_save_account_fields_tests {
     use super::*;
+
+    /// A whole-settings save from a section that mounted before the account
+    /// existed must not delete it, and must still land what it did change.
+    #[test]
+    fn a_stale_settings_save_keeps_accounts_and_its_own_edits() {
+        let mut stored = default_agents().into_iter().find(|a| a.id == "claude").unwrap();
+        stored.accounts = vec!["personal".into(), "work".into()];
+        stored.default_account = Some("work".into());
+        stored.adopted_account = Some("personal".into());
+        stored.auto_switch_account = true;
+        let disk = Settings { agents: vec![stored], ..Default::default() };
+
+        // The section's snapshot predates the accounts, and it edits another
+        // field of the same agent (Docker's env) plus an unrelated setting.
+        let mut snap_agent = default_agents().into_iter().find(|a| a.id == "claude").unwrap();
+        snap_agent.docker_env.insert("FOO".into(), "bar".into());
+        let incoming = Settings {
+            agents: vec![snap_agent],
+            preview_browser: "open -a Safari".into(),
+            ..Default::default()
+        };
+
+        let saved = keep_disk_account_fields(&disk, incoming);
+        let a = &saved.agents[0];
+        assert_eq!(a.accounts, vec!["personal".to_string(), "work".to_string()]);
+        assert_eq!(a.default_account.as_deref(), Some("work"));
+        assert_eq!(a.adopted_account.as_deref(), Some("personal"));
+        assert!(a.auto_switch_account);
+        assert_eq!(a.docker_env.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(saved.preview_browser, "open -a Safari");
+    }
 
     fn claude() -> Agent {
         default_agents().into_iter().find(|a| a.id == "claude").expect("claude is a built-in")
