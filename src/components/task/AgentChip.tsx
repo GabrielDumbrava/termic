@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 import { useAgentUsage, usageKey, costTotal, costChipVisible, firstPollDelay, usageKnown, type UsageEntry } from "@/store/agentUsage";
 import { AGENT_HOOKS_HIGHLIGHT } from "@/components/settings/AgentHooksBlock";
 import {
-  formatPercent, formatReset, formatUsd, usageLevel, drivingWindow, shortWindowWords,
+  formatPercent, formatReset, formatUsd, formatConsumed, formatPeriod, usageLevel, drivingWindow, shortWindowWords,
   USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
   blocksUsageFeed, blockedReason, statusLineAgentPrompt,
   type UsageLevel, type UsageWindow, type StatusLineOwner,
@@ -204,7 +204,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
             // the agents' own spend data is token counts and ACUs, not
             // dollars. Turning that into USD would mean a per-model price
             // table in termic, which goes silently wrong the day prices move.
-            { session: u.session, weekly: u.weekly, sessionCostUsd: null },
+            { session: u.session, weekly: u.weekly, sessionCostUsd: null, consumed: u.consumed ?? null },
             "rpc");
         })
         // No banner: the agent may not be installed, may not be logged in, or
@@ -406,6 +406,12 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               second number competing for the same glance, and showing it
               before the first `rate_limits` arrives made the chip flip from
               money to a bar mid-turn. The popover still carries the spend. */}
+          {/* An uncapped plan (devin Enterprise, ACU-billed): what it used this
+              billing period, as a plain count. No bar and no warn colour,
+              because there is no limit for it to approach. */}
+          {entry?.consumed && !entry.session && !entry.weekly && (
+            <span data-testid="usage-consumed" className="tabular-nums">{formatConsumed(entry.consumed)}</span>
+          )}
           {costChipVisible(entry, spend) && (
             <>
               {(entry?.session || entry?.weekly) && <span className="text-[var(--color-fg-faint)]">·</span>}
@@ -506,6 +512,18 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, accountsVi
             <UsageRow label="Weekly" sub="rolling 7 days" window={entry.weekly}
               driving={driver?.label === "wk"} level={level} source={entry.source} />
           </>
+        ) : entry.consumed ? (
+          <div data-testid="usage-consumed-row" className="flex items-baseline justify-between">
+            <span className="text-[var(--color-fg-dim)]">
+              {entry.consumed.unit}s this billing period
+              <span className="block text-[11px] text-[var(--color-fg-faint)]">
+                {formatPeriod(entry.consumed)
+                  ? `${formatPeriod(entry.consumed)}. No quota on this plan.`
+                  : "No quota on this plan."}
+              </span>
+            </span>
+            <span className="shrink-0 whitespace-nowrap tabular-nums font-medium text-[var(--color-fg)]">{formatConsumed(entry.consumed)}</span>
+          </div>
         ) : costChipVisible(entry, spend) ? (
           // No plan at all: say so, rather than showing two empty bars. This
           // is the API-key account, and its whole readout is the spend below.
@@ -578,7 +596,8 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, accountsVi
           the switcher below IS the credentials UI, and the auto-switch
           checkbox lives there. Two copies of that checkbox is what the merge
           removed. */}
-      <AccountRow agentId={agentId} view={accountsView} refresh={refreshAccounts} onNavigate={onNavigate} />
+      <AccountRow agentId={agentId} view={accountsView} refresh={refreshAccounts} onNavigate={onNavigate}
+        uncapped={!!entry?.consumed && !entry.session && !entry.weekly} />
     </div>
   );
 }
@@ -700,17 +719,20 @@ function UsageUnknown({ agentId, onNavigate }: {
  *  never show it. The footer pill carries the same toggle, for the user who
  *  reaches for the account menu rather than the numbers.
  */
-function AccountRow({ agentId, view, refresh, onNavigate }: {
+function AccountRow({ agentId, view, refresh, onNavigate, uncapped }: {
   agentId: string;
   view: AgentAccountsView | null;
   refresh: () => void;
   onNavigate: () => void;
+  /** The account has no quota (devin Enterprise): "running low" cannot
+   *  happen, so the nudge would be advice about nothing. */
+  uncapped?: boolean;
 }) {
   // Only the nudge toward a SECOND set. Once one exists the switcher section
   // below is the credentials UI, and the auto-switch checkbox lives there:
   // this row used to carry its own copy, and toggling one left the other
   // stale until something remounted it.
-  if (!view || !view.supported || view.accounts.length >= 1) return null;
+  if (uncapped || !view || !view.supported || view.accounts.length >= 1) return null;
 
   return (
     <button

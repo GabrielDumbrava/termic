@@ -33,6 +33,18 @@ export interface UsageWindow {
   resetsAt: number | null;
 }
 
+/** What an UNCAPPED plan has used this billing period. devin Enterprise is
+ *  billed in ACUs with no quota, so it has no percentage to show and this is
+ *  the whole readout. Never set alongside a window (agent_usage.rs). */
+export interface PeriodConsumption {
+  amount: number;
+  /** What `amount` counts, e.g. `ACU`. */
+  unit: string;
+  /** Unix epoch SECONDS, or null when the provider did not say. */
+  periodStart: number | null;
+  periodEnd: number | null;
+}
+
 /** What one account has spent. Either window can be absent: codex on a free
  *  plan reports a single 30-day window and no second one at all, so a UI that
  *  assumes two columns renders an empty one. */
@@ -54,6 +66,8 @@ export interface AgentUsage {
   session: UsageWindow | null;
   /** The long window. 7 days for claude. */
   weekly: UsageWindow | null;
+  /** Consumption on a plan with no cap. Only the pull transports set it. */
+  consumed?: PeriodConsumption | null;
 }
 
 /** A money field: any non-negative number, unclamped.
@@ -129,7 +143,29 @@ export function sameUsage(a: AgentUsage | undefined, b: AgentUsage | undefined):
     // Cost moves on turns where neither percentage does (it changes by cents
     // while a window stays on the same whole number), so leaving it out of the
     // comparison would bail on exactly the writes worth making.
-    && a.sessionCostUsd === b.sessionCostUsd;
+    && a.sessionCostUsd === b.sessionCostUsd
+    && sameConsumption(a.consumed ?? null, b.consumed ?? null);
+}
+
+function sameConsumption(a: PeriodConsumption | null, b: PeriodConsumption | null): boolean {
+  if (!a || !b) return a === b;
+  return a.amount === b.amount && a.unit === b.unit
+    && a.periodStart === b.periodStart && a.periodEnd === b.periodEnd;
+}
+
+/** `70.6 ACU` under a hundred, `1234 ACU` from there: a tenth is worth
+ *  watching early in a period and is only chip reflow later. */
+export function formatConsumed(c: PeriodConsumption | null | undefined): string {
+  if (!c || !Number.isFinite(c.amount)) return "";
+  const n = c.amount < 100 ? c.amount.toFixed(1) : String(Math.round(c.amount));
+  return `${n} ${c.unit}`;
+}
+
+/** "Aug 20 to Sep 20" for the popover, or "" when either bound is unknown. */
+export function formatPeriod(c: PeriodConsumption | null | undefined): string {
+  if (!c || c.periodStart == null || c.periodEnd == null) return "";
+  const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${day(c.periodStart)} to ${day(c.periodEnd)}`;
 }
 
 function sameWindow(a: UsageWindow | null, b: UsageWindow | null): boolean {

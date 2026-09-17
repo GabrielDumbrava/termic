@@ -3,6 +3,7 @@ import {
   USAGE_BODY_PREFIX, parseUsageBody, sameUsage, formatPercent, formatReset, formatUsd,
   usageLevel, drivingWindow, shortWindowWords, USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
   blocksUsageFeed, statusLineAgentPrompt, type StatusLineOwner,
+  formatConsumed, formatPeriod, type PeriodConsumption,
 } from "./agentUsage";
 import { firstPollDelay } from "@/store/agentUsage";
 import { HOOK_OSC_BODY, HOOK_OSC_READY_BODY, parseNotifyBody, hookOscHandlerData } from "./agentHooks";
@@ -719,5 +720,47 @@ describe("firstPollDelay (the pull cadence follows the reading, not the mount)",
   it("is the old behaviour for the case that matters: a cold first paint", () => {
     // The regression this must not cause is a chip that stays empty on open.
     expect(firstPollDelay(undefined, Date.now(), MS)).toBe(0);
+  });
+});
+
+describe("an uncapped plan's consumption (devin Enterprise, ACU-billed)", () => {
+  const acu = (amount: number, over: Partial<PeriodConsumption> = {}): PeriodConsumption =>
+    ({ amount, unit: "ACU", periodStart: 1894262400, periodEnd: 1896940800, ...over });
+  const report = (consumed: PeriodConsumption | null) =>
+    useAgentUsage.getState().report("devin", null, { session: null, weekly: null, sessionCostUsd: null, consumed }, "rpc");
+  const entry = () => useAgentUsage.getState().byAgent[usageKey("devin", null)];
+
+  beforeEach(() => useAgentUsage.setState({ byAgent: {}, cost: {} }));
+
+  it("is a known reading, so the footer does not say Usage unknown", () => {
+    report(null);
+    expect(usageKnown(entry(), 0)).toBe(false);
+    report(acu(70.56));
+    expect(usageKnown(entry(), 0)).toBe(true);
+  });
+
+  it("reads as a count with its unit, a tenth early and whole numbers later", () => {
+    expect(formatConsumed(acu(70.56))).toBe("70.6 ACU");
+    expect(formatConsumed(acu(0))).toBe("0.0 ACU");
+    expect(formatConsumed(acu(1234.4))).toBe("1234 ACU");
+    expect(formatConsumed(null)).toBe("");
+  });
+
+  it("names its billing period only when both bounds are known", () => {
+    expect(formatPeriod(acu(1))).toMatch(/ to /);
+    expect(formatPeriod(acu(1, { periodEnd: null }))).toBe("");
+  });
+
+  it("an unchanged reading is not written again, a moved one is", () => {
+    report(acu(70.56));
+    const first = entry();
+    report(acu(70.56));
+    expect(entry()).toBe(first);
+    report(acu(71));
+    expect(entry()).not.toBe(first);
+    expect(sameUsage(
+      { session: null, weekly: null, sessionCostUsd: null, consumed: acu(1) },
+      { session: null, weekly: null, sessionCostUsd: null, consumed: acu(1, { periodEnd: 1 }) },
+    )).toBe(false);
   });
 });

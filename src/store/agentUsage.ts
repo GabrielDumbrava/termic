@@ -122,7 +122,7 @@ export interface CostEntry {
  *  readout). Anything short of that is "usage unknown": a reading that has not
  *  reached the API says nothing about the account. */
 export function usageKnown(entry: UsageEntry | undefined, spend: number): boolean {
-  return !!entry && (!!entry.session || !!entry.weekly || costChipVisible(entry, spend));
+  return !!entry && (!!entry.session || !!entry.weekly || !!entry.consumed || costChipVisible(entry, spend));
 }
 
 export function costChipVisible(entry: UsageEntry | undefined, spend: number): boolean {
@@ -259,6 +259,9 @@ export const useAgentUsage = create<AgentUsageState>((set, get) => ({
         // every turn but a turn that never reached the API carries none, and
         // blanking the figure on those would make it flicker.
         sessionCostUsd: usage.sessionCostUsd ?? cur.sessionCostUsd,
+        // NOT carried: consumption is only ever sent when there is no window,
+        // so carrying it could pair an old ACU figure with a new percentage.
+        consumed: usage.consumed ?? null,
       };
     }
     // The status line fires on EVERY turn, and most turns move a percentage by

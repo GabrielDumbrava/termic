@@ -537,6 +537,55 @@ describe("agent credentials", () => {
     }
   });
 
+  it("shows an uncapped devin plan's ACUs this period instead of 'Usage unknown'", async () => {
+    // devin Enterprise is billed in ACUs with no quota: GetUserStatus answers
+    // unlimited credits, no daily or weekly percentage, and `acuConsumed`
+    // since `planStart`. The footer used to find no window and say "Usage
+    // unknown" forever. Seeded for the same reason as the case above.
+    await resetUsage();
+    const taskId = await openTaskWith(FAKE_DEVIN, "devin-acu");
+    try {
+      // The ordinary login: the chip reads the key the process spawned on.
+      await browser.waitUntil(async () => await browser.execute((id) =>
+        ((window.__termic!.useApp.getState().tabs[id] || []) as any[]).some(t => t.ptyId && !t.liveAccount),
+      taskId), { timeout: 30_000, timeoutMsg: "devin never spawned" });
+      await browser.execute((a) => {
+        window.__termic!.useAgentUsage.getState().report(a, null, {
+          session: null, weekly: null, sessionCostUsd: null,
+          consumed: { amount: 70.56, unit: "ACU", periodStart: 1894262400, periodEnd: 1896940800 },
+        }, "rpc");
+      }, FAKE_DEVIN);
+      await waitVisible('[data-testid="usage-consumed"]');
+      const chip = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.textContent ?? "");
+      expect(chip).toContain("70.6 ACU");
+      expect(chip).not.toContain("Usage unknown");
+      // No percentage: there is no cap for it to be a share of. The chip
+      // writes an empty attribute, not a missing one, when it has no window.
+      expect(await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.getAttribute("data-usage-session"))).toBe("");
+
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="usage-consumed-row"]');
+      const row = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-consumed-row"]')?.textContent ?? "");
+      expect(row).toContain("ACUs this billing period");
+      expect(row).toContain("No quota on this plan.");
+      expect(row).toContain("70.6 ACU");
+      // The figure stays on one line beside its label.
+      expect(await browser.execute(() => {
+        const n = document.querySelector('[data-testid="usage-consumed-row"] > span:last-child') as HTMLElement;
+        return n.getClientRects().length === 1 && n.offsetHeight < 24;
+      })).toBe(true);
+      // No quota means no "running low", so no nudge toward a second account.
+      expect(await browser.execute(() => !!document.querySelector('[data-testid="usage-add-credentials"]'))).toBe(false);
+      await snap("credentials-11b-devin-acu.png");
+    } finally {
+      await removeTask(taskId);
+      await dismissOverlays();
+    }
+  });
+
   it("offers a switch, by name, once the running account is nearly out", async () => {
     // The manual half, and the one every agent gets. `switchCandidate` decides
     // WHICH account: the pill only renders the answer, so the assertion is on

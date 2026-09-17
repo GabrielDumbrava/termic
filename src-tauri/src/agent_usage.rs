@@ -63,6 +63,25 @@ pub struct AgentUsage {
     /// Which account answered. Not displayed, but it is the only way to tell
     /// two clones apart in a log when one of them shows the wrong number.
     pub account_id: Option<String>,
+    /// What an UNCAPPED plan has used this billing period, for an account
+    /// that has no quota to be a percentage of. Only devin reports it: an
+    /// Enterprise account billed in ACUs answers with unlimited credits and
+    /// no daily or weekly window at all, and without this its footer could
+    /// only ever say "Usage unknown". `None` whenever a window is present,
+    /// because a percentage of a cap is the readout that matters.
+    pub consumed: Option<PeriodConsumption>,
+}
+
+/// An amount used in the current billing period, with no cap attached.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeriodConsumption {
+    pub amount: f64,
+    /// What `amount` counts, e.g. `ACU`. Shown next to the number.
+    pub unit: String,
+    /// Unix epoch SECONDS of the period's bounds, when the provider said.
+    pub period_start: Option<i64>,
+    pub period_end: Option<i64>,
 }
 
 /// Read one window out of codex's JSON. Returns None for a null window, which
@@ -125,7 +144,7 @@ pub fn parse_codex_result(result: &serde_json::Value) -> AgentUsage {
         account_id: result
             .get("accountId")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
+            .map(str::to_string),        consumed: None,
     }
 }
 
@@ -383,9 +402,30 @@ pub fn parse_devin_result(result: &serde_json::Value) -> AgentUsage {
             resets_at: ps.get(reset_key).and_then(as_f64).map(|v| v as i64),
         })
     };
+    let session = window("dailyQuotaRemainingPercent", "dailyQuotaResetAtUnix");
+    let weekly = window("weeklyQuotaRemainingPercent", "weeklyQuotaResetAtUnix");
+    // An ACU-billed plan (Enterprise) has no quota windows, only what it has
+    // consumed since `planStart`. Read only when there is no window: a capped
+    // plan's percentage is the number to watch.
+    let rfc3339 = |key: &str| -> Option<i64> {
+        let raw = ps?.get(key)?.as_str()?;
+        chrono::DateTime::parse_from_rfc3339(raw).ok().map(|d| d.timestamp())
+    };
+    let consumed = if session.is_none() && weekly.is_none() {
+        ps.and_then(|p| p.get("acuConsumed")).and_then(as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|amount| PeriodConsumption {
+                amount,
+                unit: "ACU".to_string(),
+                period_start: rfc3339("planStart"),
+                period_end: rfc3339("planEnd"),
+            })
+    } else {
+        None
+    };
     AgentUsage {
-        session: window("dailyQuotaRemainingPercent", "dailyQuotaResetAtUnix"),
-        weekly: window("weeklyQuotaRemainingPercent", "weeklyQuotaResetAtUnix"),
+        session,
+        weekly,
         plan_type: ps
             .and_then(|p| p.get("planInfo"))
             .and_then(|i| i.get("planName"))
@@ -394,7 +434,7 @@ pub fn parse_devin_result(result: &serde_json::Value) -> AgentUsage {
         account_id: us
             .and_then(|u| u.get("userId"))
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
+            .map(str::to_string),        consumed,
     }
 }
 
@@ -657,6 +697,58 @@ mod tests {
         assert_eq!(parse_devin_result(&serde_json::json!({})), AgentUsage::default());
         let u = parse_devin_result(&serde_json::json!({ "userStatus": {} }));
         assert!(u.session.is_none() && u.weekly.is_none() && u.plan_type.is_none());
+    }
+
+    /// The shape an ACU-billed (Enterprise) devin account answers with:
+    /// unlimited credits, no quota windows, `acuConsumed` since `planStart`.
+    /// Field names transcribed from the measured response; values invented.
+    fn devin_enterprise() -> serde_json::Value {
+        serde_json::json!({
+            "userStatus": {
+                "userId": "user-0000000000000000000000000000beef",
+                "planStatus": {
+                    "planInfo": {
+                        "planName": "Enterprise",
+                        "billingStrategy": "BILLING_STRATEGY_ACU",
+                        "monthlyPromptCredits": -1
+                    },
+                    "planStart": "2030-01-10T08:00:00Z",
+                    "planEnd": "2030-02-10T08:00:00Z",
+                    "availablePromptCredits": -1,
+                    "acuConsumed": 12.345
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn devin_uncapped_plan_reports_what_it_consumed_this_period() {
+        let u = parse_devin_result(&devin_enterprise());
+        assert!(u.session.is_none() && u.weekly.is_none(), "no quota means no fake percentage");
+        let c = u.consumed.expect("an ACU plan's consumption is its readout");
+        assert_eq!(c.amount, 12.345);
+        assert_eq!(c.unit, "ACU");
+        assert_eq!(c.period_start, Some(1894262400));
+        assert_eq!(c.period_end, Some(1896940800));
+    }
+
+    #[test]
+    fn devin_consumption_yields_to_a_quota_window() {
+        // A capped plan that also carries acuConsumed: the percentage of the
+        // cap is the number to watch, and two readouts would compete.
+        let mut v = devin_pro();
+        v["userStatus"]["planStatus"]["acuConsumed"] = serde_json::json!(3.0);
+        assert!(parse_devin_result(&v).consumed.is_none());
+        assert!(parse_devin_result(&devin_pro()).consumed.is_none());
+    }
+
+    #[test]
+    fn devin_consumption_without_dates_still_reads() {
+        let mut v = devin_enterprise();
+        v["userStatus"]["planStatus"]["planEnd"] = serde_json::json!("not a date");
+        v["userStatus"]["planStatus"].as_object_mut().unwrap().remove("planStart");
+        let c = parse_devin_result(&v).consumed.unwrap();
+        assert_eq!((c.period_start, c.period_end), (None, None));
     }
 
     /// The credential path is the whole per-account story: two named accounts
