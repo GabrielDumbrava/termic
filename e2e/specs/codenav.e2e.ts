@@ -1059,6 +1059,15 @@ describe("code intelligence", () => {
     // then grow back by less than was taken, which must fit.
     const roomBelow = () => browser.execute((sel) =>
       Math.round(window.innerHeight - document.querySelector(sel)!.getBoundingClientRect().top - 8), popup) as Promise<number>;
+    // Whatever holds focus before the drag must still hold it after: the grip
+    // prevents the mousedown default. (The synthetic ⌘-click that opened the
+    // popup does not focus the editor on every runner, so "the editor has
+    // focus" would test the harness, not the grip.)
+    const focusMark = () => browser.execute(() => {
+      const ae = document.activeElement as HTMLElement | null;
+      return ae ? `${ae.tagName}.${ae.className}` : "none";
+    }) as Promise<string>;
+    const focusBefore = await focusMark();
     const before = await box();
     await mouseDrag(`${popup} .cm-lsp-usages-grip`, 120, -30);
     const after = await box();
@@ -1069,10 +1078,8 @@ describe("code intelligence", () => {
     expect((await box()).height).toBe(Math.max(120, grown));
     await snap("usages-resized");
 
-    // Dragging did not steal the list's keyboard: the editor still owns it.
-    const focused = await browser.execute((id) =>
-      document.activeElement === document.querySelector(`[data-task-id="${id}"] .cm-content`), taskId);
-    expect(focused).toBe(true);
+    // Dragging did not move focus, so the list's keyboard stays where it was.
+    expect(await focusMark()).toBe(focusBefore);
 
     // Smaller than the minimum clamps instead of collapsing the list.
     await mouseDrag(`${popup} .cm-lsp-usages-grip`, -2000, -2000);
