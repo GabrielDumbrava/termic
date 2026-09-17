@@ -522,9 +522,11 @@ Three tabs. Setup + Run stream via `useScriptRuns`. Terminal is opt-in: click `+
 ## Markdown preview
 
 **GitHub's typography, the theme's colours.** `.markdown-body` in `index.css`
-ports Primer's markdown stylesheet metric for metric: system font at
-16px/1.5, 16px block spacing, GitHub's heading scale, 85% monospace code
-with a 6px radius, zebra table rows, and a 980px measure centered in the pane.
+ports Primer's markdown stylesheet: 16px block spacing, GitHub's heading
+scale, 85% monospace code with a 6px radius, zebra table rows, and a 980px
+measure centered in the pane. The one deliberate departure is the base size,
+system font at 14px/1.5 instead of GitHub's 16px, which read as too large
+next to the app's 13-14px chrome. Headings and code are `em`, so they follow.
 Colours map onto theme tokens (links use `--color-palette-blue`), so the
 document sits on the app surface under every theme. The old Inter 14px/1.65
 across the full pane width read as heavy on a wide window.
