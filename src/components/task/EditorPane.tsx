@@ -32,6 +32,7 @@ import { attachHiddenScrollRestore } from "@/lib/hiddenScrollRestore";
 import { reviewCommentsExtension, dispatchSelectionComment } from "./reviewCommentsExt";
 import { inlineBlameExtension, invalidateBlame, refreshBlame, markBlameStale } from "./inlineBlameExt";
 import { bindingMatches } from "@/lib/shortcuts";
+import { registerLivePad } from "@/lib/scratchLive";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -206,6 +207,8 @@ export function EditorPane({ task, tab, active, onContent }: {
   const lastFlushedRef = useRef<string | null>(null);
   const lastTitleRef = useRef<string | null>(null);
   const flushTimerRef = useRef<number | null>(null);
+  // Unregisters this pad from lib/scratchLive (the CLI's way into the buffer).
+  const unregisterPadRef = useRef<(() => void) | null>(null);
   const flushScratchRef = useRef<(() => void) | null>(null);
 
   // Per-task "files changed" tick. Bumped when an agent terminal
@@ -547,6 +550,26 @@ export function EditorPane({ task, tab, active, onContent }: {
         });
         viewRef.current = view;
         elog("view created");
+        if (tab.type === "scratch") {
+          // An agent's `termic pad write` lands IN this buffer: the human sees
+          // it at once, Cmd+Z takes it back, and the immediate flush makes the
+          // file agree with the window.
+          unregisterPadRef.current = registerLivePad(task.id, tab.scratchId, {
+            text: () => view.state.doc.toString(),
+            write: (text, append) => {
+              const len = view.state.doc.length;
+              view.dispatch({
+                changes: append ? { from: len, insert: text } : { from: 0, to: len, insert: text },
+                userEvent: "input.termic",
+              });
+              if (flushTimerRef.current !== null) {
+                window.clearTimeout(flushTimerRef.current);
+                flushTimerRef.current = null;
+              }
+              flushScratch(view);
+            },
+          });
+        }
         // The first frame that actually carries a highlight token. If this is
         // hundreds of ms after "view created", the grammar is in place and
         // CodeMirror is still parsing; if the gap is zero, the flash someone
@@ -631,6 +654,8 @@ export function EditorPane({ task, tab, active, onContent }: {
       }
       flushScratchRef.current?.();
       flushScratchRef.current = null;
+      unregisterPadRef.current?.();
+      unregisterPadRef.current = null;
       detachScrollRestore?.();
       viewRef.current?.destroy();
       viewRef.current = null;
