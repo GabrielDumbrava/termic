@@ -187,6 +187,9 @@ export function EditorPane({ task, tab, active, onContent }: {
   // extension is not constructed at all, so nothing is fetched, no state
   // field exists, and the editor is byte-for-byte what it was before.
   const blameCompRef = useRef(new Compartment());
+  // Soft wrap (prefs.editorWordWrap), reconfigured in place like blame.
+  const wrapCompRef = useRef(new Compartment());
+  const wrapOnRef = useRef<boolean | null>(null);
   // Which value the compartment currently holds, so the toggle effect can skip
   // the run React fires on mount (the view was just built with this value, and
   // reconfiguring would tear the plugins down and rebuild them for nothing).
@@ -249,6 +252,7 @@ export function EditorPane({ task, tab, active, onContent }: {
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const codeLigatures  = usePrefs(s => s.codeLigatures);
   const inlineBlame    = usePrefs(s => s.inlineBlame);
+  const editorWordWrap = usePrefs(s => s.editorWordWrap);
   // Syntax theme (atomone, tokyo-night, …), independently configurable per
   // app mode (#40): a dark-optimized theme can look wrong on a light app
   // surface, and vice versa. "auto" within each still follows the app
@@ -526,6 +530,7 @@ export function EditorPane({ task, tab, active, onContent }: {
                 }
               }),
               blameCompRef.current.of(buildBlame(blameOnRef.current ?? false)),
+              wrapCompRef.current.of((wrapOnRef.current = usePrefs.getState().editorWordWrap) ? EditorView.lineWrapping : []),
               langCompRef.current.of(lang ? [lang] : []),
               // ⌘-click always answers, even with no server running: it
               // offers to turn code intelligence on for a language something
@@ -769,6 +774,16 @@ export function EditorPane({ task, tab, active, onContent }: {
     blameOnRef.current = inlineBlame;
     v.dispatch({ effects: blameCompRef.current.reconfigure(buildBlame(inlineBlame)) });
   }, [inlineBlame, buildBlame]);
+
+  // Same in-place reconfigure for word wrap: toggling it from the palette
+  // keeps the cursor, undo history and scroll position. The ref records what
+  // the view was built with, so a mount never dispatches a no-op transaction.
+  useEffect(() => {
+    const v = viewRef.current;
+    if (!v || wrapOnRef.current === editorWordWrap) return;
+    wrapOnRef.current = editorWordWrap;
+    v.dispatch({ effects: wrapCompRef.current.reconfigure(editorWordWrap ? EditorView.lineWrapping : []) });
+  }, [editorWordWrap]);
 
   // What this buffer is highlighted as, and the one place a language is
   // decided (a manual Set-syntax pick beats the derived answer). Declared

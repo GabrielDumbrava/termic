@@ -519,6 +519,37 @@ Three tabs. Setup + Run stream via `useScriptRuns`. Terminal is opt-in: click `+
 
 `task_archive` sweeps `RUNNING_SCRIPTS` and SIGTERMs each before teardown.
 
+## Markdown preview
+
+**GitHub's typography, the theme's colours.** `.markdown-body` in `index.css`
+ports Primer's markdown stylesheet metric for metric: system font at
+16px/1.5, 16px block spacing, GitHub's heading scale, 85% monospace code
+with a 6px radius, zebra table rows, and a 980px measure centered in the pane.
+Colours map onto theme tokens (links use `--color-palette-blue`), so the
+document sits on the app surface under every theme. The old Inter 14px/1.65
+across the full pane width read as heavy on a wide window.
+
+**Selectable, and copies as clean rich text.** The host carries
+`data-selectable` (the chrome is `user-select: none`). ⌘C is handled by
+`lib/markdownCopy.ts`, not WebKit: WebKit inlines every computed style, so a
+paste into a light surface arrived as near-white text in Inter. The handler
+writes `text/html` with the document's structure only (links, emphasis,
+lists, tables, headings, code), re-wrapping a partial selection in its
+list / table / `<pre><code>` so bullets and code blocks survive, and drops
+what a paste target cannot resolve: relative links become their text, local
+`data:` images are left out. `text/plain` is the selection's text.
+
+**External files preview too.** An absolute-path `.md` (the read-only
+external tab from a ⌘-click) gets the same source / split / preview shell.
+`MarkdownCtx.external` switches link resolution to the file's own directory
+(`resolveExternalHref`): a target inside the task opens as an ordinary tab,
+anything else as another external tab. Relative images are not loaded, see
+docs/sandbox.md "Known gap".
+
+**Word wrap** (`prefs.editorWordWrap`, off by default) lives in Settings >
+Appearance and the palette's "Toggle word wrap". No toolbar control, by
+choice. It is its own compartment in `EditorPane`, reconfigured in place.
+
 ## Editor path bar (breadcrumb + syntax)
 
 The bar under the tab strip, for `edit` and `diff` tabs with a path (`EditorBreadcrumb` in `components/task/TaskView.tsx`). Each path segment is a click target: a folder reveals/expands that folder in the tree, the filename reveals the file, and every segment right-clicks to a copy menu. On the right: copy path, open the containing folder in Finder, locate in the tree.
