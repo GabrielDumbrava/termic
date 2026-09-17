@@ -44,8 +44,13 @@ function ToolbarButton({ mode, active, onClick, children }: {
 }
 
 export function SourcePreviewShell(
-  { view, setView, editor, preview }: {
+  { view, setView, editor, preview, active = false }: {
     view: SourceView;
+    /** This tab is the one in front. Source and split views focus the editor
+     *  themselves (the caller passes `active` into it); preview-only focuses
+     *  the preview here, so a file opened with ⌘P takes the keyboard in every
+     *  mode rather than leaving it on <body>. */
+    active?: boolean;
     setView: (v: SourceView) => void;
     /** The CodeMirror pane. Mounted in every mode. */
     editor: React.ReactNode;
@@ -64,6 +69,29 @@ export function SourcePreviewShell(
 
   const [previewMounted, setPreviewMounted] = useState(showPreview);
   useEffect(() => { if (showPreview) setPreviewMounted(true); }, [showPreview]);
+
+  // Preview-only: focus the preview's own focus target (its find checks that
+  // focus is inside it), or the column when the lazy preview has none yet.
+  // Retried on a timer, not rAF, for the reason lib/tabFocus.ts gives: the
+  // preview chunk may still be loading, and rAF freezes on an occluded window.
+  const previewColRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!active || view !== "preview") return;
+    let tries = 30;
+    let timer: number | undefined;
+    const attempt = () => {
+      const col = previewColRef.current;
+      const target = col?.querySelector<HTMLElement>("[tabindex]") ?? null;
+      if (target) {
+        target.focus();
+        if (document.activeElement === target) return;
+      }
+      if (--tries > 0) timer = window.setTimeout(attempt, 16);
+      else col?.focus();
+    };
+    timer = window.setTimeout(attempt, 0);
+    return () => window.clearTimeout(timer);
+  }, [active, view]);
 
   return (
     <div className="flex h-full flex-col bg-[var(--color-bg)]" data-testid="source-preview-shell" data-view={view}>
@@ -103,7 +131,9 @@ export function SourcePreviewShell(
 
         {previewMounted && (
           <div
-            className="relative min-h-0 border-l border-[var(--color-border-soft)]"
+            ref={previewColRef}
+            tabIndex={-1}
+            className="relative min-h-0 border-l border-[var(--color-border-soft)] outline-none"
             style={{
               display: showPreview ? "block" : "none",
               width: view === "split" ? `${100 - editorPct}%` : "100%",

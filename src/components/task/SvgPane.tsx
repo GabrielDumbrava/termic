@@ -23,7 +23,7 @@ import { usePrefs } from "@/store/prefs";
 import { svgDataUrl } from "@/lib/previewPaths";
 
 export function SvgPane(
-  { task, tab }: { task: Task; tab: EditTab },
+  { task, tab, active = false }: { task: Task; tab: EditTab; active?: boolean },
 ) {
   // Same per-tab override + persisted global default as markdown, but its OWN
   // pref: the two kinds want opposite defaults. Someone who reads markdown as
@@ -80,7 +80,8 @@ export function SvgPane(
     <SourcePreviewShell
       view={view}
       setView={setView}
-      editor={<EditorPane task={task} tab={tab} onContent={onContent} />}
+      active={active}
+      editor={<EditorPane task={task} tab={tab} onContent={onContent} active={active && view !== "preview"} />}
       preview={() => (
         <div className="h-full overflow-auto bg-[var(--color-bg)]">
           {url

@@ -17,7 +17,7 @@ const MarkdownPreview = lazy(() =>
 );
 
 export function MarkdownPane(
-  { task, tab, visible, ownsFind }: {
+  { task, tab, visible, ownsFind, active = false }: {
     task: Task;
     /** A `.md` file, or a SCRATCHPAD whose syntax resolves to markdown (GH
      *  #244). A pad has no path, so relative links and images resolve from
@@ -32,6 +32,8 @@ export function MarkdownPane(
     visible: boolean;
     /** Find belongs to this tab. True for one tab app-wide, see TaskView. */
     ownsFind: boolean;
+    /** The tab in front of its task: whichever half is showing takes focus. */
+    active?: boolean;
   },
 ) {
   // Fall back to the last-used view (a persisted pref) so a freshly opened
@@ -126,7 +128,8 @@ export function MarkdownPane(
     <SourcePreviewShell
       view={view}
       setView={setView}
-      editor={<EditorPane task={task} tab={tab} onContent={onContent} />}
+      active={active}
+      editor={<EditorPane task={task} tab={tab} onContent={onContent} active={active && view !== "preview"} />}
       preview={({ showPreview, showEditor }) => (
         <Suspense fallback={<div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading preview…</div>}>
           <MarkdownPreview

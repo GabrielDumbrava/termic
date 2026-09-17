@@ -534,11 +534,11 @@ export function TaskView({ task }: { task: Task }) {
                   {t.type === "edit"     && (
                     <Suspense fallback={null}>
                       {isSvgPath(t.path)
-                        ? <SvgPane task={task} tab={t} />
+                        ? <SvgPane task={task} tab={t} active={tabActive} />
                         : previewKindForPath(t.path)
                           ? <PreviewPane task={task} tab={t} />
                           : isMarkdownPath(t.path)
-                            ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} />
+                            ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} active={tabActive} />
                             : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}
@@ -552,7 +552,7 @@ export function TaskView({ task }: { task: Task }) {
                           that buys you. Swapping panes remounts CodeMirror
                           once, which the pad's unmount flush already covers. */}
                       {effectiveLanguageId(t) === MARKDOWN
-                        ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} />
+                        ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} active={tabActive} />
                         : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}
@@ -566,7 +566,7 @@ export function TaskView({ task }: { task: Task }) {
                           FILE's directory instead of the task root, and does
                           not load relative images (see MarkdownCtx.external). */}
                       {isMarkdownPath(t.path)
-                        ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} />
+                        ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} active={tabActive} />
                         : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}

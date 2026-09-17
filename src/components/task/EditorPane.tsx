@@ -209,6 +209,9 @@ export function EditorPane({ task, tab, active, onContent }: {
   const flushTimerRef = useRef<number | null>(null);
   // Unregisters this pad from lib/scratchLive (the CLI's way into the buffer).
   const unregisterPadRef = useRef<(() => void) | null>(null);
+  // Read by the async load below, which outlives the render it started in.
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const flushScratchRef = useRef<(() => void) | null>(null);
 
   // Per-task "files changed" tick. Bumped when an agent terminal
@@ -614,6 +617,16 @@ export function EditorPane({ task, tab, active, onContent }: {
         // display:none in WKWebView — record and re-apply it.
         detachScrollRestore = attachHiddenScrollRestore(view.scrollDOM);
         setLoading(false);
+        // A tab opened ACTIVE (⌘P on a file that was not open) mounts with the
+        // view still loading, so the focus-on-active effect below finds no view
+        // and returns: focus stayed on <body>, and the next ⌘F had no editor to
+        // go to. Focus once the view exists, if this tab is still the one in
+        // front. A timer for the same reason as that effect.
+        if (activeRef.current) {
+          window.setTimeout(() => {
+            if (viewRef.current === view && activeRef.current) view.focus();
+          }, 0);
+        }
         // Seed the preview/split wrapper with the live view so it can
         // render before the user makes any edit.
         onContentRef.current?.(view);

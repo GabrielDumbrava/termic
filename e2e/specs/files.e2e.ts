@@ -228,6 +228,122 @@ describe("file finder", () => {
     );
     await snap("file-finder.png");
   });
+
+  // ⌘P then ⌘F: the file you just picked is where your keys go. Picking used
+  // to leave focus on whatever had it before the dialog (the agent's
+  // terminal), so the next ⌘F opened find-in-terminal instead of the file's.
+  // Driven with the terminal focused first, since that is the real starting
+  // point and the one Radix hands focus back to on close.
+  const pickWithEnter = async (name: string) => {
+    await browser.execute(
+      (id) => window.__termic!.useUI.getState().openFileFinder(id),
+      taskId,
+    );
+    const input = 'input[placeholder]';
+    await browser.waitUntil(
+      () => browser.execute((n) =>
+        [...document.querySelectorAll("[data-row]")].some((r) => r.textContent?.includes(n)), name),
+      { timeout: 8_000, timeoutMsg: `file finder never listed ${name}` },
+    );
+    await browser.execute((sel, n) => {
+      const el = [...document.querySelectorAll<HTMLInputElement>(sel)]
+        .find((i) => i.closest('[role="dialog"]'))!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, n);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }, input, name);
+    await browser.waitUntil(
+      () => browser.execute((n) =>
+        document.querySelector('[role="dialog"] [data-row]')?.textContent?.includes(n) ?? false, name),
+      { timeout: 8_000, timeoutMsg: `${name} never became the top result` },
+    );
+    await browser.execute(() => {
+      const d = [...document.querySelectorAll('[role="dialog"]')].pop() as HTMLElement;
+      d.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+  };
+
+  const focusTerminal = () =>
+    browser.execute((id) => {
+      const ta = [...document.querySelectorAll<HTMLTextAreaElement>(`[data-task-id="${id}"] .xterm-helper-textarea`)]
+        .find((el) => (el.closest(".xterm") ?? el).getBoundingClientRect().width > 0);
+      if (!ta) throw new Error("no visible terminal to start from");
+      ta.focus();
+      return document.activeElement === ta;
+    }, taskId);
+
+  const editorFocusedFor = (path: string) =>
+    browser.execute((id, p) => {
+      const tab = (window.__termic!.useApp.getState().tabs[id] ?? [])
+        .find((t: any) => t.type === "edit" && t.path === p) as any;
+      if (!tab) return "no tab";
+      const ae = document.activeElement;
+      if (!ae?.closest(`[data-main-tab-id="${tab.id}"]`)) return `focus is on ${ae?.className || ae?.tagName}`;
+      return ae.classList.contains("cm-content") ? "editor" : `inside the tab, on ${ae.className || ae.tagName}`;
+    }, taskId, path);
+
+  it("focuses the editor of the file it opens, from a terminal", async () => {
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      const agent = (s.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+      if (agent) s.setActiveTabId(id, agent.id);
+    }, taskId);
+    await browser.waitUntil(focusTerminal, { timeout: 20_000, timeoutMsg: "the terminal never took focus" });
+
+    await pickWithEnter("history-probe.txt");
+    await browser.waitUntil(async () => (await editorFocusedFor("history-probe.txt")) === "editor", {
+      timeout: 8_000,
+      timeoutMsg: "the picked file's editor did not get focus",
+    }).catch(async (e) => { throw new Error(`${e.message}: ${await editorFocusedFor("history-probe.txt")}`); });
+  });
+
+  // A markdown file opens in MarkdownPane, which mounts the editor itself and
+  // used to pass it no `active` at all, so neither half could take focus.
+  for (const mode of ["source", "preview"] as const) {
+    it(`focuses a markdown file opened in ${mode} view`, async () => {
+      const before = await browser.execute(() => window.__termic!.usePrefs.getState().markdownDefaultView);
+      try {
+        await browser.execute((id, m) => {
+          const s = window.__termic!.useApp.getState();
+          const open = (s.tabs[id] ?? []).find((t: any) => t.type === "edit" && t.path === "README.md") as any;
+          if (open) s.closeTab(id, open.id);
+          window.__termic!.usePrefs.getState().setMarkdownDefaultView(m);
+          const agent = (s.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+          if (agent) s.setActiveTabId(id, agent.id);
+        }, taskId, mode);
+        await browser.waitUntil(focusTerminal, { timeout: 20_000, timeoutMsg: "the terminal never took focus" });
+
+        await pickWithEnter("README.md");
+        const where = () => browser.execute((id) => {
+          const tab = (window.__termic!.useApp.getState().tabs[id] ?? [])
+            .find((t: any) => t.type === "edit" && t.path === "README.md") as any;
+          const ae = document.activeElement;
+          if (!tab || !ae?.closest(`[data-main-tab-id="${tab.id}"]`)) return `outside: ${ae?.tagName}`;
+          if (ae.classList.contains("cm-content")) return "editor";
+          return ae.closest('[data-testid="source-preview-shell"] > div:last-child > div:last-child') ? "preview" : `tab: ${ae.tagName}`;
+        }, taskId);
+        const want = mode === "source" ? "editor" : "preview";
+        await browser.waitUntil(async () => (await where()) === want, { timeout: 8_000, timeoutMsg: `focus did not land in the ${want}` })
+          .catch(async (e) => { throw new Error(`${e.message}: ${await where()}`); });
+      } finally {
+        await browser.execute((v) => window.__termic!.usePrefs.getState().setMarkdownDefaultView(v), before);
+      }
+    });
+  }
+
+  it("focuses an already-open file's editor too", async () => {
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      const agent = (s.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+      if (agent) s.setActiveTabId(id, agent.id);
+    }, taskId);
+    await browser.waitUntil(focusTerminal, { timeout: 20_000, timeoutMsg: "the terminal never took focus" });
+
+    await pickWithEnter("history-probe.txt");
+    await browser.waitUntil(async () => (await editorFocusedFor("history-probe.txt")) === "editor", {
+      timeout: 8_000,
+      timeoutMsg: "re-picking an open file did not focus its editor",
+    }).catch(async (e) => { throw new Error(`${e.message}: ${await editorFocusedFor("history-probe.txt")}`); });
+  });
 });
 
 // P1: find-in-files (⇧⌘F) streams results from ripgrep, or git grep where rg
