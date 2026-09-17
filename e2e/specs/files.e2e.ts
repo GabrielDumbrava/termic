@@ -3,6 +3,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { archiveTask, dismissOverlays, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell } from "../helpers";
 
+// The seeded fixture repo every spec in this file works against.
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
+
 declare global {
   interface Window {
     /** Installed by the drag spec so its guard and its drag aim at one pixel. */
@@ -181,10 +184,17 @@ describe("drag a file onto a terminal", () => {
 // a result opens an editor tab for that file.
 describe("file finder", () => {
   let taskId!: string;
+  // The focus cases need a plain (non-markdown) file, and this spec has to
+  // bring its own: a name another spec happens to leave behind is there on a
+  // second local run and missing on CI's fresh checkout, which is exactly how
+  // these cases passed here and failed there. Stamped so a leftover from an
+  // earlier run cannot satisfy them either, and removed in `after`.
+  const PLAIN = `finder-focus-${Date.now()}.txt`;
   after(async () => {
     await browser.execute(() =>
       window.__termic!.useUI.getState().closeFileFinder(),
     );
+    rmSync(path.join(fixture, PLAIN), { force: true });
     if (taskId) await archiveTask(taskId);
   });
 
@@ -192,6 +202,7 @@ describe("file finder", () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-finder");
+    writeFileSync(path.join(fixture, PLAIN), "focus probe\n");
     await browser.execute(
       (id) => window.__termic!.useUI.getState().openFileFinder(id),
       taskId,
@@ -289,11 +300,11 @@ describe("file finder", () => {
     }, taskId);
     await browser.waitUntil(focusTerminal, { timeout: 20_000, timeoutMsg: "the terminal never took focus" });
 
-    await pickWithEnter("history-probe.txt");
-    await browser.waitUntil(async () => (await editorFocusedFor("history-probe.txt")) === "editor", {
+    await pickWithEnter(PLAIN);
+    await browser.waitUntil(async () => (await editorFocusedFor(PLAIN)) === "editor", {
       timeout: 8_000,
       timeoutMsg: "the picked file's editor did not get focus",
-    }).catch(async (e) => { throw new Error(`${e.message}: ${await editorFocusedFor("history-probe.txt")}`); });
+    }).catch(async (e) => { throw new Error(`${e.message}: ${await editorFocusedFor(PLAIN)}`); });
   });
 
   // A markdown file opens in MarkdownPane, which mounts the editor itself and
@@ -338,11 +349,11 @@ describe("file finder", () => {
     }, taskId);
     await browser.waitUntil(focusTerminal, { timeout: 20_000, timeoutMsg: "the terminal never took focus" });
 
-    await pickWithEnter("history-probe.txt");
-    await browser.waitUntil(async () => (await editorFocusedFor("history-probe.txt")) === "editor", {
+    await pickWithEnter(PLAIN);
+    await browser.waitUntil(async () => (await editorFocusedFor(PLAIN)) === "editor", {
       timeout: 8_000,
       timeoutMsg: "re-picking an open file did not focus its editor",
-    }).catch(async (e) => { throw new Error(`${e.message}: ${await editorFocusedFor("history-probe.txt")}`); });
+    }).catch(async (e) => { throw new Error(`${e.message}: ${await editorFocusedFor(PLAIN)}`); });
   });
 });
 
@@ -515,7 +526,6 @@ describe("find in files", () => {
 
 // P1: the file tree. Guards expanding/collapsing a folder. Creates a throwaway
 // nested file so there's a folder to toggle, then git-cleans it away.
-const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 
 describe("file tree", () => {
   let taskId!: string;

@@ -50,6 +50,36 @@ describe("find in terminal", () => {
     await key(scope, { key: "Enter", code: "Enter", keyCode: 13, which: 13 } as KeyboardEventInit);
   };
 
+  /** Get the fixture's three lines on screen with find open on "mark".
+   *
+   *  Retried, in BOTH terminals: a line typed before the shell is listening is
+   *  lost, and neither terminal has a store field that says its prompt is
+   *  ready (the agent tab's `lastOutputAt` only proves the shell wrote
+   *  something, which on a slow runner is its first prompt paint and not yet
+   *  a shell reading stdin). `clear` wipes screen AND scrollback, so a slow
+   *  first attempt cannot double the count. This is what failed on CI while
+   *  passing here: the count read "No results" because the command never ran.
+   */
+  const showFixture = async (scope: string) => {
+    await openFind(scope);
+    await waitVisible(`${scope} [data-testid="terminal-find"]`);
+    await setQuery(scope, "mark");
+    await browser.waitUntil(async () => {
+      if ((await state(scope)).label?.endsWith("of 3")) return true;
+      await findKey(scope, { key: "Escape" });
+      await waitGone(`${scope} [data-testid="terminal-find"]`);
+      await run(scope, `clear; ${PRINT_THREE}`);
+      await openFind(scope);
+      await setQuery(scope, "mark");
+      // A bounded wait on the condition itself, not a sleep: the addon
+      // re-searches 200ms after output lands.
+      return browser.waitUntil(
+        async () => (await state(scope)).label?.endsWith("of 3") ?? false,
+        { timeout: 3_000, interval: 100 },
+      ).then(() => true, () => false);
+    }, { timeout: 40_000, interval: 100, timeoutMsg: `${scope} never printed the fixture` });
+  };
+
   const openFind = (scope: string) => key(scope, { key: "f", code: "KeyF", metaKey: true });
 
   /** Set the find input the way typing does (React tracks the native setter). */
@@ -103,9 +133,7 @@ describe("find in terminal", () => {
     )), { timeout: 20_000, timeoutMsg: "the shell never drew a prompt" });
 
     await run(mainScope(), PRINT_THREE);
-    await openFind(mainScope());
-    await waitVisible(`${mainScope()} [data-testid="terminal-find"]`);
-    await setQuery(mainScope(), "mark");
+    await showFixture(mainScope());
     // All three at once, one of them current. Output that lands after the
     // query is picked up too, so this holds even if printf was slow.
     await waitState(mainScope(), { label: /^[123] of 3$/, all: 3, active: 1 }, "not every match was highlighted");
@@ -155,26 +183,8 @@ describe("find in terminal", () => {
         .some(el => (el.closest(".xterm") ?? el).getBoundingClientRect().width > 0), bottomScope()),
     { timeout: 20_000, timeoutMsg: "the footer shell never rendered" });
 
-    // The footer shell has no store field that says its prompt is up, and a
-    // line typed before zsh is listening is lost. So retype until its output
-    // shows, clearing the screen and scrollback each time so a slow first
-    // attempt cannot double the count.
-    await openFind(bottomScope());
-    await waitVisible(`${bottomScope()} [data-testid="terminal-find"]`);
-    await setQuery(bottomScope(), "mark");
-    await browser.waitUntil(async () => {
-      if ((await state(bottomScope())).label?.endsWith("of 3")) return true;
-      await findKey(bottomScope(), { key: "Escape" });
-      await run(bottomScope(), `clear; ${PRINT_THREE}`);
-      await openFind(bottomScope());
-      await setQuery(bottomScope(), "mark");
-      // A bounded wait on the condition itself, not a sleep: the addon
-      // re-searches 200ms after output lands.
-      return browser.waitUntil(
-        async () => (await state(bottomScope())).label?.endsWith("of 3") ?? false,
-        { timeout: 3_000, interval: 100 },
-      ).then(() => true, () => false);
-    }, { timeout: 30_000, interval: 100, timeoutMsg: "the footer shell never printed the fixture" });
+    await run(bottomScope(), PRINT_THREE);
+    await showFixture(bottomScope());
     await waitState(bottomScope(), { label: /^[123] of 3$/, all: 3, active: 1 }, "the footer shell's matches were not highlighted");
     // Its own bar: the main tab's stays closed.
     expect(await browser.execute((sel) => !!document.querySelector(`${sel} [data-testid="terminal-find"]`), mainScope())).toBe(false);
