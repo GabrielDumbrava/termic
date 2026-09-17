@@ -72,6 +72,8 @@ export function GeneralSection() {
 
   const loadRemoteImages = usePrefs(s => s.loadRemoteImages);
   const setLoadRemoteImages = usePrefs(s => s.setLoadRemoteImages);
+  const offerTouchIdForSudo = usePrefs(s => s.offerTouchIdForSudo);
+  const setOfferTouchIdForSudo = usePrefs(s => s.setOfferTouchIdForSudo);
 
   // Hydrate the local edit buffers once, when the backend Settings land. The
   // ref gate matters: a later save re-publishes `settings`, and re-running
@@ -278,6 +280,17 @@ export function GeneralSection() {
           onChange={saveTrayEnabled}
         />
       </Block>
+
+      {/* "Don't ask again" on the terminal's offer writes this, so it needs
+          a visible way back. */}
+      {IS_MAC && <Block id="setting-offer-touchid-sudo">
+        <Toggle
+          label="Offer Touch ID for sudo"
+          hint="When a terminal asks for your sudo password, offer to turn on Touch ID for sudo. Accepting runs a short script, in a tab where you can read it, that adds pam_tid.so to /etc/pam.d/sudo_local."
+          value={offerTouchIdForSudo}
+          onChange={setOfferTouchIdForSudo}
+        />
+      </Block>}
 
       <Block
         id="setting-load-remote-images"

@@ -1366,6 +1366,12 @@ export interface TerminalTab extends BaseTab {
    *  `send --resume`), exactly like clicking the exited banner's Restart.
    *  Watched by a TerminalPane effect; no-op while the PTY is live. */
   respawnKick?: number;
+  /** Set on the tab "Enable Touch ID for sudo" opens (SudoTouchIdBanner):
+   *  the line typed at the shell's first prompt, then "" once it is sent so
+   *  a respawn never types it twice. Present at all means this tab never
+   *  shows the offer, since it is where the user is answering it. Runtime
+   *  only, never persisted. */
+  sudoTouchIdInstall?: string;
 }
 
 /** One entry in a terminal tab's message queue. `repeat` is the total

@@ -7,7 +7,7 @@ import type { SandboxSelection } from "@/lib/types";
 import { setDiagnosticsEnabled } from "@/lib/lsp/diagnosticsPref";
 import { setChosenServers, setChosenCommands } from "@/lib/lsp/serverChoice";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { listFontFamilies, listMonospaceFonts, themesList } from "@/lib/ipc";
+import { listFontFamilies, listMonospaceFonts, sudoTouchIdSetOffer, themesList } from "@/lib/ipc";
 import {
   applyCustomVars, clearCustomVars, clearThemeCache, isCustomId, mergeTerminal,
   readThemeCache, sanitizeTheme, writeThemeCache, type CustomTheme,
@@ -56,6 +56,7 @@ const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_CONFIRM_CLOSE_AGENT_TAB = "confirmBeforeCloseAgentTab";
 const LS_CONFIRM_ARCHIVE_TASK = "confirmBeforeArchiveTask";
+const LS_OFFER_TOUCH_ID_SUDO = "offerTouchIdForSudo";
 const LS_CONFIRM_ACCOUNT_RESTART = "confirmBeforeAccountRestart";
 const LS_ARCHIVE_DELETE_BRANCH = "archiveDeleteBranch";
 const LS_WORKING_INDICATOR = "workingIndicator";
@@ -503,6 +504,12 @@ interface PrefsState {
    *  last explicit branch decision. Archiving can't be undone from inside
    *  Termic, so both halves are re-exposed in Settings, Tasks. */
   confirmBeforeArchiveTask: boolean;
+  /** Whether a terminal sitting at a sudo password prompt offers to enable
+   *  Touch ID for sudo (macOS). ON by default. Turned off by the banner's
+   *  "Don't ask again", re-exposed in Settings, General. Mirrored to Rust
+   *  (`sudo_touchid_set_offer`) so an opted-out user's PTYs skip the tty
+   *  probe entirely. */
+  offerTouchIdForSudo: boolean;
   /** Whether switching a task to another account ASKS before restarting the
    *  running agent. ON by default.
    *
@@ -832,6 +839,7 @@ interface PrefsState {
   setSettledHighlight: (v: boolean) => void;
   setConfirmBeforeCloseAgentTab: (v: boolean) => void;
   setConfirmBeforeArchiveTask: (v: boolean) => void;
+  setOfferTouchIdForSudo: (v: boolean) => void;
   setConfirmBeforeAccountRestart: (v: boolean) => void;
   setArchiveDeleteBranch: (v: boolean) => void;
   setWorkingIndicator: (v: boolean) => void;
@@ -992,6 +1000,7 @@ const initialCompletionSoundId = readCompletionSoundId();
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
 const initialConfirmCloseAgentTab = lsGetBool(LS_CONFIRM_CLOSE_AGENT_TAB, true);
 const initialConfirmArchiveTask = lsGetBool(LS_CONFIRM_ARCHIVE_TASK, true);
+const initialOfferTouchIdForSudo = lsGetBool(LS_OFFER_TOUCH_ID_SUDO, true);
 const initialConfirmAccountRestart = lsGetBool(LS_CONFIRM_ACCOUNT_RESTART, true);
 const initialArchiveDeleteBranch = lsGetBool(LS_ARCHIVE_DELETE_BRANCH, false);
 // OFF by default — experimental re-introduction of the work-in-progress
@@ -1063,6 +1072,7 @@ export const usePrefs = create<PrefsState>(set => ({
   settledHighlight: initialSettledHighlight,
   confirmBeforeCloseAgentTab: initialConfirmCloseAgentTab,
   confirmBeforeArchiveTask: initialConfirmArchiveTask,
+  offerTouchIdForSudo: initialOfferTouchIdForSudo,
   confirmBeforeAccountRestart: initialConfirmAccountRestart,
   archiveDeleteBranch: initialArchiveDeleteBranch,
   workingIndicator: initialWorkingIndicator,
@@ -1328,6 +1338,12 @@ export const usePrefs = create<PrefsState>(set => ({
   setConfirmBeforeCloseAgentTab: (v) => {
     try { localStorage.setItem(LS_CONFIRM_CLOSE_AGENT_TAB, v ? "1" : "0"); } catch {}
     set({ confirmBeforeCloseAgentTab: v });
+  },
+  setOfferTouchIdForSudo: (v) => {
+    if (usePrefs.getState().offerTouchIdForSudo === v) return;
+    try { localStorage.setItem(LS_OFFER_TOUCH_ID_SUDO, v ? "1" : "0"); } catch {}
+    set({ offerTouchIdForSudo: v });
+    sudoTouchIdSetOffer(v).catch(() => {});
   },
   setConfirmBeforeArchiveTask: (v) => {
     try { localStorage.setItem(LS_CONFIRM_ARCHIVE_TASK, v ? "1" : "0"); } catch {}

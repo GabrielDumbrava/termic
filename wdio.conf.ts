@@ -70,6 +70,10 @@ export const config: WebdriverIO.Config = {
     // touching the developer's real ~/.claude/settings.json. Honoured only by
     // the `e2e`-feature binary (agent_hooks::host_config_dir).
     process.env.TERMIC_E2E_AGENT_HOME = dataDir;
+    // Touch ID for sudo offer: `perl` stands in for sudo, eligibility is
+    // forced and the enable script is a stub (sudo_touchid.rs). Honoured only
+    // by the `e2e`-feature binary.
+    process.env.TERMIC_E2E_FAKE_SUDO = "1";
     // Purge accumulated tasks so every run starts lean (specs create their own;
     // archived tasks otherwise pile up across runs and bloat loadAll/sidebar).
     try {

@@ -1031,6 +1031,17 @@ export const defaultShell = () => invoke<string>("default_shell");
 export function onPtyData(ptyId: string, cb: (data: Uint8Array) => void): Promise<UnlistenFn> {
   return listen<{ data: number[] }>(`pty://${ptyId}`, ev => cb(new Uint8Array(ev.payload.data)));
 }
+/** Touch ID for sudo offer (sudo_touchid.rs): `show` flips true when the PTY
+ *  sits at a sudo password prompt on a Mac that could use Touch ID for it,
+ *  and false once sudo is no longer the foreground job. */
+export function onPtySudoTouchId(ptyId: string, cb: (show: boolean) => void): Promise<UnlistenFn> {
+  return listen<{ show: boolean }>(`pty-sudo-touchid://${ptyId}`, ev => cb(ev.payload.show));
+}
+/** Mirror the "offer Touch ID for sudo" pref to Rust. */
+export const sudoTouchIdSetOffer = (enabled: boolean) => invoke<void>("sudo_touchid_set_offer", { enabled });
+/** Write the bundled enable script and return its path, plus the
+ *  `sudo '<path>'` line "Copy command" puts on the clipboard. */
+export const sudoTouchIdScript = () => invoke<{ path: string; command: string }>("sudo_touchid_script");
 /** Tell Rust this PTY has a listener, so its output may start flowing.
  *  MUST be called right after `onPtyData` resolves: a Tauri event emitted
  *  before `listen()` registers reaches nobody, so a CLI that prints a banner

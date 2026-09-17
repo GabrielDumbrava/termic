@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { usePr, initCommentWatcher, initPrStatusPoller } from "@/store/pr";
 import { initScheduledTicker } from "@/lib/scheduledTicker";
-import { taskSpotlightStatus } from "@/lib/ipc";
+import { sudoTouchIdSetOffer, taskSpotlightStatus } from "@/lib/ipc";
 import { reapOrphanedServers } from "@/lib/lsp/pageSession";
 import { installPointerEventsGuard } from "@/lib/pointerEventsGuard";
 import { initCliRpc } from "@/lib/cliRpc";
@@ -73,6 +73,9 @@ export function App() {
     // IO for projects/tasks, a different metric with a different owner.
     recordFirstPaint();
     installPointerEventsGuard();
+    // Rust defaults the Touch ID for sudo offer on; only an opt-out needs
+    // to reach it.
+    if (!usePrefs.getState().offerTouchIdForSudo) sudoTouchIdSetOffer(false).catch(() => {});
     // `termic://` deep links (GH #192) drain AFTER loadAll: a link names
     // its project by name, and resolving that against an empty store would
     // reject the very link that launched the app. A failed load still wires

@@ -27,6 +27,7 @@ import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
+import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
@@ -72,6 +73,9 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
   }, []);
   // Visible when the PTY exits — overlays the dead terminal with a CTA.
   const [exited, setExited] = useState(false);
+  // Rust's "this PTY is at a sudo password prompt" signal (sudo_touchid.rs).
+  const [sudoOffer, setSudoOffer] = useState(false);
+  const offerTouchIdForSudo = usePrefs(s => s.offerTouchIdForSudo);
   // Has `initialInput` reached the PTY? Surfaced on the host element because
   // the alternative for anything waiting on it is a sleep: the spawn is async
   // (login shell lookup, ptySpawn, attach) so the container exists well before
@@ -91,9 +95,11 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current, { taskId });
     setExited(false);
     setPrimed(false);
+    setSudoOffer(false);
     let cancelled = false;
     let unlistenData: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
+    let unlistenSudo: (() => void) | null = null;
 
     // Clickable links — same model as TerminalPane: always loaded so URLs
     // underline on hover, opening gated on Cmd/Ctrl so a plain click still
@@ -266,8 +272,12 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         // Output is held Rust-side until this lands: anything emitted before
         // the listener exists is dropped (see ipc.ptyAttached).
         ipc.ptyAttached(ptyId).catch(() => {});
+        unlistenSudo = await ipc.onPtySudoTouchId(ptyId, show => {
+          if (!cancelled) setSudoOffer(show);
+        });
         unlistenExit = await ipc.onPtyExit(ptyId, () => {
           ptyRef.current = null;
+          setSudoOffer(false);
           // Bottom-split shells: parent passes onExited to close the
           // tab immediately (the tab strip is the affordance for
           // spawning a new one). Standalone previews keep the
@@ -348,7 +358,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       disposeLinkOpener();
       unregisterDrop();
       disposeImeBridge();
-      unlistenData?.(); unlistenExit?.();
+      unlistenData?.(); unlistenExit?.(); unlistenSudo?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose the renderer addon FIRST so its render loop can't fire
       // on a half-disposed terminal.
@@ -419,6 +429,9 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
 
   return (
     <div className="relative flex h-full w-full flex-col">
+      {sudoOffer && offerTouchIdForSudo && !exited && (
+        <SudoTouchIdBanner taskId={taskId} onDismiss={() => setSudoOffer(false)} />
+      )}
       {exited && (
         // In-flow banner above the terminal: the dead xterm stays
         // interactive so its scrollback is still selectable/copyable, and it

@@ -48,6 +48,7 @@ import type { TerminalTab, Task, SandboxMode } from "@/lib/types";
 import { effectiveSandboxMode, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, SANDBOX_VISUALS, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
+import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import * as ipc from "@/lib/ipc";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
@@ -213,6 +214,7 @@ export function TerminalPane({ task, tab, active }: Props) {
   }, [task.id]);
   const unlistenDataRef = useRef<(() => void) | null>(null);
   const unlistenExitRef = useRef<(() => void) | null>(null);
+  const unlistenSudoRef = useRef<(() => void) | null>(null);
   const ptyRef = useRef<string | null>(null);
   // The account the CURRENT process was spawned with (GH #278). A ref rather
   // than state: it is read on the OSC path, which runs on every turn, and it
@@ -312,6 +314,9 @@ export function TerminalPane({ task, tab, active }: Props) {
   // pane was dead until the user closed + reopened the tab.
   const [gen, setGen] = useState(0);
   const [exited, setExited] = useState(false);
+  // Rust's "this PTY is at a sudo password prompt" signal (sudo_touchid.rs).
+  const [sudoOffer, setSudoOffer] = useState(false);
+  const offerTouchIdForSudo = usePrefs(s => s.offerTouchIdForSudo);
   // Sandbox status from Rust's per-spawn `sandbox-status://<ptyId>`
   // event. Drives the warning chip in the status footer when the
   // tinyproxy failed to start (= full network deny instead of
@@ -2017,6 +2022,8 @@ const captureArmedRef = useRef(false);
     // fresh). `tabs` deliberately stays OUT of the effect deps: respawning the
     // PTY on every tab add/remove would be far worse than this one snapshot.
     const isShell = tab.cli === "shell";
+    // The Touch ID install tab: types its line once, never offers.
+    const sudoInstallInput = tab.sudoTouchIdInstall;
     // Custom-command tasks run a user-supplied launch command in a
     // login shell — never an agent. They share the shell's "no resume,
     // no agent_id, no per-agent env" treatment; only the spawned argv
@@ -2455,8 +2462,17 @@ const captureArmedRef = useRef(false);
         const ctrlSniffer = ptyRawOn
           ? makeCtrlSniffer((kind, payload) => dbg(`raw-${kind}`, payload))
           : null;
+        // Cleared to "" once sent, so a respawn of this tab never retypes it.
+        let sudoInputPending = !!sudoInstallInput;
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
           term.write(u8);
+          // Same wait-for-the-prompt as AuxTerminal's initialInput: bytes
+          // written before zsh's line editor is up are echoed twice.
+          if (sudoInputPending && !cancelled) {
+            sudoInputPending = false;
+            patchTab(task.id, tab.id, { sudoTouchIdInstall: "" });
+            ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(sudoInstallInput))).catch(() => {});
+          }
           oscSniffer?.(u8);
           ctrlSniffer?.(u8);
           const now = Date.now();
@@ -2516,6 +2532,11 @@ const captureArmedRef = useRef(false);
         // its own ref, not this one — assigning over it would silently drop
         // whatever was already there and leak a listener per respawn.
         unlistenDataRef.current = unlistenData;
+        if (sudoInstallInput === undefined) {
+          unlistenSudoRef.current = await ipc.onPtySudoTouchId(ptyId, show => {
+            if (!cancelled) setSudoOffer(show);
+          });
+        }
         // Rust holds this PTY's output until the ack lands, because a Tauri
         // event emitted before `listen()` registers reaches nobody. Without
         // it an agent that prints its banner and one OSC title at startup and
@@ -2633,6 +2654,7 @@ const captureArmedRef = useRef(false);
           // sets a fresh id; the resume/sandbox-restart branches above
           // return early and respawn without reaching here.
           patchTab(task.id, tab.id, { ptyId: undefined });
+          setSudoOffer(false);
           setExited(true);
         });
         unlistenExitRef.current = unlistenExit;
@@ -2759,6 +2781,9 @@ const captureArmedRef = useRef(false);
       disposeImeBridge();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();
+      unlistenSudoRef.current?.();
+      unlistenSudoRef.current = null;
+      setSudoOffer(false);
       // A pending trailing lastOutputAt write must not fire into the next
       // PTY session (gen-bump Restart reuses this component).
       if (lastOutputTrailerRef.current !== null) {
@@ -3221,6 +3246,9 @@ const captureArmedRef = useRef(false);
         if (tab.paneId) useApp.getState().setActivePaneId(task.id, tab.paneId);
       }}
     >
+      {sudoOffer && offerTouchIdForSudo && !exited && (
+        <SudoTouchIdBanner taskId={task.id} onDismiss={() => setSudoOffer(false)} />
+      )}
       {exited && (
         // In-flow banner above the terminal (NOT a full-cover overlay): the
         // dead xterm below stays interactive so the user can select + copy

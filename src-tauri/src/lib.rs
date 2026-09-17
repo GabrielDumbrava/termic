@@ -61,6 +61,7 @@ mod procmon;
 mod docker;
 mod agent_dirs;
 mod profiles;
+mod sudo_touchid;
 #[cfg(test)]
 mod test_support;
 use sandbox::SandboxBundle;
@@ -3888,6 +3889,17 @@ fn pty_spawn(
     let feed_r = feed.clone();
     let out_bytes_r = out_bytes.clone();
     let attached_r = attached.clone();
+    // Touch ID for sudo offer (sudo_touchid.rs). Host PTYs only: a
+    // sandboxed agent cannot run the setuid sudo, and a Docker PTY's
+    // foreground job is `docker`, whose sudo is not the host's.
+    #[cfg(target_os = "macos")]
+    let mut sudo_watch = if sandbox_bundle.is_none() && !is_docker {
+        master.as_raw_fd().and_then(sudo_touchid::SudoWatch::new)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut sudo_watch: Option<sudo_touchid::SudoWatch> = None;
     thread::spawn(move || {
         let mut buf = [0u8; 65536];
         loop {
@@ -3899,6 +3911,13 @@ fn pty_spawn(
                     buf_r.1.notify_all();
                     if let Some(feed) = &feed_r {
                         feed.push(&buf[..n]);
+                    }
+                    if let Some(show) = sudo_watch.as_mut().and_then(|w| w.on_read(n)) {
+                        emit_scoped(
+                            &app_final,
+                            &format!("pty-sudo-touchid://{}", id_final),
+                            sudo_touchid::SudoOffer { show },
+                        );
                     }
                 }
             }
@@ -22219,6 +22238,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            sudo_touchid::sudo_touchid_set_offer,
+            sudo_touchid::sudo_touchid_script,
             agent_hooks::agent_hooks_status,
             agent_hooks::agent_hooks_plan,
             agent_hooks::agent_hooks_install,

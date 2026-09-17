@@ -354,6 +354,17 @@ Two gestures, one landing point (`lib/terminalDrop.ts`): every terminal host reg
 
 Both share the hit test and the `.termic-drop-target` highlight, so they agree on where a drop lands.
 
+## Touch ID for sudo offer
+
+While a host terminal (agent tab with the sandbox off, shell tab, footer shell) sits at a sudo password prompt, `SudoTouchIdBanner` shows an in-flow strip above it: "Would you like to enable Touch ID for sudo?" with **Run in new tab**, **Copy command**, **Don't ask again** and a dismiss X. Modelled on iTerm2 3.7, including the transparency: nothing is elevated behind the user's back.
+
+- **Run in new tab** opens a plain shell tab titled "Touch ID for sudo" and types the script path at its first prompt (`TerminalTab.sudoTouchIdInstall`, cleared to `""` once sent). The script prints its own source, then asks sudo for the password. A shell, not a custom-command tab, so the output stays after the script exits and nothing re-runs it on relaunch. That tab never shows the offer itself.
+- **Copy command** copies `sudo '<path>'`.
+- **Don't ask again** turns off `offerTouchIdForSudo`, re-exposed as "Offer Touch ID for sudo" in Settings, General (macOS only).
+- Every button also dismisses it for the current prompt. Rust only raises it again on the next sudo run, and withdraws it as soon as sudo is no longer the foreground job.
+
+Rust decides when it shows (see [ipc.md](ipc.md)); the frontend only listens and renders.
+
 ## Confirms for recoverable actions
 
 `ConfirmDialog` (`askConfirm`) renders an optional second checkbox when the
