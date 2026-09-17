@@ -71,6 +71,8 @@ export interface TermicApi {
   useAgentUsage: { getState: () => any; setState: (p: any) => void };
   /** Dismissed "Usage unknown" labels (src/store/usageUnknownDismissed.ts). */
   useUsageUnknownDismissed: { getState: () => any; setState: (p: any) => void };
+  /** `termic scratchpad`'s webview handler (src/lib/scratchCli.ts). */
+  padHandler: (params: any) => Promise<any>;
   ipc: any;
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any>;
   runTabs: any;

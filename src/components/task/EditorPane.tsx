@@ -32,7 +32,7 @@ import { attachHiddenScrollRestore } from "@/lib/hiddenScrollRestore";
 import { reviewCommentsExtension, dispatchSelectionComment } from "./reviewCommentsExt";
 import { inlineBlameExtension, invalidateBlame, refreshBlame, markBlameStale } from "./inlineBlameExt";
 import { bindingMatches } from "@/lib/shortcuts";
-import { registerLivePad } from "@/lib/scratchLive";
+import { padDiskGen, padDiskSettled, registerLivePad, trackPadDiskWrite } from "@/lib/scratchLive";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -306,7 +306,13 @@ export function EditorPane({ task, tab, active, onContent }: {
         // both are async, and a language the user has not opened this session
         // is a chunk fetch, which would otherwise land on the critical path of
         // every cold editor open.
-        const [content, byPath] = await Promise.all([
+        // A pad's file can be written while this editor loads it (see
+        // lib/scratchLive): wait out writes already in flight, and note the
+        // generation so one that starts during the load is caught below.
+        const pad = tab.type === "scratch" ? [task.id, tab.scratchId] as const : null;
+        if (pad) await padDiskSettled(...pad);
+        let padGen = pad ? padDiskGen(...pad) : 0;
+        const [loaded, byPath] = await Promise.all([
           tab.type === "scratch"
             ? scratchRead(task.id, tab.scratchId)
             // An out-of-task file has no task-relative form, so it cannot go
@@ -318,12 +324,22 @@ export function EditorPane({ task, tab, active, onContent }: {
             ? langForPath(tab.path) : Promise.resolve(null),
         ]);
         if (!alive || !hostRef.current) return;
+        let content = loaded;
         elog(`read + grammar (${content.length} chars, ${byPath?.id ?? "no path match"})`);
         const resolved = await resolveSyntax(tab, content, byPath);
         elog(`syntax resolved: ${resolved.id}${resolved.ext ? "" : " (NO GRAMMAR)"}`);
         // A "Set syntax" pick made while the grammar was loading owns the
         // compartment now; this one is stale and must not land on top of it.
         if (!alive || !hostRef.current || !langIsCurrent()) return;
+        // Re-read until no pad write began since the last one. Nothing below
+        // awaits before the view registers as the live pad, so from here on a
+        // write goes into the buffer instead of past it.
+        while (pad && padDiskGen(...pad) !== padGen) {
+          await padDiskSettled(...pad);
+          padGen = padDiskGen(...pad);
+          content = await scratchRead(...pad);
+          if (!alive || !hostRef.current || !langIsCurrent()) return;
+        }
         blameOnRef.current = usePrefs.getState().inlineBlame;
         langIdRef.current = resolved.id;
         const lang = resolved.ext;
@@ -356,7 +372,7 @@ export function EditorPane({ task, tab, active, onContent }: {
           const text = v.state.doc.toString();
           if (text !== lastFlushedRef.current) {
             lastFlushedRef.current = text;
-            scratchWrite(task.id, tab.scratchId, text).catch(() => {});
+            trackPadDiskWrite(task.id, tab.scratchId, scratchWrite(task.id, tab.scratchId, text)).catch(() => {});
           }
           // Re-sniff the syntax as the buffer fills. An edit tab resolves
           // this once at mount because its PATH answers, but a pad is always

@@ -35,3 +35,45 @@ export function registerLivePad(taskId: string, scratchId: string, pad: LivePad)
 export function livePad(taskId: string, scratchId: string): LivePad | undefined {
   return live.get(key(taskId, scratchId));
 }
+
+// ── Writes to a pad's FILE, and the editor that is loading it ────────────
+//
+// A pad is unregistered for the length of an editor remount: the old view is
+// gone and the new one is still awaiting its read. That is not rare. A pad's
+// first content that sniffs as Markdown swaps EditorPane for MarkdownPane,
+// which mounts a second CodeMirror, and an agent that creates a pad and
+// writes to it straight away lands right in that gap. The write takes the
+// closed-pad path to disk, the new editor shows what it read before it, and
+// its next flush writes that stale text back over the append.
+//
+// So every write to a pad's file goes through `trackPadDiskWrite`, and an
+// editor loading a pad waits for the ones in flight, then re-reads if any
+// began while it loaded. It registers synchronously after the last check,
+// which leaves no gap for a write to fall into.
+
+const diskGen = new Map<string, number>();
+const diskPending = new Map<string, Promise<void>>();
+
+/** Record a write to a pad's file. Returns `write` untouched, so the caller
+ *  still sees its result and its error. */
+export function trackPadDiskWrite<T>(taskId: string, scratchId: string, write: Promise<T>): Promise<T> {
+  const k = key(taskId, scratchId);
+  diskGen.set(k, (diskGen.get(k) ?? 0) + 1);
+  const settled = Promise.all([diskPending.get(k), write.catch(() => {})]).then(() => {});
+  diskPending.set(k, settled);
+  void settled.then(() => {
+    if (diskPending.get(k) === settled) diskPending.delete(k);
+  });
+  return write;
+}
+
+/** Bumped by every tracked write. Unchanged across a read means the read saw
+ *  every write that had started before it. */
+export function padDiskGen(taskId: string, scratchId: string): number {
+  return diskGen.get(key(taskId, scratchId)) ?? 0;
+}
+
+/** Resolves once every write tracked so far has finished, failed ones included. */
+export function padDiskSettled(taskId: string, scratchId: string): Promise<void> {
+  return diskPending.get(key(taskId, scratchId)) ?? Promise.resolve();
+}

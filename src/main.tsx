@@ -41,7 +41,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -71,6 +71,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/store/profiles"),
         import("@/store/agentUsage"),
         import("@/store/usageUnknownDismissed"),
+        import("@/lib/scratchCli"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -93,6 +94,10 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // Which agents' "Usage unknown" label is dismissed, so a spec can put
       // the footer back the way it found it.
       useUsageUnknownDismissed: usageUnknownDismissed.useUsageUnknownDismissed,
+      // The webview half of `termic scratchpad`. Exposed so a spec can land a
+      // write in the SAME tick as an editor remount, which a round trip over
+      // the control socket can only hit by luck (lib/scratchLive).
+      padHandler: scratchCli.padHandler,
       ipc,
       invoke: core.invoke,
       runTabs,

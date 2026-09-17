@@ -377,6 +377,30 @@ right. It took a screenshot to notice and a computed-style assertion to prove.
 Assert the painted colour, not the attribute, wherever selection is carried by
 colour alone.
 
+## A scratchpad is unregistered while its editor remounts
+
+An agent's `termic scratchpad write` to an OPEN pad goes into the editor
+buffer through `lib/scratchLive`'s registry. Between an old `EditorPane`
+unmounting and a new one finishing its async `scratchRead`, the pad is not
+registered, so a write in that gap takes the closed-pad path to disk. The new
+editor shows what it read BEFORE the write, and its next flush writes that
+text back over the append.
+
+The gap is not exotic. A pad whose content sniffs as Markdown (`# Findings`)
+swaps `EditorPane` for `MarkdownPane`, which is a second CodeMirror mount, and
+an agent that creates a pad and writes to it at once lands right in it. That
+made the `scratchpad.e2e.ts` live-write case fail about one run in six.
+Verified both ways: the same case seeded with non-Markdown text passed 12 of
+12, and a case that writes in the same tick as a Markdown pick failed 3 of 3
+without the fix and passed 8 of 8 with it.
+
+Every write to a pad's file goes through `trackPadDiskWrite`, and a loading
+pad editor waits for writes in flight, then re-reads until no write started
+during its load, with no await between that check and registering. The
+tracking must start synchronously at the live-pad check and cover the
+closed-pad path's READ too: the first version tracked only the final write,
+and an editor registered inside the read's await, which still failed 8 of 8.
+
 ## Two components fetching one setting will disagree
 
 The account pill and the usage popover each carry the same "switch

@@ -455,6 +455,51 @@ describe("scratchpads from the CLI", () => {
     expect(onDisk).toBe("replaced\n");
   });
 
+  // Picking Markdown swaps EditorPane for MarkdownPane, which mounts a new
+  // CodeMirror that reads the file before it can take writes. A write in that
+  // gap used to go to disk behind the new editor's back: the editor showed
+  // the old text, and its next flush wrote the old text over the append. The
+  // "writes into the OPEN pad live" case above tripped on it about one run in
+  // six, because a `# Findings` pad sniffs as Markdown. This lands the write in
+  // the gap on purpose.
+  it("a write during the Markdown remount reaches the editor and survives its flush", async () => {
+    const r = await cliRpc({ cmd: "pad_new", task: taskId, title: "Remount", content: "plain notes\n" });
+    const scratchId = r.data.pads[0].id as string;
+    let tabId = "";
+    await browser.waitUntil(async () => {
+      tabId = (await pads(taskId)).find((p: any) => p.scratchId === scratchId)?.id ?? "";
+      return !!tabId;
+    }, { timeout: 10_000, timeoutMsg: "pad_new never opened a tab" });
+    await browser.execute((id, tid) => window.__termic!.useApp.getState().setActiveTabId(id, tid), taskId, tabId);
+    await browser.waitUntil(async () => (await editorText(tabId)) === "plain notes\n", {
+      timeout: 10_000, timeoutMsg: "the pad's editor never loaded",
+    });
+
+    await browser.execute(async (id, tid, sid) => {
+      const t = window.__termic!;
+      t.useApp.getState().patchTab(id, tid, { syntax: "Markdown" });
+      await t.padHandler({ taskId: id, op: "write", pad: sid, content: "- appended\n", append: true });
+    }, taskId, tabId, scratchId);
+
+    const want = "plain notes\n- appended\n";
+    await browser.waitUntil(async () => (await editorText(tabId)) === want, {
+      timeout: 5_000, timeoutMsg: "the write made during the remount never reached the editor",
+    });
+    // The editor's own flush must not put the pre-write text back.
+    await browser.execute((id) => {
+      const ed = [...document.querySelectorAll(`[data-task-id="${id}"] .cm-editor`)]
+        .find((el) => el.getBoundingClientRect().width > 0) as (HTMLElement & { __cmView?: any });
+      const view = ed.__cmView;
+      view.dispatch({ changes: { from: view.state.doc.length, insert: "- typed\n" } });
+    }, taskId);
+    // Read the FILE, not `pad_read`: that returns the open buffer, which is
+    // right whatever the flush did.
+    await browser.waitUntil(async () =>
+      (await browser.execute((id, sid) => window.__termic!.ipc.scratchRead(id, sid), taskId, scratchId)) === `${want}- typed\n`, {
+      timeout: 5_000, timeoutMsg: "the pad's file lost the write made during the remount",
+    });
+  });
+
   it("refuses an unknown pad by name", async () => {
     const r = await cliRpc({ cmd: "pad_read", task: taskId, pad: "no-such-pad" });
     expect(r.ok).toBe(false);

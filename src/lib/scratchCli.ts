@@ -8,7 +8,7 @@
 
 import { useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
-import { livePad } from "@/lib/scratchLive";
+import { livePad, padDiskSettled, trackPadDiskWrite } from "@/lib/scratchLive";
 import { scratchTab } from "@/lib/scratchTabs";
 import { deriveScratchTitle, SCRATCH_UNTITLED } from "@/lib/scratchTitle";
 import type { ScratchTab } from "@/lib/types";
@@ -70,7 +70,7 @@ async function createPad(taskId: string, title: string | null, content: string):
   const id = crypto.randomUUID();
   const fixed = title?.trim() || "";
   const shown = fixed || deriveScratchTitle(content);
-  await ipc.scratchWrite(taskId, id, content);
+  await trackPadDiskWrite(taskId, id, ipc.scratchWrite(taskId, id, content));
   if (shown) await ipc.scratchSetMeta(taskId, id, { title: shown });
   // Only a task whose tabs are loaded gets a tab now; any other picks the pad
   // up from the index when it is next opened (restoreScratchTabs).
@@ -94,8 +94,19 @@ async function writePad(taskId: string, info: PadInfo, content: string, append: 
     live.write(content, append);
     return info;
   }
-  const next = append ? (await ipc.scratchRead(taskId, info.id)) + content : content;
-  await ipc.scratchWrite(taskId, info.id, next);
+  // Tracked from HERE, synchronously after the live check, and covering the
+  // read too. Tracking only the final write left the read's await open: an
+  // editor mounting meanwhile passed its re-read check, registered, and the
+  // write then landed on disk behind it. `prior` is taken first so this write
+  // does not wait on itself; an unmounting editor's last flush may still be
+  // on its way to the file.
+  const prior = padDiskSettled(taskId, info.id);
+  const next = await trackPadDiskWrite(taskId, info.id, (async () => {
+    await prior;
+    const text = append ? (await ipc.scratchRead(taskId, info.id)) + content : content;
+    await ipc.scratchWrite(taskId, info.id, text);
+    return text;
+  })());
   // A closed pad has no editor to derive its title, so an untitled one takes
   // it from the text now; a named one keeps its name.
   if (!info.title) {
