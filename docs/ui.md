@@ -640,6 +640,16 @@ Two files that would still elide to the same label get their full relative
 paths instead, since an ambiguous label is the whole problem being solved. The
 footer keeps the selected row's absolute path.
 
+**The usages list resizes from its bottom-right corner, and the size sticks.**
+That is the corner that moves nothing: the tooltip is anchored by its top-left,
+so the header and arrow stay on the symbol. The drag is clamped to 320x120 and
+to the window edge, and the result is kept in `localStorage.usagesPopupSize`.
+A reopened popup takes the remembered WIDTH as fixed and the HEIGHT as a cap,
+so three usages do not sit in a box sized for forty. The file column is a share
+of the row (40%) rather than a fixed 26ch, so widening the popup is what
+un-ellipsizes the labels. Every row's `title` is its absolute `path:line`, and
+the footer's is the full path, for whatever still does not fit.
+
 Locations are **deduplicated on (uri, line, character) before anything counts
 them**: a server reporting one reference from both the open document and its
 index is normal, and the popup listed each twice, so four usages read as eight
