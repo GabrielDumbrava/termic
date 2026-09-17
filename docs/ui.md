@@ -863,6 +863,48 @@ Measurements live next to the constants in `AgentChip.tsx`. Re-derive them
 before moving a number, and do it in both themes: every one of these values is
 the ceiling of something.
 
+## Scheduled queue messages (GH #300)
+
+The queue popover's "Send after" row (Next turn / Tomorrow / In 3 days / In a
+week / a date) turns a message into a scheduled one. The promise, stated under
+the picker and never stronger: **sent the next time this chat is open and idle
+on or after the date.** Nothing fires on its own. There is no daemon and no
+Rust timer; with the app closed, `open -a Termic && "$TERMIC_CLI" send <task>
+--resume -p "..."` under launchd is the headless route.
+
+- **Dates are local midnight.** A preset or a picked date resolves to the start
+  of that day, so "in a week" made at 14:05 still sends when the chat is opened
+  at 09:00 that day. A date input is parsed as local, not UTC
+  (`localDateValue`), which would be a day early west of Greenwich.
+- **The drain** (`sendNextQueued` in TerminalPane, rules in
+  `lib/scheduledQueue.ts`'s `pickQueueItem`): a due scheduled item sends
+  whether or not the queue is active; a future one is skipped so ordinary items
+  behind it still drain; future items do not keep the loop "running" and
+  suppress the "Message queue finished" toast. A respawn pauses ordinary items
+  and leaves scheduled ones alone, because a reopened chat is exactly when they
+  exist.
+- **A scheduled send waits for readiness**, like `seedPromptWhenReady`: it can
+  be the first thing typed into a session resumed seconds ago, and claude's
+  startup dialogs eat keystrokes (its trust picker answers `No, exit` on the
+  submit). `blocked`, `lost`, a PTY swap, a turn the user started during the
+  wait, or a missing echo all KEEP the item for the next try. It is removed and
+  the file rewritten only after the write lands. More than an hour late toasts
+  "Scheduled message sent (due N days ago)"; the prompt text is never changed.
+- **Two kicks.** The PTY coming up (`tabPtyLive` in the queueKick effect's
+  deps) covers reopening a chat. For a chat already open when the date passes,
+  `lib/scheduledTicker.ts` walks mounted tabs once a minute and bumps
+  `queueKick` only on a live, idle tab with a due item; a pass with nothing due
+  writes nothing to the store. Not per-tab `setTimeout`s: past ~24.8 days the
+  delay overflows, and timers do not track sleep.
+- **Closing** a secondary or pane agent tab that holds scheduled messages asks
+  "Delete scheduled messages?" even with the close confirm turned off, because
+  the Resume list does not bring them back. The main strip tab stays durable
+  when closed, so it does not ask.
+
+Must be checked by hand whenever the readiness path changes: a resumed claude
+session that shows an update or trust dialog at startup. No suite catches a
+prompt typed into a splash screen.
+
 ## Settled detection / notifications
 
 TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible viewport, marks tab "settled" after 2 identical consecutive samples. Resets on user input. `markAttention(wsId, tabId, reason)` never marks the active tab in the active task. `useAttentionNotifier` suppresses OS notifications for every tab in the focused task. Desktop notifications off by default. Clicking a banner only brings the window forward: it never changes the active task or tab (the old focus-edge router jumped on any refocus within 15s of a notification, including a plain cmd-Tab). The unread dot is what points at the tab; the user does the switching.

@@ -675,6 +675,24 @@ pub struct PersistedTab {
     /// pinned tab comes back pinned and leftmost.
     #[serde(default)]
     pub pinned: bool,
+    /// Queue messages with a "send after" date (GH #300). Owned solely by
+    /// `task_set_tab_scheduled`; `task_set_tabs` PRESERVES it by tab id, for
+    /// the same reason it preserves `session_id`: a rename racing a schedule
+    /// write must not drop the schedule. Ordinary queue items never land
+    /// here, they are runtime-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduled: Vec<ScheduledMessage>,
+}
+
+/// One scheduled queue message. Sent the first time its tab is live and
+/// idle on or after `not_before` (epoch ms); nothing fires on its own.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ScheduledMessage {
+    pub id: String,
+    pub text: String,
+    pub not_before: i64,
+    #[serde(default)]
+    pub created: i64,
 }
 
 /// Frontend payload for `task_set_tabs`. `session_id` is only honored
@@ -7178,6 +7196,39 @@ fn task_set_resume_override(id: String, command: String) -> Result<Task, String>
     Ok(w.clone())
 }
 
+/// Build the next durable tab list from a `task_set_tabs` payload. The
+/// fields the payload does not own are carried forward from `prior` by tab
+/// id: the session uuid (stored wins; the payload's is only a first-write
+/// migration of a legacy per-cli uuid) and the scheduled messages (never
+/// taken from the payload at all). `keep_pane` is false for the right split,
+/// whose tabs have no pane leaf or run marker.
+fn merge_persisted_tabs(
+    prior: &[PersistedTab],
+    tabs: Vec<PersistedTabInput>,
+    keep_pane: bool,
+) -> Vec<PersistedTab> {
+    let prior: std::collections::HashMap<&str, &PersistedTab> =
+        prior.iter().map(|t| (t.id.as_str(), t)).collect();
+    tabs.into_iter()
+        .map(|t| {
+            let p = prior.get(t.id.as_str());
+            PersistedTab {
+                session_id: p.and_then(|p| p.session_id.clone()).or(t.session_id),
+                scheduled: p.map(|p| p.scheduled.clone()).unwrap_or_default(),
+                id: t.id,
+                cli: t.cli,
+                title: t.title,
+                custom_title: t.custom_title,
+                is_default: t.is_default,
+                command: t.command,
+                pane_leaf_id: if keep_pane { t.pane_leaf_id } else { None },
+                run_member: if keep_pane { t.run_member } else { None },
+                pinned: t.pinned,
+            }
+        })
+        .collect()
+}
+
 /// Replace a task's durable agent-tab list (metadata + order). The
 /// per-tab `session_id` is PRESERVED across the rewrite by matching tab
 /// ids against the existing record, so a layout change (rename, reorder,
@@ -7189,34 +7240,7 @@ fn task_set_resume_override(id: String, command: String) -> Result<Task, String>
 fn task_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
     let mut list = load_tasks_all();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
-    // Carry forward each surviving tab's session uuid by id (owned by
-    // task_set_tab_session_id, not by this payload).
-    let prior: std::collections::HashMap<String, Option<String>> = w
-        .persisted_tabs
-        .iter()
-        .map(|t| (t.id.clone(), t.session_id.clone()))
-        .collect();
-    let next: Vec<PersistedTab> = tabs
-        .into_iter()
-        .map(|t| {
-            let p = prior.get(&t.id).cloned().flatten();
-            PersistedTab {
-                // Stored uuid wins; only fall back to the payload's session_id
-                // for a tab we've never seen (migrating a legacy per-cli uuid
-                // onto the default tab on its first persist).
-                session_id: p.or(t.session_id),
-                id: t.id,
-                cli: t.cli,
-                title: t.title,
-                custom_title: t.custom_title,
-                is_default: t.is_default,
-                command: t.command,
-                pane_leaf_id: t.pane_leaf_id,
-                run_member: t.run_member,
-                pinned: t.pinned,
-            }
-        })
-        .collect();
+    let next = merge_persisted_tabs(&w.persisted_tabs, tabs, true);
     // No-op when nothing actually changed (compare the serialized shape;
     // session_id lives outside the input so equal metadata + preserved
     // uuids means an identical record).
@@ -7232,6 +7256,7 @@ fn task_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String>
                 && a.pane_leaf_id == b.pane_leaf_id
                 && a.run_member == b.run_member
                 && a.pinned == b.pinned
+                && a.scheduled == b.scheduled
         });
     if same {
         return Ok(());
@@ -7267,6 +7292,35 @@ fn task_set_tab_session_id(id: String, tab_id: String, uuid: String) -> Result<(
     Ok(())
 }
 
+/// Replace one durable tab's scheduled queue messages (GH #300). The
+/// frontend sends the tab's full scheduled set after every change (add,
+/// remove, delivery), so this is a plain overwrite. Looks in both tab
+/// lists. No-op when the tab is not persisted or nothing changed.
+#[tauri::command]
+fn task_set_tab_scheduled(
+    id: String,
+    tab_id: String,
+    items: Vec<ScheduledMessage>,
+) -> Result<(), String> {
+    let mut list = load_tasks_all();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
+    let tab = match w
+        .persisted_tabs
+        .iter_mut()
+        .chain(w.right_split_tabs.iter_mut())
+        .find(|t| t.id == tab_id)
+    {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+    if tab.scheduled == items {
+        return Ok(());
+    }
+    tab.scheduled = items;
+    save_task(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Persist the JSON-encoded SplitTree for a task so the split layout
 /// can be restored on the next relaunch. Pass `None` to clear (no splits).
 #[tauri::command]
@@ -7288,29 +7342,7 @@ fn task_set_split_layout(id: String, layout: Option<String>) -> Result<(), Strin
 fn task_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
     let mut list = load_tasks_all();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
-    let prior: std::collections::HashMap<String, Option<String>> = w
-        .right_split_tabs
-        .iter()
-        .map(|t| (t.id.clone(), t.session_id.clone()))
-        .collect();
-    let next: Vec<PersistedTab> = tabs
-        .into_iter()
-        .map(|t| {
-            let p = prior.get(&t.id).cloned().flatten();
-            PersistedTab {
-                session_id: p.or(t.session_id),
-                id: t.id,
-                cli: t.cli,
-                title: t.title,
-                custom_title: t.custom_title,
-                is_default: t.is_default,
-                command: t.command,
-                pane_leaf_id: None,
-                run_member: None,
-                pinned: t.pinned,
-            }
-        })
-        .collect();
+    let next = merge_persisted_tabs(&w.right_split_tabs, tabs, false);
     let same = next.len() == w.right_split_tabs.len()
         && next.iter().zip(w.right_split_tabs.iter()).all(|(a, b)| {
             a.id == b.id
@@ -7320,6 +7352,7 @@ fn task_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), S
                 && a.is_default == b.is_default
                 && a.command == b.command
                 && a.session_id == b.session_id
+                && a.scheduled == b.scheduled
         });
     if same {
         return Ok(());
@@ -22207,7 +22240,7 @@ pub fn run() {
 
             task_reorder,
             task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id,
-            task_set_tabs, task_set_tab_session_id,
+            task_set_tabs, task_set_tab_session_id, task_set_tab_scheduled,
             task_set_split_layout,
             task_set_right_tabs, task_set_right_tab_session_id,
             task_grep_start, task_grep_cancel, task_find_backend,
@@ -25491,6 +25524,49 @@ mod tests {
         let t = PersistedTab { id: "t1".into(), cli: "claude".into(), pinned: true, ..Default::default() };
         let back: PersistedTab = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert!(back.pinned);
+    }
+
+    // Scheduled queue messages (GH #300) ride on the tab record.
+    #[test]
+    fn a_task_file_without_scheduled_loads_with_none() {
+        let t: PersistedTab = serde_json::from_str(r#"{"id":"t1","cli":"claude"}"#).unwrap();
+        assert!(t.scheduled.is_empty());
+        // And an empty set is not written back, so old readers see no change.
+        assert!(!serde_json::to_string(&t).unwrap().contains("scheduled"));
+    }
+
+    fn input(id: &str, title: &str) -> PersistedTabInput {
+        serde_json::from_value(serde_json::json!({ "id": id, "cli": "claude", "title": title })).unwrap()
+    }
+
+    #[test]
+    fn a_tab_list_rewrite_keeps_each_tabs_schedule_and_session() {
+        let msg = ScheduledMessage { id: "m1".into(), text: "check logs".into(), not_before: 1_700_000_000_000, created: 1 };
+        let prior = vec![
+            PersistedTab { id: "a".into(), cli: "claude".into(), session_id: Some("s-a".into()), scheduled: vec![msg.clone()], ..Default::default() },
+            PersistedTab { id: "b".into(), cli: "claude".into(), ..Default::default() },
+        ];
+        // A rename plus a reorder, and the payload claims a different uuid.
+        let mut renamed = input("a", "renamed");
+        renamed.session_id = Some("from-payload".into());
+        let next = merge_persisted_tabs(&prior, vec![input("b", "b"), renamed], true);
+        assert_eq!(next[0].id, "b");
+        assert!(next[0].scheduled.is_empty());
+        assert_eq!(next[1].title.as_deref(), Some("renamed"));
+        assert_eq!(next[1].scheduled, vec![msg]);
+        assert_eq!(next[1].session_id.as_deref(), Some("s-a"));
+    }
+
+    #[test]
+    fn a_tab_dropped_from_the_list_drops_its_schedule() {
+        let prior = vec![PersistedTab {
+            id: "a".into(), cli: "claude".into(),
+            scheduled: vec![ScheduledMessage { id: "m1".into(), text: "x".into(), not_before: 1, created: 1 }],
+            ..Default::default()
+        }];
+        let next = merge_persisted_tabs(&prior, vec![input("c", "c")], true);
+        assert_eq!(next.len(), 1);
+        assert!(next[0].scheduled.is_empty());
     }
 
     fn role(kind: &str, task: &str) -> PtyRole {
