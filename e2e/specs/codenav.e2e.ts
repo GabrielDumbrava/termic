@@ -1051,11 +1051,22 @@ describe("code intelligence", () => {
       (document.querySelector(`${sel} .cm-lsp-usages-footer`) as HTMLElement).title, popup) as string;
     expect(footerTitle).toMatch(/^\/.*navme\.ts$/);
 
+    // Height assertions are relative to the room actually below the popup.
+    // CodeMirror already shrinks a tooltip to the space under its anchor, and
+    // the CI runner's window is short enough that the popup opens flush with
+    // its bottom edge: "drag 60px taller" then has nowhere to go and is
+    // correctly clamped. So shrink first (always possible above the minimum),
+    // then grow back by less than was taken, which must fit.
+    const roomBelow = () => browser.execute((sel) =>
+      Math.round(window.innerHeight - document.querySelector(sel)!.getBoundingClientRect().top - 8), popup) as Promise<number>;
     const before = await box();
-    await mouseDrag(`${popup} .cm-lsp-usages-grip`, 120, 60);
+    await mouseDrag(`${popup} .cm-lsp-usages-grip`, 120, -30);
     const after = await box();
     expect(after.width).toBe(before.width + 120);
-    expect(after.height).toBe(before.height + 60);
+    expect(after.height).toBe(Math.max(120, before.height - 30));
+    const grown = Math.min(after.height + 20, await roomBelow());
+    await mouseDrag(`${popup} .cm-lsp-usages-grip`, 0, 20);
+    expect((await box()).height).toBe(Math.max(120, grown));
     await snap("usages-resized");
 
     // Dragging did not steal the list's keyboard: the editor still owns it.
