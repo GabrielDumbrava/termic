@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.5.0] - 2026-09-17
+## [1.5.1] - 2026-09-17
 
 Scheduled messages, agent scratchpads from the CLI, and a GitHub-style markdown preview.
 
@@ -39,6 +39,13 @@ Scheduled messages, agent scratchpads from the CLI, and a GitHub-style markdown 
 - **A resizable usages list.** Drag its corner to see long paths and the
   code beside them; the size is remembered, and hovering a row shows its full
   path.
+- **Touch ID for sudo, offered where you need it.** When a terminal stops at
+  a sudo password prompt, a strip offers to turn on Touch ID for sudo. Run it
+  in a new tab, where the script shows its source and asks sudo for your
+  password, or copy the command and run it yourself. "Don't ask again" is
+  reversible in Settings > General.
+- **Find in terminal highlights every match**, in agent, shell and footer
+  terminals alike, with the current one marked and a match count.
 
 ### Bug fixes
 - **A claude tab resumes the session it moved to with `/clear` or
@@ -48,6 +55,13 @@ Scheduled messages, agent scratchpads from the CLI, and a GitHub-style markdown 
 - **Saving General, Tasks, Sandbox or Docker settings no longer deletes
   agent accounts** added since that settings page was opened.
   ([#308](https://github.com/simion/termic/issues/308))
+- **A file opened with ⌘P takes the keyboard**, so ⌘F right after searches
+  that file. Markdown and SVG files included.
+- **Devin Enterprise shows its usage.** An ACU-billed plan has no quota, so
+  the footer read "Usage unknown"; it now shows the ACUs used this billing
+  period.
+- **An agent's write to a scratchpad is no longer lost** when it lands while
+  the pad's editor is switching to the markdown view.
 
 ## [1.4.6] - 2026-09-16
 
