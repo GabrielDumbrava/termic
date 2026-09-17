@@ -354,6 +354,14 @@ Two gestures, one landing point (`lib/terminalDrop.ts`): every terminal host reg
 
 Both share the hit test and the `.termic-drop-target` highlight, so they agree on where a drop lands.
 
+## Find in terminal
+
+⌘F (Ctrl+Shift+F elsewhere) opens `TerminalFindBar` over any terminal: agent and shell tabs, and the footer shell. Every match gets a wash of the accent the moment the query changes; the current one gets a stronger wash and an accent outline (and xterm's selection colour, since the addon selects it), with a "3 of 12" count. Reopening on a kept query highlights again straight away.
+
+- The highlights are xterm decorations, which only take `#RRGGBB`. `lib/terminalFind.ts` resolves `--color-accent` and blends it into the terminal's background, so no hex lives outside the theme.
+- While a decorated query is live the addon re-searches 200ms after new output. Closing the bar clears the decorations, which also stops that, so a streaming agent does not keep paying for a search nobody is looking at.
+- Past 1000 matches the addon stops decorating and the count reads "1000+ matches".
+
 ## Touch ID for sudo offer
 
 While a host terminal (agent tab with the sandbox off, shell tab, footer shell) sits at a sudo password prompt, `SudoTouchIdBanner` shows an in-flow strip above it: "Would you like to enable Touch ID for sudo?" with **Run in new tab**, **Copy command**, **Don't ask again** and a dismiss X. Modelled on iTerm2 3.7, including the transparency: nothing is elevated behind the user's back.

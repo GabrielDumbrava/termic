@@ -3,7 +3,7 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
+import { AlertTriangle, TerminalSquare, Copy, Check, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { useUI } from "@/store/ui";
 import { EMPTY_TABS, isUserWatching, useApp } from "@/store/app";
@@ -49,6 +49,8 @@ import { effectiveSandboxMode, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, SANDBOX_VISUALS, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
+import { TerminalFindBar } from "@/components/task/TerminalFindBar";
+import { isTerminalFindCombo } from "@/lib/terminalFind";
 import * as ipc from "@/lib/ipc";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
@@ -198,9 +200,7 @@ export function TerminalPane({ task, tab, active }: Props) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
   const [pathMenu, setPathMenu] = useState<
     { x: number; y: number; candidates: string[]; line?: number; col?: number; external?: ExternalTarget } | null
   >(null);
@@ -1117,14 +1117,8 @@ const captureArmedRef = useRef(false);
           return false; // let the global handler take it (file finder, find-in-files, …)
         }
       }
-      // Open the in-terminal search overlay. ⌘F on macOS (EXACTLY ⌘F — no
-      // Shift, so ⇧⌘F stays the app's find-in-files); Ctrl+Shift+F
-      // elsewhere — plain Ctrl+F is readline's forward-char, so hijacking it
-      // would break the shell on Linux/Windows.
-      const searchOpenCombo = IS_MAC
-        ? e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === "f"
-        : e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "f";
-      if (e.type === "keydown" && searchOpenCombo) {
+      // Open find in terminal (TerminalFindBar). See isTerminalFindCombo.
+      if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {
         setSearchOpen(true);
         e.preventDefault();
         e.stopPropagation();
@@ -2847,17 +2841,10 @@ const captureArmedRef = useRef(false);
     }
   }, [tab.lastInputAt]);
 
+  // Closing find hands focus back to the terminal. TerminalFindBar focuses
+  // its own input on open.
   useEffect(() => {
-    if (searchOpen) {
-      requestAnimationFrame(() => {
-        const el = searchInputRef.current;
-        if (!el) return;
-        el.focus();
-        el.select();
-      });
-    } else {
-      termRef.current?.focus();
-    }
+    if (!searchOpen) termRef.current?.focus();
   }, [searchOpen]);
 
   // Live-react to font / size preference changes: rewrite the options and
@@ -3303,32 +3290,7 @@ const captureArmedRef = useRef(false);
           }}
         />
       )}
-      {searchOpen && (
-        <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 shadow-lg">
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchQuery}
-            placeholder="Find in terminal"
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            autoComplete="off"
-            onChange={e => {
-              setSearchQuery(e.target.value);
-              if (e.target.value) searchAddonRef.current?.findNext(e.target.value, { incremental: true });
-            }}
-            onKeyDown={e => {
-              if (e.key === "Escape") { e.preventDefault(); setSearchOpen(false); }
-              else if (e.key === "Enter") { e.preventDefault(); e.shiftKey ? searchAddonRef.current?.findPrevious(searchQuery) : searchAddonRef.current?.findNext(searchQuery); }
-            }}
-            className="w-44 bg-transparent text-[12px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
-          />
-          <button type="button" title="Previous match (Shift+Enter)" onClick={() => searchAddonRef.current?.findPrevious(searchQuery)} className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"><ChevronUp className="h-3.5 w-3.5" /></button>
-          <button type="button" title="Next match (Enter)" onClick={() => searchAddonRef.current?.findNext(searchQuery)} className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"><ChevronDown className="h-3.5 w-3.5" /></button>
-          <button type="button" title="Close (Esc)" onClick={() => setSearchOpen(false)} className="ml-0.5 rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"><X className="h-3.5 w-3.5" /></button>
-        </div>
-      )}
+      <TerminalFindBar open={searchOpen} onClose={() => setSearchOpen(false)} termRef={termRef} addonRef={searchAddonRef} />
       {/* Sandbox status footer was here — moved up to TaskView
           so it sits BELOW the bottom-split (when open) and stays the
           visual bottom of the task, not the agent tab. The

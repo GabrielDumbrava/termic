@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Osc52Base64 } from "@/lib/osc52";
 import { ImageAddon } from "@xterm/addon-image";
@@ -28,6 +29,8 @@ import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
+import { TerminalFindBar } from "@/components/task/TerminalFindBar";
+import { isTerminalFindCombo } from "@/lib/terminalFind";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
@@ -75,6 +78,9 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
   const [exited, setExited] = useState(false);
   // Rust's "this PTY is at a sudo password prompt" signal (sudo_touchid.rs).
   const [sudoOffer, setSudoOffer] = useState(false);
+  // Find in terminal, same bar and same key as the agent/shell tabs.
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const offerTouchIdForSudo = usePrefs(s => s.offerTouchIdForSudo);
   // Has `initialInput` reached the PTY? Surfaced on the host element because
   // the alternative for anything waiting on it is a sleep: the spawn is async
@@ -145,6 +151,9 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     // Repair double-encoded OSC 52 payloads (Claude Code). See lib/osc52.ts.
     term.loadAddon(new ClipboardAddon(new Osc52Base64()));
     const disposeCopyOnSelect = attachCopyOnSelect(term, host);
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
     term.loadAddon(new ImageAddon());
     term.loadAddon(new WebLinksAddon((event, uri) => {
       if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
@@ -188,6 +197,12 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           e.stopPropagation();
           return false;
         }
+      }
+      if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {
+        setSearchOpen(true);
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
       }
       // Cmd+Backspace → kill line to beginning (\x15, Ctrl+U). Mirrors TerminalPane.
       if (IS_MAC && e.type === "keydown" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === "Backspace") {
@@ -432,6 +447,12 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       {sudoOffer && offerTouchIdForSudo && !exited && (
         <SudoTouchIdBanner taskId={taskId} onDismiss={() => setSudoOffer(false)} />
       )}
+      <TerminalFindBar
+        open={searchOpen}
+        onClose={() => { setSearchOpen(false); termRef.current?.focus(); }}
+        termRef={termRef}
+        addonRef={searchAddonRef}
+      />
       {exited && (
         // In-flow banner above the terminal: the dead xterm stays
         // interactive so its scrollback is still selectable/copyable, and it
