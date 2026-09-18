@@ -434,6 +434,8 @@ export function AppearanceSection() {
 function SidebarSection() {
   const taskExpandMode = usePrefs(s => s.taskExpandMode);
   const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
+  const sidebarHoverReveal = usePrefs(s => s.sidebarHoverReveal);
+  const setSidebarHoverReveal = usePrefs(s => s.setSidebarHoverReveal);
 
   return (
     <div className="flex flex-col gap-6">
@@ -466,6 +468,12 @@ function SidebarSection() {
           ))}
         </div>
       </div>
+      <Toggle
+        label="Hover to reveal the collapsed sidebar"
+        hint="Slides the full sidebar out over the icon rail on hover."
+        value={sidebarHoverReveal}
+        onChange={setSidebarHoverReveal}
+      />
     </div>
   );
 }

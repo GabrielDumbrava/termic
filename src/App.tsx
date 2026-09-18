@@ -265,11 +265,13 @@ export function App() {
 }
 
 /** Sidebar grid cell. In full mode it's just the sidebar. In compact mode
- *  it's the 56px icon rail PLUS an Arc-style hover reveal that slides the
- *  full sidebar in over the main content. */
+ *  it's the 56px icon rail, PLUS an Arc-style hover reveal that slides the
+ *  full sidebar in over the main content when `sidebarHoverReveal` is on. */
 function SidebarSlot() {
   const compact = useApp(s => s.compactSidebar);
+  const hoverReveal = usePrefs(s => s.sidebarHoverReveal);
   if (!compact) return <ErrorBoundary label="Sidebar"><Sidebar /></ErrorBoundary>;
+  if (!hoverReveal) return <ErrorBoundary label="Sidebar"><Sidebar compact /></ErrorBoundary>;
   return <CompactSidebarReveal />;
 }
 

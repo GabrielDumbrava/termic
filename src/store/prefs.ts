@@ -78,6 +78,7 @@ const LS_CTRL_TAB_MODE = "ctrlTabMode";
 const LS_MD_VIEW       = "markdownDefaultView";
 const LS_SVG_VIEW      = "svgDefaultView";
 const LS_LOAD_REMOTE_IMAGES = "loadRemoteImages";
+const LS_SIDEBAR_HOVER_REVEAL = "sidebarHoverReveal";
 const LS_FIND_IN_FILES_REGEX = "findInFilesRegex";
 const LS_FIND_IN_FILES_MATCH_CASE = "findInFilesMatchCase";
 const LS_BRANCH_PREFIX = "branchPrefix";
@@ -541,6 +542,12 @@ interface PrefsState {
    *  webview is outside the cage". A per-document affordance in the
    *  preview can unblock a single file without flipping this pref. */
   loadRemoteImages: boolean;
+  /** When the sidebar is collapsed to the 56px icon rail, hovering it slides
+   *  the full sidebar in as a floating overlay (Arc-style peek). OFF by
+   *  default (issue #312): every row in the rail already carries an instant
+   *  Tip on hover, so nothing goes unlabeled when this is off. Settings >
+   *  Appearance > Interface > Sidebar. */
+  sidebarHoverReveal: boolean;
   /** Find in files (⇧⌘F) treats the query as a POSIX ERE instead of a
    *  literal string. Toggled from the search bar itself, persisted so it
    *  survives a relaunch. */
@@ -844,6 +851,7 @@ interface PrefsState {
   setArchiveDeleteBranch: (v: boolean) => void;
   setWorkingIndicator: (v: boolean) => void;
   setLoadRemoteImages: (v: boolean) => void;
+  setSidebarHoverReveal: (v: boolean) => void;
   setFindInFilesRegex: (v: boolean) => void;
   setFindInFilesMatchCase: (v: boolean) => void;
   setGlobalDefaultSandboxKind: (v: SandboxSelection) => void;
@@ -1009,6 +1017,7 @@ const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, true);
 // OFF by default (issue #69): closing the remote-image sandbox gap must not
 // silently start firing image requests for existing users.
 const initialLoadRemoteImages = lsGetBool(LS_LOAD_REMOTE_IMAGES, false);
+const initialSidebarHoverReveal = lsGetBool(LS_SIDEBAR_HOVER_REVEAL, false);
 const initialFindInFilesRegex = lsGetBool(LS_FIND_IN_FILES_REGEX, false);
 const initialFindInFilesMatchCase = lsGetBool(LS_FIND_IN_FILES_MATCH_CASE, false);
 // Migrated from the old boolean LS_DEFAULT_SANDBOX (on = "enforce", off =
@@ -1077,6 +1086,7 @@ export const usePrefs = create<PrefsState>(set => ({
   archiveDeleteBranch: initialArchiveDeleteBranch,
   workingIndicator: initialWorkingIndicator,
   loadRemoteImages: initialLoadRemoteImages,
+  sidebarHoverReveal: initialSidebarHoverReveal,
   findInFilesRegex: initialFindInFilesRegex,
   findInFilesMatchCase: initialFindInFilesMatchCase,
   globalDefaultSandboxKind: initialDefaultSandboxKind,
@@ -1364,6 +1374,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setLoadRemoteImages: (v) => {
     try { localStorage.setItem(LS_LOAD_REMOTE_IMAGES, v ? "1" : "0"); } catch {}
     set({ loadRemoteImages: v });
+  },
+  setSidebarHoverReveal: (v) => {
+    try { localStorage.setItem(LS_SIDEBAR_HOVER_REVEAL, v ? "1" : "0"); } catch {}
+    set({ sidebarHoverReveal: v });
   },
   setFindInFilesRegex: (v) => {
     try { localStorage.setItem(LS_FIND_IN_FILES_REGEX, v ? "1" : "0"); } catch {}
