@@ -613,9 +613,13 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
   });
 
   it("--resume refuses an agent with no id-resume support, naming the gate", async () => {
-    // agy's seeded entry has no resume_id_args, so a seeded id would be
-    // silently ignored at spawn; the server must refuse instead. Same gate
-    // on both verbs.
+    // An agent with no resume_id_args: a seeded id would be silently ignored
+    // at spawn, so the server must refuse instead. Same gate on both verbs.
+    //
+    // A FIXTURE agent now (`fakenoresume`), because no built-in is an example
+    // any more: agy was the last, until its hook learned to report its
+    // conversation id and it gained `--conversation <id>`. The gate is keyed
+    // on the capability, so the fixture is the honest subject.
     //
     // This used to use codex, which stopped being an example of the gate the
     // moment codex learned to resume by id: it now reports the id of the
@@ -625,7 +629,7 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
     // `resume_id_args` being empty rather than on any agent name, so this
     // needs an agent that has none, not a rename.
     const viaNew = await rpc({
-      cmd: "new", name: "", from: wtPath, agent: "agy", resume: "SESSION-X",
+      cmd: "new", name: "", from: wtPath, agent: "fakenoresume", resume: "SESSION-X",
     });
     expect(viaNew.ok).toBe(false);
     expect(viaNew.error.code).toBe("unsupported");
@@ -634,7 +638,7 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
     const viaTab = await rpc({
       cmd: "tab",
       task: "adopt-me",
-      kind: { tab: "agent", id: "agy" },
+      kind: { tab: "agent", id: "fakenoresume" },
       resume: "SESSION-X",
     });
     expect(viaTab.ok).toBe(false);

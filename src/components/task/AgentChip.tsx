@@ -45,6 +45,9 @@ import { KeyRound, ArrowRightLeft } from "lucide-react";
 import { useUsageUnknownDismissed } from "@/store/usageUnknownDismissed";
 import type { AgentAccountsView, TerminalTab } from "@/lib/types";
 import { useApp } from "@/store/app";
+import { usePrefs } from "@/store/prefs";
+import { useAgentContext, contextKey, type ContextEntry } from "@/store/agentContext";
+import { contextLevel, formatTokens, CONTEXT_WARN_PERCENT, footerSources, footerNeedsHooks, type FooterSources } from "@/lib/agentContext";
 
 /** How long a pulled reading stands before the chip asks again.
  *
@@ -150,7 +153,15 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   className?: string;
 }) {
   const { account: liveAccount, view: accountsView, refresh: refreshAccounts } = accounts;
-  const entry = useAgentUsage(s => s.byAgent[usageKey(agentId, liveAccount)]);
+  // Per-agent opt-outs from Settings > Agents. Hiding usage also stops the
+  // pull transports asking, so a hidden number costs no app-server spawns.
+  const hideUsage = usePrefs(s => s.agentFooterHidden[agentId]?.usage === true);
+  const hideContext = usePrefs(s => s.agentFooterHidden[agentId]?.context === true);
+  const usageEntry = useAgentUsage(s => s.byAgent[usageKey(agentId, liveAccount)]);
+  const entry = hideUsage ? undefined : usageEntry;
+  // This task's conversation with this agent, from the tab that spoke last.
+  const ctxEntry = useAgentContext(s => s.byTaskAgent[contextKey(taskId, agentId)]);
+  const ctx = hideContext ? undefined : ctxEntry;
   // Everything this account has spent since termic launched. A NUMBER, not the
   // entry, so this chip re-renders when its own total moves and not when some
   // other account's does.
@@ -162,8 +173,10 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   const words = shortWindowWords(base);
   // The pull transports: codex spawns `app-server`, devin POSTs its Connect
   // API. claude needs no ask at all: it pushes through the status line.
-  const askUsage = base === "codex" ? ipc.agentUsageCodex
+  const askUsage = hideUsage ? null
+    : base === "codex" ? ipc.agentUsageCodex
     : base === "devin" ? ipc.agentUsageDevin
+    : base === "copilot" ? ipc.agentUsageCopilot
     : null;
 
   // Why the feed cannot run, when it cannot. claude ONLY: it is the only
@@ -176,7 +189,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   // open. The panel is unmounted most of the time; this chip is not.
   const sw = useAccountSwitching(taskId, agentId, accounts, visible);
   const [owner, setOwner] = useState<StatusLineOwner | null>(null);
-  const known = usageKnown(entry, spend);
+  const known = hideUsage || usageKnown(entry, spend);
   useEffect(() => {
     if (base !== "claude" || !visible || !cwd || known) { setOwner(null); return; }
     let cancelled = false;
@@ -247,7 +260,14 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   // The two halves self-hide independently: an agent with no usage feed still
   // has accounts to switch, and an agent with no named account still has
   // numbers. The chip renders when EITHER has something.
-  const hasNumbers = known;
+  const hasNumbers = !hideUsage && known;
+  const hasContext = !!ctx;
+  // What this agent CAN put in the footer, for the readouts the user left on.
+  // Usage also counts when Rust says the agent reports it, so a clone whose
+  // base is missing from the table is not silently dropped.
+  const sources = footerSources(base);
+  const wantUsage = !hideUsage && (sources.usage !== null || !!accountsView?.reportsUsage);
+  const wantContext = !hideContext && sources.context !== null;
   const hasAccounts = pillVisible(accountsView);
   // An agent that CAN report usage and has not yet says so, rather than
   // leaving a gap in the footer. Without it the first task restored after a
@@ -255,7 +275,12 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   // with no hooks looked exactly like a clone that would never report.
   // A positively detected blocker still wins: it names the actual cause.
   const blocked = blocksUsageFeed(owner);
-  const unknown = !!accountsView?.reportsUsage && !hasNumbers && !blocked;
+  // ANY readout this agent could show and has not: usage, context, or both.
+  // Gating this on usage alone (it used to be `reportsUsage`) left every
+  // context-only agent (grok, opencode, pi) and the pull-usage agents Rust
+  // does not list (copilot) with an empty footer and no way to find out that
+  // installing hooks is what fills it.
+  const unknown = (wantUsage || wantContext) && !hasNumbers && !hasContext && !blocked;
   // Dismissed: the same state and the same panel behind a faint icon, so the
   // footer stops spending a label on it but the way to hooks is still one click.
   // Only while this agent has NO hooks, which is what was dismissed: once they
@@ -264,7 +289,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
   const dismissed = useUsageUnknownDismissed(s => s.byAgent[agentId] === true);
   const hooksInstalled = useApp(s => s.agentHooksInstalled[agentId] === true);
   const quiet = unknown && dismissed && !hooksInstalled;
-  if (!hasNumbers && !hasAccounts) {
+  if (!hasNumbers && !hasAccounts && !hasContext) {
     if (blocked) return <BlockedChip owner={owner!} className={className} />;
     if (!unknown) return null;
   }
@@ -304,6 +329,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
           data-usage-weekly={entry?.weekly ? String(Math.round(entry.weekly.usedPercent)) : ""}
           data-usage-source={entry?.source ?? ""}
           data-usage-level={level}
+          data-context-percent={ctx ? String(Math.round(ctx.usedPercent)) : ""}
           // The ACCOUNT half's state, on the same element: one chip, so one
           // set of attributes for a spec to read.
           data-testid-account={hasAccounts ? "1" : ""}
@@ -358,7 +384,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
             <>
               {sw.alert && <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />}
               <span className="max-w-[14ch] truncate">{sw.shown.now}</span>
-              {(hasNumbers || (unknown && !quiet)) && <span className="text-[var(--color-fg-faint)]">·</span>}
+              {(hasNumbers || hasContext || (unknown && !quiet)) && <span className="text-[var(--color-fg-faint)]">·</span>}
             </>
           )}
           {/* ONE GAUGE PER WINDOW, and each one IS its number's background.
@@ -387,6 +413,11 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               delimit themselves, and a dot in the gap read as a third mark
               competing with the two it was separating. The dot after the
               ACCOUNT stays: bare text against a filled box does need one. */}
+          {/* The context window LEADS: it is this conversation's number, the
+              one that changes as you work, where the plan windows beside it
+              belong to the account. Same gauge, so the chip reads as one row
+              of figures rather than two different widgets. */}
+          {ctx && <ContextReadout entry={ctx} />}
           {unknown && !quiet && (
             <span data-testid="usage-unknown" className="text-[var(--color-fg-faint)]">Usage unknown</span>
           )}
@@ -433,8 +464,9 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
         onCloseAutoFocus={e => e.preventDefault()}
       >
         <UsageDetail
-          agentId={agentId} entry={entry} level={level} driver={driver} spend={spend}
-          unknown={unknown}
+          agentId={agentId} entry={entry} level={level} driver={driver} spend={hideUsage ? 0 : spend}
+          unknown={unknown} ctx={ctx}
+          sources={sources} show={{ usage: wantUsage, context: wantContext }}
           accountsView={accountsView} refreshAccounts={refreshAccounts}
           onNavigate={() => setDetailOpen(false)}
         />
@@ -460,7 +492,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
  *  used, resets Wed 10:00 Reported by the agent as it works."), which is
  *  unreadable at exactly the moment you went looking for it. Rows, a bar per
  *  window, and the reset clock in its own column. */
-function UsageDetail({ agentId, entry, level, driver, spend, unknown, accountsView, refreshAccounts, onNavigate }: {
+function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sources, show, accountsView, refreshAccounts, onNavigate }: {
   agentId: string;
   /** Undefined for an account that has never reported: the panel is then
    *  purely the credentials half, and the usage rows are skipped rather than
@@ -473,6 +505,12 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, accountsVi
   spend: number;
   /** The agent can report usage and has not yet: the panel explains why. */
   unknown: boolean;
+  /** This task's context window with this agent, when shown. */
+  ctx: ContextEntry | undefined;
+  /** Where each readout comes from, and which ones the user left on: what
+   *  the "unknown" panel has to explain. */
+  sources: FooterSources;
+  show: { usage: boolean; context: boolean };
   accountsView: AgentAccountsView | null;
   refreshAccounts: () => void;
   /** Close the popover: a row that navigates away must not leave it hanging
@@ -502,9 +540,13 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, accountsVi
         )}
       </div>
 
-      <div className="flex flex-col gap-2.5 px-3 py-2.5">
+      {ctx ? <ContextRow entry={ctx} />
+        : (!unknown && show.context && sources.context === "hooks")
+          ? <ContextMissing agentId={agentId} onNavigate={onNavigate} />
+          : null}
+      <div className="flex flex-col gap-2.5 px-3 py-2.5 empty:hidden">
         {unknown ? (
-          <UsageUnknown agentId={agentId} onNavigate={onNavigate} />
+          <UsageUnknown agentId={agentId} sources={sources} show={show} onNavigate={onNavigate} />
         ) : !entry ? null : (entry.session || entry.weekly) ? (
           <>
             <UsageRow label={words.label} sub={words.sub} window={entry.session}
@@ -624,12 +666,13 @@ function UsageRisingIcon(props: React.SVGProps<SVGSVGElement>) {
  *  turns on whether THIS agent's hooks are in: a clone relocates its config
  *  dir and needs its own install. codex and devin are asked by termic and need
  *  no hooks, so they never get the hooks advice. */
-function UsageUnknown({ agentId, onNavigate }: {
+function UsageUnknown({ agentId, sources, show, onNavigate }: {
   agentId: string;
+  sources: FooterSources;
+  show: { usage: boolean; context: boolean };
   onNavigate: () => void;
 }) {
   const agents = useApp(a => a.agents);
-  const base = builtinBaseId(agentId, agents);
   const display = agentDisplayName(agentId, agents);
   // From the store, not an IPC on open. Asking `agent_hooks_status` when the
   // panel opened rendered it empty first and then grew it, so it was placed
@@ -640,7 +683,10 @@ function UsageUnknown({ agentId, onNavigate }: {
   const dismissed = useUsageUnknownDismissed(s => s.byAgent[agentId] === true);
   const setDismissed = useUsageUnknownDismissed(s => s.setDismissed);
 
-  if (base !== "claude") {
+  // Decided by where the readouts come from, not by agent name: it used to be
+  // `base !== "claude"`, which told a grok user to wait for a poll that does
+  // not exist when what they needed was the hooks install.
+  if (!footerNeedsHooks(sources, show)) {
     return (
       <div data-testid="usage-unknown-detail" data-usage-hooks="n/a" className="flex flex-col gap-1 text-[var(--color-fg-dim)]">
         <p>Termic has not been able to read usage from {display} yet.</p>
@@ -660,7 +706,12 @@ function UsageUnknown({ agentId, onNavigate }: {
   }
   return (
     <div data-testid="usage-unknown-detail" data-usage-hooks="missing" className="flex flex-col gap-2 text-[var(--color-fg-dim)]">
-      <p>To see usage you must have hooks enabled and a first response from the agent.</p>
+      <p>
+        To see {[
+          show.usage && sources.usage === "hooks" ? "usage" : null,
+          show.context && sources.context === "hooks" ? "the context window" : null,
+        ].filter(Boolean).join(" and ")} you must have hooks enabled and a first response from the agent.
+      </p>
       {/* To Settings, not an install from here: the hooks block shows exactly
           which files it will write before it writes them, and a button in a
           footer popover would skip that. */}
@@ -1030,6 +1081,93 @@ function UsageWindowReadout({ window: w, unit, stale, testid }: {
     >
       {formatPercent(w)} <Unit>{unit}</Unit>
     </span>
+  );
+}
+
+/** The context window's figure, drawn with the plan windows' gauge so the chip
+ *  stays one row of like things. Its own thresholds: a context filling up is a
+ *  session's normal life, so it only colours near compaction. */
+function ContextReadout({ entry }: { entry: ContextEntry }) {
+  const level = contextLevel(entry.usedPercent);
+  const fill = Math.max(2, Math.round(entry.usedPercent));
+  return (
+    <span
+      data-usage-window="ctx"
+      data-testid="context-gauge"
+      data-usage-fill={fill}
+      title={`Context: ${formatTokens(entry.usedTokens)} of ${formatTokens(entry.windowTokens)} tokens`}
+      className={cn("shrink-0 rounded px-1.5 py-px", LEVEL_INK[level])}
+      style={{
+        background:
+          `linear-gradient(to right,`
+          + ` color-mix(in srgb, ${LEVEL_TINT[level]} ${FILL_MIX[level]}%, transparent) 0 ${fill}%,`
+          + ` transparent ${fill}% 100%),`
+          + ` color-mix(in srgb, var(--color-fg-dim) ${TRACK_MIX}%, transparent)`,
+      }}
+    >
+      {Math.round(entry.usedPercent)}% <Unit>ctx</Unit>
+    </span>
+  );
+}
+
+/** The popover's context row: the token counts the chip leaves out. */
+function ContextRow({ entry }: { entry: ContextEntry }) {
+  const level = contextLevel(entry.usedPercent);
+  return (
+    <div data-testid="context-row" className="border-b border-[var(--color-border-soft)] px-3 py-2.5">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[var(--color-fg)]">Context</span>
+        <span className={cn("tabular-nums", LEVEL_TEXT[level] ?? "text-[var(--color-fg-dim)]")}>
+          {Math.round(entry.usedPercent)}%
+        </span>
+      </div>
+      <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-3)]">
+        <div
+          className={cn("h-full rounded-full", LEVEL_FILL[level])}
+          style={{ width: `${Math.max(2, Math.round(entry.usedPercent))}%` }}
+        />
+      </div>
+      <div className="mt-1 flex items-baseline justify-between text-[var(--color-fg-faint)]">
+        <span>{level === "normal" ? "this conversation" : `over ${CONTEXT_WARN_PERCENT}%, compaction is near`}</span>
+        <span className="tabular-nums">
+          {formatTokens(entry.usedTokens)} / {formatTokens(entry.windowTokens)} tokens
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** No context reading yet, on an agent whose plan usage IS showing.
+ *
+ *  The "Usage unknown" panel covers an agent with nothing at all; this is the
+ *  other half. copilot's usage is pulled from its own cache, so its chip has
+ *  numbers with or without hooks, and without them the context window simply
+ *  never appeared, with nothing saying that hooks are what bring it. */
+function ContextMissing({ agentId, onNavigate }: { agentId: string; onNavigate: () => void }) {
+  const hooksActive = useApp(s => s.agentHooksInstalled[agentId] === true);
+  return (
+    <div data-testid="context-missing" data-context-hooks={hooksActive ? "active" : "missing"}
+      className="flex items-center justify-between gap-3 border-b border-[var(--color-border-soft)] px-3 py-2.5">
+      <span className="text-[var(--color-fg-dim)]">
+        Context
+        <span className="block text-[11px] text-[var(--color-fg-faint)]">
+          {hooksActive ? "After the next reply. Restart the tab if you just installed hooks." : "Needs hooks."}
+        </span>
+      </span>
+      {!hooksActive && (
+        <button
+          type="button"
+          data-testid="context-install-hooks"
+          onClick={() => {
+            onNavigate();
+            useApp.getState().openSettings("agents", undefined, AGENT_HOOKS_HIGHLIGHT);
+          }}
+          className="shrink-0 rounded border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-bg-2)]"
+        >
+          Install hooks
+        </button>
+      )}
+    </div>
   );
 }
 

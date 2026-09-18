@@ -37,6 +37,11 @@ import { scoped } from "@/lib/profileScope";
 import { encodeOpenWithPick, parseOpenWithPick } from "@/lib/openWith";
 import type { OpenWithPick } from "@/lib/types";
 
+/** The two readouts an agent's footer chip can carry. */
+export const AGENT_FOOTER_PARTS = ["usage", "context"] as const;
+export type AgentFooterPart = typeof AGENT_FOOTER_PARTS[number];
+export type AgentFooterHidden = Partial<Record<AgentFooterPart, true>>;
+
 const LS_EDITOR_FONT   = "editorFont";
 const LS_EDITOR_THEME  = "editorThemeId";
 const LS_EDITOR_THEME_LIGHT = "editorThemeIdLight";
@@ -50,6 +55,7 @@ const LS_CODE_NAV      = "codeIntelligence";
 const LS_CODE_DIAGS    = "codeIntelDiagnostics";
 const LS_CODE_SERVERS  = "codeIntelServers";
 const LS_CODE_COMMANDS = "codeIntelCommands";
+const LS_FOOTER_HIDDEN = "agentFooterHidden";
 const LS_CONFIRM_CODE_NAV = "confirmBeforeCodeIntel";
 const LS_THEME         = "themeMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
@@ -700,6 +706,10 @@ interface PrefsState {
    *  about ({ python: "pylsp" }). The escape hatch for a server we do not
    *  ship; a project can override it. */
   codeIntelCommands: Record<string, string>;
+  /** Footer readouts the user switched OFF, per agent entry id. Stores only
+   *  the exceptions, so an agent added later shows both by default and a
+   *  record that fails to parse loses nothing but the opt-outs. */
+  agentFooterHidden: Record<string, AgentFooterHidden>;
   /** Show the memory disclosure when arming a checkout for code intelligence.
    *  Ticking "don't ask again" in that prompt is what turns the second
    *  checkout into a single click. */
@@ -826,6 +836,8 @@ interface PrefsState {
   setCodeIntelServer: (language: string, server: string | null) => void;
   /** Set the command line for a language, or `null` to stop using one. */
   setCodeIntelCommand: (language: string, command: string | null) => void;
+  /** Show or hide one footer readout for one agent. */
+  setAgentFooterShown: (agentId: string, part: AgentFooterPart, shown: boolean) => void;
   setConfirmBeforeCodeIntel: (v: boolean) => void;
   toggleInlineBlame:  () => void;
   setShowAllInstalledFonts: (v: boolean) => void;
@@ -984,6 +996,25 @@ const lsRecord = (key: string): Record<string, string> => {
   } catch { return {}; }
 };
 const initialCodeServers = lsRecord(LS_CODE_SERVERS);
+/** Which footer readouts are hidden, per agent. Only `true` survives the
+ *  parse: anything else is read as "shown", the default. */
+function readFooterHidden(): Record<string, AgentFooterHidden> {
+  try {
+    const raw = localStorage.getItem(LS_FOOTER_HIDDEN);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, AgentFooterHidden> = {};
+    for (const [id, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!v || typeof v !== "object") continue;
+      const e: AgentFooterHidden = {};
+      for (const part of AGENT_FOOTER_PARTS) {
+        if ((v as Record<string, unknown>)[part] === true) e[part] = true;
+      }
+      if (Object.keys(e).length) out[id] = e;
+    }
+    return out;
+  } catch { return {}; }
+}
 const initialCodeCommands = lsRecord(LS_CODE_COMMANDS);
 setDiagnosticsEnabled(initialCodeDiags);
 // Same mirror, for the server choice: read once at load, then on every change.
@@ -1112,6 +1143,7 @@ export const usePrefs = create<PrefsState>(set => ({
   codeIntelDiagnostics: initialCodeDiags,
   codeIntelServers: initialCodeServers,
   codeIntelCommands: initialCodeCommands,
+  agentFooterHidden: readFooterHidden(),
   confirmBeforeCodeIntel: initialConfirmCodeNav,
   showAllInstalledFonts: initialShowAllFonts,
   taskExpandMode: initialTaskExpandMode,
@@ -1242,6 +1274,16 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_CODE_COMMANDS, JSON.stringify(next)); } catch {}
     setChosenCommands(next);
     set({ codeIntelCommands: next });
+  },
+  setAgentFooterShown: (agentId, part, shown) => {
+    const cur = usePrefs.getState().agentFooterHidden;
+    if (!cur[agentId]?.[part] === shown) return;  // bear trap 8
+    const entry = { ...cur[agentId] };
+    if (shown) delete entry[part]; else entry[part] = true;
+    const next = { ...cur };
+    if (Object.keys(entry).length) next[agentId] = entry; else delete next[agentId];
+    try { localStorage.setItem(LS_FOOTER_HIDDEN, JSON.stringify(next)); } catch {}
+    set({ agentFooterHidden: next });
   },
   setCodeIntelServer: (language, server) => {
     const cur = usePrefs.getState().codeIntelServers;

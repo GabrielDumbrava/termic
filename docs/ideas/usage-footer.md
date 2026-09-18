@@ -186,7 +186,12 @@ These are why this is still an idea.
   age, so a cold entry still asks at once and a warm one waits out the
   remainder. Staleness stays bounded by the interval instead of the interval
   plus however long ago somebody last switched tasks.
-- **Scope.** claude, codex and devin. The other agents have no measured
-  source, and Orca's answer for them is a hidden PTY that runs the agent's own
-  `/usage` and scrapes the TUI, which is the part of their implementation that
-  would be worst to copy.
+- **Scope.** Plan usage: claude, codex, devin, agy (its status line's
+  `quota`) and copilot (its own quota cache). grok, opencode and pi have none
+  worth building on: grok's is an undocumented billing endpoint behind its
+  OIDC token with no percentage in it, opencode's plans are web-console only,
+  and pi's only surfaces as response headers over SSE, which would mean
+  changing pi's transport. muse reports it over `muse serve` only. The
+  CONTEXT WINDOW shipped alongside for every agent but muse, see
+  [agent-hooks.md](../agent-hooks.md#the-context-window-per-agent), with a
+  per-agent switch for each readout in Settings > Agents.

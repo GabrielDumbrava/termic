@@ -491,9 +491,283 @@ pub async fn agent_usage_devin(
     fetch_devin(&agent_id, docker, account.as_deref()).await
 }
 
+// ───────────────────────────── devin context ────────────────────────────
+//
+// devin reports its context window NOWHERE live: no status line, and no hook
+// payload carries a token count (measured on 3000.10.31, every event). What it
+// does keep is `num_tokens_preceding` on each assistant node in its session
+// store, which is the prompt size of that request, i.e. the context in use
+// (cross-checked against the session's own transcript metrics). The window
+// comes from `devin models list`, which is a 2s spawn, so it is asked once
+// per launch and per devin binary.
+//
+// Read on the turn's END (the tab's Done hook), from the frontend, so it costs
+// one sqlite3 read per turn and nothing while idle. `sessions.db` is not a
+// documented interface: when a column moves this returns None and the chip
+// shows no context, never a wrong one.
+
+/// One reading, in the shape `lib/agentContext.ts` takes.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextReading {
+    pub used_tokens: u64,
+    pub window_tokens: u64,
+}
+
+static DEVIN_WINDOWS: std::sync::Mutex<Option<std::collections::HashMap<String, u64>>> =
+    std::sync::Mutex::new(None);
+
+/// `model_uid -> max_context_tokens` out of `devin models list --format json`.
+pub fn parse_devin_models(v: &serde_json::Value) -> std::collections::HashMap<String, u64> {
+    let mut out = std::collections::HashMap::new();
+    for fam in v.get("families").and_then(|f| f.as_array()).into_iter().flatten() {
+        for var in fam.get("variants").and_then(|x| x.as_array()).into_iter().flatten() {
+            if let (Some(uid), Some(max)) = (
+                var.get("model_uid").and_then(|x| x.as_str()),
+                var.get("max_context_tokens").and_then(|x| x.as_u64()),
+            ) {
+                out.insert(uid.to_string(), max);
+            }
+        }
+    }
+    out
+}
+
+fn devin_window(agent_id: &str, model: &str) -> Option<u64> {
+    if let Some(map) = DEVIN_WINDOWS.lock().ok()?.as_ref() {
+        if let Some(w) = map.get(model) {
+            return Some(*w);
+        }
+    }
+    let agents = crate::load_settings_inner().agents;
+    let bin = crate::agent_dirs::resolve_agent(&agents, agent_id)
+        .map(|a| a.command)
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| "devin".to_string());
+    let out = Command::new(&bin)
+        .args(["models", "list", "--format", "json"])
+        .env("PATH", crate::shell_env::resolved_path())
+        .stdin(Stdio::null()).stderr(Stdio::null())
+        .output().ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let map = parse_devin_models(&v);
+    let w = map.get(model).copied();
+    *DEVIN_WINDOWS.lock().ok()? = Some(map);
+    w
+}
+
+/// A devin session id is a slug (`brassy-polish`). It is interpolated into a
+/// SQL string for the sqlite3 CLI, so anything else is refused outright.
+fn devin_slug_ok(s: &str) -> bool {
+    !s.is_empty() && s.len() < 128
+        && s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The query, pure, so the slug rule and the SQL can be pinned together.
+pub fn devin_context_sql(session_id: &str) -> Option<String> {
+    devin_slug_ok(session_id).then(|| format!(
+        "select s.model, (select json_extract(m.metadata, '$.num_tokens_preceding') \
+         from message_nodes m where m.session_id = s.id \
+         and json_extract(m.chat_message, '$.role') = 'assistant' \
+         and json_extract(m.metadata, '$.num_tokens_preceding') is not null \
+         order by m.node_id desc limit 1) from sessions s where s.id = '{session_id}'"
+    ))
+}
+
+/// Read one devin session's context. `Ok(None)` for "nothing to say yet".
+#[tauri::command]
+pub async fn agent_context_devin(
+    agent_id: String,
+    account: Option<String>,
+    session_id: String,
+) -> Result<Option<ContextReading>, String> {
+    let sql = devin_context_sql(&session_id).ok_or("not a devin session id")?;
+    let creds = devin_credentials(&agent_id, false, account.as_deref())?;
+    let db = creds.parent().ok_or("no devin data dir")?.join("cli").join("sessions.db");
+    if !db.exists() {
+        return Ok(None);
+    }
+    let out = Command::new("sqlite3")
+        .arg("-readonly").arg("-separator").arg("|").arg(&db).arg(&sql)
+        .stdin(Stdio::null()).stderr(Stdio::null())
+        .output().map_err(|e| format!("sqlite3: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.trim().splitn(2, '|');
+    let (Some(model), Some(used)) = (parts.next(), parts.next()) else { return Ok(None) };
+    let Ok(used) = used.trim().parse::<u64>() else { return Ok(None) };
+    let Some(window) = devin_window(&agent_id, model.trim()) else { return Ok(None) };
+    Ok((window > 0).then_some(ContextReading { used_tokens: used, window_tokens: window }))
+}
+
+// ─────────────────────────────── copilot ────────────────────────────────
+//
+// **copilot is read from its own cache**, not asked. The CLI fetches
+// `GET api.github.com/copilot_internal/user` on every run and writes the answer
+// to `copilot-user-cache.json` in the platform cache dir, `//` comment lines
+// and all (measured on 1.0.86). Asking the endpoint ourselves would mean the
+// OAuth token, which copilot keeps in the macOS Keychain under an ACL termic
+// does not own: the same wall `docs/ideas/usage-footer.md` hit with claude's.
+// The cache is as fresh as copilot's last run, and a footer chip is only shown
+// for a task that is running copilot, so that is fresh enough.
+//
+// The quota is MONTHLY, and it is filed under `session` because that is the
+// window the chip leads with; `shortWindowWords("copilot")` names it.
+
+/// Which quota bucket is the account's real limit. `premium_interactions` on a
+/// paid plan; a Free, token-billed plan has `entitlement: 0` there and its
+/// real caps on `chat`. Measured on a Free account; the paid shape is the
+/// documented one.
+const COPILOT_BUCKETS: &[&str] = &["premium_interactions", "chat"];
+
+/// Parse the cache file's text into a reading, from the entry copilot wrote
+/// most recently (one entry per token it has used).
+pub fn parse_copilot_cache(text: &str) -> Result<AgentUsage, String> {
+    let json: String = text.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>().join("\n");
+    let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("copilot cache: {e}"))?;
+    let entries = v.get("copilotUserCache").and_then(|c| c.as_object())
+        .ok_or("copilot cache has no entries")?;
+    let newest = entries.values()
+        .max_by_key(|e| e.get("retrievedAt").and_then(|r| r.as_str()).unwrap_or("").to_string())
+        .and_then(|e| e.get("response"))
+        .ok_or("copilot cache has no response")?;
+    let resets_at = newest.get("quota_reset_date_utc").and_then(|r| r.as_str())
+        .and_then(|r| chrono::DateTime::parse_from_rfc3339(r).ok())
+        .map(|d| d.timestamp());
+    let snaps = newest.get("quota_snapshots");
+    let session = COPILOT_BUCKETS.iter().find_map(|name| {
+        let b = snaps?.get(*name)?;
+        let capped = b.get("has_quota").and_then(|x| x.as_bool()) == Some(true)
+            && b.get("unlimited").and_then(|x| x.as_bool()) != Some(true)
+            && b.get("entitlement").and_then(as_f64).is_some_and(|e| e > 0.0);
+        if !capped { return None; }
+        let remaining = b.get("percent_remaining").and_then(as_f64)?;
+        Some(UsageWindow { used_percent: (100.0 - remaining).clamp(0.0, 100.0), resets_at })
+    });
+    Ok(AgentUsage {
+        session,
+        weekly: None,
+        plan_type: newest.get("copilot_plan").and_then(|p| p.as_str()).map(str::to_string),
+        account_id: None,
+        consumed: None,
+    })
+}
+
+/// Read copilot's usage for this agent entry. Host only: a Docker task's
+/// copilot writes its cache inside the container.
+#[tauri::command]
+pub async fn agent_usage_copilot(
+    agent_id: String,
+    docker: bool,
+    account: Option<String>,
+) -> Result<AgentUsage, String> {
+    let _ = (agent_id, account);
+    if docker {
+        return Err("copilot usage is not readable from a Docker task".into());
+    }
+    let path = dirs::cache_dir().ok_or("no cache dir")?
+        .join("copilot").join("copilot-user-cache.json");
+    // A 6 KB file, read on the async command's worker, never the main thread.
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    parse_copilot_cache(&text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cache's shape on 1.0.86, retyped with placeholders: the comment
+    /// header, two token entries, and a Free plan whose premium bucket is
+    /// empty and whose real cap is `chat`.
+    const COPILOT_CACHE: &str = r#"// Disposable cache for Copilot user responses, safe to delete. Managed automatically.
+// User settings belong in settings.json.
+{
+  "copilotUserCache": {
+    "v1:aaaa": { "schemaVersion": 1, "retrievedAt": "2026-09-18T09:00:00.000Z", "response": {
+      "copilot_plan": "individual", "quota_reset_date_utc": "2026-10-01T00:00:00.000Z",
+      "quota_snapshots": {
+        "premium_interactions": { "entitlement": 0, "percent_remaining": 0, "unlimited": false, "has_quota": false },
+        "chat": { "entitlement": 200, "percent_remaining": 100, "unlimited": false, "has_quota": true }
+      } } },
+    "v1:bbbb": { "schemaVersion": 1, "retrievedAt": "2026-09-18T09:30:00.000Z", "response": {
+      "copilot_plan": "individual", "quota_reset_date_utc": "2026-10-01T00:00:00.000Z",
+      "quota_snapshots": {
+        "premium_interactions": { "entitlement": 0, "percent_remaining": 0, "unlimited": false, "has_quota": false },
+        "chat": { "entitlement": 200, "percent_remaining": 99.5, "unlimited": false, "has_quota": true }
+      } } }
+  }
+}"#;
+
+    #[test]
+    fn devin_models_map_every_variant_to_its_window() {
+        let v = serde_json::json!({ "families": [
+            { "family_uid": "f", "variants": [
+                { "model_uid": "swe-2-high", "max_context_tokens": 262144 },
+                { "model_uid": "no-window" } ] },
+            { "family_uid": "g", "variants": [ { "model_uid": "opus-x", "max_context_tokens": 1000000 } ] } ] });
+        let m = parse_devin_models(&v);
+        assert_eq!(m.get("swe-2-high"), Some(&262144));
+        assert_eq!(m.get("opus-x"), Some(&1000000));
+        assert_eq!(m.get("no-window"), None);
+    }
+
+    /// The session id lands inside a SQL string. A slug passes; anything that
+    /// could close the quote never reaches sqlite3.
+    #[test]
+    fn devin_context_sql_takes_only_a_slug() {
+        assert!(devin_context_sql("brassy-polish").unwrap().contains("s.id = 'brassy-polish'"));
+        for bad in ["", "x' or '1'='1", "-lead", "a b", "a;b", "a'"] {
+            assert_eq!(devin_context_sql(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Against a real sqlite3 and a database with devin's schema: the LAST
+    /// assistant node with a count wins, user and tool nodes never do.
+    #[test]
+    #[cfg(unix)]
+    fn devin_context_sql_reads_the_last_assistant_prompt_size() {
+        if Command::new("sqlite3").arg("-version").output().is_err() { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("s.db");
+        let setup = "create table sessions(id text primary key, model text, metadata text);\
+            create table message_nodes(row_id integer primary key autoincrement, session_id text, node_id integer, parent_node_id integer, chat_message text, created_at integer, metadata text);\
+            insert into sessions values('brassy-polish','swe-2-high','{}');\
+            insert into message_nodes(session_id,node_id,chat_message,created_at,metadata) values\
+            ('brassy-polish',1,'{\"role\":\"assistant\"}',0,'{\"num_tokens_preceding\":11881}'),\
+            ('brassy-polish',2,'{\"role\":\"tool\"}',0,'{\"num_tokens_preceding\":null}'),\
+            ('brassy-polish',3,'{\"role\":\"assistant\"}',0,'{\"num_tokens_preceding\":null}'),\
+            ('brassy-polish',4,'{\"role\":\"assistant\"}',0,'{\"num_tokens_preceding\":12037}'),\
+            ('brassy-polish',5,'{\"role\":\"user\"}',0,'{\"num_tokens_preceding\":99999}');";
+        assert!(Command::new("sqlite3").arg(&db).arg(setup).status().unwrap().success());
+        let out = Command::new("sqlite3").arg("-readonly").arg("-separator").arg("|").arg(&db)
+            .arg(devin_context_sql("brassy-polish").unwrap()).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "swe-2-high|12037");
+    }
+
+    #[test]
+    fn copilot_reads_the_newest_entry_and_the_bucket_that_has_a_cap() {
+        let u = parse_copilot_cache(COPILOT_CACHE).unwrap();
+        let w = u.session.expect("a monthly window");
+        assert!((w.used_percent - 0.5).abs() < 1e-9, "newest entry, chat bucket: {w:?}");
+        assert_eq!(w.resets_at, Some(1790812800));
+        assert_eq!(u.weekly, None);
+        assert_eq!(u.plan_type.as_deref(), Some("individual"));
+    }
+
+    #[test]
+    fn copilot_prefers_premium_requests_on_a_paid_plan_and_shows_nothing_when_unlimited() {
+        let paid = COPILOT_CACHE.replace(
+            r#""premium_interactions": { "entitlement": 0, "percent_remaining": 0, "unlimited": false, "has_quota": false }"#,
+            r#""premium_interactions": { "entitlement": 300, "percent_remaining": 60, "unlimited": false, "has_quota": true }"#,
+        );
+        assert!((parse_copilot_cache(&paid).unwrap().session.unwrap().used_percent - 40.0).abs() < 1e-9);
+        let unlimited = COPILOT_CACHE.replace(r#""unlimited": false, "has_quota": true"#, r#""unlimited": true, "has_quota": true"#);
+        assert_eq!(parse_copilot_cache(&unlimited).unwrap().session, None);
+        assert!(parse_copilot_cache("// only a comment").is_err());
+    }
 
     /// The shape codex answers with on a paid plan: a short window and a long
     /// one. Transcribed from the protocol schema, not pasted from a real

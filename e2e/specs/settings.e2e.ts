@@ -3406,3 +3406,99 @@ describe("cloned agents inherit rather than copy", () => {
   });
 });
 
+
+// "Install hooks for every agent": one switch, visible without expanding the
+// block, persisted in settings.json, and wiring every supported agent on PATH.
+// The seeded fake clones (fakeclaude, fakegrok, ...) are on PATH everywhere
+// because their command is an absolute script path, so this does not depend
+// on what the runner has installed. Installs land in the throwaway profile
+// (`TERMIC_E2E_AGENT_HOME`), never a real config.
+describe("install hooks for every agent", () => {
+  const status = (id: string) => browser.execute(async (a) =>
+    (await window.__termic!.invoke("agent_hooks_status", { agentId: a })).host.installed as boolean, id);
+  const removeAll = () => browser.execute(async () => {
+    const t = window.__termic!;
+    await t.invoke("agent_hooks_auto_set", { on: false });
+    for (const a of t.useApp.getState().agents) {
+      try { await t.invoke("agent_hooks_remove", { agentId: a.id }); } catch { /* unsupported */ }
+    }
+    await t.useApp.getState().refreshAgentHooks();
+  });
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await removeAll();
+  });
+  after(async () => {
+    await removeAll();
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await dismissOverlays();
+  });
+
+  it("wires every supported agent from one switch, without expanding the block", async () => {
+    expect(await status("fakegrok")).toBe(false);
+    expect(await status("fakeclaude")).toBe(false);
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
+    await waitVisible('[data-testid="agent-hooks-auto"] [role="switch"]');
+    // Collapsed: the switch is reachable without opening the list.
+    expect(await browser.execute(() =>
+      document.querySelector('[data-testid="agent-hooks-toggle"]')?.getAttribute("aria-expanded"))).toBe("false");
+    await clickWhenVisible('[data-testid="agent-hooks-auto"] [role="switch"]');
+    await browser.waitUntil(async () => (await status("fakegrok")) && (await status("fakeclaude")),
+      { timeout: 30_000, timeoutMsg: "turning the switch on did not install hooks for every agent" });
+    // An agent that is not a hooks target (the plain fixture agent) is left alone.
+    expect(await status("fakeagent")).toBe(false);
+    // Persisted, not a view state.
+    expect(await browser.execute(() => window.__termic!.invoke("agent_hooks_auto_get"))).toBe(true);
+    const notInstalled = () => browser.execute(async () => {
+      const t = window.__termic!;
+      const found = t.useApp.getState().detectedClis as Record<string, { found: boolean }>;
+      const out: string[] = [];
+      for (const a of t.useApp.getState().agents) {
+        if (!found[a.id]?.found) continue;
+        const st = await t.invoke("agent_hooks_status", { agentId: a.id });
+        if (st.supported && !st.host.installed) out.push(`${a.id}: ${st.host.error ?? "not installed"}`);
+      }
+      return out;
+    });
+    let missing: string[] = [];
+    await browser.waitUntil(async () => (missing = await notInstalled()).length === 0,
+      { timeout: 30_000, timeoutMsg: `not every detected agent got hooks: ${JSON.stringify(missing)}` })
+      .catch(() => { throw new Error(`not every detected agent got hooks: ${JSON.stringify(missing)}`); });
+    // And the block says so, without a reload.
+    await browser.waitUntil(async () => await browser.execute(() =>
+      document.querySelector('[data-testid="agent-hooks-summary"]')?.getAttribute("data-state") === "complete"),
+      { timeout: 10_000, timeoutMsg: "the summary never read complete after installing everything" });
+    await snap("agent-hooks-install-all.png");
+  });
+
+  it("re-wires an agent whose hooks went missing on the next sync", async () => {
+    // The "new agent" case, driven the way it happens: an agent with no hooks
+    // while the setting is on gets them on the next sync (boot, or the page).
+    await browser.execute(async () => {
+      await window.__termic!.invoke("agent_hooks_remove", { agentId: "fakegrok" });
+    });
+    expect(await status("fakegrok")).toBe(false);
+    const wired = await browser.execute(() => window.__termic!.invoke("agent_hooks_sync")) as string[];
+    // Asserted on the agent's STATUS, not on which id the sync names: a clone
+    // that relocates nothing shares its base's config dir, so the sync wires
+    // it through whichever of the two it reaches first (`grok` here).
+    expect(wired.length).toBeGreaterThan(0);
+    expect(await status("fakegrok")).toBe(true);
+  });
+
+  it("keeps what is installed when turned off", async () => {
+    await clickWhenVisible('[data-testid="agent-hooks-auto"] [role="switch"]');
+    await browser.waitUntil(async () =>
+      (await browser.execute(() => window.__termic!.invoke("agent_hooks_auto_get"))) === false,
+      { timeout: 10_000, timeoutMsg: "the switch never turned off" });
+    expect(await status("fakegrok")).toBe(true);
+    // And a sync with it off installs nothing new.
+    await browser.execute(async () => {
+      await window.__termic!.invoke("agent_hooks_remove", { agentId: "fakegrok" });
+    });
+    await browser.execute(() => window.__termic!.invoke("agent_hooks_sync"));
+    expect(await status("fakegrok")).toBe(false);
+  });
+});

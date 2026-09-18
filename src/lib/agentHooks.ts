@@ -55,6 +55,16 @@ export const HOOK_OSC_READY_BODY = "agent ready for input";
  *  KEEP IN SYNC with `SESSION_BODY_PREFIX` in `agent_hooks.rs`. */
 export const HOOK_OSC_SESSION_PREFIX = "session ";
 
+/** termic's hooks saying a turn started / is over. These used to be raw OSC
+ *  `133;C` / `133;D`, which agents also emit themselves (pi marks every
+ *  message block on each repaint; claude's shell integration marks prompts),
+ *  so a hooked tab could not tell termic's signal from the agent's own. With
+ *  these, a tab whose agent has termic hooks ignores raw 133 entirely.
+ *  Routed on an EXACT match, like ready. KEEP IN SYNC with `WORKING_BODY` /
+ *  `DONE_BODY` in `agent_hooks.rs`. */
+export const HOOK_OSC_WORKING_BODY = "agent working";
+export const HOOK_OSC_DONE_BODY = "agent done";
+
 /** The session id in a trusted `session <uuid>` body, or null.
  *
  *  Validated as a UUID rather than taken verbatim, and that is not politeness:
@@ -64,9 +74,15 @@ export const HOOK_OSC_SESSION_PREFIX = "session ";
 export function hookOscSessionId(body: string): string | null {
   if (!body.startsWith(HOOK_OSC_SESSION_PREFIX)) return null;
   const id = body.slice(HOOK_OSC_SESSION_PREFIX.length).trim();
-  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)
-    ? id
-    : null;
+  // A UUID (claude, codex, agy), or devin's slug (`brassy-polish`), which is
+  // exactly what `devin --resume` takes. The slug rule is the one devin's
+  // hook applies before sending: first byte alphanumeric, then only
+  // `[0-9a-zA-Z_-]`, so nothing reaching a command line can start a flag or
+  // carry a shell metachar. The UUID-only version dropped every devin id,
+  // and the body then fell through to a notification: "session brassy-polish".
+  const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  const slug = /^[0-9a-zA-Z][0-9a-zA-Z_-]{0,127}$/;
+  return uuid.test(id) || slug.test(id) ? id : null;
 }
 
 /** The OSC payload without its introducer or terminator: what you would put

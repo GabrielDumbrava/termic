@@ -259,6 +259,9 @@ export function drivingWindow(u: AgentUsage): { window: UsageWindow; label: "5h"
 export function shortWindowWords(baseId: string): {
   chip: string; label: string; sub: string; limit: string;
 } {
+  // copilot's quota is MONTHLY and its only window, so it rides the short
+  // slot (agent_usage.rs files it there) and has to say so here.
+  if (baseId === "copilot") return { chip: "mo", label: "Monthly", sub: "resets monthly", limit: "monthly" };
   return baseId === "devin"
     ? { chip: "day", label: "Daily", sub: "resets daily", limit: "daily" }
     : { chip: "5h", label: "Session", sub: "rolling 5 hours", limit: "session" };

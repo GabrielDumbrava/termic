@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { dataDir } from "../../wdio.conf.js";
 import {
   clickWhenVisible, dismissOverlays, requireTermicApi, snap, waitForText,
-  waitForAppShell, waitVisible, waitGone,
+  waitForAppShell, waitVisible, waitGone, submitToAgent, waitForAgentReady,
 } from "../helpers";
 
 // The account switcher (GH #278): several credential sets per agent, and a
@@ -23,6 +23,9 @@ const AGENT = "claude";
 const FAKE_CLAUDE = "fakeclaude";
 const FAKE_CODEX = "fakecodex";
 const FAKE_DEVIN = "fakedevin";
+/** A grok clone: an agent whose footer has a CONTEXT source and no usage one,
+ *  which is the case "Usage unknown" used to skip entirely. */
+const FAKE_GROK = "fakegrok";
 /** The plain fixture agent, which has NO measured login store. */
 const FAKE_AGENT = "fakeagent";
 
@@ -937,6 +940,93 @@ describe("agent credentials", () => {
         try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
         await t.useApp.getState().refreshAgentHooks();
       }, FAKE_CLAUDE);
+      await removeTask(taskId);
+      await resetUsage();
+      await dismissOverlays();
+    }
+  });
+
+  // grok reports its context window through the status line the hooks install
+  // puts in, and no plan usage at all. "Usage unknown" used to be gated on
+  // usage alone, so this agent's footer was empty forever with nothing saying
+  // that installing hooks is what fills it.
+  it("offers the hooks install for an agent whose only readout is the context window", async () => {
+    await resetUsage();
+    await browser.execute(async (a) => {
+      const t = window.__termic!;
+      try { await t.invoke("agent_hooks_remove", { agentId: a }); } catch { /* none */ }
+      await t.useApp.getState().refreshAgentHooks();
+    }, FAKE_GROK);
+    const taskId = await openTaskWith(FAKE_GROK, "ctx-only-hooks");
+    try {
+      await waitVisible('[data-testid="usage-unknown"]');
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="usage-unknown-detail"][data-usage-hooks="missing"]');
+      const text = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-unknown-detail"]')?.textContent ?? "");
+      // It names what hooks would bring: the context window, not "usage".
+      expect(text).toMatch(/to see the context window you must have hooks enabled/i);
+      await waitVisible('[data-testid="usage-install-hooks"]');
+      await snap("usage-unknown-context-only.png");
+      await dismissOverlays();
+
+      // The agent's hooks are offered in Settings too (supported via its base).
+      const supported = await browser.execute(async (a) =>
+        (await window.__termic!.invoke("agent_hooks_status", { agentId: a })).supported, FAKE_GROK);
+      expect(supported).toBe(true);
+
+      // A context report replaces the label with the gauge.
+      await waitForAgentReady(taskId);
+      await submitToAgent(taskId, "#usage ctx 21000 500000");
+      await waitVisible('[data-testid="context-gauge"]', 20_000);
+      await waitGone('[data-testid="usage-unknown"]');
+    } finally {
+      await removeTask(taskId);
+      await resetUsage();
+      await dismissOverlays();
+    }
+  });
+
+  // The other half of the case above: an agent whose USAGE is pulled (codex,
+  // devin, copilot) shows numbers with or without hooks, so its chip is never
+  // "unknown", and its context window, which only hooks bring, used to be
+  // missing with nothing saying why. Reported on copilot.
+  it("says the context window needs hooks on an agent that already shows usage", async () => {
+    await resetUsage();
+    // The installed flag is set in the store rather than by a real install:
+    // a codex install runs codex's trust handshake against the clone's
+    // command, which for this fixture is a script that never answers, so it
+    // would spend the case's whole budget on a timeout. The flag is exactly
+    // what Settings refreshes after a real install, and what the row reads.
+    const setInstalled = (on: boolean) => browser.execute((a, v) => {
+      const s = window.__termic!.useApp;
+      s.setState({ agentHooksInstalled: { ...s.getState().agentHooksInstalled, [a]: v } });
+    }, FAKE_CODEX, on);
+    await setInstalled(false);
+    const taskId = await openTaskWith(FAKE_CODEX, "ctx-missing-hooks");
+    try {
+      await waitVisible('[data-testid="usage-chip"]');
+      await seedUsage(FAKE_CODEX, null, 12);
+      await browser.waitUntil(async () => await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.getAttribute("data-usage-session") === "12"),
+        { timeout: 10_000, timeoutMsg: "the seeded usage never reached the chip" });
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="context-missing"][data-context-hooks="missing"]');
+      expect(await browser.execute(() =>
+        document.querySelector('[data-testid="context-missing"]')?.textContent ?? ""))
+        .toMatch(/needs hooks/i);
+      await waitVisible('[data-testid="context-install-hooks"]');
+      await snap("usage-context-needs-hooks.png");
+      await dismissOverlays();
+
+      // Hooks in: the button goes, the line says it arrives with a reply.
+      await setInstalled(true);
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="context-missing"][data-context-hooks="active"]');
+      expect(await browser.execute(() =>
+        !!document.querySelector('[data-testid="context-install-hooks"]'))).toBe(false);
+    } finally {
+      await browser.execute(() => window.__termic!.useApp.getState().refreshAgentHooks());
       await removeTask(taskId);
       await resetUsage();
       await dismissOverlays();

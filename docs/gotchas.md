@@ -797,3 +797,62 @@ family as the "Reset to defaults" loss that first put these fields in the TS typ
 (a default entry spread over fields TypeScript did not know about) and as the
 clone-that-snapshots-its-parent trap in `agents.ts`. See
 [agent-accounts.md](agent-accounts.md).
+
+## A guard that parses the wrong format blocks every UPGRADE, silently
+
+`install()` opened with "refuse rather than clobber a config we could not
+parse", a JSON parse of the existing file. For opencode and pi that file is the
+hook itself, a JS/TS module, so every upgrade failed the parse and was refused,
+while a first install sailed through because there was no file yet. Nothing
+said so: `agent_hooks_sync` logs nothing for a refused install. opencode sat on
+schema v9 and pi on v11 while every other agent had synced to v12, and
+opencode never got its context readout. Found by reading the manifests on
+disk, not by any test, because every test installed into an empty dir.
+
+The trap generalises: a check written for one shape, placed before a branch for
+another, and exercised only on the empty case. `a_plugin_install_upgrades_over_an_old_one`
+now installs, fakes an old version on disk, and upgrades; with the parse moved
+back it fails with "termic.js is not valid JSON" (the control was run).
+
+## Two senders on one signal cannot be told apart
+
+termic's hooks said "turn started / over" with OSC `133;C` / `133;D`, and so
+does every shell integration, including pi's (it marks each message block on
+every repaint) and claude's. A hooked pi tab therefore went back to `working`
+on each repaint. The same shape bit notifications: grok, devin and muse each
+announce their own finished turn over OSC 9 a beat after termic's hook, and
+the unmatched body rang the needs-you bell.
+
+When termic adds a signal an agent might also send, give it termic's own
+channel (the trusted `termic` OSC 777 body) and then decide what the agent's
+copy means, rather than hoping the agent stays quiet. docs/agent-hooks.md
+"Working and done are termic's own bodies" has the specifics.
+
+## A restore looks exactly like activity
+
+A relaunch respawns every task's agent, resumes its session, and most agents
+then report something: a done from a resumed hook, pi's `agent_settled`, a
+session replay. One relaunch rang "agent finished" for six agents with nothing
+sent to any of them. A signal that no input since the spawn preceded is not a
+turn (`fireDone`'s `done-unasked`). Input is either the Enter path's
+`submittedSinceSpawnRef` or a `lastInputAt` stamped after the spawn started;
+the timestamp alone missed a turn typed straight into a muse tab, so neither is
+the only witness.
+
+## A hook that blocks on a dead terminal hangs NEW agents everywhere
+
+A hook writes its OSC to the agent's pty, and a write to a tty blocks once the
+buffer is full, which is the state of a pty nobody reads any more. Measured:
+three grok `done.sh` hooks sat 22 minutes in that write. A blocked tty write
+holds the device's lock, so every `lstat` of that /dev node hung too, and
+claude resolves its own tty name at startup by walking /dev (`ttyname_r` ->
+`devname_r` -> `lstat`, read off a `sample` of the stuck process). Result: every
+NEW claude session, in every termic build and profile, spawned and never drew
+a byte. `ps` hung the same way. Killing the three hooks unblocked it at once.
+
+Every generated terminal write is now bounded (`bound_emits` in
+`agent_hooks.rs`: the write runs in the background with a 2s budget, then the
+script exits), and the in-process plugins open the tty `O_NONBLOCK`, since a
+blocking write there would freeze the agent itself.
+`a_hook_never_blocks_on_a_terminal_that_will_not_read` drives each script at a
+FIFO with no reader; with the bound removed it hangs (the control was run).

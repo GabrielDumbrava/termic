@@ -33,11 +33,13 @@ import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
-import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, hookOscSessionId } from "@/lib/agentHooks";
+import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, hookOscSessionId } from "@/lib/agentHooks";
 import { parseUsageBody } from "@/lib/agentUsage";
+import { parseContextBody } from "@/lib/agentContext";
 import { FooterAgentChip } from "./AgentChip";
 import { activeFooterAgent, footerAgentIds, footerAgentKey } from "@/lib/footerAgents";
 import { useAgentUsage } from "@/store/agentUsage";
+import { useAgentContext } from "@/store/agentContext";
 import { imageFromClipboard, pastePathText } from "@/lib/clipboardImage";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import { deliverMessage, sendMessageToPty } from "@/lib/agentSend";
@@ -267,6 +269,11 @@ export function TerminalPane({ task, tab, active }: Props) {
   const senderStateRef = useRef<"busy" | "idle" | "attention" | null>(null);
   // Read inside the spawn effect, which must NOT re-run when this flips.
   const hooksOwnStateRef = useRef(false);
+  /** The hook turn-edge handler, set where the terminal is wired so the OSC
+   *  777 handler (registered earlier) can reach it. */
+  const hookTurnRef = useRef<((sub: string, origin: string) => void) | null>(null);
+  /** Logged once per pty: the first agent-native OSC 133 that was ignored. */
+  const native133LoggedRef = useRef(false);
   /** Has a hook for THIS pty actually reached us? Installed is not the same as
    *  working, and conflating them hangs the UI.
    *
@@ -525,6 +532,32 @@ const captureArmedRef = useRef(false);
     if (!force && term && hasPendingWork(tab.cli, visibleTailRows(term, PENDING_TAIL_ROWS))) {
       debugLogRef.current?.("done-deferred", `agent reports pending work (${reason})`);
       return false;
+    }
+    // A done with NO input sent to this process since it spawned is not the
+    // end of a turn anybody asked for. On a relaunch every restored agent
+    // resumes its session, and most of them then report a done of their own
+    // (a resumed hook, pi's `agent_settled`, copilot replaying its session):
+    // measured, one relaunch rang "agent finished" for six agents at once
+    // with nothing sent to any of them. The spinner still stops; there is
+    // just nothing to announce. Every input path (typing, a seeded prompt,
+    // the queue, broadcast, the CLI) stamps `lastInputAt`, so a real first
+    // turn after a restore always has one.
+    {
+      const live = useApp.getState().tabs[task.id]
+        ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+      const spawnedAt = spawnStartedAtRef.current;
+      // Either signal counts as input: the Enter path sets the ref, and every
+      // injected send stamps `lastInputAt`. The timestamp alone missed a turn
+      // typed straight into a muse tab (logged as unasked while the user was
+      // watching it start), so it is never the only witness.
+      const asked = submittedSinceSpawnRef.current || (live?.lastInputAt ?? 0) >= spawnedAt;
+      if (attn === "done" && spawnedAt > 0 && !asked) {
+        logWorkState("done-unasked",
+          `cli=${tab.cli} task=${JSON.stringify(task.name)} why=${reason}`
+          + " no input since spawn: state cleared, no badge, no bell");
+        useApp.getState().setWorkState(task.id, tab.id, "idle", `done with no input since spawn: ${reason}`);
+        return true;
+      }
     }
     doneFiredSinceSubmitRef.current = true;
     doneFiredAtRef.current = Date.now();
@@ -1337,6 +1370,7 @@ const captureArmedRef = useRef(false);
     // env and possibly a different sandbox mode, so it has to demonstrate
     // delivery again rather than inherit a claim the previous process earned.
     hookSeenRef.current = false;
+    native133LoggedRef.current = false;
     agentReadyPatchedRef.current = false;
     // Reset sender classification so signal-silent agents (agy, custom CLIs)
     // get submit-window working detection on every respawn, not just the first.
@@ -1839,6 +1873,13 @@ const captureArmedRef = useRef(false);
       // reports that the agent is past its own startup and a typed message
       // will reach its input box. Routed before notifyAttention so a ready
       // session can never badge as needing you.
+      // termic's hooks: a turn started / is over. Exact match, like ready, and
+      // routed before notifyAttention for the same reason: a trusted body that
+      // falls through badges the tab.
+      if (trusted && (body === HOOK_OSC_WORKING_BODY || body === HOOK_OSC_DONE_BODY)) {
+        hookTurnRef.current?.(body === HOOK_OSC_WORKING_BODY ? "C" : "D", "hook");
+        return false;
+      }
       if (trusted && body === HOOK_OSC_READY_BODY) {
         wdlog("OSC 777 ready (termic hook)", body);
         dbg("osc777-ready", body.slice(0, 200));
@@ -1867,6 +1908,13 @@ const captureArmedRef = useRef(false);
       // a session id would otherwise ring a bell on every session start, which
       // is the exact bug codex's own OSC 9 had just been fixed for.
       const reported = trusted ? hookOscSessionId(body) : null;
+      // A trusted session body that fails validation is DROPPED, never
+      // announced: it is a report to termic, and falling through to
+      // notifyAttention is how a devin id reached the user as a banner.
+      if (trusted && !reported && body.startsWith(HOOK_OSC_SESSION_PREFIX)) {
+        logWorkState("session-rejected", `cli=${tab.cli} body=${JSON.stringify(body.slice(0, 80))}`);
+        return false;
+      }
       if (reported) {
         wdlog("OSC 777 session id (termic hook)", reported);
         dbg("osc777-session", reported);
@@ -1933,6 +1981,16 @@ const captureArmedRef = useRef(false);
         );
         return false;
       }
+      // The context window, from whichever transport this agent has (status
+      // line, Stop hook or in-process plugin: lib/agentContext.ts). Same
+      // routing rule as usage: before notifyAttention, because it lands on
+      // every turn and a trusted body that falls through badges the tab.
+      const ctx = trusted ? parseContextBody(body) : null;
+      if (ctx) {
+        dbg("osc777-ctx", body.slice(0, 200));
+        useAgentContext.getState().report(task.id, tab.cli ?? "claude", tab.id, ctx);
+        return false;
+      }
       wdlog(`OSC 777 notify${trusted ? " (termic hook)" : ""}`, body);
       dbg("osc777-notify", body.slice(0, 200));
       notifyAttention(`OSC 777 notify`, body, trusted);
@@ -1947,8 +2005,10 @@ const captureArmedRef = useRef(false);
     //   B → prompt end      (idle, user-input window open)
     //   C → command running (busy)
     //   D[;<exit>] → command done (idle, immediate — no settle delay)
-    term.parser.registerOscHandler(133, (data) => {
-      const sub = (data.split(";")[0] || "").toUpperCase();
+    // One turn edge from termic's hooks: C = a turn started, D = it is over,
+    // A/B = a prompt boundary. Fed by termic's own trusted bodies (the OSC 777
+    // handler above) and, for an agent WITHOUT termic hooks, by raw OSC 133.
+    const hookTurn = (sub: string, origin: string) => {
       // Logged on ARRIVAL, not on the state change it may or may not cause.
       // The working hook is a heartbeat: most of its firings land on a tab that
       // is already working, which is a no-change and therefore invisible in the
@@ -1960,18 +2020,54 @@ const captureArmedRef = useRef(false);
         logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
           + " first hook delivered; fallbacks stand down for this pty");
       }
-      logWorkState("hook-osc", `cli=${tab.cli} osc=133;${sub} task=${JSON.stringify(task.name)}`);
-      wdlog(`OSC 133;${sub}`);
+      logWorkState("hook-osc", `cli=${tab.cli} osc=${origin};${sub} task=${JSON.stringify(task.name)}`);
+      wdlog(`${origin} ${sub}`);
       dbg("osc133", sub);
       if (sub === "C") {
-        goWorking(`OSC 133;C`);
+        goWorking(`${origin} C`);
       } else if (sub === "D") {
         // 133;D is a hard "command ended" — no need to wait SETTLE_MS.
-        goIdle(`OSC 133;D`, 0, true);
+        goIdle(`${origin} D`, 0, true);
+        // devin keeps its context window nowhere live, only in its session
+        // store, so the end of a turn is when it is read (agent_usage.rs).
+        // One sqlite3 read per turn; nothing while idle.
+        if (tab.cli && builtinBaseId(tab.cli, useApp.getState().agents) === "devin") {
+          const sid = (useApp.getState().tabs[task.id]
+            ?.find(t => t.id === tab.id) as TerminalTab | undefined)?.sessionId;
+          if (sid) {
+            ipc.agentContextDevin(tab.cli, spawnAccountRef.current, sid)
+              .then(r => {
+                if (!r || cancelled) return;
+                useAgentContext.getState().report(task.id, tab.cli ?? "devin", tab.id, {
+                  usedTokens: r.usedTokens, windowTokens: r.windowTokens,
+                  usedPercent: Math.min(100, (r.usedTokens / r.windowTokens) * 100),
+                });
+              })
+              .catch(err => console.warn("[context] devin refused:", err));
+          }
+        }
       } else if (sub === "A" || sub === "B") {
         // Prompt boundary — idle, but only settle if we were busy.
-        goIdle(`OSC 133;${sub}`);
+        goIdle(`${origin} ${sub}`);
       }
+    };
+    hookTurnRef.current = hookTurn;
+    term.parser.registerOscHandler(133, (data) => {
+      const sub = (data.split(";")[0] || "").toUpperCase();
+      // termic's hooks no longer speak 133, so for an agent that HAS them,
+      // every 133 is the agent's own: pi marks each message block on every
+      // repaint, claude's shell integration marks its prompts. Neither is a
+      // turn edge termic should act on (they put a hooked pi tab back to
+      // working on every repaint).
+      if (hooksOwnStateRef.current) {
+        if (!native133LoggedRef.current) {
+          native133LoggedRef.current = true;
+          logWorkState("native-133-ignored", `cli=${tab.cli} task=${JSON.stringify(task.name)} sub=${sub}`
+            + " the agent's own 133 marks are ignored while termic hooks own its state");
+        }
+        return false;
+      }
+      hookTurn(sub, "OSC 133");
       return false;
     });
 
@@ -2507,8 +2603,17 @@ const captureArmedRef = useRef(false);
             // window for them causes false positives because Claude's TUI
             // redraws on every Enter (viewport shifts, hash changes,
             // settled-done fires on idle prompt).
+            //
+            // NEVER once the agent's hooks have proven themselves. Hooks own
+            // the turn from then on, and nothing but a hook ends it, so a
+            // promotion here is permanent: pi answered inside the submit
+            // window, its hook sent done, and its final repaint 26ms later
+            // put the tab back to working for good (measured in the
+            // work-state log: `done-while-watching: OSC 133;D`, then
+            // `req=working why=-`).
             if (workDoneEnabled
                 && senderStateRef.current === null
+                && !hookSeenRef.current
                 && now < submitWindowUntilRef.current
                 && now - submitAtRef.current >= ECHO_DEAD_MS
                 && cur.workState !== "working") {
@@ -2767,6 +2872,9 @@ const captureArmedRef = useRef(false);
     return () => {
       cancelled = true;
       ro.disconnect();
+      // This PTY's conversation is over (closed, or restarted into a new one),
+      // so its context reading describes nothing any more.
+      useAgentContext.getState().clearTab(task.id, tab.cli ?? "claude", tab.id);
       disposeCopyOnSelect();
       disposeLinkOpener();
       disposePathLinks.dispose();

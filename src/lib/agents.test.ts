@@ -89,6 +89,33 @@ describe("spawnArgsForCli", () => {
     expect(second).toContain("improve-tests");
   });
 
+  // copilot refuses `--name` on any resume and exits 1, which termic read as
+  // "resume failed" and answered with a fresh session every relaunch.
+  it("names a copilot session only when it is created, never on a resume", () => {
+    mockAgents.push({
+      id: "copilot", display_name: "copilot", command: "copilot", args: [], builtin: true,
+      capabilities: {
+        yolo_args: [], runtime_yolo_command: "",
+        resume_args: ["--continue"],
+        session_id_args: ["--session-id", "{UUID}"],
+        resume_id_args: ["--session-id", "{UUID}"],
+        name_args: ["--name", "{WORKSPACE_SLUG}"],
+      },
+    } as any);
+    const fakeTask = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
+    const base = { yolo: false, isPrimary: true, task: fakeTask };
+    // The mint: a brand-new session, so the name goes on.
+    expect(spawnArgsForCli("copilot", { ...base, resume: false, sessionUuid: "u1", resumeKnown: false }))
+      .toEqual(["--session-id", "u1", "--name", "improve-tests"]);
+    // Resuming that id: no name, or copilot refuses to start.
+    expect(spawnArgsForCli("copilot", { ...base, resume: false, sessionUuid: "u1", resumeKnown: true }))
+      .toEqual(["--session-id", "u1"]);
+    // The worktree resume: same refusal with --continue.
+    expect(spawnArgsForCli("copilot", { ...base, resume: true })).toEqual(["--continue"]);
+    // A fresh worktree spawn with nothing to resume is a new session.
+    expect(spawnArgsForCli("copilot", { ...base, resume: false })).toEqual(["--name", "improve-tests"]);
+  });
+
   it("omits name_args when a resumeOverride is active", () => {
     const fakeTask = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
     // A verbatim --resume override targets the session by name; renaming it

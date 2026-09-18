@@ -39,6 +39,26 @@ target.
 | opencode | not measured | `chat.message`, `permission.replied` | `permission.asked` | `session.idle` | `session.idle`, on the SECOND escape |
 | codex | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | `PermissionRequest` | `Stop` | none exists |
 | devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest`, plus `PreToolUse` on `ask_user_question` | `Stop` | none exists |
+| copilot | none (trust dialog precedes `sessionStart`) | `userPromptSubmitted`, `preToolUse`, `postToolUse` | `permissionRequest` | `agentStop` | none exists |
+| pi | none (`session_start` precedes the input box) | `before_agent_start`, `tool_call` | `ui_prompt_start` (an extension's own prompt; pi has no permission prompts) | `agent_settled` | none exists |
+| muse | none (`SessionStart` is lazy) | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest` | `Stop` | none exists |
+
+Three install shapes are new with copilot, pi and muse (GH #277 follow-up):
+
+- **copilot** gets its NATIVE hook file, `~/.copilot/hooks/termic.json`
+  (`{"version":1,"hooks":{"<event>":[{"type":"command","bash":…}]}}`), which
+  copilot loads alongside any other `hooks/*.json`. It is ours outright, so
+  removal is a delete. Measured on 1.0.86: every event fires with
+  `TERMIC_PTY` / `TERMIC_TASK_ID` intact, in `-p` and in the TUI, and
+  `permissionRequest` fires even under `--allow-all-tools`. A `preToolUse`
+  hook that ERRORS denies the tool, which is one more reason every script
+  here exits 0.
+- **pi** is a plugin-file agent like opencode: one TypeScript extension at
+  `~/.pi/agent/extensions/termic.ts`, autoloaded and transpiled by pi itself,
+  running in-process (so the env is simply pi's). Done is `agent_settled`,
+  not `agent_end`, because pi can still auto-retry or compact after
+  `agent_end`.
+- **muse** needs its MANAGED hook file, see below.
 
 **Ready is the only signal that is not a correction.** Everything else here
 replaces a state the terminal reports WRONG. Ready reports one the terminal
@@ -85,8 +105,8 @@ Codex is excluded from the ECHO fallback specifically, and only that: its title
 already says `Action Required` at +22ms, so a first message typed into it does
 not need the echo check. It is a full hooks agent otherwise (see below).
 
-**Muse Code cannot use this transport, and that is measured rather than
-assumed.** It has a hooks system and it looks like an easy win: the config is
+**Muse Code's ORDINARY hooks cannot use this transport; its managed hooks can
+(1.3.0).** The history is kept because the ordinary path is still dead. It has a hooks system and it looks like an easy win: the config is
 claude-shaped, lives at `~/.config/muse/settings.json` (needs
 `"schema_version": 1`, or muse rejects the whole file), and `SessionStart`,
 `UserPromptSubmit`, `Stop`, `PreLLMCall` and `PostLLMCall` all fire, every
@@ -116,9 +136,22 @@ classifies it unaided, and unlike codex it never puts its final message on an
 of the end-of-turn bell problem either. What hooks would add is the attention
 state, which is the one thing its title was not measured for.
 
-Wiring it would need a transport muse cannot strip, e.g. baking the pty path
-into the command at install time, which the file-based installer cannot do
-because that path changes per spawn.
+**What changed in 1.3.0: managed hooks.** Two top-level keys in
+`~/.config/muse/settings.json`, `managed_hooks_path` (a file with a
+claude-shaped `{"hooks":{…}}`) and `managed_hooks_env_vars` (a list of NAMES),
+make muse forward exactly those variables to the hooks in that file and to no
+others. Measured end to end: with the keys set, an OSC 777 written by a managed
+hook reached a live interactive TUI's pty; with the env key removed, the same
+hooks lost both variables again. So termic writes its hook file into its own
+script dir (`termic-hooks/managed-hooks.json`) and claims the two keys, only
+when `managed_hooks_path` is free or already ours, since it is a single slot an
+enterprise policy may hold. Unlike a status line slot this one is the
+TRANSPORT, so an install that cannot claim it FAILS rather than reporting on.
+Two traps: a glob like `TERMIC_*` in the env list makes muse refuse to start
+(exit 1), and muse runs hooks for its own internal subagents under their own
+`session_id`, so every script drops a payload whose id is not a UUIDv7 (the
+main session's; subagents get v4). Without that filter a subagent's `Stop`
+ends the tab's turn early.
 
 **Muse Code is also the case the echo guard cannot cover, and the reason
 `UNATTENDED_SPAWN_ARGS` grew a third entry.** Muse has a trust picker too
@@ -371,9 +404,12 @@ turn and reads a real pty, and captured exactly this:
 
 ```text
 ESC]777;notify;termic;agent ready for input BEL   SessionStart
-ESC]133;C BEL                                     UserPromptSubmit
-ESC]133;D BEL                                     Stop
+ESC]777;notify;termic;agent working BEL           UserPromptSubmit
+ESC]777;notify;termic;agent done BEL              Stop
 ```
+
+(Captured when working/done were still raw `133;C` / `133;D`; the bodies are
+what schema v13 writes. See "Working and done are termic's own bodies".)
 
 It borrows the user's login with a SYMLINK to `auth.json` rather than a copy, so
 no credential is duplicated into a temp dir, and it never writes to the real
@@ -463,6 +499,46 @@ pushed onto the container env in `docker::build_spec`, with `TERMIC_PTY` set to
 the CONTAINER's address (`/proc/1/fd/1`). Before that, every hook in a
 sandboxed tab exited on its first line and a whole tab delivered zero OSCs
 while its unsandboxed neighbours delivered hundreds.
+
+### Working and done are termic's own bodies, not OSC 133
+
+Until schema v13 the hooks said "turn started" / "turn over" as raw OSC
+`133;C` / `133;D`, the FinalTerm shell-integration marks. Agents emit those
+marks THEMSELVES: pi wraps every message block in `133;A`..`C` on each repaint
+(`OSC133_ZONE_START` in its message components), and claude's shell
+integration marks its prompts. termic could not tell its own hook from the
+agent's paint, so a hooked pi tab went back to `working` on every repaint.
+
+The hooks now send `agent working` / `agent done` on the trusted `termic`
+channel (routed on an exact match, like ready), and a tab whose agent has
+termic hooks IGNORES raw `133` altogether (`native-133-ignored`, logged once
+per pty). An agent without termic hooks still gets `133` read as before,
+which is the only state signal some of them have.
+
+### An agent's own notifications, and dones nobody asked for
+
+Three more ways a correct hook install still rang the wrong bell, all measured
+in the work-state log:
+
+- **Agents announce their own end of turn**, over OSC 9 / 777, a beat after
+  the hook's done: grok `Turn complete in 3.5s. · <title>` (~180ms), devin
+  `Devin finished`, muse `<workspace> — done (18s)` (10 to 20s). Unmatched,
+  each read as needs-you. They are in `BUILTIN_NOTIFY_IGNORE`
+  (`lib/agents.ts`), anchored, so a real request from the same agent still
+  badges. A new agent's own notifications have to be checked the same way.
+- **grok's `Notification` hook is several events**, told apart by
+  `notificationType`: `permission_prompt` is the block, `idle_prompt` fires a
+  minute after ANY turn ends. The attention script passes the first only.
+- **A relaunch restores every task, and most agents then report a done** (a
+  resumed hook, pi's `agent_settled`, a replayed session) with nothing sent to
+  them: one relaunch rang "agent finished" for six agents at once. `fireDone`
+  clears the spinner but does not badge or notify a done with no input since
+  the spawn (`done-unasked` in the log).
+
+The fallbacks have to stand down too. The submit-window promotion (output soon
+after Enter means working, for agents with no state signal) put a hooked pi tab
+back to `working` 26ms after its hook's done, permanently, since only a hook
+ends a hook-owned turn. It is skipped once `hookSeenRef` is set.
 
 **Why not `terminalSequence`.** claude can write the OSC itself, and its
 runtime allowlists that to OSC 0/1/2/9/99/777 plus BEL. OSC 133 is not on the
@@ -640,6 +716,71 @@ unattended upgrade should actually be asking. It is safe as a gate because
 `remove` deletes every entry AND the script directory, so an opted-out user
 reads false and is never re-installed behind their back. Pinned by
 `an_install_missing_a_newly_added_event_is_still_ours`.
+
+## "Install hooks for every agent"
+
+One switch at the top of the Agents page's hooks block, visible without
+expanding it (`Settings.auto_install_hooks`, persisted in `settings.json`).
+On, every `agent_hooks_sync` (boot, the switch itself, and opening the Agents
+page) installs hooks for each supported agent whose binary is on PATH
+(`agent_binary_on_path`, the same resolution as `detect_clis`) and that has
+none yet, host and Docker together exactly like the row's own button. An
+agent whose config is unreadable or has `disableAllHooks` is skipped, as a
+manual install would refuse it. Off installs and removes nothing: what is in
+stays in.
+
+Two things fell out of building it. `agent_hooks_sync` became an ASYNC command:
+it can now install, and a codex install spawns `codex app-server` for its trust
+hashes, which on the main thread freezes the window. And the block's mount
+effect must not re-run on the switch: it did, and two syncs raced over the same
+config files, leaving one agent "not installed" on some runs.
+
+A clone that relocates nothing shares its base's config dir, so installing for
+either wires both; the sync reports whichever id it reached first.
+
+## agy resumes its own conversation in a main checkout
+
+agy cannot be handed a conversation id at launch, and has `--conversation <id>`
+to resume one, the same shape as codex (`session_id_args` empty,
+`resume_id_args` set, `cliSupportsCaptureResume`). Its `PreInvocation` hook
+reads `conversationId` from the payload (a UUID, measured on 1.2.6) and
+reports it on the session body in the same write as working, so the next
+spawn of a main-checkout task resumes that conversation. Without hooks there
+is no id and the task starts fresh, as before.
+
+## The context window, per agent
+
+The footer chip shows how full the CURRENT conversation is, next to the plan
+windows (`lib/agentContext.ts`, `store/agentContext.ts`). It is keyed by task
+and agent, not by account: two tasks on one login share a quota and nothing
+else. Every agent reports it on one body, `ctx <used tokens> <window tokens>
+[<used percent>]`, on the same trusted OSC 777 channel, so the terminal has one
+parser. The optional percent is the agent's own figure where its formula is not
+tokens/window.
+
+| agent | source | fields, measured |
+| --- | --- | --- |
+| claude | status line | `context_window.total_input_tokens` (input + cache creation + cache read of the last call, the numerator of claude's own `used_percentage`) over `context_window_size` |
+| agy | status line (`antigravity-cli/settings.json`, `statusLine.command`) | same fields as claude; `context_window_size` is 0 before the first call |
+| copilot | status line (`~/.copilot/settings.json`) | `current_context_tokens` over `displayed_context_limit`. NOT `total_input_tokens`, which is the whole session's, and `context_window_size` is null on the `auto` model |
+| grok | status line (`[ui.status_line]` in `~/.grok/config.toml`) | `context_tokens` over `context_window_size` (`session_input_tokens` only grows) |
+| codex | `Stop` hook | `transcript_path` is the rollout; its last `token_count` has `last_token_usage.total_tokens` and `model_context_window`. The percent is codex's own, with its 12000-token baseline reserved (`codex-rs/protocol`), so plain tokens/window would disagree with the TUI |
+| opencode | plugin | the last assistant `message.updated` with output: input + output + reasoning + cache read + write, over the model's `limit.context` from `chat.params` (the TUI's formula, read out of 1.18.31) |
+| pi | extension | `ctx.getContextUsage()`, pi's own footer figure |
+| devin | read at turn end | nothing live: no status line, no token count in any hook. `num_tokens_preceding` of the last assistant node in `cli/sessions.db`, over `max_context_tokens` from `devin models list` (`agent_context_devin`) |
+| muse | none | only `muse serve` (MSP) reports it, never a TUI tab |
+
+The status line script is ONE template for all four status line agents, baked
+per agent: context fields are tried in a fixed order and the first plain number
+wins, and the parts that belong to one agent (claude's `rate_limits` and cost,
+agy's `quota`) are read only in that agent's copy. grok sends a cost too; it is
+not forwarded, because grok is credit-limited and a dollar figure with no plan
+beside it reads as "billed per token".
+
+The other slots are claimed the way claude's is: only when free (a user's own
+status line, or grok's built-in row, is theirs), handed back only while still
+ours. agy's `statusLine` has no `type` key, and agy 1.2.6 rewrites its settings
+on launch dropping keys it does not know.
 
 ## The status line is not a hook, and rides the same channel anyway
 

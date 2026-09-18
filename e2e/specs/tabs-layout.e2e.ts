@@ -1568,3 +1568,59 @@ describe("recently-used tab navigation", () => {
     await waitGone("[data-testid='ctrl-tab-mode']");
   });
 });
+
+// The compact rail is one icon per task, so its tooltip has to say what is
+// INSIDE the task: every terminal with the title the expanded tree shows, and
+// its state. Top-aligned with the icon, since it is taller than the tile. The
+// rail scrolls with no visible bar.
+describe("compact rail", () => {
+  let taskId!: string;
+  after(async () => {
+    await browser.execute(() => {
+      const s = window.__termic!.useApp.getState();
+      if (s.compactSidebar) s.toggleCompactSidebar();
+    });
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("lists the task's terminals in its tooltip, level with the icon", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-rail-tip");
+    await browser.execute(() => {
+      const s = window.__termic!.useApp.getState();
+      if (!s.compactSidebar) s.toggleCompactSidebar();
+    });
+    const trigger = `[data-rail-task-id="${taskId}"]`;
+    await waitVisible(trigger);
+    await browser.execute((sel) => {
+      document.querySelector(sel)!.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+    }, trigger);
+    await waitVisible('[data-testid="compact-task-tip"]');
+    const tip = await browser.execute((sel) => {
+      const t = document.querySelector('[data-testid="compact-task-tip"]')!;
+      const box = (t.closest('[data-side]') ?? t).getBoundingClientRect();
+      const icon = document.querySelector(sel)!.getBoundingClientRect();
+      return {
+        text: (t as HTMLElement).innerText,
+        rows: t.querySelectorAll('[data-testid="compact-task-tip-tab"]').length,
+        topDelta: Math.round(box.top - icon.top),
+      };
+    }, trigger);
+    expect(tip.text).toContain("e2e-rail-tip");
+    expect(tip.rows).toBeGreaterThanOrEqual(1);
+    // Level with the icon, not centred on it (a few px of border/padding).
+    expect(Math.abs(tip.topDelta)).toBeLessThanOrEqual(6);
+    await snap("compact-rail-tooltip.png");
+  });
+
+  it("scrolls without a visible scrollbar", async () => {
+    const hidden = await browser.execute(() => {
+      const el = document.querySelector('[data-rail-task-id]')!.closest(".overflow-y-auto") as HTMLElement;
+      return getComputedStyle(el).scrollbarWidth;
+    });
+    expect(hidden).toBe("none");
+    await snap("compact-rail.png");
+  });
+});

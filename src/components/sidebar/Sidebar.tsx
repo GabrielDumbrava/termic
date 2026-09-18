@@ -85,6 +85,28 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const compactStore = useApp(s => s.compactSidebar);
   const compact = compactProp ?? compactStore;
   const openSettings = useApp(s => s.openSettings);
+  // Whether the compact rail's list has more below the fold. Written only when
+  // it FLIPS, so scrolling costs no re-render of the sidebar per frame.
+  const projectsScrollRef = useRef<HTMLDivElement | null>(null);
+  const [moreBelow, setMoreBelow] = useState(false);
+  useEffect(() => {
+    const el = projectsScrollRef.current;
+    if (!el || !compact) { setMoreBelow(false); return; }
+    const check = () => {
+      const more = el.scrollTop + el.clientHeight < el.scrollHeight - 2;
+      setMoreBelow(prev => (prev === more ? prev : more));
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    // The list grows without the scroller resizing (a task or project added),
+    // which only a child-list observer sees. `check` is O(1) and writes
+    // nothing unless the answer flips.
+    const mo = new MutationObserver(check);
+    mo.observe(el, { childList: true, subtree: true });
+    return () => { el.removeEventListener("scroll", check); ro.disconnect(); mo.disconnect(); };
+  }, [compact]);
   // GH #280: keeps this window's registry view fresh, and decides whether the
   // strip exists at all.
   useProfilesSync();
@@ -896,7 +918,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       </nav>
 
       {/* Projects section */}
-      <div className={cn("flex-1 overflow-y-auto min-h-0", compact ? "px-1.5 py-1.5" : "px-2 py-2")}>
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={projectsScrollRef}
+        className={cn("flex-1 overflow-y-auto min-h-0", compact ? "no-scrollbar px-1.5 py-1.5" : "px-2 py-2")}
+      >
         <div className={cn(
           "flex items-center justify-between text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]",
           compact ? "flex-col gap-1.5 py-1" : "px-2 py-1",
@@ -1767,6 +1793,16 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           })()}
         </div>
       </div>
+        {/* The compact rail scrolls with no visible bar (a 10px bar is a sixth
+            of a 56px rail), so the fade is what says there is more below. */}
+        {compact && moreBelow && (
+          <div
+            aria-hidden
+            data-testid="sidebar-more-below"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--color-bg-1)] to-transparent"
+          />
+        )}
+      </div>
 
       {/* The bottom stack: profile strip (conditional) + footer, in ONE
           positioned container so UpdateCard can anchor to its top edge.
@@ -2332,8 +2368,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Compact mode: render a minimal icon-only row (no tree, no children).
   if (compact) {
     return (
-      <Tip content={labelIsBranch ? `${label} (${w.name})` : w.name} side="right">
+      <Tip content={<CompactTaskTip name={labelIsBranch ? `${label} (${w.name})` : w.name} tabs={terminalTabs} />} side="right" align="start" pointer>
         <div
+          data-rail-task-id={w.id}
           onClick={() => setActive(w.id)}
           className={cn(
             "relative mx-auto flex h-8 w-8 items-center justify-center rounded-md cursor-pointer transition-colors",
@@ -3062,3 +3099,38 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
  *  has polled the task (colored), otherwise the persisted identity only
  *  (muted glyph - "there is a PR, state unknown"). Click opens it on the
  *  forge; that's the sidebar's link-out (issue #21). */
+
+/** The compact rail's tooltip for one task: its name, then every terminal it
+ *  holds (agents, shells, run tabs) with the title the expanded tree would
+ *  show and its state. The rail is one icon per task, so without this a task
+ *  running claude AND codex AND a shell read as just "claude-1", and the user
+ *  could not tell which task they were about to open. */
+function CompactTaskTip({ name, tabs }: { name: string; tabs: TerminalTab[] }) {
+  const agents = useApp(s => s.agents);
+  return (
+    <div data-testid="compact-task-tip" className="flex max-w-[320px] flex-col gap-1">
+      <div className="truncate font-medium">{name}</div>
+      {tabs.map(tab => {
+        const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
+        const working = tab.workState === "working";
+        const title = tab.customTitle ? rawTitle : formatTerminalTitle(rawTitle, tab.cli, working);
+        const state = tab.unread?.reason === "attention" ? "needs you"
+          : tab.workState === "done" ? "done"
+          : working ? "working"
+          : "";
+        return (
+          <div key={tab.id} data-testid="compact-task-tip-tab" className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
+            <CliIcon cli={resolveIconId(tab.cli, agents)} className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{title}</span>
+            {state && (
+              <span className={cn("ml-auto shrink-0 pl-2",
+                state === "needs you" ? "text-[var(--color-warn)]" : "text-[var(--color-fg-faint)]")}>
+                {state}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

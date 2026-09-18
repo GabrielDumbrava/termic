@@ -124,8 +124,16 @@ set_title "✳ ${name}"
 #               that it does. Body must match agentHooks.ts HOOK_OSC_BODY.
 osc9()   { printf '\033]9;%s\007' "$1"; }
 osc777() { printf '\033]777;notify;%s\007' "$1"; }
-# The hook transport: what termic's installed scripts write.
-osc133() { printf '\033]133;%s\007' "$1"; }
+# The hook transport: what termic's installed scripts write. `C` = a turn
+# started, `D` = it is over, sent as termic's own trusted bodies (they used to
+# be raw OSC 133, which agents also emit themselves; see agentHooks.ts).
+osc133() {
+  case "$1" in
+    C) osc777 "termic;agent working" ;;
+    D) osc777 "termic;agent done" ;;
+    *) printf '\033]133;%s\007' "$1" ;;
+  esac
+}
 spin()   { for f in 0 1 2; do set_title "${SPINNER[$f]} ${name}"; sleep 0.15; done; }
 
 # One "prompt" per stdin line: go busy (spinner title + streamed output), then

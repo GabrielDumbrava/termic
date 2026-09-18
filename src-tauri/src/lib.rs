@@ -18727,6 +18727,12 @@ pub struct Settings {
     /// gets the dock icon as their way back instead of losing both.
     #[serde(default)]
     pub tray_enabled: Option<bool>,
+    /// Install termic's agent hooks for EVERY supported agent that is on
+    /// PATH and has none, and keep doing it for agents added later
+    /// (`agent_hooks::agent_hooks_sync`). Off by default: hooks write into
+    /// the agent's own config, which is the user's to opt into, once.
+    #[serde(default)]
+    pub auto_install_hooks: bool,
     /// Repo-root config paths symlinked into each NEW worktree task (when the
     /// checkout didn't already provide them). Files as well as dirs:
     /// `.mcp.json` is a file and carries project-scoped MCP servers (GH #251).
@@ -19165,8 +19171,13 @@ fn default_agents() -> Vec<Agent> {
                 // `--continue` (`-c`) continues the most recent
                 // conversation in CWD with no interactive picker.
                 resume_args: vec!["--continue".into()],
+                // agy cannot be HANDED an id at launch, so a main-checkout
+                // task learns it after: the termic PreInvocation hook
+                // reports `conversationId` (a UUID), and the next spawn
+                // resumes it with `--conversation <id>`. Same capture shape
+                // as codex (`cliSupportsCaptureResume`).
                 session_id_args: vec![],
-                resume_id_args: vec![],
+                resume_id_args: vec!["--conversation".into(), "{UUID}".into()],
                 name_args: vec![],
                 signals: AgentSignals::default(),
                 match_output: false,
@@ -20725,6 +20736,28 @@ async fn detect_clis() -> Vec<CliInfo> {
         .unwrap_or_default()
 }
 
+/// Is this agent entry's binary installed? The same resolution `detect_clis`
+/// uses (a clone runs its parent's command; an absolute path is checked as
+/// is, anything else is looked up on the resolved login-shell PATH), minus the
+/// `--version` probe. For deciding whether to write hooks into an agent's
+/// config: creating `~/.grok` for someone who has no grok is not an install.
+pub(crate) fn agent_binary_on_path(agents: &[Agent], id: &str) -> bool {
+    let bin = crate::agent_dirs::resolve_agent(agents, id)
+        .map(|a| a.command)
+        .unwrap_or_default();
+    let bin = bin.trim();
+    if bin.is_empty() {
+        return false;
+    }
+    if bin.starts_with('/') {
+        return Path::new(bin).exists();
+    }
+    shell_env::resolved_path()
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .any(|dir| Path::new(&format!("{dir}/{bin}")).exists())
+}
+
 fn detect_clis_blocking() -> Vec<CliInfo> {
     let agents = load_settings_inner().agents;
     // Probe agents concurrently — `shell_env::resolved_path()` can block
@@ -22245,9 +22278,13 @@ pub fn run() {
             agent_hooks::agent_hooks_install,
             agent_hooks::agent_hooks_remove,
             agent_hooks::agent_hooks_sync,
+            agent_hooks::agent_hooks_auto_get,
+            agent_hooks::agent_hooks_auto_set,
             agent_hooks::usage_status_line_owner,
             agent_usage::agent_usage_codex,
             agent_usage::agent_usage_devin,
+            agent_usage::agent_usage_copilot,
+            agent_usage::agent_context_devin,
             perf_boot_elapsed_ms,
             deep_link_take_pending,
             agent_accounts, account_add, account_remove, account_set_default, account_set_auto_switch,

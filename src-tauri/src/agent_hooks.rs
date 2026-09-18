@@ -83,7 +83,24 @@ use std::path::{Path, PathBuf};
 // hash the hooks.json ENTRY (command path, timeout, status message), none of
 // which this changes, so a reinstall re-asks codex and writes back the same
 // hashes rather than orphaning them.
-pub const SCHEMA_VERSION: u32 = 10;
+//
+// v11 has claude's status line also report the CONTEXT WINDOW, on its own
+// `ctx` body. Stale-and-quieter: a v10 install reports usage exactly as before
+// and simply shows no context.
+//
+// v12 filters grok's `Notification` to `permission_prompt` (its idle nag rang
+// the bell after every turn) and has agy report its conversation id.
+// Stale-and-harmful for grok: a v11 install keeps ringing.
+//
+// v13 moves working/done off raw OSC 133 onto termic's own trusted bodies
+// (`WORKING_BODY` / `DONE_BODY`), so an agent's own 133 marks can be ignored,
+// and ends an opencode turn on its final message rather than `session.idle`.
+// Stale-and-harmful: a v12 install's 133 is now ignored for hooked agents.
+//
+// v14 bounds every terminal write (`bound_emits`): a hook blocked writing to a
+// dead tab's pty held the tty lock and hung every new claude. Stale-and-
+// harmful: a v13 install can still wedge.
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// Directory we create inside the agent's config dir. Also the prefix that
 /// identifies our entries for removal, which is why it must never be renamed
@@ -212,12 +229,32 @@ const SESSION_BODY_PREFIX: &str = "session ";
 /// apart on an exact match and would badge a ready session as needing you.
 const READY_BODY: &str = "agent ready for input";
 
+/// A turn started / a turn is over. termic's OWN bodies, on the trusted
+/// channel, where they used to be raw OSC `133;C` / `133;D`: agents emit 133
+/// themselves (pi marks every message block on each repaint, claude's shell
+/// integration marks its prompts), and a hook speaking the same marks could not
+/// be told apart from them. A pi tab went to "working" on every repaint and a
+/// relaunch rang "finished" for agents nobody had spoken to. With their own
+/// bodies, a tab whose agent has termic hooks ignores raw 133 altogether.
+/// KEEP IN SYNC with `HOOK_OSC_WORKING_BODY` / `HOOK_OSC_DONE_BODY` in
+/// `lib/agentHooks.ts`.
+const WORKING_BODY: &str = "agent working";
+const DONE_BODY: &str = "agent done";
+
 /// Prefix of the body that reports subscription usage (GH #277). Written by the
 /// STATUS LINE, not by a hook, but it rides the same OSC 777 channel and the
 /// same trusted `termic` title. Must never be a prefix of `ATTENTION_BODY` or
 /// `READY_BODY`, or vice versa: the TS handler tells the three apart on the
 /// body alone. KEEP IN SYNC with `USAGE_BODY_PREFIX` in `lib/agentUsage.ts`.
 const USAGE_BODY_PREFIX: &str = "usage ";
+
+/// Prefix of the body that reports the CONTEXT WINDOW: `ctx <used tokens>
+/// <window tokens> [<used percent>]`. Written by every agent that has a
+/// source (claude's and grok's status line, codex's Stop hook, the opencode
+/// and pi plugins), one format so the terminal has one parser. Same rule as
+/// the usage prefix: never a prefix of another body, or prefixed by one.
+/// KEEP IN SYNC with `CONTEXT_BODY_PREFIX` in `lib/agentContext.ts`.
+pub(crate) const CONTEXT_BODY_PREFIX: &str = "ctx ";
 
 /// Filename stem of the status line script. Not a `Signal::stem()`, because a
 /// status line is not a signal: it is not registered against an event, it is
@@ -244,10 +281,66 @@ const USAGE_STEM: &str = "usage";
 /// dependencies" property, and a status line that fails to run is one claude
 /// reports on every single turn.
 pub fn statusline_body() -> String {
-    STATUSLINE_TEMPLATE
+    statusline_body_for("claude")
+}
+
+/// The status line script as written for one agent. ONE script for every agent
+/// with a status line slot (claude, agy, copilot, grok), because they all pipe
+/// a JSON payload with a `context_window` object on stdin and differ only in
+/// which fields it holds; the agent is baked in so the parts that are one
+/// agent's alone (claude's `rate_limits` and cost, agy's `quota`) cannot be
+/// misread from another's payload.
+pub fn statusline_body_for(agent: &str) -> String {
+    bound_emits(&STATUSLINE_TEMPLATE
+        .replace("@AGENT@", agent)
         .replace("@NOTIFY@", NOTIFY_PREFIX)
         .replace("@USAGE@", USAGE_BODY_PREFIX)
-        .replace("@SCHEMA@", &SCHEMA_VERSION.to_string())
+        .replace("@CTX@", CONTEXT_BODY_PREFIX)
+        .replace("@SCHEMA@", &SCHEMA_VERSION.to_string()))
+}
+
+/// Make every terminal write in a generated script unable to block for long.
+///
+/// A hook writes its OSC to the agent's pty, and a write to a tty BLOCKS once
+/// its buffer is full, which is exactly the state of a pty whose reader has
+/// gone (a closed tab, a quit app). Measured, and costly: three grok `done.sh`
+/// hooks sat for 22 minutes blocked in that write, and a blocked tty write
+/// holds the device's lock, so every `lstat` of that /dev node hung with it.
+/// claude resolves its own tty name at startup by walking /dev
+/// (`ttyname_r` -> `devname_r` -> `lstat`), so NEW claude sessions in every
+/// termic window stopped drawing, whichever account, until the stuck hooks
+/// were killed. `ps` hung the same way.
+///
+/// So each `X "$TERMIC_PTY" || X /proc/1/fd/1 || X /dev/tty || true` chain
+/// runs in the background with a 2s budget, then the script exits whatever
+/// happened. A tty write blocked on a full buffer is interruptible, so the
+/// TERM lands. The watchdog is killed as soon as the write returns, so it
+/// never outlives a normal hook (and never signals a recycled pid).
+fn bound_emits(script: &str) -> String {
+    let mut out = String::with_capacity(script.len() + 512);
+    for line in script.split_inclusive('\n') {
+        let body = line.trim_end_matches('\n');
+        let indent_len = body.len() - body.trim_start().len();
+        let (indent, rest) = body.split_at(indent_len);
+        let func = rest.split_whitespace().next().unwrap_or("");
+        let chain = format!(
+            "{func} \"$TERMIC_PTY\" || {func} /proc/1/fd/1 || {func} /dev/tty || true"
+        );
+        if !func.is_empty() && rest == chain {
+            let call = chain.trim_end_matches(" || true");
+            out.push_str(&format!(
+                "{indent}( {call} ) </dev/null >/dev/null 2>&1 &\n\
+                 {indent}termic_w=$!\n\
+                 {indent}( sleep 2; kill \"$termic_w\" ) </dev/null >/dev/null 2>&1 &\n\
+                 {indent}termic_k=$!\n\
+                 {indent}wait \"$termic_w\" 2>/dev/null\n\
+                 {indent}kill \"$termic_k\" 2>/dev/null\n"
+            ));
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Written as a template with `@TOKEN@` holes rather than a `format!`, because
@@ -255,7 +348,7 @@ pub fn statusline_body() -> String {
 /// otherwise have to be doubled. A shell script full of `{{` is a script nobody
 /// can read against the thing it is supposed to be.
 const STATUSLINE_TEMPLATE: &str = r#"#!/bin/sh
-# termic status line for claude (usage feed, schema v@SCHEMA@). Safe to delete.
+# termic status line for @AGENT@ (usage + context feed, schema v@SCHEMA@). Safe to delete.
 #
 # Reports subscription usage to termic by writing ONE OSC sequence to the
 # terminal termic handed it, and printing NOTHING to stdout.
@@ -277,18 +370,23 @@ payload=$(cat | tr -d '[:space:]')
 # status line is the correct output there, and it is what an exit prints.
 [ -n "$TERMIC_TASK_ID" ] || exit 0
 [ -n "$TERMIC_PTY" ] || exit 0
-# grok reads ~/.claude/settings.json too, so this file can also run under grok.
-# The user never opted grok in here. Same provenance rule as its hook siblings.
-[ -z "$GROK_HOOK_EVENT" ] || exit 0
+agent='@AGENT@'
+# grok reads ~/.claude/settings.json too, so claude's copy can also run under
+# grok. The user never opted grok in there. Same provenance rule as its hook
+# siblings. grok's own copy is grok's.
+[ "$agent" != claude ] || [ -z "$GROK_HOOK_EVENT" ] || exit 0
 
 # An API-KEY account has no rate_limits at all: plan windows are a subscription
 # concept. That is precisely the account whose cost is worth reporting, so the
 # early exit checks for BOTH sources and gives up only when neither is there.
 case "$payload" in
-  *'"rate_limits":'*|*'"total_cost_usd":'*) ;;
+  *'"rate_limits":'*|*'"total_cost_usd":'*|*'"context_window":{'*|*'"quota":{'*) ;;
   *) exit 0 ;;
 esac
-rl=${payload#*'"rate_limits":'}
+# Only claude's payload has a `rate_limits` worth reading. Cleared for anyone
+# else so a field of the same name can never be taken for claude's.
+rl=''
+[ "$agent" = claude ] && rl=${payload#*'"rate_limits":'}
 
 # One window object sliced out, then one number read out of it.
 #
@@ -340,14 +438,81 @@ esac
 # anything that is not a bare number is dropped rather than passed into an OSC
 # payload. A dot is allowed because this is dollars and cents.
 cost='-'
-case "$payload" in
+# claude only. grok sends a `cost.total_cost_usd` too, but a grok account is
+# billed against a credit limit that this cannot see, and a dollar figure with
+# no plan beside it reads as "billed per token", which it is not.
+[ "$agent" = claude ] && case "$payload" in
   *'"total_cost_usd":'*)
     v=${payload#*'"total_cost_usd":'}; v=${v%%,*}; v=${v%%\}*}
     case "$v" in ''|*[!0-9.]*) ;; *) cost=$v ;; esac ;;
 esac
 
-# Nothing readable in the payload: say nothing rather than report three dashes.
-[ "$five" = '-' ] && [ "$seven" = '-' ] && [ "$cost" = '-' ] && exit 0
+# agy's quota, per bucket, as a REMAINING fraction. Which buckets apply depends
+# on the model: Gemini models spend `gemini-*`, everything else `3p-*`. The
+# fraction becomes a used percentage and `reset_in_seconds` an epoch, in awk
+# because sh has no floating point. Measured on agy 1.2.6.
+if [ "$agent" = agy ]; then
+  q=''
+  case "$payload" in *'"quota":{'*) q=${payload#*'"quota":{'} ;; esac
+  model=''
+  case "$payload" in
+    *'"model":{'*) m=${payload#*'"model":{'}; m=${m%%\}*}
+      case "$m" in *'"id":"'*) model=${m#*'"id":"'}; model=${model%%'"'*} ;; esac ;;
+  esac
+  case "$model" in *gemini*) fam=gemini ;; *) fam=3p ;; esac
+  now=$(date +%s)
+  bucket() {
+    case "$q" in
+      *"\"$fam-$1\":{"*)
+        b=${q#*"\"$fam-$1\":{"}; b=${b%%\}*}
+        f='-'; r='-'
+        case "$b" in *'"remaining_fraction":'*)
+          v=${b#*'"remaining_fraction":'}; v=${v%%,*}
+          case "$v" in ''|*[!0-9.]*) ;; *) f=$v ;; esac ;;
+        esac
+        case "$b" in *'"reset_in_seconds":'*)
+          v=${b#*'"reset_in_seconds":'}; v=${v%%,*}
+          case "$v" in ''|*[!0-9]*) ;; *) r=$((now + v)) ;; esac ;;
+        esac
+        [ "$f" = '-' ] && return
+        pct=$(awk -v f="$f" 'BEGIN { p = (1 - f) * 100; if (p < 0) p = 0; printf "%.2f", p }')
+        echo "$pct $r" ;;
+    esac
+  }
+  set -- $(bucket 5h); [ -n "$1" ] && { five=$1; fivereset=$2; }
+  set -- $(bucket weekly); [ -n "$1" ] && { seven=$1; sevenreset=$2; }
+fi
+
+# The context window. `total_input_tokens` is input + cache creation + cache
+# read of the LAST call, which is exactly the numerator of claude's own
+# `used_percentage` (measured in 2.1.276's bundle), and unlike that field it is
+# flat: `used_percentage` comes AFTER the nested `current_usage` object, where
+# the two-cut parse would stop on the wrong brace. termic divides instead.
+# Zero tokens is a session before its first call, which is no reading at all.
+#
+# The other agents name the same thing differently, so each field is a list
+# tried in order and the first plain number wins:
+#   tokens  copilot `current_context_tokens` (its `total_input_tokens` is the
+#           whole SESSION's, never the window), grok `context_tokens`, then
+#           claude and agy `total_input_tokens`
+#   window  `context_window_size` (null on copilot's auto model, 0 on agy
+#           before its first call), then copilot `displayed_context_limit`
+ctxused='-'; ctxsize='-'
+num() {
+  case "$cw" in
+    *"\"$1\":"*)
+      v=${cw#*"\"$1\":"}; v=${v%%,*}; v=${v%%\}*}
+      case "$v" in ''|0|*[!0-9]*) return 1 ;; *) echo "$v" ;; esac ;;
+    *) return 1 ;;
+  esac
+}
+case "$payload" in
+  *'"context_window":{'*)
+    cw=${payload#*'"context_window":{'}
+    ctxused=$(num current_context_tokens || num context_tokens || num total_input_tokens || echo -)
+    ctxsize=$(num context_window_size || num displayed_context_limit || echo -)
+    ;;
+esac
 
 # THREE targets, tried in order, exactly as the hooks do: $TERMIC_PTY is a HOST
 # path a Docker-sandboxed agent cannot see, /proc/1/fd/1 is the container's own
@@ -355,7 +520,18 @@ esac
 # usually fails because these run with no controlling terminal.
 #
 # The values go through printf's %s, never into its FORMAT string.
-emit() { printf ']@NOTIFY@@USAGE@%s %s %s %s %s' "$five" "$seven" "$fivereset" "$sevenreset" "$cost" > "$1" 2>/dev/null; }
+emitctx() { printf ']@NOTIFY@@CTX@%s %s' "$ctxused" "$ctxsize" >> "$1" 2>/dev/null; }
+if [ "$ctxused" != '-' ] && [ "$ctxsize" != '-' ]; then
+  emitctx "$TERMIC_PTY" || emitctx /proc/1/fd/1 || emitctx /dev/tty || true
+fi
+
+# Nothing readable in the payload: say nothing rather than report three dashes.
+[ "$five" = '-' ] && [ "$seven" = '-' ] && [ "$cost" = '-' ] && exit 0
+
+# Same three targets as the context write above. `>>` on both, which is the
+# same thing on a pty and does not let the second write erase the first when
+# the target is a plain file (the tests, and any future log target).
+emit() { printf ']@NOTIFY@@USAGE@%s %s %s %s %s' "$five" "$seven" "$fivereset" "$sevenreset" "$cost" >> "$1" 2>/dev/null; }
 emit "$TERMIC_PTY" || emit /proc/1/fd/1 || emit /dev/tty || true
 exit 0
 "#;
@@ -365,8 +541,8 @@ impl Signal {
     fn payload(self) -> String {
         match self {
             Signal::Attention => format!("{NOTIFY_PREFIX}{ATTENTION_BODY}"),
-            Signal::Working => "133;C".into(),
-            Signal::Done => "133;D".into(),
+            Signal::Working => format!("{NOTIFY_PREFIX}{WORKING_BODY}"),
+            Signal::Done => format!("{NOTIFY_PREFIX}{DONE_BODY}"),
             Signal::Ready => format!("{NOTIFY_PREFIX}{READY_BODY}"),
         }
     }
@@ -418,6 +594,41 @@ pub fn hooks_for(agent: &str) -> &'static [(&'static str, Signal)] {
         // opencode's plugin sees all four edges in-process. It is the only
         // agent that reports permission.replied, so its attention can be
         // cleared exactly rather than waiting for the next busy signal.
+        // pi's extension, same in-process model as opencode's plugin. No
+        // Ready: `session_start` fires before the TUI's input box is up, and a
+        // Ready that arrives early is worse than none (seedPrompt trusts it).
+        // Done is `agent_settled`, not `agent_end`: pi can still auto-retry or
+        // compact after `agent_end` (its own docs say so). Attention is an
+        // extension's own `ctx.ui` prompt, the only blocking input pi has.
+        // copilot 1.0.86, every event measured firing with the env intact.
+        // `permissionRequest` fires even under `--allow-all-tools`, and is the
+        // blocking edge; `postToolUse` hands working back once it is answered,
+        // since copilot has no "permission replied" event. No Ready: the trust
+        // dialog comes BEFORE `sessionStart`, so it cannot gate a first prompt.
+        // muse 1.3.0, through its MANAGED hook file, the one hook source that
+        // is handed the env vars it names (see `ConfigSlot::MuseManaged`).
+        // SessionStart is lazy (it fires on the first prompt), so no Ready.
+        "muse" => &[
+            ("UserPromptSubmit", Signal::Working),
+            ("PreToolUse", Signal::Working),
+            ("PostToolUse", Signal::Working),
+            ("PermissionRequest", Signal::Attention),
+            ("Stop", Signal::Done),
+        ],
+        "copilot" => &[
+            ("userPromptSubmitted", Signal::Working),
+            ("preToolUse", Signal::Working),
+            ("postToolUse", Signal::Working),
+            ("permissionRequest", Signal::Attention),
+            ("agentStop", Signal::Done),
+        ],
+        "pi" => &[
+            ("before_agent_start", Signal::Working),
+            ("tool_call", Signal::Working),
+            ("ui_prompt_start", Signal::Attention),
+            ("ui_prompt_end", Signal::Working),
+            ("agent_settled", Signal::Done),
+        ],
         "opencode" => &[
             ("chat.message", Signal::Working),
             ("permission.asked", Signal::Attention),
@@ -553,10 +764,12 @@ pub fn hooks_for(agent: &str) -> &'static [(&'static str, Signal)] {
 /// Config schema. They are not variations on one shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Schema {
-    /// Not a config file at all: a JS module dropped into the plugin
-    /// directory. Install is a file write, removal a delete, and there is
-    /// nothing of the user's to merge with or preserve.
-    OpencodePlugin,
+    /// Not a config file at all: a module dropped into a directory the agent
+    /// autoloads (opencode's `plugins/`, pi's `agent/extensions/`). Install is
+    /// a file write, removal a delete, and there is nothing of the user's to
+    /// merge with or preserve. The module runs in-process and sees the
+    /// agent's own env, which is how it finds `$TERMIC_PTY`.
+    PluginFile,
     /// `hooks.<Event>[] = { hooks: [handler] }`. claude and grok both use it,
     /// which is not a coincidence: grok reads claude's file on purpose.
     ClaudeCompatible,
@@ -565,11 +778,18 @@ enum Schema {
     /// `Stop` take handlers DIRECTLY. Wrap the latter and they register with an
     /// EMPTY command: visible in `agy -p "/hooks"`, silently inert. Measured.
     AntigravityNamed,
+    /// copilot's native hook file, `{"version":1,"hooks":{"<event>":[{"type":
+    /// "command","bash":...}]}}`, written WHOLE into `hooks/termic.json`: every
+    /// `*.json` there is loaded, so the file is ours outright and removal is a
+    /// delete. The native shape rather than a claude-style one because the
+    /// camelCase event names are the only ones measured to fire (1.0.86).
+    CopilotFile,
 }
 
 fn schema_for(agent: &str) -> Schema {
     match agent {
-        "opencode" => Schema::OpencodePlugin,
+        "copilot" => Schema::CopilotFile,
+        "opencode" | "pi" => Schema::PluginFile,
         "agy" => Schema::AntigravityNamed,
         _ => Schema::ClaudeCompatible,
     }
@@ -651,6 +871,84 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
             "      *'\"type\":\"cloudsession\"'*|*'\"type\":\"MCPtask\"'*) exit 0 ;;\n",
             "    esac\n",
             "    ;;\n",
+            "esac\n",
+        ),
+        // codex's CONTEXT WINDOW, read at the end of every turn. `Stop` carries
+        // `transcript_path`, the rollout JSONL, and by the time it fires that
+        // file already holds the turn's `token_count` event (measured on
+        // 0.154.0). The figure is codex's own "N% context left", computed the
+        // way `codex-rs/protocol` does: a 12000-token BASELINE is reserved out
+        // of the window and out of the usage, so tokens/window would disagree
+        // with the TUI by several points. Only the tail is read: a rollout
+        // grows for the whole session.
+        ("codex", Signal::Done) => concat!(
+            "# RAW, not whitespace-stripped: the path can contain a space.\n",
+            "raw=$(cat)\n",
+            "ctx=''\n",
+            "tp=''\n",
+            "case \"$raw\" in *'\"transcript_path\":\"'*) tp=${raw#*'\"transcript_path\":\"'}; tp=${tp%%'\"'*} ;; esac\n",
+            "if [ -n \"$tp\" ] && [ -f \"$tp\" ]; then\n",
+            "  line=$(tail -c 262144 \"$tp\" 2>/dev/null | grep '\"type\":\"token_count\"' | tail -n 1)\n",
+            "  case \"$line\" in *'\"last_token_usage\":{'*'\"model_context_window\":'*)\n",
+            "    lu=${line#*'\"last_token_usage\":{'}; lu=${lu%%\\}*}\n",
+            "    tot=${lu#*'\"total_tokens\":'}; tot=${tot%%[!0-9]*}\n",
+            "    win=${line#*'\"model_context_window\":'}; win=${win%%[!0-9]*}\n",
+            "    if [ -n \"$tot\" ] && [ -n \"$win\" ] && [ \"$win\" -gt 12000 ]; then\n",
+            "      eff=$((win - 12000)); used=$((tot - 12000)); [ \"$used\" -lt 0 ] && used=0\n",
+            "      left=$(( ((eff - used) * 200 / eff + 1) / 2 ))\n",
+            "      [ \"$left\" -lt 0 ] && left=0; [ \"$left\" -gt 100 ] && left=100\n",
+            "      ctx=\"$tot $win $((100 - left))\"\n",
+            "    fi ;;\n",
+            "  esac\n",
+            "fi\n",
+        ),
+        // muse runs hooks for its own internal subagents too, under their own
+        // `session_id`, and a subagent's Stop would end the tab's turn early.
+        // Measured on 1.3.0: the main session's id is a UUIDv7, a subagent's
+        // a UUIDv4. The version is the 15th character. Anything that is not
+        // a v7 is dropped, which fails quiet: the title still reports state.
+        ("muse", _) => concat!(
+            "raw=$(cat)\n",
+            "sid=''\n",
+            "case \"$raw\" in *'\"session_id\":\"'*) sid=${raw#*'\"session_id\":\"'}; sid=${sid%%'\"'*} ;; esac\n",
+            "case \"$sid\" in ??????????????7*) ;; *) exit 0 ;; esac\n",
+        ),
+        // grok's `Notification` is not one event but several, told apart by
+        // `notificationType`: `permission_prompt` is the blocking edge this
+        // hook exists for, and `idle_prompt` fires about a minute after ANY
+        // turn ends (grok's own hooks doc, which says to match on the type,
+        // not the display `message`). Unfiltered, every finished grok turn
+        // rang the bell a minute later, measured in the work-state log:
+        // done at 13:51:08, "agent needs your input" at 13:52:08 with no turn
+        // running. A payload with no type at all keeps the old behaviour.
+        ("grok", Signal::Attention) => concat!(
+            "flat=$(cat | tr -d '[:space:]')\n",
+            "case \"$flat\" in\n",
+            "  *'\"notificationType\":\"permission_prompt\"'*) ;;\n",
+            "  *'\"notificationType\":'*) exit 0 ;;\n",
+            "esac\n",
+        ),
+        // agy's conversation id, for a main-checkout task to resume ITS OWN
+        // conversation (`--conversation <id>`) rather than the last one run in
+        // the directory. agy cannot be handed an id at launch, and it has no
+        // startup event, so the first model invocation reports it; every hook
+        // payload carries `conversationId` (measured on 1.2.6). Same UUID-only
+        // rule as codex, since the value lands in a command line.
+        ("agy", Signal::Working) => concat!(
+            "flat=$(cat | tr -d '[:space:]')\n",
+            "sid=''\n",
+            "case \"$flat\" in\n",
+            "  *'\"conversationId\":\"'*)\n",
+            "    sid=${flat#*'\"conversationId\":\"'}\n",
+            "    sid=${sid%%'\"'*}\n",
+            "    ;;\n",
+            "esac\n",
+            "case \"$sid\" in\n",
+            "  ????????-????-????-????-????????????) ;;\n",
+            "  *) sid='' ;;\n",
+            "esac\n",
+            "case \"$sid\" in\n",
+            "  *[!0-9a-fA-F-]*) sid='' ;;\n",
             "esac\n",
         ),
         ("agy", Signal::Done) => concat!(
@@ -881,6 +1179,32 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
              emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true",
             ready = Signal::Ready.payload()
         )
+    } else if matches!((agent, sig), ("agy", Signal::Working)) {
+        // Working and the conversation id in ONE write, same reason as Ready.
+        format!(
+            "[ -n \"$TERMIC_PTY\" ] || exit 0\n\
+             if [ -n \"$sid\" ]; then\n\
+               emit() {{ printf '\\033]{working}\\007\\033]{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}%s\\007' \"$sid\" > \"$1\" 2>/dev/null; }}\n\
+             else\n\
+               emit() {{ printf '\\033]{working}\\007' > \"$1\" 2>/dev/null; }}\n\
+             fi\n\
+             emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true",
+            working = Signal::Working.payload()
+        )
+    } else if matches!((agent, sig), ("codex", Signal::Done)) {
+        // Done and the context in ONE write, for the same reason Ready and the
+        // session id are: a truncating redirect onto a plain file would let the
+        // second erase the first.
+        format!(
+            "[ -n \"$TERMIC_PTY\" ] || exit 0\n\
+             if [ -n \"$ctx\" ]; then\n\
+               emit() {{ printf '\\033]{done}\\007\\033]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}%s\\007' \"$ctx\" > \"$1\" 2>/dev/null; }}\n\
+             else\n\
+               emit() {{ printf '\\033]{done}\\007' > \"$1\" 2>/dev/null; }}\n\
+             fi\n\
+             emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true",
+            done = Signal::Done.payload()
+        )
     } else if sig == Signal::Attention && matches!(agent, "claude" | "codex" | "devin") {
         format!(
             "[ -n \"$TERMIC_PTY\" ] || exit 0\n\
@@ -928,7 +1252,7 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
     };
 
     let what = sig.stem();
-    format!(
+    bound_emits(&format!(
         r#"#!/bin/sh
 # termic agent hook for {agent} ({what}, schema v{SCHEMA_VERSION}). Safe to delete.
 #
@@ -945,7 +1269,7 @@ pub fn script_body(agent: &str, sig: Signal) -> String {
 {guard}{emit}
 exit 0
 "#
-    )
+    ))
 }
 
 /// opencode's plugin, which is a JS module rather than a spawned hook.
@@ -958,10 +1282,101 @@ exit 0
 ///
 /// Being in-process is also why it writes with `fs` rather than spawning
 /// anything: no process per event.
+/// The module a `Schema::PluginFile` agent loads.
+fn plugin_body(agent: &str) -> String {
+    match agent {
+        "pi" => pi_extension_body(),
+        _ => opencode_plugin_body(),
+    }
+}
+
+/// pi's extension. Everything the opencode plugin says about running
+/// in-process applies: a throw lands in pi, so every handler is wrapped, and it
+/// does nothing outside a termic pty.
+///
+/// It also reports the CONTEXT WINDOW, from pi's own `ctx.getContextUsage()`,
+/// which is the figure pi's footer shows (measured: `{tokens, contextWindow,
+/// percent}`, percent 0-100, tokens null right after a compaction).
+fn pi_extension_body() -> String {
+    let attention = Signal::Attention.payload();
+    let working = Signal::Working.payload();
+    let done = Signal::Done.payload();
+    let ctx = format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}");
+    format!(
+        r#"// termic agent hook for pi (generated, schema v{SCHEMA_VERSION}). Safe to delete.
+//
+// Reports pi's state and context window to termic by writing one OSC sequence
+// to the terminal termic handed it ($TERMIC_PTY). Runs in-process, so every
+// handler is wrapped: a throw here would land in pi.
+import {{ openSync, writeSync, closeSync, constants as fsConstants }} from "node:fs";
+
+const PTY = process.env.TERMIC_PTY;
+// Installed globally, so it also loads under a plain `pi` in any terminal.
+const ACTIVE = Boolean(PTY && process.env.TERMIC_TASK_ID);
+const TARGETS = [PTY, "/proc/1/fd/1", "/dev/tty"];
+
+const send = (payload: string) => {{
+  if (!ACTIVE) return;
+  for (const t of TARGETS) {{
+    if (!t) continue;
+    try {{
+      // NON-BLOCKING: a tty whose reader is gone fills up, and a blocking
+      // write would freeze the agent itself (this runs in its process) and
+      // hold the tty's lock, which hangs anything else that stats /dev.
+      const fd = openSync(t, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOCTTY);
+      try {{ writeSync(fd, `\x1b]${{payload}}\x07`); }} finally {{ closeSync(fd); }}
+      return;
+    }} catch {{ /* try the next */ }}
+  }}
+}};
+
+const ATTENTION = "{attention}";
+const WORKING   = "{working}";
+const DONE      = "{done}";
+const CTX       = "{ctx}";
+
+let lastBeat = 0;
+const beat = () => {{
+  const now = Date.now();
+  if (now - lastBeat < {HEARTBEAT_MS}) return;
+  lastBeat = now;
+  send(WORKING);
+}};
+
+let lastCtx = "";
+const reportContext = (ctx: any) => {{
+  const u = ctx?.getContextUsage?.();
+  if (!u || u.tokens == null || !(u.contextWindow > 0)) return;
+  const pct = typeof u.percent === "number" ? u.percent : (u.tokens / u.contextWindow) * 100;
+  const body = `${{Math.round(u.tokens)}} ${{Math.round(u.contextWindow)}} ${{Math.round(pct)}}`;
+  if (body === lastCtx) return;
+  lastCtx = body;
+  send(CTX + body);
+}};
+
+export default function (pi: any) {{
+  if (!ACTIVE) return;
+  const on = (event: string, fn: (ctx: any) => void) =>
+    pi.on(event, async (_event: any, ctx: any) => {{ try {{ fn(ctx); }} catch {{ /* never throw into pi */ }} }});
+  on("before_agent_start", () => {{ send(WORKING); lastBeat = Date.now(); }});
+  on("tool_call", () => beat());
+  on("ui_prompt_start", () => send(ATTENTION));
+  on("ui_prompt_end", () => send(WORKING));
+  on("turn_end", ctx => reportContext(ctx));
+  on("session_compact", ctx => reportContext(ctx));
+  // A resumed session already has a context before its first turn.
+  on("session_start", ctx => reportContext(ctx));
+  on("agent_settled", ctx => {{ reportContext(ctx); send(DONE); }});
+}}
+"#
+    )
+}
+
 fn opencode_plugin_body() -> String {
     let attention = Signal::Attention.payload();
     let working = Signal::Working.payload();
     let done = Signal::Done.payload();
+    let ctx = format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}");
     format!(
         r#"// termic agent hook for opencode (generated, schema v{SCHEMA_VERSION}). Safe to delete.
 //
@@ -971,7 +1386,7 @@ fn opencode_plugin_body() -> String {
 //
 // Runs IN-PROCESS: no timeout, no exit code, and a throw in a tool handler
 // blocks the tool. Every handler below is wrapped for that reason.
-import {{ writeFileSync }} from "fs";
+import {{ openSync, writeSync, closeSync, constants as fsConstants }} from "fs";
 
 const PTY = process.env.TERMIC_PTY;
 // Not spawned by a termic pty (this file is installed globally, so it also
@@ -987,13 +1402,58 @@ const send = (payload) => {{
   if (!ACTIVE) return;
   for (const t of TARGETS) {{
     if (!t) continue;
-    try {{ writeFileSync(t, `\x1b]${{payload}}\x07`); return; }} catch {{ /* try the next */ }}
+    try {{
+      // NON-BLOCKING: a tty whose reader is gone fills up, and a blocking
+      // write would freeze the agent itself (this runs in its process) and
+      // hold the tty's lock, which hangs anything else that stats /dev.
+      const fd = openSync(t, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOCTTY);
+      try {{ writeSync(fd, `\x1b]${{payload}}\x07`); }} finally {{ closeSync(fd); }}
+      return;
+    }} catch {{ /* try the next */ }}
   }}
 }};
 
 const ATTENTION = "{attention}";
 const WORKING   = "{working}";
 const DONE      = "{done}";
+const CTX       = "{ctx}";
+
+// Context window, computed exactly as opencode's own TUI does (read out of the
+// 1.18.31 binary): the LAST assistant message with output, summing input,
+// output, reasoning and both cache counts, over the model's `limit.context`.
+// The limit is learned from `chat.params`, which hands over the model it is
+// about to call, and keyed by provider/model because a turn can make a second
+// call on a different small model (the title). `config.providers()` is the
+// fallback for a session resumed before any `chat.params` fired.
+const limits = new Map();
+let lastDoneFor = "";
+// Set once this turn's done is sent, cleared by the next user message: a part
+// update that trails the final message must not re-assert working after done.
+let turnDone = false;
+let lastCtx = "";
+const reportContext = async (client, info) => {{
+  const t = info?.tokens;
+  if (!t || !(t.output > 0)) return;
+  const used = (t.input || 0) + (t.output || 0) + (t.reasoning || 0)
+    + (t.cache?.read || 0) + (t.cache?.write || 0);
+  const key = `${{info.providerID}}/${{info.modelID}}`;
+  let limit = limits.get(key);
+  if (limit === undefined && client?.config?.providers) {{
+    limits.set(key, 0); // one lookup per model, not one per streamed update
+    try {{
+      const res = await client.config.providers();
+      const list = res?.data?.providers ?? res?.providers ?? [];
+      const model = list.find(p => p.id === info.providerID)?.models?.[info.modelID];
+      limit = model?.limit?.context || 0;
+      limits.set(key, limit);
+    }} catch {{ limit = 0; }}
+  }}
+  if (!(used > 0) || !(limit > 0)) return;
+  const body = `${{used}} ${{limit}} ${{Math.round(used / limit * 100)}}`;
+  if (body === lastCtx) return;
+  lastCtx = body;
+  send(CTX + body);
+}};
 
 // Heartbeat. `chat.message` fires ONCE per turn, and working is a sustained
 // state: anything that clears the spinner mid-turn (the user clicking into the
@@ -1004,17 +1464,43 @@ const DONE      = "{done}";
 // because the raw rate is far too high to write an OSC per event.
 let lastBeat = 0;
 const beat = () => {{
+  if (turnDone) return;
   const now = Date.now();
   if (now - lastBeat < {HEARTBEAT_MS}) return;
   lastBeat = now;
   send(WORKING);
 }};
 
-export const TermicStatus = async () => ({{
+export const TermicStatus = async ({{ client }} = {{}}) => ({{
   // One per turn, on submit.
-  "chat.message": async () => {{ try {{ send(WORKING); lastBeat = Date.now(); }} catch {{}} }},
+  "chat.message": async () => {{ try {{ turnDone = false; send(WORKING); lastBeat = Date.now(); }} catch {{}} }},
+  "chat.params": async (input) => {{
+    try {{
+      const m = input?.model;
+      if (m?.limit?.context > 0) limits.set(`${{m.providerID}}/${{m.id}}`, m.limit.context);
+    }} catch {{}}
+  }},
   event: async ({{ event }}) => {{
     try {{
+      if (event?.type === "message.updated") {{
+        const info = event.properties?.info;
+        if (ACTIVE && info?.role === "assistant") {{
+          await reportContext(client, info);
+          // The END of the turn is the assistant's final message completing,
+          // not `session.idle`: idle waits for opencode's second model call
+          // (the session title), measured at 14s after a 2s reply. A final
+          // message is one that completed with a finish reason that does not
+          // hand back to a tool. `session.idle` stays as the backstop, and a
+          // second done on one turn is a no-op on termic's side.
+          if (info.time?.completed && info.finish && info.finish !== "tool-calls"
+              && info.id && info.id !== lastDoneFor) {{
+            lastDoneFor = info.id;
+            turnDone = true;
+            send(DONE);
+          }}
+        }}
+        return;
+      }}
       if (event?.type === "message.part.delta" || event?.type === "message.part.updated") {{
         beat();
         return;
@@ -1249,6 +1735,14 @@ fn settings_rel(agent: &str) -> &'static str {
         // BOTH loaded (measured: writing both double-fires every event), so
         // only ever the documented plural.
         "opencode" => "plugins/termic.js",
+        "copilot" => "hooks/termic.json",
+        // Inside OUR script dir: muse reads it only because settings.json
+        // points `managed_hooks_path` at it, so it is ours outright.
+        "muse" => "termic-hooks/managed-hooks.json",
+        // pi autoloads every `~/.pi/agent/extensions/*.ts` in every project and
+        // transpiles it itself, so there is no build step (measured on 0.85.1,
+        // under `-p` as well as the TUI).
+        "pi" => "agent/extensions/termic.ts",
         // grok reads every *.json under hooks/, so it gets a file of its own
         // and removal is a delete rather than a merge-back.
         "grok" => "hooks/termic.json",
@@ -1366,7 +1860,7 @@ pub fn status(target: &Target) -> HookStatus {
         out.error = Some("could not resolve the agent config directory".into());
         return out;
     };
-    if schema_for(&agent) == Schema::OpencodePlugin {
+    if schema_for(&agent) == Schema::PluginFile {
         // A JS file, not JSON: presence IS the install, and there are no
         // per-event entries, so consent and completeness coincide.
         out.installed = settings.exists();
@@ -1430,10 +1924,21 @@ pub fn status(target: &Target) -> HookStatus {
             // One key we own outright: it is there or it is not.
             out.ours_present = out.installed;
         }
+        Schema::CopilotFile => {
+            let hooks = hooks_for(&agent);
+            let has = |event: &str| {
+                root.get("hooks").and_then(|h| h.get(event)).and_then(Value::as_array)
+                    .is_some_and(|l| l.iter().any(|e| {
+                        e.get("bash").and_then(Value::as_str).is_some_and(|c| c.starts_with(&prefix))
+                    }))
+            };
+            out.installed = hooks.iter().all(|(event, _)| has(event));
+            out.ours_present = hooks.iter().any(|(event, _)| has(event));
+        }
         // Handled by the early return above: the plugin is one file we write
         // whole, so there is no config to inspect or merge. Spelled out rather
         // than a catch-all so a NEW schema still fails to compile here.
-        Schema::OpencodePlugin => unreachable!("opencode returns before this"),
+        Schema::PluginFile => unreachable!("opencode returns before this"),
     };
     out.schema_version = std::fs::read_to_string(script.join(MANIFEST_NAME))
         .ok()
@@ -1659,6 +2164,243 @@ fn unmerge_statusline(root: &Value, prefix: &str) -> Option<Value> {
     Some(out)
 }
 
+/// copilot's hook file, whole. `timeoutSec` well under copilot's default: a
+/// hook here writes one OSC and exits, and a `preToolUse` that errors DENIES
+/// the tool (measured), so it must never be slow enough to be killed.
+fn copilot_hooks_file(commands: &[(&str, String, Signal)]) -> Value {
+    let mut hooks = Map::new();
+    for (event, command, _) in commands {
+        let list = hooks.entry(event.to_string()).or_insert_with(|| Value::Array(Vec::new()));
+        if let Value::Array(a) = list {
+            a.push(serde_json::json!({ "type": "command", "bash": command, "timeoutSec": 10 }));
+        }
+    }
+    serde_json::json!({ "version": 1, "hooks": Value::Object(hooks) })
+}
+
+/// A key termic claims in a config file OTHER than the one its hooks live in:
+/// an agent's status line slot, or muse's managed-hooks pointer. claude's
+/// status line is in the same `settings.json` as its hooks and is merged
+/// inline with them, so it is not here.
+///
+/// Every variant is claimed only when free and handed back only if still
+/// ours, the same ownership rule as claude's `statusLine`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigSlot {
+    /// A JSON settings file (config-dir relative) with a `statusLine` object.
+    /// `typed`: whether the object carries `"type": "command"` (copilot's
+    /// schema has it; agy's has only `command`, and agy 1.2.6 rewrites its
+    /// settings on launch dropping keys it does not know).
+    Json { rel: &'static str, typed: bool },
+    /// grok's `[ui.status_line]` table in `config.toml`.
+    GrokToml,
+    /// muse's `managed_hooks_path` + `managed_hooks_env_vars` in its
+    /// `settings.json`. Plain `hooks` there run with a STRIPPED environment
+    /// (still true on 1.3.0), so `$TERMIC_PTY` never reaches them; the managed
+    /// file is the one source muse hands named variables to. Measured end to
+    /// end: an OSC from a managed hook reached a live TUI's pty, and removing
+    /// the env key took the variables away again. `managed_hooks_path` is a
+    /// single slot an enterprise policy may already hold, hence claim-if-free.
+    MuseManaged,
+}
+
+fn config_slot(agent: &str) -> Option<ConfigSlot> {
+    match agent {
+        "agy" => Some(ConfigSlot::Json { rel: "antigravity-cli/settings.json", typed: false }),
+        "copilot" => Some(ConfigSlot::Json { rel: "settings.json", typed: true }),
+        "grok" => Some(ConfigSlot::GrokToml),
+        "muse" => Some(ConfigSlot::MuseManaged),
+        _ => None,
+    }
+}
+
+/// The env vars muse is told to forward to managed hooks. Names only: muse
+/// refuses to START on a glob like `TERMIC_*` (measured, exit 1).
+const MUSE_ENV_VARS: &[&str] = &["TERMIC_PTY", "TERMIC_TASK_ID"];
+
+/// Claim muse's managed-hooks slot in its settings, or None when it is someone
+/// else's. Pure, for the tests. `schema_version` is left exactly as found:
+/// muse rejects a settings file without one, and it is not ours to add.
+fn muse_claim_managed(root: &Value, hooks_file: &str, prefix: &str) -> Option<Value> {
+    let cur = root.get("managed_hooks_path").and_then(Value::as_str);
+    if cur.is_some_and(|p| !p.starts_with(prefix)) {
+        return None;
+    }
+    let mut out = root.clone();
+    let obj = out.as_object_mut()?;
+    obj.insert("managed_hooks_path".into(), Value::String(hooks_file.into()));
+    let mut vars: Vec<Value> = obj.get("managed_hooks_env_vars").and_then(Value::as_array)
+        .cloned().unwrap_or_default();
+    for v in MUSE_ENV_VARS {
+        if !vars.iter().any(|x| x.as_str() == Some(v)) {
+            vars.push(Value::String((*v).into()));
+        }
+    }
+    obj.insert("managed_hooks_env_vars".into(), Value::Array(vars));
+    Some(out)
+}
+
+/// Hand it back if it still points into our dir. The env list keeps whatever
+/// names the user added; ours go, and the key goes when nothing is left.
+fn muse_release_managed(root: &Value, prefix: &str) -> Option<Value> {
+    let cur = root.get("managed_hooks_path").and_then(Value::as_str)?;
+    if !cur.starts_with(prefix) {
+        return None;
+    }
+    let mut out = root.clone();
+    let obj = out.as_object_mut()?;
+    obj.remove("managed_hooks_path");
+    if let Some(Value::Array(vars)) = obj.get("managed_hooks_env_vars").cloned() {
+        let rest: Vec<Value> = vars.into_iter()
+            .filter(|x| !x.as_str().is_some_and(|s| MUSE_ENV_VARS.contains(&s)))
+            .collect();
+        if rest.is_empty() {
+            obj.remove("managed_hooks_env_vars");
+        } else {
+            obj.insert("managed_hooks_env_vars".into(), Value::Array(rest));
+        }
+    }
+    Some(out)
+}
+
+/// The `type` values grok reads as "no status line" (its own docs), which is
+/// a slot termic may claim. Anything else is the user's.
+const GROK_SLOT_FREE: &[&str] = &["disabled", "off", "none", "hidden"];
+
+/// Claim grok's slot in a `config.toml` source, returning the new source, or
+/// None when the slot is the user's. Pure, for the tests. `toml_edit` keeps
+/// every comment and the user's formatting outside the one table touched.
+fn grok_claim_status_line(src: &str, command: &str, prefix: &str) -> Result<Option<String>, String> {
+    let mut doc: toml_edit::DocumentMut = src.parse().map_err(|e| format!("config.toml: {e}"))?;
+    let existing = doc.get("ui").and_then(|u| u.get("status_line"));
+    if let Some(t) = existing {
+        let kind = t.get("type").and_then(|v| v.as_str()).unwrap_or("disabled");
+        let cmd = t.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let ours = cmd.starts_with(prefix);
+        if !ours && !GROK_SLOT_FREE.contains(&kind) {
+            return Ok(None);
+        }
+    }
+    if doc.get("ui").is_none() {
+        let mut ui = toml_edit::Table::new();
+        ui.set_implicit(true);
+        doc["ui"] = toml_edit::Item::Table(ui);
+    }
+    let mut t = toml_edit::Table::new();
+    t["type"] = toml_edit::value("command");
+    t["command"] = toml_edit::value(command);
+    doc["ui"]["status_line"] = toml_edit::Item::Table(t);
+    Ok(Some(doc.to_string()))
+}
+
+/// Hand grok's slot back if it still names our script. None when untouched.
+fn grok_release_status_line(src: &str, prefix: &str) -> Result<Option<String>, String> {
+    let mut doc: toml_edit::DocumentMut = src.parse().map_err(|e| format!("config.toml: {e}"))?;
+    let ours = doc.get("ui").and_then(|u| u.get("status_line"))
+        .and_then(|t| t.get("command")).and_then(|v| v.as_str())
+        .is_some_and(|c| c.starts_with(prefix));
+    if !ours {
+        return Ok(None);
+    }
+    if let Some(ui) = doc.get_mut("ui").and_then(|u| u.as_table_like_mut()) {
+        ui.remove("status_line");
+        if ui.is_empty() {
+            doc.remove("ui");
+        }
+    }
+    Ok(Some(doc.to_string()))
+}
+
+fn write_json(path: &Path, v: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut bytes = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    write_atomic(path, &bytes)
+}
+
+fn install_config_slot(
+    target: &Target, agent: &str, dir: &Path, prefix: &str, slot: ConfigSlot,
+) -> Result<(), String> {
+    let base = config_dir(target)?;
+    if slot == ConfigSlot::MuseManaged {
+        let path = base.join("settings.json");
+        let root = read_settings(&path)?;
+        let hooks_file = format!("{prefix}managed-hooks.json");
+        return match muse_claim_managed(&root, &hooks_file, prefix) {
+            Some(next) if next != root => write_json(&path, &next),
+            Some(_) => Ok(()),
+            None => Err("muse's managed_hooks_path already names another file".into()),
+        };
+    }
+    let script = dir.join(format!("{USAGE_STEM}.sh"));
+    write_atomic(&script, statusline_body_for(agent).as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod status line: {e}"))?;
+    }
+    let command = format!("{prefix}{USAGE_STEM}.sh");
+    match slot {
+        ConfigSlot::MuseManaged => unreachable!("returned above"),
+        ConfigSlot::Json { rel, typed } => {
+            let path = base.join(rel);
+            let root = read_settings(&path)?;
+            let mut next = merge_statusline(&root, &command, prefix);
+            if !typed {
+                if let Some(sl) = next.get_mut("statusLine").and_then(Value::as_object_mut) {
+                    if sl.get("command").and_then(Value::as_str) == Some(command.as_str()) {
+                        sl.remove("type");
+                    }
+                }
+            }
+            if next == root {
+                return Ok(());
+            }
+            write_json(&path, &next)
+        }
+        ConfigSlot::GrokToml => {
+            let path = base.join("config.toml");
+            let src = std::fs::read_to_string(&path).unwrap_or_default();
+            match grok_claim_status_line(&src, &command, prefix)? {
+                Some(next) if next != src => write_atomic(&path, next.as_bytes()),
+                _ => Ok(()),
+            }
+        }
+    }
+}
+
+fn remove_config_slot(target: &Target, prefix: &str, slot: ConfigSlot) -> Result<(), String> {
+    let base = config_dir(target)?;
+    match slot {
+        ConfigSlot::Json { .. } | ConfigSlot::MuseManaged => {
+            let path = base.join(match slot { ConfigSlot::Json { rel, .. } => rel, _ => "settings.json" });
+            if !path.exists() {
+                return Ok(());
+            }
+            let root = read_settings(&path)?;
+            let next = match slot {
+                ConfigSlot::MuseManaged => muse_release_managed(&root, prefix),
+                _ => unmerge_statusline(&root, prefix),
+            };
+            if let Some(next) = next {
+                write_json(&path, &next)?;
+            }
+            Ok(())
+        }
+        ConfigSlot::GrokToml => {
+            let path = base.join("config.toml");
+            let Ok(src) = std::fs::read_to_string(&path) else { return Ok(()) };
+            match grok_release_status_line(&src, prefix)? {
+                Some(next) => write_atomic(&path, next.as_bytes()),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
 pub fn install(target: &Target) -> Result<(), String> {
     // The BASE: what this agent behaves as. Paths still come from the target,
     // which carries the instance id, so a clone writes into its own config dir.
@@ -1690,6 +2432,29 @@ pub fn install(target: &Target) -> Result<(), String> {
     let settings = settings_path(target)?;
     let dir = script_dir(target)?;
 
+    // A plugin file is written WHOLE, and it is not JSON: it is the module
+    // itself. It must never reach the parse below, which refused every
+    // UPGRADE of an opencode or pi install (the file exists, is JS/TS, fails
+    // to parse as JSON) while a first install sailed through (no file yet).
+    // So those two agents sat on whatever schema they were first installed
+    // with: measured, opencode at v9 and pi at v11 while every other agent had
+    // synced to v12, and opencode never got its context code at all.
+    if schema_for(&agent) == Schema::PluginFile {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(settings.parent().ok_or("no plugin dir")?)
+            .map_err(|e| format!("create plugin dir: {e}"))?;
+        write_atomic(&settings, plugin_body(&agent).as_bytes())?;
+        let manifest = Manifest {
+            schema_version: SCHEMA_VERSION,
+            command: settings.to_string_lossy().into_owned(),
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        return write_atomic(
+            &dir.join(MANIFEST_NAME),
+            serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?.as_bytes(),
+        );
+    }
+
     // Refuse rather than clobber a config we could not parse.
     let root = read_settings(&settings)?;
     if disable_all_hooks(&root) {
@@ -1706,24 +2471,6 @@ pub fn install(target: &Target) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     if !backup.exists() && settings.exists() {
         std::fs::copy(&settings, &backup).map_err(|e| format!("back up the config: {e}"))?;
-    }
-
-    // opencode is a single JS module, not a set of scripts plus a config
-    // merge. Nothing of the user's is touched, so there is nothing to back up
-    // or merge back.
-    if schema_for(&agent) == Schema::OpencodePlugin {
-        std::fs::create_dir_all(settings.parent().ok_or("no plugin dir")?)
-            .map_err(|e| format!("create plugin dir: {e}"))?;
-        write_atomic(&settings, opencode_plugin_body().as_bytes())?;
-        let manifest = Manifest {
-            schema_version: SCHEMA_VERSION,
-            command: settings.to_string_lossy().into_owned(),
-            installed_at: chrono::Utc::now().to_rfc3339(),
-        };
-        return write_atomic(
-            &dir.join(MANIFEST_NAME),
-            serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?.as_bytes(),
-        );
     }
 
     let mut commands: Vec<(&str, String, Signal)> = Vec::new();
@@ -1768,14 +2515,32 @@ pub fn install(target: &Target) -> Result<(), String> {
             acc
         }
         Schema::AntigravityNamed => agy_merge(&root, &commands),
+        Schema::CopilotFile => copilot_hooks_file(&commands),
         // Handled by the early return above: the plugin is one file we write
         // whole, so there is no config to inspect or merge. Spelled out rather
         // than a catch-all so a NEW schema still fails to compile here.
-        Schema::OpencodePlugin => unreachable!("opencode returns before this"),
+        Schema::PluginFile => unreachable!("opencode returns before this"),
     };
+    if let Some(parent) = settings.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
     let mut bytes = serde_json::to_vec_pretty(&merged).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
     write_atomic(&settings, &bytes)?;
+
+    // The status line slot of an agent that keeps it OUTSIDE the hooks file.
+    // Best effort: a slot we cannot claim costs the footer its context number
+    // and nothing else, so it never fails the hook install it rides on.
+    if let Some(slot) = config_slot(&agent) {
+        let claimed = install_config_slot(target, &agent, &dir, &prefix, slot);
+        match (slot, claimed) {
+            (_, Ok(())) => {}
+            // muse's slot is the TRANSPORT, not an extra: without it every
+            // hook fires with a stripped env and writes nothing. Fail loudly.
+            (ConfigSlot::MuseManaged, Err(e)) => return Err(e),
+            (_, Err(e)) => crate::dlog(&format!("[agent-hooks] {agent}: slot not claimed: {e}")),
+        }
+    }
 
     // codex only, and it is not optional: its hooks are discovered, reported
     // `enabled: true`, and then NOT RUN until they are trusted. Everything
@@ -1821,7 +2586,7 @@ pub fn remove(target: &Target) -> Result<(), String> {
     }
 
     // Deleting a file we wrote whole. Nothing to unmerge.
-    if schema_for(&agent) == Schema::OpencodePlugin {
+    if schema_for(&agent) == Schema::PluginFile {
         if settings.exists() {
             std::fs::remove_file(&settings)
                 .map_err(|e| format!("remove {}: {e}", settings.display()))?;
@@ -1854,11 +2619,24 @@ pub fn remove(target: &Target) -> Result<(), String> {
             if touched { Some(acc) } else { None }
         }
         Schema::AntigravityNamed => agy_unmerge(&root),
+        Schema::CopilotFile => {
+            // Ours outright: every entry in it is ours, so the file goes.
+            if settings.exists() {
+                std::fs::remove_file(&settings)
+                    .map_err(|e| format!("remove {}: {e}", settings.display()))?;
+            }
+            None
+        }
         // Handled by the early return above: the plugin is one file we write
         // whole, so there is no config to inspect or merge. Spelled out rather
         // than a catch-all so a NEW schema still fails to compile here.
-        Schema::OpencodePlugin => unreachable!("opencode returns before this"),
+        Schema::PluginFile => unreachable!("opencode returns before this"),
     };
+    if let Some(slot) = config_slot(&agent) {
+        if let Err(e) = remove_config_slot(target, &prefix, slot) {
+            crate::dlog(&format!("[agent-hooks] {agent}: slot not handed back: {e}"));
+        }
+    }
 
     if let Some(stripped) = stripped {
         // If what remains matches the pre-install backup, restore the backup's
@@ -1895,7 +2673,7 @@ pub fn remove(target: &Target) -> Result<(), String> {
 /// row can say "not supported yet" rather than offering a button that fails.
 /// Agents this build can wire. Each needs a measured event AND a transport
 /// that reaches termic; see `event_for` / `uses_terminal_sequence`.
-pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin"];
+pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin", "pi", "copilot", "muse"];
 
 fn check_supported(agent_id: &str) -> Result<(), String> {
     // A duplicated agent is supported when what it was cloned FROM is. It runs
@@ -1984,7 +2762,8 @@ pub fn agent_hooks_plan(agent_id: String) -> Result<HookPlan, String> {
             .collect();
         let merged = match schema_for(&base) {
             Schema::AntigravityNamed => agy_merge(&Value::Object(Map::new()), &commands),
-            Schema::OpencodePlugin => Value::String("(a JS plugin file, shown below)".into()),
+            Schema::PluginFile => Value::String("(a JS plugin file, shown below)".into()),
+            Schema::CopilotFile => copilot_hooks_file(&commands),
             Schema::ClaudeCompatible => {
                 let mut acc = Value::Object(Map::new());
                 for (event, command, sig) in &commands {
@@ -2007,11 +2786,36 @@ pub fn agent_hooks_plan(agent_id: String) -> Result<HookPlan, String> {
     if base == "claude" {
         notes.push(
             "Also installs a status line that reports how much of your plan \
-             limits you have used, for the task footer. It prints nothing, so \
-             the agent looks unchanged. If you already have your own status \
-             line, yours is kept and no usage is shown."
+             limits you have used, and how full the context window is, for the \
+             task footer. It prints nothing, so the agent looks unchanged. If you \
+             already have your own status line, yours is kept and neither is shown."
                 .into(),
         );
+    }
+    match config_slot(&base) {
+        Some(ConfigSlot::Json { rel, .. }) => notes.push(format!(
+            "Also sets the status line in {rel}, which reports {} for the task footer. \
+             It prints nothing, so the agent looks unchanged. If you already have your \
+             own status line, yours is kept and nothing is shown.",
+            if base == "agy" { "your plan quota and the context window" } else { "the context window" },
+        )),
+        Some(ConfigSlot::GrokToml) => notes.push(
+            "Also sets [ui.status_line] in config.toml to a script that reports the \
+             context window for the task footer. It prints nothing, and grok hides an \
+             empty row. If you already use a status line (built-in or your own), it is \
+             kept and no context is shown."
+                .into(),
+        ),
+        Some(ConfigSlot::MuseManaged) => notes.push(
+            "muse strips the environment it gives ordinary hooks, so these are \
+             registered as MANAGED hooks: settings.json gets managed_hooks_path \
+             pointing at termic's file, and managed_hooks_env_vars naming \
+             TERMIC_PTY and TERMIC_TASK_ID, the only two variables muse is asked to \
+             pass through. If managed_hooks_path already names another file, \
+             nothing is changed and the install fails."
+                .into(),
+        ),
+        None => {}
     }
     if !hooks.is_empty() {
         notes.push(
@@ -2133,7 +2937,11 @@ pub(crate) fn should_sync(c: SyncCheck) -> bool {
 /// `disableAllHooks` is left exactly as found.
 ///
 /// Returns the agent ids it updated, so a caller can say what happened.
-#[tauri::command]
+///
+/// `async` so it runs OFF the main thread: an install (upgrade or "install all
+/// hooks") can spawn `codex app-server` for its trust hashes, and a sync
+/// command doing that freezes the window (docs/ipc.md).
+#[tauri::command(async)]
 pub fn agent_hooks_sync() -> Vec<String> {
     let mut updated = Vec::new();
     // Every agent in the registry, not just the built-in names: a clone is
@@ -2168,7 +2976,57 @@ pub fn agent_hooks_sync() -> Vec<String> {
             }
         }
     }
+    // "Install all hooks" (`Settings.auto_install_hooks`): every supported
+    // agent that is on PATH and has none gets them, host and Docker, the same
+    // way the Settings button installs one. An agent whose config cannot be
+    // read or has `disableAllHooks` set is left alone, exactly as a manual
+    // install would refuse it. Runs after the upgrade pass above, so an agent
+    // that was just upgraded is not installed twice.
+    if crate::load_settings_inner().auto_install_hooks {
+        let agents = crate::load_settings_inner().agents;
+        for agent in &ids {
+            if check_supported(agent).is_err() || updated.contains(agent) {
+                continue;
+            }
+            let st = status(&Target::Host(agent.clone()));
+            if st.ours_present || st.error.is_some() || st.disabled_all {
+                continue;
+            }
+            if !crate::agent_binary_on_path(&agents, agent) {
+                continue;
+            }
+            match agent_hooks_install(agent.clone()) {
+                Ok(_) => updated.push(agent.clone()),
+                Err(e) => crate::dlog(&format!("[agent-hooks] auto-install {agent} skipped: {e}")),
+            }
+        }
+    }
     updated
+}
+
+/// Is "install all hooks" on?
+#[tauri::command]
+pub fn agent_hooks_auto_get() -> bool {
+    crate::load_settings_inner().auto_install_hooks
+}
+
+/// Turn "install all hooks" on or off. Turning it on installs right away and
+/// returns the agents it wired; turning it off installs and removes nothing
+/// (what is in stays in, and each row's own button is how to take one out).
+/// Async and off the main thread: an install can spawn `codex app-server` to
+/// learn its trust hashes, which is a cold process start.
+#[tauri::command]
+pub async fn agent_hooks_auto_set(on: bool) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut s = crate::load_settings_inner();
+        if s.auto_install_hooks != on {
+            s.auto_install_hooks = on;
+            crate::save_settings_inner(&s)?;
+        }
+        Ok(if on { agent_hooks_sync() } else { Vec::new() })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Install for one agent, covering host AND its Docker config dir. Docker needs
@@ -2573,6 +3431,11 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     /// renders under the user's input box on every turn.
     #[cfg(unix)]
     fn statusline_run(payload: &str) -> (String, String) {
+        statusline_run_as("claude", payload)
+    }
+
+    #[cfg(unix)]
+    fn statusline_run_as(agent: &str, payload: &str) -> (String, String) {
         use std::io::Read;
         use std::process::{Command, Stdio};
 
@@ -2586,7 +3449,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("usage.sh");
         let pty = dir.join("pty");
-        std::fs::write(&script, statusline_body()).unwrap();
+        std::fs::write(&script, statusline_body_for(agent)).unwrap();
         std::fs::write(&pty, "").unwrap();
 
         let mut child = Command::new("/bin/sh")
@@ -2622,7 +3485,11 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
       "session_id": "00000000-0000-0000-0000-000000000000",
       "cwd": "/Users/u/work/repo",
       "model": { "display_name": "Opus 5" },
-      "context_window": { "used_percentage": 4, "remaining_percentage": 96 },
+      "context_window": {
+        "total_input_tokens": 8123, "total_output_tokens": 311, "context_window_size": 200000,
+        "current_usage": { "input_tokens": 3, "cache_creation_input_tokens": 120, "cache_read_input_tokens": 8000 },
+        "used_percentage": 4, "remaining_percentage": 96
+      },
       "rate_limits": {
         "five_hour": { "used_percentage": 16, "resets_at": 1788530400 },
         "seven_day": { "used_percentage": 14.000000000000002, "resets_at": 1788937200 }
@@ -2641,6 +3508,339 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             emitted.contains(&format!("{NOTIFY_PREFIX}{USAGE_BODY_PREFIX}16 14.000000000000002 1788530400 1788937200")),
             "unexpected body: {emitted:?}"
         );
+    }
+
+    /// The context window rides its own body, in claude's real key order: the
+    /// two flat numbers come BEFORE the nested `current_usage`, which is why the
+    /// script reads them and not `used_percentage`.
+    #[test]
+    #[cfg(unix)]
+    fn the_status_line_reports_the_context_window() {
+        let (emitted, stdout) = statusline_run(STATUSLINE_PAYLOAD);
+        assert_eq!(stdout, "");
+        assert!(
+            emitted.contains(&format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}8123 200000")),
+            "unexpected body: {emitted:?}"
+        );
+    }
+
+    /// Context alone is still worth a write: an account whose first payload
+    /// carries no limits and no cost yet can already say how full it is. And
+    /// zero tokens is a session before its first call, which says nothing.
+    #[test]
+    #[cfg(unix)]
+    fn context_alone_is_reported_and_zero_tokens_is_not() {
+        let (emitted, _) = statusline_run(
+            r#"{"context_window":{"total_input_tokens":500,"context_window_size":1000000,"current_usage":null}}"#,
+        );
+        assert_eq!(emitted, format!("\x1b]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}500 1000000\x07"));
+        let (emitted, _) = statusline_run(
+            r#"{"context_window":{"total_input_tokens":0,"context_window_size":200000,"current_usage":null}}"#,
+        );
+        assert_eq!(emitted, "");
+    }
+
+    /// copilot on its `auto` model: `context_window_size` and `used_percentage`
+    /// are null, the live figures are `current_context_tokens` over
+    /// `displayed_context_limit`, and `total_input_tokens` is the whole
+    /// SESSION's, which must never be read as the window. Shape measured on
+    /// 1.0.86, values placeholders.
+    #[test]
+    #[cfg(unix)]
+    fn copilot_reports_its_live_context_and_never_its_session_total() {
+        let payload = r#"{"session_id":"x","model":{"id":"auto"},
+          "cost":{"total_premium_requests":1},
+          "context_window":{"current_context_tokens":13781,"displayed_context_limit":200000,
+            "current_context_used_percentage":7,"context_window_size":null,"used_percentage":null,
+            "total_input_tokens":99999,"total_output_tokens":10}}"#;
+        let (emitted, stdout) = statusline_run_as("copilot", payload);
+        assert_eq!(stdout, "");
+        assert_eq!(emitted, format!("\x1b]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}13781 200000\x07"));
+    }
+
+    /// grok: `context_tokens` is the live window (`session_input_tokens` only
+    /// grows). It also sends a cost, which is NOT forwarded: that is claude's
+    /// field on the usage body, and a grok account is credit-limited.
+    #[test]
+    #[cfg(unix)]
+    fn grok_reports_context_tokens_and_no_cost() {
+        let payload = r#"{"schema_version":1,"cost":{"total_cost_usd":0.03},
+          "context_window":{"context_window_size":500000,"context_tokens":21000,
+            "session_input_tokens":90000,"used_percentage":4}}"#;
+        let (emitted, _) = statusline_run_as("grok", payload);
+        assert_eq!(emitted, format!("\x1b]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}21000 500000\x07"));
+    }
+
+    /// agy: claude-shaped context, plus a `quota` of REMAINING fractions per
+    /// bucket, picked by model family. 0.984 remaining is 1.6% used.
+    #[test]
+    #[cfg(unix)]
+    fn agy_reports_context_and_its_model_family_quota() {
+        let payload = r#"{"model":{"id":"gemini-pro-agent"},
+          "context_window":{"total_input_tokens":28600,"total_output_tokens":10,"context_window_size":1048576,
+            "used_percentage":2.73,"current_usage":{"input_tokens":1}},
+          "quota":{"gemini-5h":{"remaining_fraction":0.984,"reset_time":"x","reset_in_seconds":3600},
+            "gemini-weekly":{"remaining_fraction":0.5,"reset_time":"x","reset_in_seconds":7200},
+            "3p-5h":{"remaining_fraction":0.1,"reset_time":"x","reset_in_seconds":60}}}"#;
+        let (emitted, _) = statusline_run_as("agy", payload);
+        assert!(emitted.contains(&format!("{CONTEXT_BODY_PREFIX}28600 1048576")), "{emitted:?}");
+        let body = emitted.split(USAGE_BODY_PREFIX).nth(1).expect("a usage body");
+        let f: Vec<&str> = body.trim_end_matches('\x07').split(' ').collect();
+        assert_eq!(&f[..2], &["1.60", "50.00"], "{body:?}");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let reset: i64 = f[2].parse().unwrap();
+        assert!((reset - (now + 3600)).abs() < 5, "5h reset {reset} vs now {now}");
+        assert_eq!(f[4], "-", "agy reports no cost");
+
+        // A non-Gemini model spends the third-party buckets.
+        let (emitted, _) = statusline_run_as("agy", &payload.replace("gemini-pro-agent", "claude-sonnet"));
+        assert!(emitted.contains(&format!("{USAGE_BODY_PREFIX}90.00 - ")), "{emitted:?}");
+
+        // Before the first call the window is 0: no context reading.
+        let (emitted, _) = statusline_run_as("agy",
+            r#"{"model":{"id":"g"},"context_window":{"total_input_tokens":0,"context_window_size":0,"current_usage":null}}"#);
+        assert_eq!(emitted, "");
+    }
+
+    #[test]
+    fn grok_status_line_is_claimed_only_when_free_and_handed_back_intact() {
+        let prefix = "/Users/u/.grok/termic-hooks/";
+        let cmd = format!("{prefix}usage.sh");
+        // Nothing there: claimed, and the rest of the file untouched.
+        let src = "# my grok config\nmodel = \"grok-4\"\n\n[mcp]\nfoo = 1\n";
+        let claimed = grok_claim_status_line(src, &cmd, prefix).unwrap().expect("free slot");
+        assert!(claimed.starts_with("# my grok config\nmodel = \"grok-4\"\n"), "{claimed}");
+        assert!(claimed.contains("[ui.status_line]") && claimed.contains(&cmd), "{claimed}");
+        // Handing it back restores the original exactly.
+        assert_eq!(grok_release_status_line(&claimed, prefix).unwrap().as_deref(), Some(src));
+        // A user's own command row is theirs.
+        let theirs = "[ui.status_line]\ntype = \"command\"\ncommand = \"~/.grok/mine.sh\"\n";
+        assert_eq!(grok_claim_status_line(theirs, &cmd, prefix).unwrap(), None);
+        assert_eq!(grok_release_status_line(theirs, prefix).unwrap(), None);
+        // So is the built-in row they chose.
+        let builtin = "[ui.status_line]\ntype = \"builtin\"\nitems = [\"cwd\"]\n";
+        assert_eq!(grok_claim_status_line(builtin, &cmd, prefix).unwrap(), None);
+        // An explicitly disabled one is free, in any of its spellings.
+        let off = "[ui]\ntheme = \"dark\"\n\n[ui.status_line]\ntype = \"off\"\n";
+        let claimed = grok_claim_status_line(off, &cmd, prefix).unwrap().expect("off is free");
+        assert!(claimed.contains("theme = \"dark\""));
+        // Releasing ours keeps the user's other [ui] keys.
+        let released = grok_release_status_line(&claimed, prefix).unwrap().unwrap();
+        assert!(released.contains("theme = \"dark\"") && !released.contains("status_line"), "{released}");
+        // Re-claiming our own is idempotent.
+        let once = grok_claim_status_line("", &cmd, prefix).unwrap().unwrap();
+        assert_eq!(grok_claim_status_line(&once, &cmd, prefix).unwrap().as_deref(), Some(once.as_str()));
+        // Unparseable TOML is refused, never replaced.
+        assert!(grok_claim_status_line("[ui\n", &cmd, prefix).is_err());
+    }
+
+    #[test]
+    fn muse_managed_slot_is_claimed_only_when_free_and_keeps_the_users_vars() {
+        let prefix = "/Users/u/.config/muse/termic-hooks/";
+        let file = format!("{prefix}managed-hooks.json");
+        let root = serde_json::json!({ "schema_version": 1, "model": "m" });
+        let claimed = muse_claim_managed(&root, &file, prefix).expect("free");
+        assert_eq!(claimed["managed_hooks_path"], file.as_str());
+        assert_eq!(claimed["managed_hooks_env_vars"], serde_json::json!(["TERMIC_PTY", "TERMIC_TASK_ID"]));
+        assert_eq!(claimed["schema_version"], 1, "muse rejects a file without it");
+        assert_eq!(muse_release_managed(&claimed, prefix), Some(root.clone()));
+        // An enterprise or user managed file is not ours to replace.
+        let theirs = serde_json::json!({ "schema_version": 1, "managed_hooks_path": "/etc/muse/hooks.json" });
+        assert_eq!(muse_claim_managed(&theirs, &file, prefix), None);
+        assert_eq!(muse_release_managed(&theirs, prefix), None);
+        // A var the user listed survives both directions, and is not doubled.
+        let mixed = serde_json::json!({ "schema_version": 1, "managed_hooks_env_vars": ["FOO", "TERMIC_PTY"] });
+        let c = muse_claim_managed(&mixed, &file, prefix).unwrap();
+        assert_eq!(c["managed_hooks_env_vars"], serde_json::json!(["FOO", "TERMIC_PTY", "TERMIC_TASK_ID"]));
+        let r = muse_release_managed(&c, prefix).unwrap();
+        assert_eq!(r["managed_hooks_env_vars"], serde_json::json!(["FOO"]));
+    }
+
+    /// grok's idle nag is a `Notification` too; only the permission prompt may
+    /// badge the tab.
+    #[test]
+    #[cfg(unix)]
+    fn grok_attention_is_the_permission_prompt_only() {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        let dir = unique_test_dir("grok-notify");
+        let run = |payload: &str| -> String {
+            let script = dir.join("attention.sh");
+            let pty = dir.join("pty");
+            std::fs::write(&script, script_body("grok", Signal::Attention)).unwrap();
+            std::fs::write(&pty, "").unwrap();
+            let mut child = Command::new("/bin/sh").arg(&script)
+                .env("TERMIC_TASK_ID", "t1").env("TERMIC_PTY", &pty)
+                .env("GROK_HOOK_EVENT", "notification")
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().unwrap();
+            {
+                use std::io::Write as _;
+                child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+            }
+            assert!(child.wait().unwrap().success());
+            let mut out = String::new();
+            std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
+            out
+        };
+        let bell = format!("\x1b]{NOTIFY_PREFIX}{ATTENTION_BODY}\x07");
+        assert_eq!(run(r#"{"notificationType": "permission_prompt", "message": "m"}"#), bell);
+        assert_eq!(run(r#"{"notificationType":"idle_prompt","message":"Grok is waiting"}"#), "");
+        assert_eq!(run(r#"{"notificationType":"task_complete"}"#), "");
+        assert_eq!(run(r#"{"message":"no type"}"#), bell);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hook whose terminal will not take the write must still exit. A FIFO
+    /// with no reader blocks the open exactly like a pty whose reader is gone
+    /// blocks the write; before the budget, grok `done.sh` hooks sat 22
+    /// minutes in that state and held the tty lock that hung every new claude
+    /// (see `bound_emits`). Every signal's script and the status line.
+    #[test]
+    #[cfg(unix)]
+    fn a_hook_never_blocks_on_a_terminal_that_will_not_read() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let dir = unique_test_dir("stuck-pty");
+        let fifo = dir.join("pty");
+        assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let mut bodies: Vec<(String, String)> = [Signal::Working, Signal::Done, Signal::Attention, Signal::Ready]
+            .into_iter()
+            .map(|sig| (format!("claude {}", sig.stem()), script_body("claude", sig)))
+            .collect();
+        bodies.push(("grok done".into(), script_body("grok", Signal::Done)));
+        bodies.push(("statusline".into(), statusline_body_for("claude")));
+        for (name, body) in bodies {
+            let script = dir.join("s.sh");
+            std::fs::write(&script, body).unwrap();
+            let started = std::time::Instant::now();
+            let mut child = Command::new("/bin/sh").arg(&script)
+                .env("TERMIC_TASK_ID", "t1").env("TERMIC_PTY", &fifo)
+                .env_remove("GROK_HOOK_EVENT")
+                .env("GROK_HOOK_EVENT", if name.starts_with("grok") { "stop" } else { "" })
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().unwrap();
+            child.stdin.as_mut().unwrap()
+                .write_all(br#"{"session_id":"x","context_window":{"total_input_tokens":5,"context_window_size":9}}"#)
+                .unwrap();
+            drop(child.stdin.take());
+            let status = child.wait().unwrap();
+            let took = started.elapsed();
+            assert!(status.success(), "{name}: a hook must exit 0");
+            assert!(took < std::time::Duration::from_secs(5), "{name}: blocked for {took:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bound_emits_wraps_every_chain_and_nothing_else() {
+        let src = "a\n  emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true\nexit 0\n";
+        let out = bound_emits(src);
+        assert!(out.starts_with("a\n  ( emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty ) </dev/null >/dev/null 2>&1 &\n"), "{out}");
+        assert!(out.contains("  ( sleep 2; kill \"$termic_w\" )"));
+        assert!(out.ends_with("exit 0\n"));
+        // Every generated script is bounded: no bare chain survives.
+        for sig in [Signal::Working, Signal::Done, Signal::Attention, Signal::Ready] {
+            for agent in ["claude", "codex", "grok", "devin", "agy", "copilot", "muse"] {
+                assert!(!script_body(agent, sig).contains("|| emit /dev/tty || true"), "{agent} {sig:?}");
+            }
+        }
+        assert!(!statusline_body_for("claude").contains("/dev/tty || true"));
+    }
+
+    /// agy reports its conversation id on the first model invocation, in the
+    /// same write as working, so a main-checkout task can resume it with
+    /// `--conversation <id>`. Anything that is not a UUID never reaches a
+    /// command line.
+    #[test]
+    #[cfg(unix)]
+    fn agy_working_reports_its_conversation_id() {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        let dir = unique_test_dir("agy");
+        let run = |payload: &str| -> String {
+            let script = dir.join("working.sh");
+            let pty = dir.join("pty");
+            std::fs::write(&script, script_body("agy", Signal::Working)).unwrap();
+            std::fs::write(&pty, "").unwrap();
+            let mut child = Command::new("/bin/sh").arg(&script)
+                .env("TERMIC_TASK_ID", "t1").env("TERMIC_PTY", &pty)
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().unwrap();
+            {
+                use std::io::Write as _;
+                child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+            }
+            assert!(child.wait().unwrap().success());
+            let mut out = String::new();
+            std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
+            out
+        };
+        let id = "11111111-2222-4333-8444-555555555555";
+        assert_eq!(
+            run(&format!(r#"{{"conversationId":"{id}","modelName":"m","invocationNum":1}}"#)),
+            format!("\x1b]{NOTIFY_PREFIX}{WORKING_BODY}\x07\x1b]{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}{id}\x07")
+        );
+        assert_eq!(run(r#"{"conversationId":"x; rm -rf ~","invocationNum":1}"#), format!("\x1b]{NOTIFY_PREFIX}{WORKING_BODY}\x07"));
+        assert_eq!(run(r#"{"invocationNum":1}"#), format!("\x1b]{NOTIFY_PREFIX}{WORKING_BODY}\x07"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// muse's hooks also fire for its internal subagents, whose session ids are
+    /// UUIDv4 where the main session's is v7. Only v7 may move the tab.
+    #[test]
+    #[cfg(unix)]
+    fn muse_hooks_ignore_its_internal_subagents() {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        let dir = unique_test_dir("muse");
+        let run = |sid: &str| -> String {
+            let script = dir.join("done.sh");
+            let pty = dir.join("pty");
+            std::fs::write(&script, script_body("muse", Signal::Done)).unwrap();
+            std::fs::write(&pty, "").unwrap();
+            let mut child = Command::new("/bin/sh").arg(&script)
+                .env("TERMIC_TASK_ID", "t1").env("TERMIC_PTY", &pty)
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().unwrap();
+            {
+                use std::io::Write as _;
+                let p = format!(r#"{{"hook_event_name":"Stop","session_id":"{sid}","cwd":"/w"}}"#);
+                child.stdin.as_mut().unwrap().write_all(p.as_bytes()).unwrap();
+            }
+            assert!(child.wait().unwrap().success());
+            let mut out = String::new();
+            std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
+            out
+        };
+        assert_eq!(run("0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"), format!("\x1b]{NOTIFY_PREFIX}{DONE_BODY}\x07"));
+        assert_eq!(run("3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9"), "");
+        assert_eq!(run(""), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copilot_gets_its_native_hook_file() {
+        let cmds = vec![
+            ("agentStop", "/p/termic-hooks/done.sh".to_string(), Signal::Done),
+            ("preToolUse", "/p/termic-hooks/working.sh".to_string(), Signal::Working),
+        ];
+        let v = copilot_hooks_file(&cmds);
+        assert_eq!(v["version"], 1);
+        assert_eq!(v["hooks"]["agentStop"][0]["bash"], "/p/termic-hooks/done.sh");
+        assert_eq!(v["hooks"]["agentStop"][0]["type"], "command");
+        assert!(v["hooks"]["preToolUse"][0]["timeoutSec"].as_u64().unwrap() <= 10);
+        assert_eq!(settings_rel("copilot"), "hooks/termic.json");
+        assert_eq!(schema_for("copilot"), Schema::CopilotFile);
+    }
+
+    /// A payload named `rate_limits` in another agent's status line is never
+    /// read as claude's plan.
+    #[test]
+    #[cfg(unix)]
+    fn only_claude_reads_rate_limits() {
+        let (emitted, _) = statusline_run_as("copilot", STATUSLINE_PAYLOAD);
+        assert!(!emitted.contains(USAGE_BODY_PREFIX), "{emitted:?}");
     }
 
     /// The window that is NOT last in the object, cut on a comma rather than on
@@ -2957,7 +4157,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // before the current set must read as stale, or `agent_hooks_sync`
         // skips it and the user keeps that set forever: v3 types into startup
         // dialogs, v4 holds a tab on `working` for the rest of the session.
-        assert_eq!(SCHEMA_VERSION, 10, "bump me with the hook set, or installs go stale silently");
+        assert_eq!(SCHEMA_VERSION, 14, "bump me with the hook set, or installs go stale silently");
     }
 
     #[test]
@@ -3113,7 +4313,60 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         let mut out = String::new();
         std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        out.contains("133;D")
+        out.contains(DONE_BODY)
+    }
+
+    /// codex's Done hook with a rollout on disk: done, plus the context the way
+    /// the codex TUI computes it. The fixture's `token_count` line is the
+    /// measured 0.154.0 shape with placeholder numbers, and the rollout path
+    /// has a SPACE in it, which a whitespace-stripped read would break.
+    #[test]
+    #[cfg(unix)]
+    fn codex_done_reports_the_context_codex_itself_shows() {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        let dir = unique_test_dir("codex ctx");
+        let rollout = dir.join("rollout 1.jsonl");
+        let tc = |total: u64| format!(
+            r#"{{"timestamp":"t","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":91308,"total_tokens":92436}},"last_token_usage":{{"input_tokens":33935,"cached_input_tokens":27392,"output_tokens":422,"reasoning_output_tokens":29,"total_tokens":{total}}},"model_context_window":258400}},"rate_limits":{{"primary":{{"used_percent":5.0}}}}}}}}"#);
+        std::fs::write(&rollout, format!(
+            "{{\"type\":\"session_meta\"}}\n{}\n{{\"type\":\"response_item\"}}\n{}\n", tc(1000), tc(34357)
+        )).unwrap();
+        let run = |payload: String| -> String {
+            let script = dir.join("done.sh");
+            let pty = dir.join("pty");
+            std::fs::write(&script, script_body("codex", Signal::Done)).unwrap();
+            std::fs::write(&pty, "").unwrap();
+            let mut child = Command::new("/bin/sh").arg(&script)
+                .env("TERMIC_TASK_ID", "t1").env("TERMIC_PTY", &pty)
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().unwrap();
+            {
+                use std::io::Write as _;
+                child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+            }
+            assert!(child.wait().unwrap().success());
+            let mut out = String::new();
+            std::fs::File::open(&pty).unwrap().read_to_string(&mut out).unwrap();
+            out
+        };
+        let payload = format!(
+            r#"{{"session_id":"s","transcript_path":"{}","hook_event_name":"Stop","stop_hook_active":false}}"#,
+            rollout.display()
+        );
+        // The LAST token_count wins: 34357 of 258400 with the 12k baseline is
+        // (246400 - 22357) / 246400 = 90.9% left, which codex shows as 91.
+        assert_eq!(
+            run(payload),
+            format!("\x1b]{NOTIFY_PREFIX}{DONE_BODY}\x07\x1b]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}34357 258400 9\x07")
+        );
+        // No transcript, or one that is gone: done alone, never a guessed 0%.
+        assert_eq!(run(r#"{"session_id":"s"}"#.into()), format!("\x1b]{NOTIFY_PREFIX}{DONE_BODY}\x07"));
+        assert_eq!(
+            run(r#"{"transcript_path":"/nonexistent/rollout.jsonl"}"#.into()),
+            format!("\x1b]{NOTIFY_PREFIX}{DONE_BODY}\x07")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Run claude's generated ATTENTION script against a payload and return the
@@ -3553,7 +4806,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             out.contains(&format!("{NOTIFY_PREFIX}needs your answer: ask_user_question")),
             "the question edge must raise attention: {out:?}"
         );
-        assert!(!out.contains("133;C"), "a blocked question is not working: {out:?}");
+        assert!(!out.contains(WORKING_BODY), "a blocked question is not working: {out:?}");
     }
 
     // The same script on the SAME tool's PostToolUse hands working back the
@@ -3563,8 +4816,8 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     #[cfg(unix)]
     fn devin_question_answer_restores_working() {
         let out = devin_working_output_for(&devin_tool_payload("PostToolUse", "ask_user_question"));
-        assert!(out.contains("133;C"), "answer landed, turn resumed: {out:?}");
-        assert!(!out.contains(NOTIFY_PREFIX), "an answered question is not attention: {out:?}");
+        assert!(out.contains(WORKING_BODY), "answer landed, turn resumed: {out:?}");
+        assert!(!out.contains("needs your"), "an answered question is not attention: {out:?}");
     }
 
     #[test]
@@ -3579,8 +4832,8 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             String::new(),
         ] {
             let out = devin_working_output_for(&payload);
-            assert!(out.contains("133;C"), "working lost for {payload:?}: {out:?}");
-            assert!(!out.contains(NOTIFY_PREFIX), "not attention for {payload:?}: {out:?}");
+            assert!(out.contains(WORKING_BODY), "working lost for {payload:?}: {out:?}");
+            assert!(!out.contains("needs your"), "not attention for {payload:?}: {out:?}");
         }
     }
 
@@ -3597,6 +4850,37 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // id and the trusted sender and is told apart by an exact match alone.
         assert_ne!(ATTENTION_BODY, READY_BODY);
         assert!(!"needs your permission: Bash".starts_with(READY_BODY));
+    }
+
+    /// An UPGRADE of a plugin-file install. The plugin is JS/TS, and install
+    /// used to parse the existing file as JSON before reaching the plugin
+    /// branch, so every upgrade was refused and opencode sat on v9 for a day.
+    /// Needs the e2e feature to move the agent home into a temp dir.
+    #[test]
+    #[cfg(all(unix, feature = "e2e"))]
+    fn a_plugin_install_upgrades_over_an_old_one() {
+        let home = std::env::temp_dir().join(format!("termic-plugin-upgrade-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("TERMIC_E2E_AGENT_HOME", &home);
+        for agent in ["opencode", "pi"] {
+            let target = Target::Host(agent.into());
+            install(&target).expect("first install");
+            let plugin = settings_path(&target).unwrap();
+            // What an old schema left on disk: an older module and manifest.
+            std::fs::write(&plugin, "// termic agent hook (generated, schema v9)\nexport const X = 1;\n").unwrap();
+            let manifest = script_dir(&target).unwrap().join(MANIFEST_NAME);
+            std::fs::write(&manifest, r#"{"schema_version":9,"command":"x","installed_at":"t"}"#).unwrap();
+            assert!(status(&target).stale, "{agent}: an old install must read as stale");
+
+            install(&target).unwrap_or_else(|e| panic!("{agent}: the upgrade was refused: {e}"));
+            let st = status(&target);
+            assert!(st.installed && !st.stale, "{agent}: still stale after the upgrade");
+            let body = std::fs::read_to_string(&plugin).unwrap();
+            assert!(body.contains(CONTEXT_BODY_PREFIX), "{agent}: the new module was not written");
+            remove(&target).unwrap();
+        }
+        std::env::remove_var("TERMIC_E2E_AGENT_HOME");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The whole codex loop against a REAL `codex` binary: install, trust,
@@ -3808,12 +5092,12 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // codex registered it rather than by firing here.
         assert!(seen.contains("777;notify;termic;agent ready for input"),
             "SessionStart (ready) never reached the pty");
-        assert!(seen.contains("133;C"), "working never reached the pty");
-        assert!(seen.contains("133;D"), "Stop (done) never reached the pty");
+        assert!(seen.contains(WORKING_BODY), "working never reached the pty");
+        assert!(seen.contains(DONE_BODY), "Stop (done) never reached the pty");
         // Order matters as much as presence: a done before any working is a
         // turn termic would ignore, since a hard idle is dropped unless we
         // were working.
-        assert!(seen.find("133;C").unwrap() < seen.rfind("133;D").unwrap(),
+        assert!(seen.find(WORKING_BODY).unwrap() < seen.rfind(DONE_BODY).unwrap(),
             "done arrived before working: {seen:?}");
 
         // The session id, which is what makes repo-root resume possible at all:
@@ -4031,9 +5315,9 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     fn agy_and_grok_both_write_to_the_pty_with_their_own_sequences() {
         let done = script_body("agy", Signal::Done);
         assert!(done.contains("$TERMIC_PTY"));
-        assert!(done.contains("133;D"), "hard done, no settle wait");
+        assert!(done.contains(DONE_BODY), "hard done, no settle wait");
         let working = script_body("agy", Signal::Working);
-        assert!(working.contains("133;C"));
+        assert!(working.contains(WORKING_BODY));
         // agy is not grok and must not carry grok's provenance gate.
         assert!(!done.contains("GROK_HOOK_EVENT"));
         assert!(done.contains(r#"[ -n "$TERMIC_TASK_ID" ] || exit 0"#));
@@ -4042,7 +5326,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     // ── opencode ────────────────────────────────────────────────────
     #[test]
     fn opencode_is_a_plugin_not_a_config_merge() {
-        assert_eq!(schema_for("opencode"), Schema::OpencodePlugin);
+        assert_eq!(schema_for("opencode"), Schema::PluginFile);
         // The documented plural ONLY. `.opencode/plugin` and
         // `.opencode/plugins` are both loaded, and writing both double-fires
         // every event (measured).
@@ -4071,9 +5355,124 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // Silent outside a termic pty, same rule as the shell scripts.
         assert!(js.contains("TERMIC_PTY") && js.contains("TERMIC_TASK_ID"));
         assert!(js.contains(&Signal::Attention.payload()));
-        assert!(js.contains("133;C") && js.contains("133;D"));
+        assert!(js.contains(WORKING_BODY) && js.contains(DONE_BODY));
         // No raw control bytes in a generated source file.
         assert!(!js.contains('\u{1b}') && !js.contains('\u{7}'));
+    }
+
+    /// Runs the generated plugin for real under node, with the event shapes
+    /// opencode 1.18.31 was measured sending, and reads what reached the pty.
+    /// Skipped where there is no node (the plugin itself runs under opencode's
+    /// bundled runtime, not node, but the module is plain ESM either way).
+    #[test]
+    #[cfg(unix)]
+    fn the_opencode_plugin_reports_the_context_window_the_way_its_tui_does() {
+        use std::process::Command;
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("termic.mjs");
+        let pty = dir.path().join("pty");
+        std::fs::write(&plugin, opencode_plugin_body()).unwrap();
+        std::fs::write(&pty, "").unwrap();
+        let driver = dir.path().join("drive.mjs");
+        std::fs::write(&driver, r#"
+            const { TermicStatus } = await import(process.argv[2]);
+            const client = { config: { providers: async () => ({ data: { providers: [
+              { id: "acme", models: { "big": { limit: { context: 400000 } } } },
+            ] } }) } };
+            const h = await TermicStatus({ client });
+            const info = (tokens, modelID = "small") => ({ type: "message.updated", properties: { info: {
+              role: "assistant", providerID: "acme", modelID, tokens } } });
+            await h["chat.params"]({ model: { providerID: "acme", id: "small", limit: { context: 200000 } } });
+            // The first update of a message is all zeros: no reading.
+            await h.event({ event: info({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }) });
+            await h.event({ event: info({ input: 9189, output: 3, reasoning: 14, cache: { read: 1024, write: 0 } }) });
+            // The same figure again writes nothing.
+            await h.event({ event: info({ input: 9189, output: 3, reasoning: 14, cache: { read: 1024, write: 0 } }) });
+            // A model chat.params never named: the limit comes from providers().
+            await h.event({ event: info({ input: 100000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, "big") });
+            await h.event({ event: info({ input: 100000, output: 10, reasoning: 0, cache: { read: 0, write: 0 } }, "big") });
+            // A user message is not a reading.
+            await h.event({ event: { type: "message.updated", properties: { info: { role: "user", tokens: { output: 5 } } } } });
+        "#).unwrap();
+        let out = Command::new("node")
+            .arg(&driver).arg(&plugin)
+            .env("TERMIC_PTY", &pty).env("TERMIC_TASK_ID", "t1")
+            .output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let got = std::fs::read_to_string(&pty).unwrap();
+        let ctx = |b: &str| format!("\x1b]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}{b}\x07");
+        // writeFileSync truncates, so the file holds the LAST write only.
+        assert_eq!(got, ctx("100010 400000 25"));
+        // And the first reading, run on its own, is opencode's formula.
+        std::fs::write(&pty, "").unwrap();
+        std::fs::write(&driver, r#"
+            const { TermicStatus } = await import(process.argv[2]);
+            const h = await TermicStatus({});
+            await h["chat.params"]({ model: { providerID: "acme", id: "small", limit: { context: 200000 } } });
+            await h.event({ event: { type: "message.updated", properties: { info: { role: "assistant",
+              providerID: "acme", modelID: "small",
+              tokens: { input: 9189, output: 3, reasoning: 14, cache: { read: 1024, write: 0 } } } } } });
+        "#).unwrap();
+        let out = Command::new("node")
+            .arg(&driver).arg(&plugin)
+            .env("TERMIC_PTY", &pty).env("TERMIC_TASK_ID", "t1")
+            .output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(std::fs::read_to_string(&pty).unwrap(), ctx("10230 200000 5"));
+    }
+
+    /// opencode's turn ends on the FINAL assistant message, not on
+    /// `session.idle` (which waits for the title call), and a trailing part
+    /// update does not put it back to working. Runs the real module.
+    #[test]
+    #[cfg(unix)]
+    fn the_opencode_plugin_ends_the_turn_on_the_final_message() {
+        use std::process::Command;
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("termic.mjs");
+        let log = dir.path().join("log");
+        let pty = dir.path().join("pty");
+        std::fs::write(&plugin, opencode_plugin_body()).unwrap();
+        std::fs::write(&pty, "").unwrap();
+        let driver = dir.path().join("drive.mjs");
+        // The plugin truncates the target on every write, so the driver
+        // snapshots it after each step: the snapshot is the LAST thing sent.
+        std::fs::write(&driver, r#"
+            import { readFileSync, writeFileSync, appendFileSync } from "fs";
+            const [,, plugin, pty, log] = process.argv;
+            const { TermicStatus } = await import(plugin);
+            const h = await TermicStatus({});
+            const step = async (name, fn) => {
+              writeFileSync(pty, "");
+              await fn();
+              appendFileSync(log, name + "=" + JSON.stringify(readFileSync(pty, "utf8")) + "\n");
+            };
+            const msg = (id, extra) => ({ event: { type: "message.updated", properties: { info: {
+              role: "assistant", id, providerID: "p", modelID: "m", tokens: { output: 0 }, ...extra } } } });
+            await step("submit", () => h["chat.message"]());
+            await step("tool", () => h.event(msg("m1", { time: { completed: 1 }, finish: "tool-calls" })));
+            await step("final", () => h.event(msg("m2", { time: { completed: 2 }, finish: "stop" })));
+            await step("trailing", () => h.event({ event: { type: "message.part.updated" } }));
+            await step("again", () => h.event(msg("m2", { time: { completed: 2 }, finish: "stop" })));
+        "#).unwrap();
+        let out = Command::new("node").arg(&driver).arg(&plugin).arg(&pty).arg(&log)
+            .env("TERMIC_PTY", &pty).env("TERMIC_TASK_ID", "t1").output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let log = std::fs::read_to_string(&log).unwrap();
+        let at = |k: &str| log.lines().find(|l| l.starts_with(&format!("{k}="))).unwrap().to_string();
+        let done = Signal::Done.payload();
+        let working = Signal::Working.payload();
+        assert!(at("submit").contains(&working), "{log}");
+        assert!(!at("tool").contains(&done), "a tool-call message is not the end: {log}");
+        assert!(at("final").contains(&done), "the final message ends the turn: {log}");
+        assert_eq!(at("trailing"), "trailing=\"\"", "a trailing part re-asserted working: {log}");
+        assert_eq!(at("again"), "again=\"\"", "one done per message: {log}");
     }
 
     #[test]
@@ -4105,4 +5504,3 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert!(strays.is_empty(), "temp file left behind");
     }
 }
-

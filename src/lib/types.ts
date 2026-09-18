@@ -778,6 +778,9 @@ export interface Settings {
    *  tasks that need input or just finished) is shown at all. Absent/true =
    *  shown; only an explicit false turns it off. Applies live on save. */
   tray_enabled?: boolean;
+  /** Install agent hooks for every supported agent on PATH, including ones
+   *  added later. Owned by the hooks block (`agent_hooks_auto_set`). */
+  auto_install_hooks?: boolean;
   /** Canonical repo paths hidden from the Add Project discovery list.
    *  Discovery still finds them; the picker filters them out until restored. */
   discovery_dismissed?: string[];

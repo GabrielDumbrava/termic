@@ -22,9 +22,10 @@
 // directory, but a user who declines for an agent must never find hooks
 // installed for it inside a container. See docs/agent-hooks.md.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Check, CircleAlert } from "lucide-react";
-import { agentHooksInstall, agentHooksPlan, agentHooksRemove, agentHooksStatus } from "@/lib/ipc";
+import { agentHooksInstall, agentHooksPlan, agentHooksRemove, agentHooksStatus, agentHooksAutoGet, agentHooksAutoSet, agentHooksSync } from "@/lib/ipc";
+import { Toggle } from "@/components/settings/Controls";
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
@@ -52,6 +53,17 @@ export function AgentHooksBlock() {
   // behind the toggle and the collapsed row carries only what it is and how
   // many agents are wired.
   const [expanded, setExpanded] = useState(false);
+  /** "Install all hooks", or null until read. */
+  const [auto, setAuto] = useState<boolean | null>(null);
+  // Read by the mount/detection effect without being one of its deps: the
+  // switch installs through its own call, and re-running that effect on the
+  // flip started a SECOND sync racing the first over the same config files.
+  const autoRef = useRef(auto);
+  autoRef.current = auto;
+  const autoLoaded = auto !== null;
+  useEffect(() => {
+    void agentHooksAutoGet().then(setAuto).catch(() => setAuto(false));
+  }, []);
   // Arriving from the Agents section's link: scroll to this block and flash it
   // once. Same one-shot contract as GeneralSection's, so a later manual visit
   // to Notifications does not re-flash something the reader is already on.
@@ -112,9 +124,35 @@ export function AgentHooksBlock() {
     setStatus(Object.fromEntries(rows.filter(Boolean) as (readonly [string, AgentHookStatus])[]));
   }, []);
 
-  useEffect(() => { if (present.length) void refresh(present); },
+  // With "install all hooks" on, an agent that appeared since the last sync
+  // (newly on PATH, or just added here) is wired before its row is read, so
+  // the list never shows a gap the setting promised to close.
+  useEffect(() => {
+    if (!present.length || !autoLoaded) return;
+    void (async () => {
+      if (autoRef.current) {
+        const wired = await agentHooksSync().catch(() => [] as string[]);
+        if (wired.length) await useApp.getState().refreshAgentHooks();
+      }
+      await refresh(present);
+    })();
+  },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [present.join(","), refresh]);
+    [present.join(","), refresh, autoLoaded]);
+
+  const setAutoInstall = async (on: boolean) => {
+    setAuto(on);
+    setBusy("*");
+    try {
+      await agentHooksAutoSet(on);
+      await useApp.getState().refreshAgentHooks();
+      await refresh(present);
+    } catch (e) {
+      setFailure(f => ({ ...f, "*": String(e) }));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const act = async (id: string, install: boolean) => {
     setBusy(id);
@@ -202,6 +240,20 @@ export function AgentHooksBlock() {
             : "Let agents report their own state"}
         </span>
       </button>
+
+      {/* Outside the collapsed part on purpose: the one decision most people
+          make here is "all of them", and it should not take an expand. */}
+      <div data-testid="agent-hooks-auto" data-on={auto ? "1" : "0"} className="mt-3">
+        <Toggle
+          label="Install hooks for every agent"
+          hint="Includes agents you add later."
+          value={!!auto}
+          onChange={v => { if (busy !== "*") void setAutoInstall(v); }}
+        />
+        {failure["*"] && (
+          <div className="mt-1 text-[12px] text-[var(--color-err)]">{failure["*"]}</div>
+        )}
+      </div>
 
       {expanded && (
         <div className="mt-3 flex flex-col gap-3">

@@ -379,10 +379,12 @@ pub fn shared_config_entries(base_id: &str) -> &'static [&'static str] {
 /// only where this is true. Everywhere else the switch is manual, which is the
 /// half that works for all eight built-ins.
 ///
-/// THREE agents, by two transport shapes, and none is a guess: claude pushes
-/// percentages through the status line it lets termic install, codex answers
-/// `agent_usage.rs` over JSON-RPC, and devin answers it over the Connect
-/// `GetUserStatus` call its own TUI header reads. An agent gets a `true` here
+/// FOUR agents, and none is a guess: claude and agy push percentages through
+/// the status line termic installs (agy's carries its per-bucket `quota`,
+/// measured on 1.2.6), codex answers `agent_usage.rs` over JSON-RPC, and devin
+/// answers it over the Connect `GetUserStatus` call its own TUI header reads.
+/// copilot also reports a number (its quota cache) but is NOT here: it has no
+/// login store, so an automatic switch would have nothing to switch to. An agent gets a `true` here
 /// only once one of those paths actually produces numbers for it, because the
 /// cost of being wrong is an "auto-switch" toggle that silently never fires.
 /// See `docs/ideas/usage-footer.md` for why the transports differ.
@@ -391,7 +393,7 @@ pub fn shared_config_entries(base_id: &str) -> &'static [&'static str] {
 /// table, so a second claude entry reports usage for the same reason the
 /// original does.
 pub fn reports_usage(base_id: &str) -> bool {
-    matches!(base_id, "claude" | "codex" | "devin")
+    matches!(base_id, "claude" | "codex" | "devin" | "agy")
 }
 
 /// Extra variables an agent needs before its login REALLY follows the store.
@@ -657,7 +659,7 @@ mod instance_dir_tests {
         let reporting: Vec<String> = built_ins().into_iter().filter(|id| reports_usage(id)).collect();
         assert_eq!(
             reporting,
-            vec!["claude".to_string(), "codex".to_string(), "devin".to_string()]
+            vec!["claude".to_string(), "codex".to_string(), "agy".to_string(), "devin".to_string()]
         );
     }
 

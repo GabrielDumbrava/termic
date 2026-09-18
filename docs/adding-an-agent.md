@@ -5,7 +5,14 @@ every one of those shipped with something missed that only turned up in use. The
 order matters: the measuring comes first, and half the entries below exist
 because a default was written from a CLI's `--help` and was wrong.
 
-Two rules run through all of it.
+Three rules run through all of it.
+
+**Keep it unified.** A new agent fits the shared paths (one wire body per
+signal, the shared status-line script, the `SOURCES` table, the install
+schemas) or goes without the feature. A bespoke mechanism for one agent (its
+own Tauri command, a parser for its private files, a one-agent schema) is a
+cost every later change pays; say what it adds and offer leaving the feature
+out before building it. muse's context was left out on exactly that ground.
 
 **Measure, never infer.** `--help` describes intent; the binary decides. Every
 default here has been wrong at least once for an agent whose help text said
@@ -30,6 +37,13 @@ undocumented:
 
 Where there is no offline mode, budget real turns and say so before spending
 them: a maintainer on the cheapest plan has very few.
+
+**A probe can change the user's install.** The first `agy -p` of an
+investigation self-updated agy (1.1.28 to 1.2.6), and 1.2.6 rewrites its
+`settings.json` on every launch, dropping keys it does not know. Back up any
+config a probe could touch, restore it byte for byte, and tell the user when
+the agent itself changed something; restoring the file does not stop the
+agent doing it again.
 
 ## 1. The registry entry (`default_agents()` in `lib.rs`)
 
@@ -148,7 +162,11 @@ map, for whoever is debugging one:
 | `hooks_for` / `state_dir` | `agent_hooks.rs` | no work-state signals; the agent looks permanently idle |
 | `CliIcon` / `CLI_BRAND_COLOR` / `CLI_LABEL` | `icons/cli.tsx` | a blank icon and an unstyled name, visible immediately |
 | `scripts/login-probe.mjs` | | **guarded.** The login table can rot with no way to notice |
-| `reports_usage` | `agent_dirs.rs` | no plan-usage chip and no automatic account switch. Default `false`, and leaving it there is the CORRECT answer for a new agent: turn it on only once a transport actually produces numbers |
+| `reports_usage` | `agent_dirs.rs` | no automatic account switch. Default `false`, and leaving it there is the CORRECT answer for a new agent: turn it on only once a transport actually produces numbers AND the agent has a login store |
+| `SOURCES` | `lib/agentContext.ts` | no "Usage unknown" state and no "Install hooks" offer in the footer, so an agent that CAN report shows an empty footer with nothing saying why. See section 5b |
+| `config_slot` | `agent_hooks.rs` | an agent whose status line (or muse's managed-hooks pointer) lives outside its hooks file never gets it written, so the hooks install and nothing reports |
+| `askUsage` | `components/task/AgentChip.tsx` | a pull-usage agent's command exists and is never called |
+| `shortWindowWords` | `lib/agentUsage.ts` | a quota that is not five hours (devin daily, copilot monthly) is labelled `5h` |
 
 Three of those are guarded because they are the ones that go wrong QUIETLY: a
 missing icon is obvious the first time you look, a missing `state_dirs` row is
@@ -185,7 +203,21 @@ share one cwd, so "resume the last session here" is another task's conversation.
    accept one at launch. `resume_id_args` only, plus a way to learn the id after
    the fact: `post_launch_capture` (a shell command, opencode and muse) or the
    agent's own hook reporting it (codex, which is better, see §5).
-3. **Neither** (agy). `resume_args` only; repo-root tasks start fresh.
+3. **Neither**. `resume_args` only; repo-root tasks start fresh. agy used to
+   be here, until its hook proved it could report `conversationId`: it is now
+   a capture agent (`--conversation {UUID}`), learned the codex way.
+
+**The id is not always a UUID.** devin's is a slug (`brassy-polish`). The TS
+parser (`hookOscSessionId`) and the hook's charset guard both have to accept
+the agent's real shape, or the report is dropped, and a dropped trusted body
+used to fall through to a notification ("session brassy-polish").
+
+**Check the agent accepts its OTHER flags on a resume.** copilot refuses
+`--name` on any resume, with `--session-id <existing>` and with `--continue`,
+and exits 1 before drawing, which termic reads as "resume failed" and answers
+with a fresh session every time. It is in `NAME_ONLY_ON_NEW_SESSION`
+(`lib/agents.ts`). Run a real create-then-resume with the full argv termic
+composes, not the resume flag alone.
 
 **Test for the mint shape properly**, because two agents looked like it and were
 not:
@@ -265,21 +297,71 @@ express it. Before designing anything, check the two things that make it
 possible at all:
 
 - **Does the agent pass `$TERMIC_PTY` and `$TERMIC_TASK_ID` through to a hook
-  command?** Muse does not. It strips them (`HOME` survives, custom vars do
-  not), and `shell_environment_policy` does not change it, so every generated
-  script would exit 0 having written nothing. That killed muse hooks outright.
+  command?** Muse does not, for ORDINARY hooks. It strips them (`HOME`
+  survives, custom vars do not), and `shell_environment_policy` does not change
+  it, so every generated script would exit 0 having written nothing. That kept
+  muse off the list until 1.3.0, whose MANAGED hooks
+  (`managed_hooks_path` + `managed_hooks_env_vars`) forward the variables they
+  name. Look for a side door like that before giving up, and verify it the way
+  muse's was: a hook that dumps `env` to a file, with the setting on and off.
 - **Does the readiness event fire at STARTUP?** Muse's `SessionStart` fires on
   the first PROMPT, despite its payload saying `source: "startup"`, so it cannot
   gate readiness.
 
-Then the shape: `hooks_for`, `schema_for` (`ClaudeCompatible` covers most,
-including codex), `settings_rel`, `SUPPORTED`, and whether the agent needs a
-required field in a config termic creates from scratch (muse rejects a
-`settings.json` with no `schema_version`).
+Then the shape: `hooks_for`, `schema_for`, `settings_rel`, `SUPPORTED`, and
+whether the agent needs a required field in a config termic creates from
+scratch (muse rejects a `settings.json` with no `schema_version`). There are
+four schemas, pick by how the agent loads hooks, not by what looks similar:
+
+| schema | agents | what termic writes |
+|---|---|---|
+| `ClaudeCompatible` | claude, codex, devin, grok, muse | a `hooks.<Event>[] = {hooks:[…]}` map merged into the agent's config (grok and muse into a file of termic's own) |
+| `AntigravityNamed` | agy | one named key in `config/hooks.json` |
+| `PluginFile` | opencode, pi | one in-process module in a directory the agent autoloads; install is a write, removal a delete |
+| `CopilotFile` | copilot | the agent's NATIVE hook file, whole, in a directory it loads every `*.json` from |
+
+A plugin file is written whole on every install, and must never pass through
+the JSON config guard (docs/gotchas.md "A guard that parses the wrong format
+blocks every UPGRADE"): test an UPGRADE over an old version, not only a fresh
+install.
+
+An in-process plugin (opencode, pi) is the easiest transport there is when it
+exists: it sees the agent's own env, needs no script per event, and can read
+state a hook payload never carries (pi's `ctx.getContextUsage()`, opencode's
+message tokens). Wrap every handler, since a throw lands in the agent.
+
+**Look at what the agent says on its OWN, with hooks installed.** Three
+agents rang the wrong bell with a correct install (docs/agent-hooks.md "An
+agent's own notifications"):
+
+- its own end-of-turn notification (grok, devin, muse each send one) belongs
+  in `BUILTIN_NOTIFY_IGNORE`, anchored;
+- a hook event that is really several (grok's `Notification`:
+  `permission_prompt` vs `idle_prompt`) has to be filtered by its type field;
+- raw OSC 133 from the agent is ignored once termic's hooks own it, so the
+  hooks must never signal with 133 themselves (they send `agent working` /
+  `agent done`).
+
+Then relaunch termic with a task of the new agent open and send nothing: no
+bell, no badge, no spinner left running. A restored session that reports a
+done must not announce it.
+
+**An agent reads its hooks at launch.** grok, claude and the others pick up an
+install on the next spawn, not in the running tab; the footer says "restart
+this tab" for that reason. Test an install with a fresh spawn.
+
+**Filter out the agent's own subagents.** muse fires hooks for its internal
+reminder subagents under their own `session_id`, and a subagent's `Stop` ends
+the tab's turn early. If the agent has subagents, check what their hook
+payloads look like before trusting a Done.
 
 **There is no UI step.** Settings → Agents' hooks row and the welcome wizard's
 list are both driven by `SUPPORTED` crossed with what is on PATH, so adding the
-id there is what makes the agent appear. The corollary is the part that looks
+id there is what makes the agent appear. It also puts the agent under "Install
+hooks for every agent": a user with that switch on gets the new agent's hooks
+installed on the next sync, without doing anything, so the install must be
+safe to run unattended (no prompt, no failure that leaves a half-written
+config). The corollary is the part that looks
 like a bug and is not: an agent deliberately left out shows NOTHING in that
 dropdown rather than a row explaining why. If you decide against hooks for an
 agent, the reasoning goes in `docs/agent-hooks.md` — that is the only place
@@ -295,12 +377,70 @@ turns every hook off.
 Bump `SCHEMA_VERSION` whenever a script BODY changes, or existing installs keep
 the old scripts forever. There is a test that fails if you forget.
 
+## 5b. Footer readouts: plan usage and the context window
+
+The task footer's agent chip shows two things per agent, and a new agent owes
+both a measured answer: **where does its plan usage come from, and where does
+its context window come from?** "Nowhere" is a valid answer, but it has to be
+the result of looking, and it is written down in `SOURCES`
+(`lib/agentContext.ts`), which is the one table the chip reads to decide
+whether to show "Usage unknown" and whether to offer "Install hooks".
+
+Look in this order, because each one is cheaper to build on than the next:
+
+1. **A status line command.** claude, agy, copilot and grok each pipe a JSON
+   payload to a configured command on every repaint or turn. Check: does it
+   carry `context_window` (and which fields), a quota or `rate_limits`, and does
+   the command inherit the env (`TERMIC_PTY`)? Does it render the command's
+   stdout (it must stay empty)? Does it run under `-p` (claude's does not, so a
+   print-mode probe measures nothing)? If yes, the shared
+   `STATUSLINE_TEMPLATE` (`agent_hooks.rs`) covers it: add the agent's field
+   names to the fallback lists in its context parse, and a `config_slot` entry
+   for where the slot lives. Claim it only when free.
+2. **A hook payload.** Look for token counts, or a `transcript_path` whose
+   file has them (codex's rollout `token_count`). Read it in the Done hook and
+   send `ctx` in the SAME write as done.
+3. **An in-process plugin** (opencode, pi): read the agent's own numbers.
+4. **Something on disk, read at turn end** (devin's `sessions.db`): a small
+   Tauri command, called from TerminalPane on the hook's done. Last resort,
+   because the format is the agent's internal business and will move.
+5. **Usage from the agent itself, cold** (codex's app-server RPC, devin's API,
+   copilot's own quota cache): an `agent_usage_*` command and an `askUsage`
+   arm. Never an OAuth refresh or a keychain read termic does not own
+   (`docs/ideas/usage-footer.md` has the full reasoning).
+
+Whatever the transport, the context goes out as ONE body, `ctx <used tokens>
+<window tokens> [<used percent>]`, on the trusted OSC 777 channel. Send the
+percent only when the agent's own formula is not tokens/window (codex reserves
+a 12000-token baseline), and send nothing rather than a zero when the window is
+not known yet. Usage goes on the existing `usage` body or a pull command.
+
+Then:
+
+- a `SOURCES` row: `"hooks"` if it only arrives once termic's hooks are in,
+  `"pull"` if termic asks for it, `null` if there is none. A wrong `"pull"`
+  tells the user to wait for a poll that does not exist when the fix is
+  installing hooks.
+- `reports_usage` only if the usage is real AND the agent has a login store
+  (see 1c).
+- `shortWindowWords` if the short window is not five hours.
+- the measured fields in docs/agent-hooks.md "The context window, per agent".
+
+The Settings > Agents card shows a "Show plan usage" and "Show context window"
+switch for every agent; the hints come from `SOURCES` too, so there is nothing
+else to wire.
+
 ## 6. Tests and docs
 
 - Rust: the seeded-default test (assert the flags AND the reasoning, including
   what is deliberately EMPTY).
 - TS: `agents.test.ts` for spawn-arg composition; keep `BUILTIN_FALLBACK` in
   step with the Rust table.
+- Footer readouts: a `statusline_run_as("<agent>", …)` test with the agent's
+  measured payload SHAPE (placeholders, never pasted output), or the
+  equivalent run of its hook or plugin (`codex_done_reports_…`,
+  `the_opencode_plugin_reports_…` run the real script / module), and a
+  `footerSources` expectation in `agentContext.test.ts`.
 - **Grep the whole test suite for agents used as EXAMPLES.** Giving codex
   `resume_id_args` broke `cli.e2e.ts`, which used codex as its example of an
   agent that cannot resume by id, and it was caught by CI on main rather than

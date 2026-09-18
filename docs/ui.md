@@ -848,6 +848,14 @@ behind its own figure: `85% wk` sits on a box filled 85% of the way across,
 with the unused part left as a visible track. It has been three designs, and
 the reasons are worth keeping because they are not about this chip.
 
+The context window (`NN% ctx`) is a third gauge of the same kind, LEADING the
+chip because it is this conversation's number rather than the account's. It
+uses its own thresholds (80 / 90, `contextLevel`), later than the plan's,
+because a filling context is a session's normal life and only the approach to
+compaction is news. Each readout can be switched off per agent in Settings >
+Agents (`agentFooterHidden` in prefs, stored as opt-outs); hiding usage also
+stops the pull transports asking, so a hidden number spawns nothing.
+
 One bar, showing whichever window was closest to its limit, sat hard against
 the 5h number and displayed the OTHER one. Two bars fixed that and left four
 marks for two facts, costing 56px of a bar that starts hiding chips at 780px

@@ -2,9 +2,19 @@ import * as RT from "@radix-ui/react-tooltip";
 import { type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-interface Props { content: ReactNode; children: ReactNode; side?: "top" | "right" | "bottom" | "left"; delay?: number; }
+interface Props {
+  content: ReactNode; children: ReactNode; side?: "top" | "right" | "bottom" | "left"; delay?: number;
+  /** Where the content sits along the trigger. `start` for a tall tooltip
+   *  beside a small trigger, so its first line is level with the trigger
+   *  rather than the whole box centred on it. */
+  align?: "start" | "center" | "end";
+  /** Draw the arrow in the border colour so it reads against a dark rail.
+   *  The default arrow is filled with the tooltip's own background, which is
+   *  right for a one-line label and invisible beside a tall panel. */
+  pointer?: boolean;
+}
 
-export function Tip({ content, children, side = "top", delay = 0 }: Props) {
+export function Tip({ content, children, side = "top", delay = 0, align = "center", pointer = false }: Props) {
   if (!content) return <>{children}</>;
   return (
     // delayDuration: 0 makes the tooltip open the instant the cursor lands
@@ -19,7 +29,7 @@ export function Tip({ content, children, side = "top", delay = 0 }: Props) {
         <RT.Portal>
           <RT.Content
             side={side}
-            align="center"
+            align={align}
             sideOffset={6}
             className={cn(
               // Body-sized 13.5px text (no more squinty tooltips), generous
@@ -29,7 +39,9 @@ export function Tip({ content, children, side = "top", delay = 0 }: Props) {
             )}
           >
             {content}
-            <RT.Arrow className="fill-[var(--color-bg-2)]" />
+            {pointer
+              ? <RT.Arrow width={12} height={7} className="fill-[var(--color-border)]" />
+              : <RT.Arrow className="fill-[var(--color-bg-2)]" />}
           </RT.Content>
         </RT.Portal>
       </RT.Root>

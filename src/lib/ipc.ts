@@ -332,6 +332,20 @@ export const agentUsageDevin = (agentId: string, docker: boolean, account: strin
   invoke<AgentUsage & { planType: string | null; accountId: string | null }>(
     "agent_usage_devin", { agentId, docker, account });
 
+/** copilot's usage, read from the cache copilot writes on every run
+ *  (`copilot-user-cache.json`). No spawn and no token: the CLI already asked
+ *  GitHub, and its answer is on disk. Host only. */
+export const agentUsageCopilot = (agentId: string, docker: boolean, account: string | null) =>
+  invoke<AgentUsage & { planType: string | null; accountId: string | null }>(
+    "agent_usage_copilot", { agentId, docker, account });
+
+/** One devin session's context window, from its session store. devin has no
+ *  live source (no status line, no token counts in any hook), so this is read
+ *  when a turn ends. `null` when there is nothing to say yet. */
+export const agentContextDevin = (agentId: string, account: string | null, sessionId: string) =>
+  invoke<{ usedTokens: number; windowTokens: number } | null>(
+    "agent_context_devin", { agentId, account, sessionId });
+
 /** Per-task deny counters surfaced in the TerminalPane footer
  *  chip. Currently only `network` (the proxy bumps it on every CONNECT
  *  / HTTP request that fails the host allowlist). Cheap to poll. */
@@ -1340,3 +1354,8 @@ export const agentHooksRemove  = (agentId: string) => invoke<AgentHookStatus>("a
 /** Bring already-installed hooks up to this build's set. Safe to call on every
  *  startup: a no-op unless something we generate actually changed. */
 export const agentHooksSync = () => invoke<string[]>("agent_hooks_sync");
+/** "Install all hooks": persisted in settings.json. Turning it on installs
+ *  for every supported agent on PATH right away and returns those it wired;
+ *  every later sync (boot, the Agents page) keeps new agents covered. */
+export const agentHooksAutoGet = () => invoke<boolean>("agent_hooks_auto_get");
+export const agentHooksAutoSet = (on: boolean) => invoke<string[]>("agent_hooks_auto_set", { on });

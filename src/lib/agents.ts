@@ -636,6 +636,19 @@ export const BUILTIN_OUTPUT_SIGNALS: Record<string, Partial<SignalPatterns>> = {
 
 export const BUILTIN_NOTIFY_IGNORE: Record<string, string[]> = {
   claude: ["is waiting for your input"],
+  // grok announces every finished turn over OSC 9, ~180ms after its Stop hook:
+  // `Turn complete in 3.5s. · <session title>` (measured in the work-state
+  // log). That is a done, not a request, and the unmatched body rang the
+  // needs-you bell on every grok turn. Anchored, so a body that merely
+  // mentions a turn is still read.
+  grok: ["^Turn complete\\b"],
+  // devin's own end-of-turn OSC 9/777 (`Devin finished`), same shape, same
+  // bell.
+  devin: ["^Devin finished$"],
+  // muse's own end-of-turn OSC 9, `<workspace> — done (18s)`, 10 to 20s after
+  // its Stop hook (measured in the work-state log). Anchored on the tail, since
+  // the head is the workspace name.
+  muse: ["\\u2014 done \\(\\d+s\\)$"],
 };
 
 /** Built-in ALLOW-LIST of notification bodies, per agent. When an agent has
@@ -1097,6 +1110,23 @@ export function spawnResumeShape(opts: {
  *         (`codex resume --last <yolo>`) attaches its global flag to
  *         the subcommand instead of the root binary.
  */
+/** Agents whose `name_args` may ONLY go on a spawn that CREATES a session.
+ *
+ *  copilot 1.0.86 refuses the name on every resume, and exits 1 before its
+ *  TUI draws, which termic reads as "resume failed" and answers with a fresh
+ *  session (measured, both shapes):
+ *
+ *    --session-id <existing> --name x
+ *      error: option '--name' cannot be used with option '--session-id <id>'
+ *      when it resolves to an existing or remote session or task.
+ *    --continue --name x
+ *      error: the argument '--continue' cannot be used with '--name <name>'
+ *
+ *  claude is NOT here: it takes `--name` with `--resume`, and relies on it
+ *  to keep the task name on a session resumed across relaunches. Keyed by
+ *  the built-in base, so a clone of copilot inherits the rule. */
+export const NAME_ONLY_ON_NEW_SESSION = new Set(["copilot"]);
+
 /** Extra args composed into UNATTENDED spawns only (a prompt will be
  *  injected with no human at the keyboard, e.g. run-prompt "new agent"):
  *  suppress startup update checks so a blocking "Update available!" menu
@@ -1164,6 +1194,9 @@ export function spawnArgsForCli(
 ): string[] {
   const { args, caps } = findAgent(cli);
   const vars = taskVars(opts.task, opts.sessionUuid);
+  const nameOnlyOnNew = NAME_ONLY_ON_NEW_SESSION.has(
+    builtinBaseId(cli, useApp.getState().agents),
+  );
 
   const hasIdResume = (caps.session_id_args?.length ?? 0) > 0
                    && (caps.resume_id_args?.length ?? 0) > 0;
@@ -1204,7 +1237,12 @@ export function spawnArgsForCli(
     // resumeOverride is active: renaming the session on every relaunch
     // reassigns its display name out from under the override's target, so
     // the next `--resume <name>` no longer matches (breaks after 1 relaunch).
-    ...(opts.isPrimary && opts.task && !override ? (caps.name_args ?? []) : []),
+    //
+    // For an agent that only names a NEW session (NAME_ONLY_ON_NEW_SESSION),
+    // only the spawn that creates one: the id mint, or no resume at all.
+    ...(opts.isPrimary && opts.task && !override
+        && (!nameOnlyOnNew || isFirstIdSpawn || resumeBlock.length === 0)
+      ? (caps.name_args ?? []) : []),
     ...(opts.yolo ? (caps.yolo_args ?? []) : []),
   ];
   return composed.map(a => expandArg(a, vars));

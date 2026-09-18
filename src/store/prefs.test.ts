@@ -558,3 +558,53 @@ describe("prefs: systemScheme follows the OS appearance", () => {
     expect(resolveThemeFull(custom.id, usePrefs.getState().systemScheme)).toBe(custom.id);
   });
 });
+
+// The footer's per-agent readouts. Stored as OPT-OUTS, so an agent nobody has
+// touched (including one added after this shipped) shows both, and a corrupt
+// blob loses only the opt-outs.
+describe("prefs: agentFooterHidden", () => {
+  const KEY = "agentFooterHidden";
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("shows everything by default", async () => {
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().agentFooterHidden).toEqual({});
+  });
+
+  it("hides and re-shows one readout for one agent, and persists it", async () => {
+    const { usePrefs } = await import("./prefs");
+    const s = usePrefs.getState();
+    s.setAgentFooterShown("claude", "context", false);
+    expect(usePrefs.getState().agentFooterHidden).toEqual({ claude: { context: true } });
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ claude: { context: true } });
+    s.setAgentFooterShown("claude", "usage", false);
+    s.setAgentFooterShown("claude", "context", true);
+    expect(usePrefs.getState().agentFooterHidden).toEqual({ claude: { usage: true } });
+    s.setAgentFooterShown("claude", "usage", true);
+    // Nothing hidden leaves no entry behind at all.
+    expect(usePrefs.getState().agentFooterHidden).toEqual({});
+  });
+
+  it("does not write an unchanged value (bear trap 8)", async () => {
+    const { usePrefs } = await import("./prefs");
+    const before = usePrefs.getState().agentFooterHidden;
+    usePrefs.getState().setAgentFooterShown("codex", "usage", true);
+    expect(usePrefs.getState().agentFooterHidden).toBe(before);
+  });
+
+  it("reads back only `true` opt-outs from a stored blob", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ a: { usage: true, context: "yes" }, b: 5, c: { context: true } }));
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().agentFooterHidden).toEqual({ a: { usage: true }, c: { context: true } });
+  });
+
+  it("survives a corrupt blob", async () => {
+    localStorage.setItem(KEY, "{nope");
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().agentFooterHidden).toEqual({});
+  });
+});

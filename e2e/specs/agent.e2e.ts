@@ -19,6 +19,7 @@ import {
   archiveTask,
   clickByText,
   clickWhenVisible,
+  waitVisible,
   cliRpc,
   ensureActiveTask,
   openTask,
@@ -1447,6 +1448,14 @@ describe("one turn raises one notification", () => {
 describe("agent notifications", () => {
   let taskId!: string;
   after(async () => {
+    // The footer toggles case persists opt-outs; a failure half way must not
+    // leave a later spec's chip without its readouts.
+    await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      for (const [id, h] of Object.entries(p.agentFooterHidden)) {
+        for (const part of Object.keys(h as object)) p.setAgentFooterShown(id, part as "usage" | "context", true);
+      }
+    });
     if (taskId) await archiveTask(taskId);
   });
 
@@ -1661,6 +1670,121 @@ describe("agent notifications", () => {
     });
     expect(await taskViewBadge(taskId!)).not.toBe("attention");
     expect(await sidebarBadge(taskId!)).not.toBe("attention");
+  });
+
+  // The context window rides the same chip as the plan windows, as its own
+  // gauge, through the same trusted OSC channel with a `ctx` body. Driven
+  // through the real terminal: the fake agent writes exactly what claude's
+  // status line writes, so the parse, the per-task store and the render are
+  // all the real ones.
+  it("shows the context window in the chip beside the plan windows", async () => {
+    await ensureActiveTask(taskId!);
+    await submitToAgent(taskId!, "#usage ctx 170000 200000");
+    const gauge = await browser.$('[data-testid="context-gauge"]');
+    await gauge.waitForExist({ timeout: 20_000, timeoutMsg: "the context gauge never appeared" });
+    expect(await gauge.getText()).toContain("85%");
+    expect(await gauge.getText()).toContain("ctx");
+    expect(await gauge.getAttribute("data-usage-fill")).toBe("85");
+    const chip = await browser.$('[data-testid="usage-chip"]');
+    expect(await chip.getAttribute("data-context-percent")).toBe("85");
+    // The plan windows are still there beside it: one chip, both readouts.
+    expect(await (await browser.$$('[data-testid="usage-gauge"]')).length).toBe(2);
+  });
+
+  // Its own `it` for the budget reason the gauge screenshots have one: every
+  // fake-agent round trip spends a large share of mocha's 60s.
+  it("prefers the agent's own context percentage over tokens/window", async () => {
+    await ensureActiveTask(taskId!);
+    // An agent-supplied percentage wins over tokens/window (codex reserves a
+    // baseline, so its figure is not the plain ratio).
+    await submitToAgent(taskId!, "#usage ctx 34357 258400 9");
+    await browser.waitUntil(
+      async () => (await (await browser.$('[data-testid="context-gauge"]')).getAttribute("data-usage-fill")) === "9",
+      { timeout: 20_000, timeoutMsg: "the agent's own percentage never replaced the ratio" },
+    );
+    expect(await (await browser.$('[data-testid="usage-chip"]')).getAttribute("data-context-percent")).toBe("9");
+  });
+
+  // The popover alone: the reading above is still on screen, so this spends
+  // no round trip, only the render and one capture.
+  it("spells out the context's token counts in the popover", async () => {
+    await ensureActiveTask(taskId!);
+    await clickWhenVisible('[data-testid="usage-chip"]');
+    await waitVisible('[data-testid="context-row"]');
+    expect(await browser.execute(() =>
+      document.querySelector('[data-testid="context-row"]')?.textContent ?? ""))
+      .toContain("34k / 258k tokens");
+    await snap("context-popover.png");
+    await clickWhenVisible('[data-testid="usage-chip"]');
+    await browser.waitUntil(
+      async () => !(await browser.execute(() => !!document.querySelector('[data-testid="context-row"]'))),
+      { timeout: 5_000, timeoutMsg: "the popover never closed" },
+    );
+  });
+
+  it("never badges the tab for a context report", async () => {
+    await ensureActiveTask(taskId!);
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      s.clearAttention(id, s.tabs[id][0].id);
+    }, taskId);
+    await setWindowPresence(false);
+    await submitToAgent(taskId!, "#usage ctx 50000 200000");
+    await browser.waitUntil(async () => {
+      const el = await browser.$('[data-testid="usage-chip"]');
+      return (await el.isExisting()) && (await el.getAttribute("data-context-percent")) === "25";
+    }, { timeout: 20_000, timeoutMsg: "the context report never landed" });
+    await browser.waitUntil(async () => (await quietFor(taskId!)) > 6_000, {
+      timeout: 30_000, interval: 500, timeoutMsg: "PTY never went quiet after the context report",
+    });
+    expect(await taskViewBadge(taskId!)).not.toBe("attention");
+    expect(await sidebarBadge(taskId!)).not.toBe("attention");
+    await setWindowPresence(true);
+  });
+
+  // The per-agent switches in Settings > Agents, driven through the real
+  // card. Each one hides exactly its readout; the other stays, and turning it
+  // back on brings the number back without a new report (the reading is kept,
+  // only the render is gated).
+  it("hides and restores each readout from the agent's settings card", async () => {
+    const agentId = await browser.execute((id) =>
+      window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)!.cli, taskId) as string;
+    const toggle = async (label: string) => {
+      await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
+      await clickWhenVisible(`[data-agent-id="${agentId}"]`);
+      await waitVisible(`[data-testid="agent-footer-${agentId}"]`);
+      const clicked = await browser.execute((id, l) => {
+        const box = document.querySelector(`[data-testid="agent-footer-${id}"]`);
+        const row = [...(box?.children ?? [])].find(r => r.textContent?.includes(l));
+        const sw = row?.querySelector('[role="switch"]') as HTMLElement | null;
+        sw?.click();
+        return !!sw;
+      }, agentId, label);
+      expect(clicked).toBe(true);
+      await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+      await ensureActiveTask(taskId!);
+    };
+    const shown = () => browser.execute(() => ({
+      ctx: !!document.querySelector('[data-testid="context-gauge"]'),
+      usage: document.querySelectorAll('[data-testid="usage-gauge"]').length,
+    }));
+
+    await toggle("Show context window");
+    await browser.waitUntil(async () => (await shown()).ctx === false,
+      { timeout: 8_000, timeoutMsg: "hiding context left the gauge on screen" });
+    expect((await shown()).usage).toBe(2);
+
+    await toggle("Show plan usage");
+    await browser.waitUntil(async () => (await shown()).usage === 0,
+      { timeout: 8_000, timeoutMsg: "hiding usage left the plan gauges on screen" });
+
+    await toggle("Show context window");
+    await toggle("Show plan usage");
+    await browser.waitUntil(async () => {
+      const s = await shown();
+      return s.ctx && s.usage === 2;
+    }, { timeout: 8_000, timeoutMsg: "turning both back on did not restore both readouts" });
+    expect(await browser.execute(() => window.__termic!.usePrefs.getState().agentFooterHidden)).toEqual({});
   });
 
   // One task, two agents (GH #277). The footer's chip used to be hard-bound to

@@ -85,3 +85,37 @@ describe("agent hook OSC sequence", () => {
     expect(HOOK_OSC_TITLE).toBe("termic");
   });
 });
+
+describe("termic's own turn bodies", () => {
+  it("pins the bodies the Rust hooks write", async () => {
+    const m = await import("./agentHooks");
+    // KEEP IN SYNC with agent_hooks::WORKING_BODY / DONE_BODY.
+    expect(m.HOOK_OSC_WORKING_BODY).toBe("agent working");
+    expect(m.HOOK_OSC_DONE_BODY).toBe("agent done");
+    // Exact-match routed next to ready and attention: none may equal another.
+    const all = [m.HOOK_OSC_WORKING_BODY, m.HOOK_OSC_DONE_BODY, m.HOOK_OSC_READY_BODY, m.HOOK_OSC_BODY];
+    expect(new Set(all).size).toBe(all.length);
+  });
+});
+
+describe("hookOscSessionId accepts devin's slugs", () => {
+  it("takes a UUID or a slug, and nothing that could reach a command line as more", async () => {
+    const { hookOscSessionId } = await import("./agentHooks");
+    expect(hookOscSessionId("session brassy-polish")).toBe("brassy-polish");
+    expect(hookOscSessionId("session 66666666-7777-4888-9999-aaaaaaaaaaaa")).toBe("66666666-7777-4888-9999-aaaaaaaaaaaa");
+    for (const bad of ["session -rf", "session a b", "session a;b", "session $(x)", "session ", "session _x"]) {
+      expect(hookOscSessionId(bad), bad).toBeNull();
+    }
+  });
+});
+
+describe("an agent's own end-of-turn notification is not a request", () => {
+  it("does not badge grok's 'Turn complete' or devin's 'Devin finished'", () => {
+    expect(notificationWantsAttention("grok", "Turn complete in 3.5s. · Repeated greetings", [])).toBe(false);
+    expect(notificationWantsAttention("devin", "Devin finished", [])).toBe(false);
+    expect(notificationWantsAttention("muse", "my-repo \u2014 done (18s)", [])).toBe(false);
+    expect(notificationWantsAttention("muse", "Muse needs your approval to run a command", [])).toBe(true);
+    // A permission request from grok still is one.
+    expect(notificationWantsAttention("grok", "Grok needs your permission to run bash", [])).toBe(true);
+  });
+});

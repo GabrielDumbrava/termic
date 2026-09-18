@@ -28,6 +28,7 @@ import { isTerminalEntry, BUILTIN_TITLE_SIGNALS, builtinBaseId, YOLO_ARGS_NOTES 
 import { SubSection } from "@/components/settings/SubSection";
 import { Toggle } from "@/components/settings/Controls";
 import { usePrefs } from "@/store/prefs";
+import { footerReports } from "@/lib/agentContext";
 
 export function AgentsSection() {
   const terminalCopyOnSelect = usePrefs(s => s.terminalCopyOnSelect);
@@ -992,6 +993,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
       )}
 
       <div className="grid grid-cols-1 gap-3">
+        {!isTerminal && <FooterReadouts agentId={agent.id} />}
         <Field label="Command" hint={isTerminal
           ? "Run through your login shell (quoting, pipes, and rc-file PATH all work). The shell stays interactive after the command exits. Placeholders: {task_slug}, {task_name}, {task_path}, {branch}, {port}."
           : "Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work, and shell-style `VAR=val cmd` prefixes won't either; use the Environment box below for env vars."}>
@@ -1463,5 +1465,37 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {hint && <div className="mt-0.5 mb-1.5 text-[12px] text-[var(--color-fg-dim)]">{hint}</div>}
       {children}
     </label>
+  );
+}
+
+/** What this agent's chip in the task footer shows. Two switches, one per
+ *  readout, stored in prefs as opt-outs so a new agent shows both. The hint
+ *  says when the agent has no source for one, rather than hiding the switch:
+ *  a missing switch reads as a missing feature, and a clone of a reporting
+ *  agent inherits the source anyway. */
+function FooterReadouts({ agentId }: { agentId: string }) {
+  const agents = useApp(s => s.agents);
+  const reports = footerReports(builtinBaseId(agentId, agents));
+  const hidden = usePrefs(s => s.agentFooterHidden[agentId]);
+  const setShown = usePrefs(s => s.setAgentFooterShown);
+  return (
+    <div data-testid={`agent-footer-${agentId}`} className="grid grid-cols-1 gap-3 rounded-md border border-[var(--color-border-soft)] px-3 py-2.5">
+      <Toggle
+        label="Show plan usage in the footer"
+        hint={reports.usage
+          ? "How much of this account's rolling limits is spent (session and weekly), next to the account name."
+          : "This agent has no usage source yet, so there is nothing to show either way."}
+        value={!hidden?.usage}
+        onChange={v => setShown(agentId, "usage", v)}
+      />
+      <Toggle
+        label="Show context window in the footer"
+        hint={reports.context
+          ? "How full the current conversation is, from the tab of this agent you used last. Click the chip for the token counts."
+          : "This agent does not report its context window, so there is nothing to show either way."}
+        value={!hidden?.context}
+        onChange={v => setShown(agentId, "context", v)}
+      />
+    </div>
   );
 }
