@@ -607,6 +607,40 @@ describe("settings rail", () => {
     expect(interfacePane).not.toContain("Terminal font");
   });
 
+  // GH #312: off by default, since every row in the compact rail already
+  // carries an instant Tip, so the overlay slide-in is a preference to
+  // restore, not something the rail needs for icons to stay legible.
+  it("gates the compact sidebar's hover reveal, off by default", async () => {
+    const LABEL = "Hover to reveal the collapsed sidebar";
+    let original: boolean | undefined;
+    try {
+      await clickRail("Appearance");
+      await clickAppearanceTab("interface");
+      await waitForText(LABEL);
+
+      original = await browser.execute(
+        () => window.__termic!.usePrefs.getState().sidebarHoverReveal,
+      );
+      expect(original).toBe(false);
+
+      await clickToggleByLabel(LABEL);
+      await browser.waitUntil(
+        async () =>
+          (await browser.execute(
+            () => window.__termic!.usePrefs.getState().sidebarHoverReveal,
+          )) === true,
+        { timeout: 8_000, timeoutMsg: "sidebarHoverReveal pref never flipped on" },
+      );
+      expect(await ariaCheckedFor(LABEL)).toBe("true");
+    } finally {
+      if (original !== undefined) {
+        await browser.execute((v) => {
+          window.__termic!.usePrefs.getState().setSidebarHoverReveal(v);
+        }, original);
+      }
+    }
+  });
+
   // GH #140: the renderer control used to be hidden behind !IS_MAC, forcing
   // Mac users to hand-edit localStorage to escape WebGL. It is now a three-way
   // picker (webgl / canvas / dom) on every platform. The suite runs on macOS,
