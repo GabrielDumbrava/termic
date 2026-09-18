@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.6.0",
+      "date": "2026-09-18",
+      "summary": "Context window in the footer, plan usage for more agents, and quieter notifications."
+    },
+    {
       "version": "1.5.1",
       "date": "2026-09-17",
       "summary": "Scheduled messages, agent scratchpads from the CLI, and a GitHub-style markdown preview."

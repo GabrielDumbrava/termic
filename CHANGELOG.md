@@ -4,6 +4,43 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.6.0] - 2026-09-18
+
+Context window in the footer, plan usage for more agents, and quieter notifications.
+
+### Features
+- **The context window, next to plan usage.** Each agent's footer chip now
+  shows how full the current conversation is (`42% ctx`), and clicking it
+  spells out the token counts. It works for Claude, Codex, Antigravity,
+  GitHub Copilot, Grok, opencode, pi and Devin, each reporting through the
+  hooks Termic installs.
+- **Plan usage for Antigravity and GitHub Copilot**, beside Claude, Codex and
+  Devin. Copilot's is its monthly quota.
+- **Agent hooks for GitHub Copilot, pi and Muse Code**, so their tabs report
+  when a turn starts, when it needs you and when it is done.
+- **Install hooks for every agent** with one switch at the top of Settings >
+  Agents > Agent hooks. It also covers agents you add later.
+- **Choose what each agent's chip shows.** Every agent card in Settings >
+  Agents has a switch for plan usage and one for the context window.
+- **Antigravity resumes its own conversation** in a main-checkout task, rather
+  than whichever one ran last in that folder.
+- **The compact sidebar says what is inside a task.** Hovering a task in the
+  collapsed sidebar lists its agents and terminals with their titles and state.
+
+### Bug fixes
+- A hook stuck writing to a closed tab could stop every new Claude session from
+  starting, in every Termic window. Hooks now give up after two seconds.
+- GitHub Copilot started a fresh session instead of resuming the task's own.
+- Grok rang the needs-you bell a minute after every turn, and Grok's and
+  Devin's own "turn finished" messages were shown as needing you.
+- Devin's session name could appear as a notification.
+- Relaunching Termic announced "agent finished" for agents nobody had sent
+  anything to.
+- opencode hooks never upgraded after their first install, and opencode's turn
+  took several seconds longer than its reply to show as done.
+- The collapsed sidebar shows no scrollbar; a fade marks that there is more
+  below.
+
 ## [1.5.1] - 2026-09-17
 
 Scheduled messages, agent scratchpads from the CLI, and a GitHub-style markdown preview.
