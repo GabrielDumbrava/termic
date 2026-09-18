@@ -1616,11 +1616,16 @@ describe("compact rail", () => {
   });
 
   it("scrolls without a visible scrollbar", async () => {
-    const hidden = await browser.execute(() => {
+    // Measured as the space a scrollbar takes, not as `scrollbar-width`:
+    // macOS 14's WebKit (the CI runner) predates that property and reads it
+    // back as something else, while the `::-webkit-scrollbar` half of
+    // `.no-scrollbar` hides the bar there all the same.
+    const bar = await browser.execute(() => {
       const el = document.querySelector('[data-rail-task-id]')!.closest(".overflow-y-auto") as HTMLElement;
-      return getComputedStyle(el).scrollbarWidth;
+      return { cls: el.classList.contains("no-scrollbar"), gutter: el.offsetWidth - el.clientWidth };
     });
-    expect(hidden).toBe("none");
+    expect(bar.cls).toBe(true);
+    expect(bar.gutter).toBe(0);
     await snap("compact-rail.png");
   });
 });
