@@ -38,6 +38,7 @@ import { lastAgentLine } from "@/lib/resumeTail";
 import { parseUsageBody } from "@/lib/agentUsage";
 import { parseContextBody } from "@/lib/agentContext";
 import { FooterAgentChip } from "./AgentChip";
+import { footerChipMode } from "./footerChipMode";
 import { activeFooterAgent, footerAgentIds, footerAgentKey } from "@/lib/footerAgents";
 import { useAgentUsage } from "@/store/agentUsage";
 import { useAgentContext } from "@/store/agentContext";
@@ -3635,20 +3636,30 @@ export function FooterBar({ task, sandboxWarning }: {
             account has spent. They were two chips and two panels, which the
             account pill's own comment already argued against ("forms one unit
             with the usage chip"). */}
-        {agentIds.map(id => (
-          <FooterAgentChip
-            key={id}
-            taskId={task.id}
-            agentId={id}
-            cwd={task.path}
-            docker={!!task.docker_sandbox_enabled}
-            visible={isActiveTask}
-            // Never true for a single-agent task, which is every task until
-            // somebody opens a second agent in one: nothing to choose between,
-            // so nothing to drop.
-            secondary={agentIds.length > 1 && id !== activeAgent}
-          />
-        ))}
+        {/* The chips get their OWN box so the group can shed width from the
+            left without ever pushing the sandbox status off the end. Without
+            it the chips are all shrink-0 inside an ml-auto group, so five
+            agents simply ran past the bar and under the right panel. */}
+        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+          {agentIds.map(id => {
+            // Never secondary in a single-agent task, which is every task
+            // until somebody opens a second agent in one: nothing to choose
+            // between, so nothing to drop.
+            const { secondary, compact } = footerChipMode(agentIds, activeAgent, id);
+            return (
+              <FooterAgentChip
+                key={id}
+                taskId={task.id}
+                agentId={id}
+                cwd={task.path}
+                docker={!!task.docker_sandbox_enabled}
+                visible={isActiveTask}
+                secondary={secondary}
+                compact={compact}
+              />
+            );
+          })}
+        </div>
         {mode !== "off" && total > 0 && (
           <DeniedHostsPopover taskId={task.id} cli={task.cli ?? "claude"} count={total} mode={mode} />
         )}

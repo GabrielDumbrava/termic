@@ -73,7 +73,7 @@ const STALE_AFTER_MS = 15 * 60_000;
  *  which was the reason `useAgentAccounts` was lifted in the first place -
  *  they are now the same chip, so the shared owner moved down here with them.
  */
-export function FooterAgentChip({ taskId, agentId, cwd, docker, visible, secondary }: {
+export function FooterAgentChip({ taskId, agentId, cwd, docker, visible, secondary, compact }: {
   taskId: string;
   agentId: string;
   cwd?: string;
@@ -83,6 +83,10 @@ export function FooterAgentChip({ taskId, agentId, cwd, docker, visible, seconda
    *  than one. Dropped when the footer is too narrow to hold every chip, so
    *  what survives is the agent whose tab is on screen. */
   secondary: boolean;
+  /** Render this chip down to its icon and context figure. See AgentChip's
+   *  `compact`; the footer turns it on for secondary agents once a task runs
+   *  enough of them that full chips cannot fit at any window width. */
+  compact: boolean;
 }) {
   // The account THIS agent's process is running as, which is the running one
   // and not the configured one: a switch applies on the next spawn, so between
@@ -119,11 +123,12 @@ export function FooterAgentChip({ taskId, agentId, cwd, docker, visible, seconda
       // bar's own label-shedding rules take over at 680 and 560. The two-agent
       // case in e2e/specs/agent.e2e.ts re-measures all of this.
       className={secondary ? "@max-[780px]:hidden" : undefined}
+      compact={compact}
     />
   );
 }
 
-export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, className }: {
+export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, className, compact = false }: {
   taskId: string;
   /** The agent ENTRY id (a clone keeps its own). Half of the account key: the
    *  other half is `liveAccount`, because one entry can now hold several
@@ -151,6 +156,20 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
    *  task runs; there is no wrapper element to hang that on, because an empty
    *  one would still spend a flex gap on a chip that rendered nothing. */
   className?: string;
+  /** Shed everything but the agent's icon and its CONTEXT figure.
+   *
+   *  The footer used to have one shedding rule: hide a secondary agent's whole
+   *  chip below 780px, a width measured for the two-agent case. A task can run
+   *  as many agents as it has tabs, and at five the chips wanted ~870px on
+   *  their own, so the rule never fired and the group ran off the end of the
+   *  bar and under the right panel (GH #314 screenshot thread).
+   *
+   *  What survives is the context figure, because that is the one number that
+   *  belongs to THIS conversation and moves while you work; 5h and wk belong
+   *  to the account, are identical across every tab signed into it, and are a
+   *  click away in the popover. The account name goes too: the brand icon
+   *  already says which agent this is. */
+  compact?: boolean;
 }) {
   const { account: liveAccount, view: accountsView, refresh: refreshAccounts } = accounts;
   // Per-agent opt-outs from Settings > Agents. Hiding usage also stops the
@@ -349,6 +368,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
                     : `${agentDisplayName(agentId, agents)} plan usage`
           }
           data-usage-dismissed={quiet ? "1" : ""}
+          data-compact={compact ? "1" : ""}
           className={cn(
             "flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 tabular-nums",
             "hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]",
@@ -380,7 +400,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               something needs attention: the brand icon already says which
               agent this is, so a second permanent icon would be width spent
               on nothing. */}
-          {hasAccounts && (
+          {hasAccounts && !compact && (
             <>
               {sw.alert && <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />}
               <span className="max-w-[14ch] truncate">{sw.shown.now}</span>
@@ -418,15 +438,17 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               belong to the account. Same gauge, so the chip reads as one row
               of figures rather than two different widgets. */}
           {ctx && <ContextReadout entry={ctx} />}
-          {unknown && !quiet && (
+          {/* Everything below belongs to the ACCOUNT, not to this
+              conversation, so it is what a compact chip sheds. */}
+          {!compact && unknown && !quiet && (
             <span data-testid="usage-unknown" className="text-[var(--color-fg-faint)]">Usage unknown</span>
           )}
-          {entry?.session && (
+          {!compact && entry?.session && (
             <UsageWindowReadout
               window={entry.session} unit={words.chip} stale={stale} testid="5h"
             />
           )}
-          {entry?.weekly && (
+          {!compact && entry?.weekly && (
             <UsageWindowReadout
               window={entry.weekly} unit="wk" stale={stale} testid="wk"
             />
@@ -440,10 +462,10 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
           {/* An uncapped plan (devin Enterprise, ACU-billed): what it used this
               billing period, as a plain count. No bar and no warn colour,
               because there is no limit for it to approach. */}
-          {entry?.consumed && !entry.session && !entry.weekly && (
+          {!compact && entry?.consumed && !entry.session && !entry.weekly && (
             <span data-testid="usage-consumed" className="tabular-nums">{formatConsumed(entry.consumed)}</span>
           )}
-          {costChipVisible(entry, spend) && (
+          {!compact && costChipVisible(entry, spend) && (
             <>
               {(entry?.session || entry?.weekly) && <span className="text-[var(--color-fg-faint)]">·</span>}
               <span data-usage-spend={spend.toFixed(4)}>{formatUsd(spend)}</span>

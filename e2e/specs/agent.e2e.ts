@@ -1600,6 +1600,56 @@ describe("agent notifications", () => {
     expect((await week.getCSSProperty("background-image")).value).toContain("gradient");
   });
 
+  // A task runs as many agents as it has tabs. The footer's original shedding
+  // rule was one hide-below-780px on a secondary chip, a width measured for
+  // the TWO-agent case, so five agents in one task never tripped it and the
+  // chips ran off the end of the bar and under the right panel. Order matters
+  // more than the widths: detail goes before agents do, and the agent whose
+  // tab is on screen keeps its full chip.
+  //
+  // Tabs are added through the app's own store rather than spawned: this is a
+  // LAYOUT case, the chip renders per distinct cli whether or not a process
+  // came up, and waiting on three real spawns would buy nothing and cost the
+  // budget the case above is already written against.
+  it("sheds chip detail before it sheds agents when a task runs several", async () => {
+    await ensureActiveTask(taskId!);
+    const before = (await browser.$$('[data-testid="usage-chip"]')).length;
+    await browser.execute((t) => {
+      for (const cli of ["codex", "gemini", "grok"]) {
+        window.__termic!.useApp.getState().addTab(
+          t, { id: crypto.randomUUID(), type: "terminal", cli, title: cli } as never,
+        );
+      }
+    }, taskId);
+    await browser.waitUntil(
+      async () => (await browser.$$('[data-testid="usage-chip"]')).length > before,
+      { timeout: 10_000, timeoutMsg: "the extra agents never got a footer chip" },
+    );
+
+    // Read it all in one pass in the page: wdio element arrays buy nothing
+    // here and the geometry has to be measured in the window anyway.
+    const seen = await browser.execute(() => {
+      const chips = [...document.querySelectorAll('[data-testid="usage-chip"]')];
+      const bar = document.querySelector('[data-testid="task-footer"]');
+      const right = bar ? bar.getBoundingClientRect().right : 0;
+      return {
+        total: chips.length,
+        compact: chips.filter(c => c.getAttribute("data-compact") === "1").length,
+        shedWindows: document.querySelectorAll(
+          '[data-compact="1"] [data-usage-window="5h"], [data-compact="1"] [data-usage-window="wk"]',
+        ).length,
+        escaped: chips.filter(c => c.getBoundingClientRect().right > right + 1).length,
+      };
+    });
+    // Exactly one full chip: the active agent's. Everything else compacts.
+    expect(seen.compact).toBe(seen.total - 1);
+    // What a compact chip sheds is the ACCOUNT's windows, never the context
+    // figure, which is the only number that belongs to this conversation.
+    expect(seen.shedWindows).toBe(0);
+    // The reported bug itself: no chip may extend past the bar it lives in.
+    expect(seen.escaped).toBe(0);
+  });
+
   // Its own `it`, and the reason is the budget the case above is written
   // against: that one spends most of 60s on a real agent round trip, and two
   // screenshots on top of it tipped it into mocha's timeout. Tests in a file

@@ -864,6 +864,22 @@ marks for two facts, costing 56px of a bar that starts hiding chips at 780px
 straight at the thing, which is the only evidence that counts for a footer
 meant to be read at a glance.
 
+**The bar sheds DETAIL before it sheds AGENTS.** A task runs as many agents as
+it has tabs, and the original shedding rule was a single one: hide a secondary
+agent's whole chip below 780px. That width was measured for the two-agent case,
+so with five agents in one task the chips wanted ~870px on their own, the rule
+never fired, and the group ran off the end of the bar and under the right
+panel. Now `footerChipMode` (its own module, so the order is unit-testable
+without a window) compacts every secondary chip past
+`FULL_CHIP_AGENT_LIMIT` agents: icon and `NN% ctx` only, dropping the account
+name and the 5h/wk figures. Context is what survives because it is the only
+number that belongs to THIS conversation and moves while you work, where the
+plan windows are identical across every tab signed into that account and are
+one click away in the popover. The agent whose tab is on screen always keeps
+its full chip. The chips also sit in their own `min-w-0 overflow-hidden` box
+inside the right group, so width is shed from the left and the sandbox status
+stays pinned as the rightmost item whatever happens.
+
 **A fill behind text costs that text contrast, and the cost lands where you
 can least afford it.** Amber text on an amber fill measures 3.3:1 in dark
 mode, so the number gets hardest to read exactly when it matters most, and
