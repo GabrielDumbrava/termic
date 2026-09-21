@@ -34,6 +34,7 @@ import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, hookOscSessionId } from "@/lib/agentHooks";
+import { lastAgentLine } from "@/lib/resumeTail";
 import { parseUsageBody } from "@/lib/agentUsage";
 import { parseContextBody } from "@/lib/agentContext";
 import { FooterAgentChip } from "./AgentChip";
@@ -57,7 +58,7 @@ import * as ipc from "@/lib/ipc";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, spawnResumeShape, resumeIdArgsForCli, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS, STICKY_DONE_MS, ATTENTION_ECHO_MS, builtinBaseId, BUILTIN_OUTPUT_SIGNALS, resolveAgent } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, spawnResumeShape, resumeIdArgsForCli, resumePickerArgsForCli, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS, STICKY_DONE_MS, ATTENTION_ECHO_MS, builtinBaseId, BUILTIN_OUTPUT_SIGNALS, resolveAgent } from "@/lib/agents";
 import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
@@ -344,6 +345,21 @@ export function TerminalPane({ task, tab, active }: Props) {
   const lastSpawnWasResumeRef = useRef(false);
   const failedResumeRef = useRef(false);
   const RESUME_FAILURE_MS = 2000;
+  // GH #311. Set by a failed stored-id resume when the agent has a session
+  // picker: the NEXT spawn opens that picker instead of minting a fresh
+  // session, so the user continues the conversation they meant to. The id
+  // they pick comes back over the hooks (`session <id>` OSC), as any
+  // `/resume` does. `pickerSpawnRef` marks the spawn that IS the picker, so
+  // leaving it (Esc exits 1) falls through to a fresh session exactly once
+  // rather than looping back into the picker.
+  const pickerNextRef = useRef(false);
+  const pickerSpawnRef = useRef(false);
+  // What a resume attempt printed in its first RESUME_FAILURE_MS, raw. A
+  // failed resume says why and exits within a second, and xterm writes
+  // asynchronously, so its buffer can still lack that last line when the exit
+  // lands; Rust drains every byte before it emits the exit, so this cannot.
+  // Only filled inside that window, so the hot data path pays nothing else.
+  const resumeTailRef = useRef("");
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
@@ -2201,14 +2217,23 @@ const captureArmedRef = useRef(false);
       resumeOverride: task.resume_override ?? undefined,
       failedResume: failedResumeRef.current,
     });
-    const resumeOverride = captureResumeOverride ?? (decision.kind === "override" ? decision.override : undefined);
-    const useIdResume = decision.kind === "resume-id" || decision.kind === "mint";
+    // The agent's own picker, once, right after a stored id failed (see
+    // pickerNextRef). It replaces every resume path for this one spawn: no
+    // mint (the user picks the session), no --continue, no stored id.
+    const pickerArgs = isAgent && pickerNextRef.current ? resumePickerArgsForCli(tab.cli) : [];
+    const openPicker = pickerArgs.length > 0;
+    pickerNextRef.current = false;
+    pickerSpawnRef.current = openPicker;
+    const resumeOverride = openPicker ? undefined
+      : captureResumeOverride ?? (decision.kind === "override" ? decision.override : undefined);
+    const useIdResume = !openPicker && (decision.kind === "resume-id" || decision.kind === "mint");
     const sessionUuid =
-      decision.kind === "mint" ? crypto.randomUUID()
+      openPicker ? undefined
+      : decision.kind === "mint" ? crypto.randomUUID()
       : decision.kind === "resume-id" ? storedUuid
       : undefined;
-    const resumeKnown = decision.kind === "resume-id";
-    const shouldResume = decision.kind === "cwd-resume";
+    const resumeKnown = !openPicker && decision.kind === "resume-id";
+    const shouldResume = !openPicker && decision.kind === "cwd-resume";
     // What this spawn actually did about resuming. NOT `decision.kind` alone:
     // a capture-resume agent (codex, opencode) resumes through
     // `captureResumeOverride`, which decideResume never sees. Pure + unit
@@ -2252,7 +2277,9 @@ const captureArmedRef = useRef(false);
         // Override owns its own "session not found" handling (claude shows
         // the resume picker), so it never counts as a resume for the fast-
         // exit fallback — only real resume-id / cwd-resume spawns do.
-        lastSpawnWasResumeRef.current = resumeShape.isResume;
+        // The picker is not a resume attempt: leaving it is the user's choice,
+        // handled below, and must not read as "the stored id failed".
+        lastSpawnWasResumeRef.current = !openPicker && resumeShape.isResume;
         hasHistoryLocalRef.current = false;
         // Agent: resolve the executable through the registry (users can
         // repoint `claude` etc. in Settings → Agent CLIs). Shell / custom:
@@ -2306,6 +2333,7 @@ const captureArmedRef = useRef(false);
           sessionUuid,
           resumeKnown,
           resumeOverride,
+          picker: openPicker ? pickerArgs : undefined,
           unattended: !!(tab as TerminalTab).unattended,
           task,
         });
@@ -2554,8 +2582,15 @@ const captureArmedRef = useRef(false);
           : null;
         // Cleared to "" once sent, so a respawn of this tab never retypes it.
         let sudoInputPending = !!sudoInstallInput;
+        const tailDecoder = new TextDecoder();
+        resumeTailRef.current = "";
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
           term.write(u8);
+          if (lastSpawnWasResumeRef.current
+              && Date.now() - spawnStartedAtRef.current < RESUME_FAILURE_MS) {
+            resumeTailRef.current = (resumeTailRef.current
+              + tailDecoder.decode(u8, { stream: true })).slice(-2000);
+          }
           // Same wait-for-the-prompt as AuxTerminal's initialInput: bytes
           // written before zsh's line editor is up are echoed twice.
           if (sudoInputPending && !cancelled) {
@@ -2672,6 +2707,19 @@ const captureArmedRef = useRef(false);
               + ` afterMs=${Date.now() - spawnStartedAtRef.current} fastExit=${fastExit}`
               + ` storedId=${resumeShape.usedStoredSessionId}`);
           }
+          // Leaving the agent's picker (GH #311): Esc exits 1 with no session
+          // picked. Start fresh ONCE, which is what used to happen straight
+          // away. A session the user DID pick was reported over the hooks
+          // (sessionReportedRef), or at least chosen with Enter
+          // (submittedSinceSpawnRef, for an agent with no hook to report it),
+          // and ITS later exit is an ordinary one: the exited banner, not a
+          // surprise fresh session.
+          if (pickerSpawnRef.current && !sessionReportedRef.current && !submittedSinceSpawnRef.current) {
+            pickerSpawnRef.current = false;
+            failedResumeRef.current = true;
+            setGen(g => g + 1);
+            return;
+          }
           if (fastExit && lastSpawnWasResumeRef.current) {
             // Rapid exit during a resume attempt = the stored session
             // doesn't resolve anymore (id-CLI: log rotated / deleted;
@@ -2699,8 +2747,21 @@ const captureArmedRef = useRef(false);
               // why. Measured cause: a SECOND Codex holding the same thread
               // ("already has an active writer"), which is what made clicking
               // R look like it did nothing.
+              // The agent says WHY on its way out ("No conversation found",
+              // "running as a background session ... claude attach"), and that
+              // line is the most useful thing here, so it rides the toast.
+              const why = lastAgentLine(resumeTailRef.current);
+              // With a picker, open it instead of starting over (GH #311): the
+              // conversation is usually still there, only termic's pointer is
+              // stale. Without one, the fresh session is still the fallback,
+              // and the agent's own line says what to do next.
+              const hasPicker = resumePickerArgsForCli(tab.cli).length > 0;
+              pickerNextRef.current = hasPicker;
               useUI.getState().pushToast(
-                `Couldn't resume the previous ${agentDisplayName(tab.cli)} session. Started a fresh one.`,
+                (hasPicker
+                  ? `Couldn't resume the previous ${agentDisplayName(tab.cli)} session. Pick one to continue, or press Esc to start a new one.`
+                  : `Couldn't resume the previous ${agentDisplayName(tab.cli)} session. Started a fresh one.`)
+                + (why ? ` ${agentDisplayName(tab.cli)} said: "${why}"` : ""),
                 "info",
               );
               useApp.getState().setTabSessionId(task.id, tab.id, "");

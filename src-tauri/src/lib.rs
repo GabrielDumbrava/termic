@@ -19006,6 +19006,14 @@ pub struct AgentCapabilities {
     /// `{UUID}` which expands to the previously-minted uuid.
     #[serde(default)]
     pub resume_id_args: Vec<String>,
+    /// Args that open the agent's OWN session picker (GH #311), used when a
+    /// stored session id fails to resume instead of silently starting fresh.
+    /// No `{UUID}`: the user picks, and the id comes back over the hooks
+    /// (`SessionStart` with `source: resume`), so termic reads no session
+    /// files. Empty → no picker, the fresh fallback stays. Filled only where
+    /// measured; see docs/adding-an-agent.md.
+    #[serde(default)]
+    pub resume_picker_args: Vec<String>,
     /// Always-applied args (every spawn). Useful for things like
     /// `--name {WORKSPACE_SLUG}` so claude's /resume picker shows
     /// termic's task name. Placeholders: {WORKSPACE_SLUG},
@@ -19056,6 +19064,11 @@ fn default_agents() -> Vec<Agent> {
                 // resumes that same id.
                 session_id_args: vec!["--session-id".into(), "{UUID}".into()],
                 resume_id_args:  vec!["--resume".into(),     "{UUID}".into()],
+                // `--resume` with no id opens claude's own session picker.
+                // Measured on 2.1.278: picking one fires SessionStart with
+                // `source: resume` and the chosen id (entrypoint `cli`), which
+                // the READY hook reports; Esc exits 1 with no SessionStart.
+                resume_picker_args: vec!["--resume".into()],
                 // Surface termic's task name in claude's /resume
                 // picker + prompt box + terminal title. Stamped on the mint
                 // spawn only (gated to the first id spawn in spawnArgsForCli).
@@ -19129,6 +19142,7 @@ fn default_agents() -> Vec<Agent> {
                 // later resume answered with it), and the id is STABLE across
                 // resumes, so storing it once is enough.
                 resume_id_args: vec!["resume".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 name_args: vec![],
                 signals: AgentSignals::default(),
                 match_output: false,
@@ -19185,6 +19199,7 @@ fn default_agents() -> Vec<Agent> {
                 // as codex (`cliSupportsCaptureResume`).
                 session_id_args: vec![],
                 resume_id_args: vec!["--conversation".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 name_args: vec![],
                 signals: AgentSignals::default(),
                 match_output: false,
@@ -19243,6 +19258,7 @@ fn default_agents() -> Vec<Agent> {
                 // mint (new UUID) and the resume (same UUID) flag.
                 session_id_args: vec!["--session-id".into(), "{UUID}".into()],
                 resume_id_args:  vec!["--session-id".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
                 signals: AgentSignals::default(),
                 match_output: false,
@@ -19295,6 +19311,7 @@ fn default_agents() -> Vec<Agent> {
                 // then `-r <uuid> -p "what word?"` answered "banana".
                 session_id_args: vec!["--session-id".into(), "{UUID}".into()],
                 resume_id_args: vec!["--resume".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 // No `--name` equivalent in grok's help; its session title is
                 // model-generated and lands in the terminal title instead.
                 name_args: vec![],
@@ -19352,6 +19369,7 @@ fn default_agents() -> Vec<Agent> {
                 // resume are byte-identical.
                 session_id_args: vec!["--session-id".into(), "{UUID}".into()],
                 resume_id_args: vec!["--session-id".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
                 signals: AgentSignals::default(),
                 match_output: false,
@@ -19393,6 +19411,7 @@ fn default_agents() -> Vec<Agent> {
                 resume_args: vec!["--continue".into()],
                 session_id_args: vec![],
                 resume_id_args: vec!["--session".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 name_args: vec![],
                 signals: AgentSignals::default(),
                 match_output: false,
@@ -19472,6 +19491,7 @@ fn default_agents() -> Vec<Agent> {
                 // a live 1.0.2 through `--provider echo`: `muse resume <uuid>`
                 // prints "resumed session <uuid>" and redraws the prior turns.
                 resume_id_args: vec!["resume".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 name_args: vec![],
                 signals: AgentSignals::default(),
                 match_output: false,
@@ -19588,6 +19608,7 @@ fn default_agents() -> Vec<Agent> {
                 resume_args: vec!["--continue".into()],
                 session_id_args: vec![],
                 resume_id_args: vec!["--resume".into(), "{UUID}".into()],
+                resume_picker_args: vec![],
                 // No --name flag; devin generates its own session title and
                 // puts it on the terminal title as `devin: <title>`.
                 name_args: vec![],
@@ -19771,6 +19792,10 @@ pub(crate) fn load_settings_in(id: &ProfileId) -> Settings {
         }
         if c.resume_id_args.is_empty() && !d.resume_id_args.is_empty() {
             c.resume_id_args = d.resume_id_args.clone();
+            migrated = true;
+        }
+        if c.resume_picker_args.is_empty() && !d.resume_picker_args.is_empty() {
+            c.resume_picker_args = d.resume_picker_args.clone();
             migrated = true;
         }
         if c.name_args.is_empty() && !d.name_args.is_empty() {
@@ -22917,6 +22942,29 @@ mod tests {
     /// GH #316. Loading a non-root profile whose settings need a load-time
     /// migration wrote that profile's settings over the ROOT file, taking the
     /// root's accounts and paths with them, on every load.
+    /// GH #311. An install from before the picker has a claude entry with no
+    /// `resume_picker_args`; the load backfills the built-in default, as it
+    /// does for the other capability lists, so a failed resume opens claude's
+    /// picker without anyone visiting Settings.
+    #[test]
+    fn an_existing_claude_entry_gains_its_session_picker_on_load() {
+        with_scratch_data_dir(|data| {
+            let mut s = crate::load_settings_in(&ProfileId::Root);
+            s.agents.iter_mut().find(|a| a.id == "claude").unwrap()
+                .capabilities.resume_picker_args.clear();
+            crate::save_settings_in(&ProfileId::Root, &s).unwrap();
+            let raw = std::fs::read_to_string(data.join("settings.json")).unwrap();
+            assert!(!raw.contains("\"resume_picker_args\": [\n        \"--resume\""), "the fixture must start without it");
+
+            let loaded = crate::load_settings_in(&ProfileId::Root);
+            let caps = &loaded.agents.iter().find(|a| a.id == "claude").unwrap().capabilities;
+            assert_eq!(caps.resume_picker_args, vec!["--resume".to_string()]);
+            // Only where measured: codex has none until someone measures it.
+            let codex = &loaded.agents.iter().find(|a| a.id == "codex").unwrap().capabilities;
+            assert!(codex.resume_picker_args.is_empty());
+        });
+    }
+
     #[test]
     fn a_profile_that_needs_a_migration_writes_its_own_file_not_the_roots() {
         with_scratch_data_dir(|data| {

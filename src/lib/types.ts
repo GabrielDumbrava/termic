@@ -577,6 +577,11 @@ export interface Agent {
      *  resume the termic-owned session. Must contain `{UUID}`, which
      *  expands to the previously-minted uuid. */
     resume_id_args?: string[];
+    /** Args that open the agent's own session picker (GH #311). Used when a
+     *  stored session id fails to resume, instead of starting a fresh
+     *  session in silence. No `{UUID}`: the user picks, and the chosen id
+     *  comes back over the hooks. Empty/missing → no picker. */
+    resume_picker_args?: string[];
     /** Always-applied args (every spawn). Useful for things like
      *  `--name {WORKSPACE_SLUG}` so claude's /resume picker shows
      *  termic's task name. */

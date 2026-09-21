@@ -139,6 +139,55 @@ spin()   { for f in 0 1 2; do set_title "${SPINNER[$f]} ${name}"; sleep 0.15; do
 # One "prompt" per stdin line: go busy (spinner title + streamed output), then
 # return to the idle glyph — the busy -> idle transition claude drives, which
 # termic turns into working -> done.
+# Resume shapes for GH #311, claude's, measured on 2.1.278:
+#   --resume <id>, with <id> listed in $TERMIC_DATA_DIR/e2e-dead-sessions:
+#     claude's "No conversation found" line and exit 1, which is what a stored
+#     id that no longer resolves does.
+#   --resume with no id: claude's session picker. A line `pick <uuid>` picks
+#     that session, reported over the hook OSC as claude's SessionStart
+#     (`source: resume`) is, and the fixture carries on as a normal agent. Any
+#     other line exits 1, which is what leaving claude's picker with Esc does.
+prev_arg=""; resume_arg=""; picker=""
+for a in "$@"; do
+  if [ "$prev_arg" = "--resume" ]; then
+    case "$a" in -*) picker=1 ;; *) resume_arg="$a" ;; esac
+  fi
+  prev_arg="$a"
+done
+[ "$prev_arg" = "--resume" ] && picker=1
+if [ -n "$resume_arg" ] && [ -n "${TERMIC_DATA_DIR:-}" ] \
+   && grep -qx "$resume_arg" "${TERMIC_DATA_DIR}/e2e-dead-sessions" 2>/dev/null; then
+  echo "No conversation found with session ID: $resume_arg"
+  exit 1
+fi
+if [ -n "$picker" ]; then
+  echo "FAKE-AGENT picker: Resume session"
+  # Esc alone leaves, with no Enter, exactly as claude's picker does; anything
+  # else is the start of a line.
+  # A terminal also writes ESC-led REPLIES to its own queries (xterm answers
+  # device-attribute and focus queries this way), so an ESC followed at once
+  # by more bytes is one of those and is skipped; a lone ESC is the key.
+  esc="$(printf '\033')"
+  while :; do
+    IFS= read -r -n1 first || exit 1
+    [ "$first" != "$esc" ] && break
+    if IFS= read -r -n1 -t 0.15 _next; then
+      while IFS= read -r -n1 -t 0.05 _more; do :; done
+      continue
+    fi
+    exit 1
+  done
+  IFS= read -r rest || true
+  choice="${first}${rest}"
+  case "$choice" in
+    "pick "*)
+      osc777 "termic;agent ready for input"
+      osc777 "termic;session ${choice#pick }"
+      echo "FAKE-AGENT resumed ${choice#pick }" ;;
+    *) exit 1 ;;
+  esac
+fi
+
 while IFS= read -r line; do
   # Strip leading interrupt bytes. A directive that reads a keystroke mid-turn
   # can be handed MORE than the one byte it consumes (xterm does not promise
