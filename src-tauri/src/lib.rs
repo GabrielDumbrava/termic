@@ -19795,7 +19795,12 @@ pub(crate) fn load_settings_in(id: &ProfileId) -> Settings {
     // a read-only filesystem or transient I/O error shouldn't fail the
     // load (in-memory state is still correct).
     if migrated {
-        let _ = save_settings_inner(&s);
+        // To the profile this was loaded FROM (GH #316). `save_settings_inner`
+        // writes the ROOT file, so a non-root profile that needed a migration
+        // had its settings written over the root profile on every load (the
+        // root's accounts and paths went with them), and never received the
+        // migration itself, so the next load did it again.
+        let _ = save_settings_in(id, &s);
     }
     s
 }
@@ -22899,6 +22904,49 @@ mod tests {
             crate::delete_task_file("t2").unwrap();
             assert!(!data.join("profiles/home/tasks/t2.json").exists());
             assert!(data.join("tasks/t1.json").exists(), "the sweep took an unrelated profile's task");
+        });
+    }
+
+    /// GH #316. Loading a non-root profile whose settings need a load-time
+    /// migration wrote that profile's settings over the ROOT file, taking the
+    /// root's accounts and paths with them, on every load.
+    #[test]
+    fn a_profile_that_needs_a_migration_writes_its_own_file_not_the_roots() {
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            let home_id = ProfileId::Slug("home".into());
+
+            let mut root = crate::load_settings_in(&ProfileId::Root);
+            root.default_tasks_path = "~/root-tasks".into();
+            let claude = root.agents.iter_mut().find(|a| a.id == "claude").unwrap();
+            claude.accounts = vec!["Personal".into(), "Work".into()];
+            claude.default_account = Some("Work".into());
+            crate::save_settings_in(&ProfileId::Root, &root).unwrap();
+            let root_before = std::fs::read_to_string(data.join("settings.json")).unwrap();
+
+            // A profile file from an older build: its symlink list is the
+            // legacy default, which the loader migrates.
+            let mut home = crate::load_settings_in(&home_id);
+            home.default_tasks_path = "~/home-tasks".into();
+            home.worktree_symlink_paths = crate::legacy_worktree_symlink_paths_v1_3();
+            crate::save_settings_in(&home_id, &home).unwrap();
+
+            let loaded = crate::load_settings_in(&home_id);
+            assert_eq!(loaded.default_tasks_path, "~/home-tasks");
+            assert_eq!(loaded.worktree_symlink_paths, crate::default_worktree_symlink_paths());
+
+            // The root file is byte-for-byte what it was.
+            assert_eq!(std::fs::read_to_string(data.join("settings.json")).unwrap(), root_before);
+            let root_after = crate::load_settings_in(&ProfileId::Root);
+            let c = root_after.agents.iter().find(|a| a.id == "claude").unwrap();
+            assert_eq!(c.accounts, vec!["Personal".to_string(), "Work".to_string()]);
+            assert_eq!(root_after.default_tasks_path, "~/root-tasks");
+
+            // And the profile's own file received the migration, so the next
+            // load has nothing left to migrate.
+            let on_disk: Settings = serde_json::from_str(
+                &std::fs::read_to_string(data.join("profiles/home/settings.json")).unwrap()).unwrap();
+            assert_eq!(on_disk.worktree_symlink_paths, crate::default_worktree_symlink_paths());
         });
     }
 
