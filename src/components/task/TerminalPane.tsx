@@ -360,6 +360,10 @@ export function TerminalPane({ task, tab, active }: Props) {
   // lands; Rust drains every byte before it emits the exit, so this cannot.
   // Only filled inside that window, so the hot data path pays nothing else.
   const resumeTailRef = useRef("");
+  // Open only while a resume spawn is inside RESUME_FAILURE_MS: the survive
+  // timer and the exit both close it, so the data path checks one boolean and
+  // nothing else for the rest of the session's life (GH #311 review).
+  const resumeTailOpenRef = useRef(false);
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
@@ -2525,6 +2529,8 @@ const captureArmedRef = useRef(false);
         // args. Cleared in the exit handler if we never reach the
         // timeout (the rapid-exit branch fires first).
         window.setTimeout(() => {
+          // Past the window a failed resume dies in: stop collecting its tail.
+          resumeTailOpenRef.current = false;
           if (cancelled || ptyRef.current !== ptyId) return;
           if (hasHistoryLocalRef.current) return;
           hasHistoryLocalRef.current = true;
@@ -2584,10 +2590,10 @@ const captureArmedRef = useRef(false);
         let sudoInputPending = !!sudoInstallInput;
         const tailDecoder = new TextDecoder();
         resumeTailRef.current = "";
+        resumeTailOpenRef.current = lastSpawnWasResumeRef.current;
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
           term.write(u8);
-          if (lastSpawnWasResumeRef.current
-              && Date.now() - spawnStartedAtRef.current < RESUME_FAILURE_MS) {
+          if (resumeTailOpenRef.current) {
             resumeTailRef.current = (resumeTailRef.current
               + tailDecoder.decode(u8, { stream: true })).slice(-2000);
           }
@@ -2671,13 +2677,6 @@ const captureArmedRef = useRef(false);
             if (!cancelled) setSudoOffer(show);
           });
         }
-        // Rust holds this PTY's output until the ack lands, because a Tauri
-        // event emitted before `listen()` registers reaches nobody. Without
-        // it an agent that prints its banner and one OSC title at startup and
-        // then blocks on stdin can lose both to the spawn round trip and show
-        // an empty terminal with no live title, for good.
-        ipc.ptyAttached(ptyId).catch(() => {});
-
         const unlistenExit = await ipc.onPtyExit(ptyId, (code) => {
           ptyRef.current = null;
           // Run/setup tabs (GH #54): surface a non-zero exit as "failed" on
@@ -2757,9 +2756,15 @@ const captureArmedRef = useRef(false);
               // and the agent's own line says what to do next.
               const hasPicker = resumePickerArgsForCli(tab.cli).length > 0;
               pickerNextRef.current = hasPicker;
+              // The session picked is remembered only if the agent REPORTS it,
+              // which is the hooks' job. Without them the picker still gets the
+              // user their conversation now, but the next relaunch cannot find
+              // it again, and that has to be said rather than discovered.
+              const remembers = useApp.getState().agentHooksInstalled[tab.cli] === true;
               useUI.getState().pushToast(
                 (hasPicker
                   ? `Couldn't resume the previous ${agentDisplayName(tab.cli)} session. Pick one to continue, or press Esc to start a new one.`
+                    + (remembers ? "" : " Install agent hooks so Termic remembers the one you pick.")
                   : `Couldn't resume the previous ${agentDisplayName(tab.cli)} session. Started a fresh one.`)
                 + (why ? ` ${agentDisplayName(tab.cli)} said: "${why}"` : ""),
                 "info",
@@ -2818,6 +2823,18 @@ const captureArmedRef = useRef(false);
           setExited(true);
         });
         unlistenExitRef.current = unlistenExit;
+        // Rust holds this PTY's output until the ack lands, because a Tauri
+        // event emitted before `listen()` registers reaches nobody. Without
+        // it an agent that prints its banner and one OSC title at startup and
+        // then blocks on stdin can lose both to the spawn round trip and show
+        // an empty terminal with no live title, for good.
+        //
+        // AFTER the exit listener, not before it: a process that has already
+        // exited has its buffered output released by this ack, and the waiter
+        // fires pty-exit right behind it. Acking first left the exit to race
+        // `onPtyExit`'s own round trip, and a lost exit is a failed resume
+        // that neither opens the picker nor starts fresh (GH #311 review).
+        ipc.ptyAttached(ptyId).catch(() => {});
 
         // Input: pipe xterm keystrokes back to PTY. User input is the
         // canonical "I've seen and addressed the done bullet" signal —
