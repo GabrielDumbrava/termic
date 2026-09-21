@@ -1051,6 +1051,12 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             />
           </Field>
         </div>
+        <Field label="Session picker args" hint="Opens the agent's own session picker when a stored session fails to resume, instead of starting a new session. The session you pick comes back through the agent hooks, so Termic resumes it next time. No {UUID}. Empty = start a new session, as before; a built-in agent gets its default back on the next start, like the other argument lists.">
+          <ArgsInput value={agent.capabilities?.resume_picker_args || []}
+            onChange={resume_picker_args => onPatchCaps({ resume_picker_args })}
+            className="font-mono" placeholder={inheritedPlaceholder(inherited, a => a.capabilities?.resume_picker_args, "--resume")}
+          />
+        </Field>
         <Field label="Name args" hint="Applied on every spawn. Pins a display name for the session (claude shows it in /resume and the prompt box). Placeholders supported: {WORKSPACE_SLUG}, {WORKSPACE_NAME}, {BRANCH}.">
           <ArgsInput value={agent.capabilities?.name_args || []}
             onChange={name_args => onPatchCaps({ name_args })}

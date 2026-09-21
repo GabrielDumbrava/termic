@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "../../wdio.conf.js";
 // Agent work-state, attention and queue flows.
@@ -2296,6 +2296,120 @@ describe("a claude session that moves after /clear is the one resumed", () => {
     expect([s.tab, s.persisted]).toEqual([EARLY, EARLY]);
   });
 });
+
+// ── a stored session that no longer resolves opens the agent's picker ─────
+//
+// GH #311. A stored id that fails to resume used to be answered with a fresh
+// session in silence, although the conversation was usually still there and
+// only termic's pointer was stale. Now, for an agent with `resume_picker_args`
+// (claude's `--resume` with no id, measured on 2.1.278), the next spawn opens
+// THAT agent's picker; the session picked there comes back over the hook OSC
+// and is what the next relaunch resumes. Leaving the picker still starts fresh.
+// `fakeclaude` reproduces claude's three shapes (scripts/fake-agent.sh).
+describe("a stored session that no longer resolves opens the agent's picker (#311)", () => {
+  // Fresh per run: the dead-session list lives in the profile and outlives a
+  // run, so a fixed id killed last time would already be dead here.
+  const PICKED = crypto.randomUUID();
+  let taskId: string | null = null;
+
+  before(() => writeFileSync(join(dataDir, "e2e-dead-sessions"), ""));
+
+  function spawnArgv(id: string): string[] {
+    const raw = readFileSync(join(dataDir, "e2e-agent-argv.log"), "utf8");
+    return raw.split("\n").filter(l => l.startsWith(id + "\t")).map(l => l.slice(id.length + 1));
+  }
+  const stored = (id: string) => browser.execute(
+    (t) => (window.__termic!.useApp.getState().tabs[t] ?? [])[0]?.sessionId ?? null, id);
+  /** Mark a session id as one the fixture cannot resume. */
+  const kill = (sid: string) => appendFileSync(join(dataDir, "e2e-dead-sessions"), sid + "\n");
+  const relaunch = async (id: string) => {
+    await browser.execute((t) => {
+      const s = window.__termic!.useApp.getState();
+      s.stopTask(t);
+      s.setActiveTask(null);
+    }, id);
+    await browser.pause(300);
+    await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
+  };
+  const waitSpawns = (id: string, n: number, msg: string) => browser.waitUntil(
+    () => Promise.resolve(spawnArgv(id).length >= n), { timeout: 30_000, timeoutMsg: msg });
+  const toasts = () => browser.execute(() =>
+    (window.__termic!.useUI.getState().toasts as any[]).map(t => t.msg as string));
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("opens the picker instead of a fresh session, and says why", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-picker", true, "fakeclaude");
+    const id = taskId;
+    await waitForAgentReady(id);
+    // The minted id is only held once the spawn survives RESUME_FAILURE_MS.
+    await browser.pause(2500);
+    await submitToAgent(id, "hello");
+    await browser.waitUntil(async () => !!(await stored(id)),
+      { timeout: 10_000, timeoutMsg: "the minted id was never persisted" });
+    const minted = (await stored(id))!;
+    kill(minted);
+
+    const before = spawnArgv(id).length;
+    await relaunch(id);
+    // The doomed resume, then the picker: `--resume` with no id after it.
+    await waitSpawns(id, before + 2, "no picker spawn followed the failed resume");
+    const [resume, picker] = spawnArgv(id).slice(before);
+    expect(resume).toContain(`--resume ${minted}`);
+    expect(picker).toMatch(/(^|\s)--resume(\s|$)/);
+    expect(picker).not.toContain(minted);
+    expect(picker).not.toContain("--session-id");
+
+    // The toast offers the picker and carries the agent's own reason.
+    const said = (await toasts()).join("\n");
+    expect(said).toMatch(/Pick one to continue, or press Esc to start a new one/);
+    expect(said).toMatch(/No conversation found with session ID/);
+    // The stale id is gone; nothing is stored until the user picks.
+    expect(await stored(id)).toBe(null);
+  });
+
+  it("stores the session picked in the agent's picker, and resumes it next time", async () => {
+    const id = taskId!;
+    await waitForAgentReady(id);
+    await submitToAgent(id, `pick ${PICKED}`);
+    await browser.waitUntil(async () => (await stored(id)) === PICKED,
+      { timeout: 10_000, timeoutMsg: "the session picked in the agent's picker was not stored" });
+
+    const before = spawnArgv(id).length;
+    await relaunch(id);
+    await waitSpawns(id, before + 1, "the task never respawned");
+    expect(spawnArgv(id)[before]).toContain(`--resume ${PICKED}`);
+  });
+
+  it("starts a fresh session when the picker is left without choosing", async () => {
+    const id = taskId!;
+    await waitForAgentReady(id);
+    kill(PICKED);
+    const before = spawnArgv(id).length;
+    await relaunch(id);
+    await waitSpawns(id, before + 2, "no picker spawn followed the failed resume");
+    await waitForAgentReady(id);
+    // Leaving claude's picker is Esc alone, no Enter, which exits 1 with
+    // nothing picked. Written to the pty directly: typing through xterm would
+    // add the Enter that picking takes.
+    await browser.execute(async (t) => {
+      const st = window.__termic!.useApp.getState();
+      const ptyId = (st.tabs[t] ?? [])[0]?.ptyId;
+      await window.__termic!.ipc.ptyWrite(ptyId, [27]);
+    }, id);
+    await waitSpawns(id, before + 3, "leaving the picker did not start a fresh session");
+    const fresh = spawnArgv(id)[before + 2];
+    expect(fresh).toContain("--session-id");
+    // And exactly once: no loop back into the picker.
+    await browser.pause(2500);
+    expect(spawnArgv(id).length).toBe(before + 3);
+  });
+});
+
 
 // The same agent, added to a task from the + menu instead of being the task's
 // own. That tab is the FIRST of its cli, so every "primary" test in the spawn
