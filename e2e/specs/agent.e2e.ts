@@ -1617,44 +1617,71 @@ describe("agent notifications", () => {
   it("hides whole chips rather than truncating them, and says when it did", async () => {
     await ensureActiveTask(taskId!);
     const before = (await browser.$$('[data-testid="usage-chip"]')).length;
-    await browser.execute((t) => {
+    const added = await browser.execute((t) => {
+      const ids: string[] = [];
       for (const cli of ["codex", "gemini", "grok"]) {
+        const id = crypto.randomUUID();
         window.__termic!.useApp.getState().addTab(
-          t, { id: crypto.randomUUID(), type: "terminal", cli, title: cli } as never,
+          t, { id, type: "terminal", cli, title: cli } as never,
         );
+        ids.push(id);
       }
+      return ids;
     }, taskId);
-    await browser.waitUntil(
-      async () => (await browser.$$('[data-testid="usage-chip"]')).length > before,
-      { timeout: 10_000, timeoutMsg: "the extra agents never got a footer chip" },
-    );
+    // EVERY exit removes them, including a throw half way. All the `it`s in
+    // this file share one window, and three stray agent tabs move the active
+    // tab out from under the submits that follow: leaving them behind turned
+    // one failure here into every later case in the file failing with
+    // "xterm never forwarded it".
+    try {
+      await browser.waitUntil(
+        async () => (await browser.$$('[data-testid="usage-chip"]')).length > before
+          || !!(await browser.$('[data-testid="agent-chips-more"]')).elementId,
+        { timeout: 10_000, timeoutMsg: "the extra agents changed nothing in the footer" },
+      );
 
-    // One pass in the page: wdio element arrays buy nothing here and the
-    // geometry has to be measured in the window anyway.
-    const seen = await browser.execute(() => {
-      const chips = [...document.querySelectorAll('[data-testid="usage-chip"]')];
-      const bar = document.querySelector('[data-testid="task-footer"]');
-      const right = bar ? bar.getBoundingClientRect().right : 0;
-      const shown = chips.filter(c => c.getBoundingClientRect().width > 0);
-      const marker = document.querySelector('[data-testid="agent-chips-more"]');
-      return {
-        total: chips.length,
-        shown: shown.length,
-        markerInDom: !!marker,
-        markerShown: !!marker && marker.getBoundingClientRect().width > 0,
-        escaped: shown.filter(c => c.getBoundingClientRect().right > right + 1).length,
-      };
-    });
+      // One pass in the page: wdio element arrays buy nothing here and the
+      // geometry has to be measured in the window anyway.
+      const seen = await browser.execute(() => {
+        const chips = [...document.querySelectorAll('[data-testid="usage-chip"]')];
+        const bar = document.querySelector('[data-testid="task-footer"]');
+        const right = bar ? bar.getBoundingClientRect().right : 0;
+        const shown = chips.filter(c => c.getBoundingClientRect().width > 0);
+        const marker = document.querySelector('[data-testid="agent-chips-more"]');
+        return {
+          total: chips.length,
+          shown: shown.length,
+          markerInDom: !!marker,
+          markerShown: !!marker && marker.getBoundingClientRect().width > 0,
+          escaped: shown.filter(c => c.getBoundingClientRect().right > right + 1).length,
+        };
+      });
 
-    // The marker exists whenever the task COULD hide something; CSS decides
-    // whether it is on screen, so its presence in the DOM is what we pin.
-    expect(seen.total).toBeGreaterThan(1);
-    expect(seen.markerInDom).toBe(true);
-    // Whatever the width, the bar is internally consistent: either every chip
-    // is on screen and the marker is not, or some are missing and it is.
-    expect(seen.markerShown).toBe(seen.shown < seen.total);
-    // The reported bug itself: no chip may extend past the bar it lives in.
-    expect(seen.escaped).toBe(0);
+      // The marker is in the DOM whenever the task COULD be hiding an agent;
+      // CSS decides whether it is on screen, so its presence is what we pin.
+      expect(seen.markerInDom).toBe(true);
+      // One direction only, and deliberately. "A chip is hidden" implies the
+      // marker shows. The converse does NOT hold: an agent whose chip renders
+      // nothing at all (no usage feed, no account, no context) has no chip to
+      // hide, and the bar is still not showing that agent, which is what the
+      // marker says. Asserting the biconditional here is what failed: three
+      // agents with no data contributed no chips, so every chip fitted while
+      // the marker correctly reported agents the bar was not showing.
+      if (seen.shown < seen.total) expect(seen.markerShown).toBe(true);
+      // A shown chip is a WHOLE chip, never a truncated one.
+      expect(seen.shown).toBeGreaterThan(0);
+      // The reported bug itself: no chip may extend past the bar it lives in.
+      expect(seen.escaped).toBe(0);
+    } finally {
+      await browser.execute((t, ids) => {
+        const app = window.__termic!.useApp.getState();
+        for (const id of ids as string[]) app.closeTab(t, id);
+      }, taskId, added);
+      await browser.waitUntil(
+        async () => (await browser.$$('[data-testid="usage-chip"]')).length <= before,
+        { timeout: 10_000, timeoutMsg: "the extra agent tabs were not cleaned up" },
+      );
+    }
   });
 
   // Its own `it`, and the reason is the budget the case above is written
