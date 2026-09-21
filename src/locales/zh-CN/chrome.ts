@@ -215,6 +215,7 @@ export default {
     confirmMessageManyProject: "将永久删除 {{project}} 中 {{count}} 个已归档任务，且无法撤销。",
   },
   board: {
+    colBacklog: "未开始",
     colAttention: "需要注意",
     colWorking: "进行中",
     colReview: "审查中",

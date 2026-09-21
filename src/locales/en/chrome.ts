@@ -215,6 +215,7 @@ export default {
     confirmMessageManyProject: "This permanently deletes {{count}} archived tasks in {{project}}. It cannot be undone.",
   },
   board: {
+    colBacklog: "Not started",
     colAttention: "Needs attention",
     colWorking: "Working",
     colReview: "In review",
