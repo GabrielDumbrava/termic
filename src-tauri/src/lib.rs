@@ -8611,6 +8611,23 @@ fn procmon_open_window(app: AppHandle) -> Result<(), String> {
     .min_inner_size(560.0, 320.0)
     .build()
     .map_err(|e| e.to_string())?;
+    // Remember WHERE the monitor was, never how big. The window-state plugin
+    // puts saved bounds back verbatim and does not honour min_inner_size, and
+    // its saved 880x620 came back as 440x310 logical on a 2x display, under
+    // this window's own 560x320 minimum. At 440 the row grid's first column
+    // collapses and the process name renders at ZERO width: the title is in
+    // the DOM and invisible, so every row reads as bare numbers. Measured both
+    // ways, with the saved entry present the webview is 440 CSS px wide and
+    // the name span is 0px; with it deleted, 880 and 85px, which is what
+    // `activity.e2e.ts` "names the agent row after the tab" asserts. A monitor
+    // panel is a fixed-shape table, so opening at its designed size every time
+    // costs less than remembering one that can come back unusable. PROCMON_WINDOW
+    // is in `skip_initial_state` for this reason (as "main" is, which restores
+    // its own size and then clamps up).
+    {
+        use tauri_plugin_window_state::{StateFlags, WindowExt};
+        let _ = win.restore_state(StateFlags::POSITION);
+    }
     // A window closed by its red button never unmounts React cleanly, so
     // the frontend's `procmon_stop` may not run. Drop the session here too:
     // there is no thread to stop, but a stale session would keep a dead
@@ -22018,7 +22035,7 @@ pub fn run() {
         // deterministic order (restore → clamp-up → position → show)
         // instead of letting the plugin's on_window_ready hook race the
         // setup code. The plugin still SAVES bounds on move/resize/close.
-        .plugin(tauri_plugin_window_state::Builder::default().skip_initial_state("main").build())
+        .plugin(tauri_plugin_window_state::Builder::default().skip_initial_state("main").skip_initial_state(PROCMON_WINDOW).build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
