@@ -35,10 +35,23 @@
 // to take stale units to 0 across five merges in Chrome and to render the same
 // glyph stream correctly in WKWebView where the unguarded terminal drew debris.
 //
-// This is a local stand-in for an upstream xterm.js change; delete it once
-// that lands. Reach-ins are optional-chained and pinned by
-// xtermInternals.test.ts, so a rename degrades to today's behaviour (the bug)
-// rather than throwing.
+// UPSTREAM, and the deletion criterion is concrete. xtermjs/xterm.js#6038
+// ("[webgl] Atlas page merge corruption and overflow under heavy terminal
+// rendering", closed 2026-07-21) is this bug, and the fix landed in
+// @xterm/addon-webgl 0.20.0-beta.300 as exactly this approach:
+// `public static nextVersion` on AtlasPage, with every `version++` replaced by
+// `version = ++AtlasPage.nextVersion`. The same release also replaces the
+// never-reset `_requestClearModel` flag with a monotonic `_pageLayoutVersion`
+// (see docs/performance.md bear trap 11).
+//
+// 0.20.0 is BETA only; npm `latest` is still 0.19.0, which is what we ship.
+// So: when @xterm/addon-webgl 0.20.0 goes stable and we upgrade, delete this
+// module, its test, its wiring in loadTerminalRenderer and its entries in
+// xtermInternals.test.ts. Until then it is load-bearing. Tracked in
+// docs/tech-debt.md.
+//
+// Reach-ins are optional-chained and pinned by xtermInternals.test.ts, so a
+// rename degrades to today's behaviour (the bug) rather than throwing.
 
 /** One counter for every page of every atlas in the process. Starts above 0 so
  *  a guarded page can never collide with the 0/1 an unguarded one is born
