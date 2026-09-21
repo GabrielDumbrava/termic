@@ -3,6 +3,7 @@
 // Shortcuts; the "Edit" button in the header closes this and jumps there.
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
@@ -43,6 +44,7 @@ const HIDDEN_ON_MAC: Set<ShortcutId> = IS_MAC
   : new Set<ShortcutId>();
 
 export function ShortcutsHelpDialog() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.shortcutsHelpOpen);
   const close = useUI(s => s.closeShortcutsHelp);
   const openSettings = useApp(s => s.openSettings);
@@ -122,7 +124,7 @@ export function ShortcutsHelpDialog() {
       >
         <div className="flex items-center gap-2">
           <Command className="h-4 w-4 text-[var(--color-fg-dim)]" />
-          <span className="text-base font-medium">Keyboard shortcuts</span>
+          <span className="text-base font-medium">{t("shortcutsHelp.title")}</span>
         </div>
         <div
           data-tauri-drag-region="false"
@@ -134,12 +136,12 @@ export function ShortcutsHelpDialog() {
             className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-[12.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
           >
             <Pencil className="h-3.5 w-3.5" />
-            Edit
+            {t("common:edit")}
           </button>
           <button
             onClick={close}
             className="rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-            aria-label="Close"
+            aria-label={t("common:close")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -152,7 +154,7 @@ export function ShortcutsHelpDialog() {
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Search shortcuts…"
+          placeholder={t("shortcutsHelp.searchPlaceholder")}
           autoFocus
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
           className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] py-2.5 pl-9 pr-3 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
@@ -163,7 +165,7 @@ export function ShortcutsHelpDialog() {
       <div className="mt-3 flex max-h-[58vh] flex-col gap-5 overflow-y-auto pr-1">
         {groups.length === 0 ? (
           <div className="px-1 py-6 text-center text-[12.5px] text-[var(--color-fg-faint)]">
-            No shortcuts match “{query}”.
+            {t("shortcutsHelp.noMatch", { query })}
           </div>
         ) : groups.map(({ group, rows }) => (
           <div key={group} className="flex flex-col">
