@@ -1600,18 +1600,21 @@ describe("agent notifications", () => {
     expect((await week.getCSSProperty("background-image")).value).toContain("gradient");
   });
 
-  // A task runs as many agents as it has tabs. The footer's original shedding
-  // rule was one hide-below-780px on a secondary chip, a width measured for
-  // the TWO-agent case, so five agents in one task never tripped it and the
-  // chips ran off the end of the bar and under the right panel. Order matters
-  // more than the widths: detail goes before agents do, and the agent whose
-  // tab is on screen keeps its full chip.
+  // A task runs as many agents as it has tabs. The footer's original rule was
+  // one hide-below-780px on a secondary chip, a width measured for the TWO-
+  // agent case, so five agents in one task never tripped it and the chips ran
+  // off the end of the bar and under the right panel.
+  //
+  // A chip is now either fully shown or not shown at all, the agent whose tab
+  // is on screen is never hidden, and a marker says so whenever anything is
+  // missing. The breakpoints are CSS container queries, so what this case can
+  // assert is the DOM contract and the geometry, not which width hides what.
   //
   // Tabs are added through the app's own store rather than spawned: this is a
   // LAYOUT case, the chip renders per distinct cli whether or not a process
   // came up, and waiting on three real spawns would buy nothing and cost the
   // budget the case above is already written against.
-  it("sheds chip detail before it sheds agents when a task runs several", async () => {
+  it("hides whole chips rather than truncating them, and says when it did", async () => {
     await ensureActiveTask(taskId!);
     const before = (await browser.$$('[data-testid="usage-chip"]')).length;
     await browser.execute((t) => {
@@ -1626,26 +1629,30 @@ describe("agent notifications", () => {
       { timeout: 10_000, timeoutMsg: "the extra agents never got a footer chip" },
     );
 
-    // Read it all in one pass in the page: wdio element arrays buy nothing
-    // here and the geometry has to be measured in the window anyway.
+    // One pass in the page: wdio element arrays buy nothing here and the
+    // geometry has to be measured in the window anyway.
     const seen = await browser.execute(() => {
       const chips = [...document.querySelectorAll('[data-testid="usage-chip"]')];
       const bar = document.querySelector('[data-testid="task-footer"]');
       const right = bar ? bar.getBoundingClientRect().right : 0;
+      const shown = chips.filter(c => c.getBoundingClientRect().width > 0);
+      const marker = document.querySelector('[data-testid="agent-chips-more"]');
       return {
         total: chips.length,
-        compact: chips.filter(c => c.getAttribute("data-compact") === "1").length,
-        shedWindows: document.querySelectorAll(
-          '[data-compact="1"] [data-usage-window="5h"], [data-compact="1"] [data-usage-window="wk"]',
-        ).length,
-        escaped: chips.filter(c => c.getBoundingClientRect().right > right + 1).length,
+        shown: shown.length,
+        markerInDom: !!marker,
+        markerShown: !!marker && marker.getBoundingClientRect().width > 0,
+        escaped: shown.filter(c => c.getBoundingClientRect().right > right + 1).length,
       };
     });
-    // Exactly one full chip: the active agent's. Everything else compacts.
-    expect(seen.compact).toBe(seen.total - 1);
-    // What a compact chip sheds is the ACCOUNT's windows, never the context
-    // figure, which is the only number that belongs to this conversation.
-    expect(seen.shedWindows).toBe(0);
+
+    // The marker exists whenever the task COULD hide something; CSS decides
+    // whether it is on screen, so its presence in the DOM is what we pin.
+    expect(seen.total).toBeGreaterThan(1);
+    expect(seen.markerInDom).toBe(true);
+    // Whatever the width, the bar is internally consistent: either every chip
+    // is on screen and the marker is not, or some are missing and it is.
+    expect(seen.markerShown).toBe(seen.shown < seen.total);
     // The reported bug itself: no chip may extend past the bar it lives in.
     expect(seen.escaped).toBe(0);
   });

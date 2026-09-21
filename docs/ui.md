@@ -864,21 +864,35 @@ marks for two facts, costing 56px of a bar that starts hiding chips at 780px
 straight at the thing, which is the only evidence that counts for a footer
 meant to be read at a glance.
 
-**The bar sheds DETAIL before it sheds AGENTS.** A task runs as many agents as
-it has tabs, and the original shedding rule was a single one: hide a secondary
-agent's whole chip below 780px. That width was measured for the two-agent case,
-so with five agents in one task the chips wanted ~870px on their own, the rule
-never fired, and the group ran off the end of the bar and under the right
-panel. Now `footerChipMode` (its own module, so the order is unit-testable
-without a window) compacts every secondary chip past
-`FULL_CHIP_AGENT_LIMIT` agents: icon and `NN% ctx` only, dropping the account
-name and the 5h/wk figures. Context is what survives because it is the only
-number that belongs to THIS conversation and moves while you work, where the
-plan windows are identical across every tab signed into that account and are
-one click away in the popover. The agent whose tab is on screen always keeps
-its full chip. The chips also sit in their own `min-w-0 overflow-hidden` box
-inside the right group, so width is shed from the left and the sandbox status
-stays pinned as the rightmost item whatever happens.
+**A chip is fully shown or not shown at all, and the bar says when it hid
+one.** The original rule was a single hide-below-780px on a secondary agent's
+chip, a width measured for the two-agent case. A task runs as many agents as it
+has tabs, so with five the chips wanted ~870px on their own, the rule never
+fired, and the group ran off the end of the bar and under the right panel.
+
+`footerChipMode` (its own module, so the order is unit-testable without a
+window) gives the k-th secondary chip a container-query breakpoint at the width
+where it stops fitting, so the bar sheds from the tail. The agent whose tab is
+on screen never gets one and is therefore never hidden, at any width. There is
+deliberately no abbreviated middle state: a chip missing its plan figures reads
+identically to an agent that has none, which is the footer lying by omission,
+and half a readout in a bar meant to be taken at a glance is worth less than a
+clear signal that something is missing. `moreMarkerClass` supplies that signal,
+a `···` shown by the inverse breakpoint so it appears exactly while at least
+one chip is gone.
+
+**The marker carries no COUNT, and that is a deliberate trade.** An accurate
+"+4 more" means knowing how many chips fit, which means measuring the strip in
+JS, and this bar has no ResizeObserver on purpose: it sits under a streaming
+terminal and the `@container` collapse exists so a window drag costs no React
+render. CSS can hide the overflow but cannot produce the number, so the marker
+says "there are more" and stops there. If that number is ever worth a
+ResizeObserver, scope it to the chip strip and set state only when the fitting
+count changes, never per pixel.
+
+The chips also sit in their own `min-w-0 overflow-hidden` box inside the right
+group, so width is shed from the left and the sandbox status stays pinned as
+the rightmost item whatever happens.
 
 **A fill behind text costs that text contrast, and the cost lands where you
 can least afford it.** Amber text on an amber fill measures 3.3:1 in dark

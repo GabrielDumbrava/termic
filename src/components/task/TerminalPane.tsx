@@ -38,7 +38,7 @@ import { lastAgentLine } from "@/lib/resumeTail";
 import { parseUsageBody } from "@/lib/agentUsage";
 import { parseContextBody } from "@/lib/agentContext";
 import { FooterAgentChip } from "./AgentChip";
-import { footerChipMode } from "./footerChipMode";
+import { footerChipMode, moreMarkerClass } from "./footerChipMode";
 import { activeFooterAgent, footerAgentIds, footerAgentKey } from "@/lib/footerAgents";
 import { useAgentUsage } from "@/store/agentUsage";
 import { useAgentContext } from "@/store/agentContext";
@@ -3531,6 +3531,9 @@ export function FooterBar({ task, sandboxWarning }: {
   const activeAgent = useApp(
     s => activeFooterAgent(s.tabs[task.id] ?? EMPTY_TABS, s.activeTab[task.id], task.cli ?? "claude"),
   );
+  // Null when the task runs one agent: nothing can ever be hidden, so the
+  // marker is not in the DOM at all rather than permanently hidden by CSS.
+  const moreClass = moreMarkerClass(agentIds, activeAgent);
 
   // no right-split agent queue state needed; split panes show their own queue via SplitView
 
@@ -3641,24 +3644,34 @@ export function FooterBar({ task, sandboxWarning }: {
             it the chips are all shrink-0 inside an ml-auto group, so five
             agents simply ran past the bar and under the right panel. */}
         <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-          {agentIds.map(id => {
-            // Never secondary in a single-agent task, which is every task
-            // until somebody opens a second agent in one: nothing to choose
-            // between, so nothing to drop.
-            const { secondary, compact } = footerChipMode(agentIds, activeAgent, id);
-            return (
-              <FooterAgentChip
-                key={id}
-                taskId={task.id}
-                agentId={id}
-                cwd={task.path}
-                docker={!!task.docker_sandbox_enabled}
-                visible={isActiveTask}
-                secondary={secondary}
-                compact={compact}
-              />
-            );
-          })}
+          {agentIds.map(id => (
+            <FooterAgentChip
+              key={id}
+              taskId={task.id}
+              agentId={id}
+              cwd={task.path}
+              docker={!!task.docker_sandbox_enabled}
+              visible={isActiveTask}
+              // Undefined for the active agent, which is what pins its chip
+              // on screen at every width.
+              hideClass={footerChipMode(agentIds, activeAgent, id).hideClass}
+            />
+          ))}
+          {/* "There are more agents than fit." No count: the breakpoints are
+              CSS container queries rather than a ResizeObserver (this bar sits
+              under a streaming terminal and must not render on a window drag),
+              so nothing here knows how many actually fit. CSS decides whether
+              this shows, by hiding it above the width where the last chip
+              still had room. */}
+          {moreClass && (
+            <span
+              data-testid="agent-chips-more"
+              title="More agents than fit here. Widen the window, or switch tabs to see them."
+              className={cn("shrink-0 px-0.5 text-[var(--color-fg-faint)]", moreClass)}
+            >
+              ···
+            </span>
+          )}
         </div>
         {mode !== "off" && total > 0 && (
           <DeniedHostsPopover taskId={task.id} cli={task.cli ?? "claude"} count={total} mode={mode} />
