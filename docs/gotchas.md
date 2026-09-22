@@ -858,3 +858,47 @@ script exits), and the in-process plugins open the tty `O_NONBLOCK`, since a
 blocking write there would freeze the agent itself.
 `a_hook_never_blocks_on_a_terminal_that_will_not_read` drives each script at a
 FIFO with no reader; with the bound removed it hangs (the control was run).
+
+## Reporting nothing is reporting something, and the state machine believes it
+
+A done hook that finds work outstanding used to end in `exit 0`, writing not a
+byte. That reads on the wire as exactly what a model mid-token writes, so the
+tab could not tell a turn still running from a turn that ended while a
+backgrounded `sleep 900` kept its `Stop` payload populated. Measured on claude
+2.1.278: the hold is per SESSION, not per turn, so a later one-word turn that
+used no tools was held the same way, and every done for the rest of that
+session was swallowed. See docs/agent-hooks.md "Delegated work".
+
+Two things to carry forward when a guard decides to withhold a signal:
+
+**Withholding is a third outcome, so say it.** `agent delegated: <count>
+<label> <ids>` costs one more body on a channel that already exists, and it
+turns "we heard nothing" into "the agent stopped and is waiting on two
+subagents", which the UI can render and the state machine can bound.
+
+**A hook that has read the payload must outrank the screen scan that guesses
+at it.** claude's `pending` patterns (`lib/agents.ts`) include `N shells still
+running`, which is on screen for as long as the leftover shell lives, so
+`fireDone`'s screen-scan hold would defer the resulting done forever. The
+delegated dones pass `force` for that reason. The scan is the FALLBACK for the
+fact the hook just read directly, and a fallback that can veto its own
+replacement is not a fallback.
+
+## A layer that exists only during a transition gets snapped into existence
+
+A badge in the sidebar jumped one pixel up and to the right on row hover, and
+back on leave. Nothing moved in layout: the badge is `absolute inset-0` inside
+a fixed-size slot, and hover only changes colours.
+
+`transition-opacity` is what moved it. WebKit promotes the element to its own
+compositing layer for the duration of the transition and pixel-snaps that
+layer. The badge sits at a fractional offset (a `py-[3px]` row and a
+truncating flex sibling both land on half pixels), so the snap is a visible
+shift, and it reverses when the layer is thrown away.
+
+`[transform:translate3d(0,0,0)]` on the transitioning element fixes it by
+making the layer permanent, so the snapped position is the only position it
+ever has. `Dialog` documents the same trick for the opposite symptom, blurry
+text, and `Spinner` for a third, a rotating ring that orbits its own centre.
+All three are one rule: **if an element is going to be composited, composite
+it always, not just while something is animating.**

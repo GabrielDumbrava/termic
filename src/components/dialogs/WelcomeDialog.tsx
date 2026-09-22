@@ -1,4 +1,11 @@
-// First-launch welcome wizard. Four steps:
+// First-launch welcome wizard. Five steps:
+//   0. What a project and a task ARE, and what a worktree is. First,
+//      because it is the only step that is pure orientation and every step
+//      after it already uses the vocabulary ("your repos folder" presumes
+//      you know a project is a repo). Also because people leave a wizard
+//      part way through, and this is the one thing they cannot pick up from
+//      the UI afterwards: users have run whole projects in worktrees
+//      believing a worktree was just a branch.
 //   1. Repos directory + CLI detection (original behavior).
 //   2. Agent hooks - sits here because the user has just seen which agents
 //      they have, so the list this step acts on is still on screen.
@@ -17,25 +24,28 @@ import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, projectAdd, agentHooksStatus, agentHooksInstall, agentHooksRemove } from "@/lib/ipc";
+import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, projectAdd, agentHooksStatus, agentHooksInstall, agentHooksRemove, agentHooksAutoGet, agentHooksAutoSet, agentHooksPlan } from "@/lib/ipc";
 import { usePr } from "@/store/pr";
 import { Checkbox } from "@/components/ui/Checkbox";
-import type { AgentHookStatus, CliInfo, DiscoveredRepo } from "@/lib/types";
+import type { AgentHookStatus, CliInfo, DiscoveredRepo, HookPlan } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { CliIcon, CLI_LABEL } from "@/icons/cli";
 import { TermicMark } from "@/icons/TermicLogo";
 import { cn } from "@/lib/utils";
 import { usePrefs, applyTheme, type ThemeMode } from "@/store/prefs";
-import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2, Flower2, GitPullRequest } from "lucide-react";
+import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2, Flower2, GitPullRequest, ChevronDown, ChevronRight, Plus, FolderPlus, GitBranch, Link2 } from "lucide-react";
+import { TaskLocationIcon } from "@/components/TaskLocationIcon";
+import { TaskWorkBadge } from "@/components/TaskWorkBadge";
+import type { DelegatedWork } from "@/lib/delegatedWork";
 
-type Step = 0 | 1 | 2 | 3;
+type Step = 0 | 1 | 2 | 3 | 4;
 
 export function WelcomeDialog() {
   const open = useUI(s => s.welcomeOpen);
   const close = useUI(s => s.closeWelcome);
   const [step, setStep] = useState<Step>(0);
 
-  // Step 1 state.
+  // Step 1 (repos) state.
   const [dir, setDir] = useState("");
   const [summary, setSummary] = useState("");
   const [clis, setClis] = useState<CliInfo[]>([]);
@@ -43,7 +53,7 @@ export function WelcomeDialog() {
   // the parent so step 3's project-picker has the data ready without
   // re-fetching when the user reaches it.
   const [repos, setRepos] = useState<DiscoveredRepo[]>([]);
-  // Selected paths for step 3. Defaults to all-unadded checked when
+  // Selected paths for step 4. Defaults to all-unadded checked when
   // the discovery result first lands.
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
 
@@ -91,7 +101,7 @@ export function WelcomeDialog() {
         repos_dir: skipRepos ? "" : dir.trim(),
         welcomed: true,
       });
-      // Create projects for every path the user ticked in step 3.
+      // Create projects for every path the user ticked in step 4.
       // Best-effort: log failures but don't block wizard close (the
       // user can re-add via the dashboard's Add project button).
       const toAdd = repos.filter(r => selectedPaths.has(r.path) && !r.already_added);
@@ -120,7 +130,18 @@ export function WelcomeDialog() {
     } finally { setBusy(false); }
   }
 
-  const next = () => setStep(s => (s < 3 ? ((s + 1) as Step) : s));
+  // The project picker only exists when it has something to pick. With no
+  // repos directory it was a screen that said "nothing to suggest" and
+  // offered one button, which is a step that exists to be dismissed.
+  //
+  // `dir` set but no summary yet means discovery is still running, and that
+  // counts as useful: dropping the step for the 200ms before the answer
+  // arrives would move Get started onto the theme step and then take it
+  // away again.
+  const discovering = !!dir.trim() && !summary;
+  const lastStep: Step = repos.some(r => !r.already_added) || discovering ? 4 : 3;
+
+  const next = () => setStep(s => (s < lastStep ? ((s + 1) as Step) : s));
   const back = () => setStep(s => (s > 0 ? ((s - 1) as Step) : s));
 
   return (
@@ -138,14 +159,19 @@ export function WelcomeDialog() {
       >
         <TermicMark size={40} />
         <div className="flex-1 min-w-0">
-          <div className="text-[18px] font-semibold leading-tight">Welcome to Termic</div>
-          <div className="text-[12.5px] text-[var(--color-fg-dim)]">
-            {/* Parallel imperatives, one per step. Step 0 sets the repos
-                folder and confirms detected agents, so it says so. */}
-            {step === 0 && "Set your repos folder and agents."}
-            {step === 1 && "Let agents tell you when they need you."}
-            {step === 2 && "Pick your theme."}
-            {step === 3 && "Pick projects to add."}
+          {/* The step's question, and the only line in the header. A
+              subtitle under it restated the title in every case worth
+              writing, so each step carries its explanation in the body
+              instead, where there is room to be specific. */}
+          {/* ONE LINE: about 33 characters at 18px in the strip left over
+              beside the logo and the pips. `truncate` makes going over show
+              as an ellipsis rather than quietly growing the header. */}
+          <div className="truncate text-[18px] font-semibold leading-tight">
+            {step === 0 && "Welcome to Termic"}
+            {step === 1 && "Where do you keep your repos?"}
+            {step === 2 && "Enable agent hooks"}
+            {step === 3 && "Pick your theme"}
+            {step === 4 && "Which projects should Termic add?"}
           </div>
         </div>
         {/* Tiny pip indicator. Click to jump (handy for skipping back). */}
@@ -154,7 +180,7 @@ export function WelcomeDialog() {
           data-tauri-drag-region="false"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
-          {[0, 1, 2, 3].map(i => (
+          {Array.from({ length: lastStep + 1 }, (_, i) => i).map(i => (
             <button key={i} onClick={() => setStep(i as Step)}
               aria-label={`Step ${i + 1}`}
               className={cn(
@@ -165,15 +191,16 @@ export function WelcomeDialog() {
         </div>
       </div>
 
-      {step === 0 && (
+      {step === 0 && <StepConcepts />}
+      {step === 1 && (
         <StepRepos
           dir={dir} setDir={setDir} summary={summary}
           clis={clis} setClis={setClis} browse={browse}
         />
       )}
-      {step === 1 && <StepHooks clis={clis} />}
-      {step === 2 && <StepTheme />}
-      {step === 3 && (
+      {step === 2 && <StepHooks clis={clis} />}
+      {step === 3 && <StepTheme />}
+      {step === 4 && (
         <StepProjects
           dir={dir}
           repos={repos}
@@ -182,22 +209,32 @@ export function WelcomeDialog() {
         />
       )}
 
+      {/* Skip alone on the far left, away from the pair you use to move
+          through the wizard: it is the one button here that abandons the
+          step rather than advancing it, and it sat next to Next. Back and
+          Next are together on the right so stepping either way is one short
+          move. */}
       <div className="mt-5 flex items-center justify-between gap-2">
-        <Button variant="ghost" type="button" onClick={back} disabled={step === 0 || busy}>
-          Back
-        </Button>
-        <div className="flex gap-2">
-          {step < 3 && (
+        <div>
+          {step < lastStep && (
             <Button variant="ghost" type="button" onClick={next} disabled={busy}>
               Skip
             </Button>
           )}
-          {step < 3 && (
+        </div>
+        <div className="flex gap-2">
+          <Button variant="ghost" type="button" onClick={back} disabled={step === 0 || busy}>
+            Back
+          </Button>
+          {step < lastStep && (
             <Button variant="primary" type="button" onClick={next} disabled={busy}>
               Next
             </Button>
           )}
-          {step === 3 && (
+          {/* `>=`, not `===`: discovery can come back empty while the user is
+              already standing on the picker, and a step with neither Next nor
+              Finish is a dialog with no way out. */}
+          {step >= lastStep && (
             <Button variant="primary" type="button" onClick={() => finish(!dir.trim())} disabled={busy}>
               {busy
                 ? "Adding…"
@@ -256,12 +293,11 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
 
   return (
     <div className="flex flex-col gap-3">
+      <p className="text-[12.5px] text-[var(--color-fg-dim)]">
+        Termic scans it and suggests the repos you have not added yet.
+      </p>
       <label className="block text-[13.5px]">
-        Where do you keep your repos?{" "}
-        <span className="text-[var(--color-fg-faint)] font-normal">
-          (we'll suggest unadded ones)
-        </span>
-        <div className="mt-1.5 flex gap-2">
+        <div className="flex gap-2">
           <Input value={dir} onChange={e => setDir(e.target.value)} placeholder="~/Projects" />
           <Button variant="secondary" type="button" onClick={browse}>Browse…</Button>
         </div>
@@ -371,9 +407,223 @@ function ForgeRows() {
 // file rather than burying it. Agents we cannot wire say why instead of
 // quietly missing from the list, which is the mistake the competing
 // implementation makes in the other direction.
+// ── Step 0: what a project and a task are ───────────────────────────
+//
+// A REPLICA of the sidebar, not an illustration of one: the same class
+// strings, the same `--task-row-h`, the same `TaskLocationIcon` and
+// `TaskWorkBadge` the real rows use. A loose approximation is worse than
+// nothing here, because the whole job of this step is that the user
+// recognises the thing when they see it a minute later.
+//
+// Captions sit OUTSIDE the panel, one per row. Putting them inside would
+// have meant a sidebar that looks like no sidebar they will ever see.
+//
+// Two things are being taught. What the marks mean, which is otherwise only
+// discoverable by hovering a badge that the close button covers. And what a
+// worktree is, which users get wrong in a specific and expensive way: they
+// read it as a way of making a branch, work for a week, and wonder why their
+// editor never showed any of it. So the toggle from the New Task dialog is
+// reproduced here, with the consequence spelled out under each side.
+type ConceptRow = {
+  name: string;
+  /** Draw the location icon. Only the two rows that TEACH it do, so the mark
+   *  being explained is the only thing changing on every row below them. The
+   *  real sidebar shows it on every row; here it would be noise competing
+   *  with the lesson. */
+  loc?: boolean;
+  main?: boolean;
+  open?: boolean;
+  badge?: React.ReactNode;
+  caption: React.ReactNode;
+};
+
+const HELD = (over: Partial<DelegatedWork> = {}): DelegatedWork =>
+  ({ label: "subagent", count: 2, ids: [], ...over });
+
+const CONCEPT_ROWS: ConceptRow[] = [
+  // The two locations FIRST, adjacent and otherwise identical, so the only
+  // thing that differs between them is the icon. Main checkout leads because
+  // it is what a new task gets. Everything below teaches a mark instead, so
+  // the two lessons never overlap in one row.
+  // These two name the icon, because the icon IS the lesson: the rows are
+  // otherwise identical and the caption is the only place the word appears.
+  { name: "hotfix-typo", main: true, loc: true, caption: (
+    <><Term icon={Link2}>Main checkout</Term> edits files directly in your repo</>) },
+  { name: "fix-login", loc: true, caption: (
+    <><Term icon={GitBranch}>Worktree</Term> a separate folder and branch</>) },
+  { name: "refactor-auth", open: true, badge: <TaskWorkBadge reason="working" />,
+    caption: "The agent is working" },
+  { name: "nightly-sweep", open: true,
+    badge: <TaskWorkBadge reason="delegated" delegated={HELD()} />,
+    caption: "Waiting on subagents or scripts" },
+  { name: "flaky-test", open: true,
+    badge: <TaskWorkBadge reason="working" delegated={HELD({ count: 1, partial: true })} />,
+    caption: "Partially done, still waiting" },
+  { name: "release-notes", open: true, badge: <TaskWorkBadge reason="done" />,
+    caption: "Work done" },
+  { name: "deps-bump", open: true, badge: <TaskWorkBadge reason="attention" />,
+    caption: "Needs your attention" },
+];
+
+/** The word a caption is teaching, brighter than the rest of the line, with
+ *  the glyph beside it. The icon appears twice on purpose: once in the row
+ *  and once next to its name, which is the only place the two are actually
+ *  joined up. */
+function Term({ icon: Icon, children }: { icon: typeof Link2; children: React.ReactNode }) {
+  return (
+    <strong className="mr-1 inline-flex items-center gap-1 align-[-2px] font-medium text-[var(--color-fg-dim)]">
+      <Icon className="h-3 w-3" />{children}:
+    </strong>
+  );
+}
+
+/** The two rows above the task list, rendered twice: once in the replica and
+ *  once invisibly beside it, which is what keeps the captions aligned. */
+function SidebarReplicaHeaders() {
+  return (
+    <>
+      <div className="flex items-center justify-between px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]">
+        <span>Projects</span>
+        <FolderPlus className="h-3.5 w-3.5" />
+      </div>
+      <div className="flex items-center justify-between rounded-md py-1.5 pl-2 pr-0 text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg)]">
+        <span className="flex items-center gap-1">
+          <ChevronDown className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+          acme-api
+        </span>
+        <Plus className="mr-1 h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+      </div>
+    </>
+  );
+}
+
+function StepConcepts() {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-[12.5px] text-[var(--color-fg-dim)]">
+        A <strong className="font-medium text-[var(--color-fg)]">project</strong> is a git repo you have
+        added. A <strong className="font-medium text-[var(--color-fg)]">task</strong> is one piece of work
+        inside it, with its own agents, terminal and diff.
+      </p>
+
+      <div className="flex gap-3">
+        {/* The replica. Widths and paddings are the sidebar's own. */}
+        <div className="w-[176px] shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] px-2 py-2">
+          <SidebarReplicaHeaders />
+          {CONCEPT_ROWS.map(r => (
+            <div
+              key={r.name}
+              className="mb-px ml-3 flex h-[var(--task-row-h)] items-center gap-1 rounded-md px-1 text-[13px] text-[var(--color-fg-dim)]"
+            >
+              {r.open
+                ? <ChevronRight className="mx-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                : <Moon className="mx-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] opacity-40" />}
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                <span className="min-w-0 truncate font-medium">{r.name}</span>
+                {r.loc && <TaskLocationIcon isMainCheckout={!!r.main} />}
+              </div>
+              <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+                {r.badge}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* One caption per row, on the same row height, so the eye pairs them
+            without a leader line. */}
+        {/* Same BOX as the panel beside it, transparent: a 1px border and
+            `py-2`. Without them every caption sits ~9px high, which is the
+            panel's padding and border, and the pairing reads as broken even
+            though the rows themselves are identical. Repeating the box is
+            what keeps the two columns in step; matching numbers by hand did
+            not survive the first look. */}
+        <div className="flex min-w-0 flex-1 flex-col border border-transparent py-2">
+          {/* The headers again, invisible, so the captions line up with the
+              rows whatever those headers measure. */}
+          <div aria-hidden className="invisible"><SidebarReplicaHeaders /></div>
+          {CONCEPT_ROWS.map(r => (
+            <div
+              key={r.name}
+              className="mb-px flex h-[var(--task-row-h)] items-center truncate whitespace-nowrap text-[11.5px] text-[var(--color-fg-faint)]"
+            >
+              {r.caption}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* The New Task toggle, reproduced. Same icons, same labels, same
+          shape, so the choice is already familiar when it is live. */}
+      <div className="rounded-md border border-[var(--color-border)] p-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <span className="text-[13px] font-medium text-[var(--color-fg)]">Task type</span>
+          <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+            {/* Main checkout lit, because that is what the dialog actually
+                seeds for a single repo (`readLastMode() ?? "repo_root"` in
+                NewTaskDialog). Drawing the other one selected taught the
+                wrong default, which is worse than teaching nothing. */}
+            <span className="flex h-7 items-center gap-1.5 rounded-[5px] bg-[var(--color-accent-deep)] px-2.5 text-[12.5px] text-white">
+              <Link2 className="h-3.5 w-3.5" /> Main checkout
+            </span>
+            <span className="flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] text-[var(--color-fg-dim)]">
+              <GitBranch className="h-3.5 w-3.5" /> Worktree
+            </span>
+          </div>
+        </div>
+        <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
+          <Link2 className="mr-1 inline h-3 w-3 align-[-2px]" />
+          <strong className="font-medium text-[var(--color-fg-dim)]">Main checkout</strong> is what a new
+          task uses. The agent works in the repo folder you already have open, on its current branch, so its
+          edits appear in your editor as it makes them. Run one task at a time here. Archiving it leaves
+          everything in place.
+        </p>
+        <p className="mt-1.5 text-[12px] leading-snug text-[var(--color-fg-faint)]">
+          <GitBranch className="mr-1 inline h-3 w-3 align-[-2px]" />
+          <strong className="font-medium text-[var(--color-fg-dim)]">Worktree</strong> gives the task
+          <strong className="font-medium text-[var(--color-fg-dim)]"> its own folder on disk</strong>, under
+          <code className="mx-1">~/termic/tasks/</code>, with its own branch. Your repo folder stays as it
+          is, so several agents can work at the same time, and none of it reaches your editor until you merge
+          the branch. Archiving the task deletes the folder. The toggle remembers what you picked last.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** `busy` holds an agent id while one row works; this stands in for "all of
+ *  them", so the bulk button can show its own progress without a second
+ *  piece of state. No agent can be called this. */
+const ALL = "\u0000all";
+
 function StepHooks({ clis }: { clis: CliInfo[] }) {
   const [rows, setRows] = useState<Record<string, AgentHookStatus>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  // `auto_install_hooks` in settings.json, read once on arrival so the box
+  // reflects a user who already turned it on in a previous run.
+  const [auto, setAutoState] = useState(false);
+  // What each install actually writes, straight from `agent_hooks_plan`,
+  // which builds it from the hook definitions. A hand-written line per agent
+  // would be wrong the first time an event is added and nobody would notice,
+  // because it is a sentence rather than a test.
+  const [plans, setPlans] = useState<Record<string, HookPlan>>({});
+  useEffect(() => {
+    agentHooksAutoGet().then(setAutoState).catch(() => {});
+  }, []);
+  const setAuto = async (on: boolean) => {
+    setAutoState(on);
+    try {
+      await agentHooksAutoSet(on);
+      // Switching it on installs for everything wirable, so the rows below
+      // have to be re-read or they keep showing "off" for agents that are
+      // now on.
+      const out: Record<string, AgentHookStatus> = {};
+      for (const id of detected) {
+        try { out[id] = await agentHooksStatus(id); } catch { /* leave it out */ }
+      }
+      setRows(r => ({ ...r, ...out }));
+      await useApp.getState().refreshAgentHooks();
+    } catch { setAutoState(!on); }
+  };
   const detected = clis.filter(c => c.found && c.name !== "shell").map(c => c.name);
 
   // Auto-install once on arrival for everything we can wire. `ran` guards a
@@ -383,6 +633,11 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
     if (ran || !detected.length) return;
     setRan(true);
     void (async () => {
+      const plansOut: Record<string, HookPlan> = {};
+      await Promise.all(detected.map(async id => {
+        try { plansOut[id] = await agentHooksPlan(id); } catch { /* row works without it */ }
+      }));
+      setPlans(plansOut);
       const out: Record<string, AgentHookStatus> = {};
       for (const id of detected) {
         try {
@@ -396,6 +651,27 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
     })();
   }, [ran, detected]);
 
+  // Every agent this step could wire and has not. The arrival pass already
+  // installs what it can, so this is only ever non-empty after a Remove or a
+  // failure, which is exactly when a per-row hunt is the wrong shape.
+  const offAgents = detected.filter(id => {
+    const st = rows[id];
+    return st?.supported && !st.host.disabled_all && !st.host.installed;
+  });
+  const offCount = offAgents.length;
+
+  const installAll = async () => {
+    setBusy(ALL);
+    try {
+      for (const id of offAgents) {
+        try {
+          const next = await agentHooksInstall(id);
+          setRows(r => ({ ...r, [id]: next }));
+        } catch { /* leave that row as it was; Settings surfaces the error */ }
+      }
+    } finally { setBusy(null); }
+  };
+
   const toggle = async (id: string, install: boolean) => {
     setBusy(id);
     try {
@@ -407,12 +683,70 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-        Agents do not always say when they are stuck. Claude paints its idle
-        marker while it is waiting for you to approve something, so Termic can
-        read it as finished. A small hook in the agent's own config fixes that.
+      {/* What a hook IS, in the first sentence. This used to open with the
+          problem and call the fix "a small hook", which names it without
+          saying what it is: a file? a daemon? something phoning home? */}
+      <p className="text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
+        A hook is a few lines Termic adds to the agent&apos;s own settings file. The agent runs
+        them when a turn starts, when it needs you, and when it finishes, and they tell Termic.
+        Nothing leaves your machine.
       </p>
-      <div className="flex flex-col gap-1.5">
+      <p className="text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
+        Without them Termic has to read the terminal and guess. Claude paints its idle marker
+        while it waits for you to approve something, which reads as finished.
+      </p>
+      {/* The same switch as Settings -> Agents & Terminals
+          (`agent_hooks_auto_set`), not a second one that means something
+          similar: this is the decision most people want, and it is the only
+          one here that also covers agents installed LATER. Without it a
+          wizard run wires what happens to be on PATH today and quietly
+          leaves the next agent guessing.
+
+          Recommended and pre-armed rather than sold: the label says what it
+          does and the hint says what it saves, which is the honest version
+          of an incentive. */}
+      <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/[0.07] px-3 py-2.5">
+        <input
+          type="checkbox"
+          data-testid="welcome-hooks-auto"
+          className="mt-[3px] h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+          checked={auto}
+          disabled={busy === ALL}
+          onChange={e => void setAuto(e.target.checked)}
+        />
+        <span className="min-w-0">
+          <span className="block text-[13px] font-medium text-[var(--color-fg)]">
+            Keep every agent hooked up
+            <span className="ml-1.5 rounded bg-[var(--color-accent)]/15 px-1.5 py-px text-[10.5px] uppercase tracking-wider text-[var(--color-accent)]">
+              Recommended
+            </span>
+          </span>
+          <span className="mt-0.5 block text-[12px] leading-snug text-[var(--color-fg-dim)]">
+            Installs the hook for any agent you add later too, so you never get a tab that
+            reports the wrong state because nobody wired it.
+          </span>
+        </span>
+      </label>
+
+      {offCount > 1 && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-2">
+          <span className="text-[12.5px] text-[var(--color-fg-dim)]">
+            {offCount} agents have no hook yet.
+          </span>
+          <Button variant="secondary" type="button" disabled={!!busy} onClick={installAll}>
+            {busy === ALL ? "Installing…" : "Install for all"}
+          </Button>
+        </div>
+      )}
+      <div className="text-[11px] uppercase tracking-wide text-[var(--color-fg-faint)]">
+        Agents found on this machine
+      </div>
+      {/* Capped at about four rows. Nine agents at two lines each ran the
+          dialog past the bottom of a laptop screen, which put Next off
+          screen: the list is the long part and the only part that can
+          scroll on its own. `pr-1` keeps the scrollbar off the Remove
+          buttons. */}
+      <div className="-mt-1.5 flex max-h-[248px] flex-col gap-1.5 overflow-y-auto pr-1">
         {detected.length === 0 && (
           <p className="text-[12.5px] text-[var(--color-fg-dim)]">
             No agent CLIs detected yet. You can turn this on later in Settings.
@@ -423,9 +757,21 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
           return (
             <div key={id}
               className="flex items-center justify-between gap-3 rounded-md border border-[var(--color-border)] px-3 py-2">
-              <div className="flex items-center gap-2">
-                <CliIcon cli={id} className="h-4 w-4" />
-                <span className="text-[13px]">{CLI_LABEL[id] ?? id}</span>
+              <div className="flex min-w-0 items-center gap-2">
+                <CliIcon cli={id} className="h-4 w-4 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[13px]">{CLI_LABEL[id] ?? id}</div>
+                  {plans[id]?.entries.length ? (
+                    <div
+                      className="truncate text-[11px] text-[var(--color-fg-faint)]"
+                      title={`${plans[id].entries.map(e => `${e.event} reports ${e.reports}`).join("\n")}\n\nin ${plans[id].config_path}`}
+                    >
+                      {plans[id].entries.map(e => e.event).join(", ")}
+                      {" in "}
+                      {plans[id].config_path.replace(/^.*\//, "")}
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 {/* codex used to be special-cased here to "not needed", on the
@@ -455,8 +801,7 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
       {/* Name the file. This is the user's own config, not ours. */}
       {Object.values(rows).some(r => r.supported && r.host.installed) && (
         <p className="text-[11.5px] text-[var(--color-fg-dim)]">
-          Added one entry to your agent's settings file. Remove it any time here
-          or in Settings.
+          Remove takes the lines back out, here or in Settings.
         </p>
       )}
     </div>

@@ -967,6 +967,69 @@ prompt typed into a splash screen.
 
 TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible viewport, marks tab "settled" after 2 identical consecutive samples. Resets on user input. `markAttention(wsId, tabId, reason)` never marks the active tab in the active task. `useAttentionNotifier` suppresses OS notifications for every tab in the focused task. Desktop notifications off by default. Clicking a banner only brings the window forward: it never changes the active task or tab (the old focus-edge router jumped on any refocus within 15s of a notification, including a plain cmd-Tab). The unread dot is what points at the tab; the user does the switching.
 
+## The work badge, and the fourth thing it can say
+
+The full state list, including what each one draws and whether it rings,
+is [agent-states.md](agent-states.md). This section is the rendering
+rationale.
+
+Three states and a qualifier, not four states. `workState` stays `idle` /
+`working` / `done`; `delegatedWork` on the tab says what the agent handed off
+and has not finished, and it changes what two of the three MEAN:
+
+- `working` + delegated: the model loop has STOPPED and the agent is waiting
+  on its own subagent. The turn is running but nothing is being computed, so
+  the spinner is replaced outright by `BackgroundRing`: a dashed ring
+  turning once every 8 seconds. A 1s spinner claims a model is running and reads as
+  a hang long before the two-hour monitoring agent it will eventually be
+  sitting on. Alive, not busy.
+- `working` + delegated `partial`: some of that work reported back and the
+  rest runs on. An outlined blue dot, the done colour without the fill,
+  because it is the same event as a done except that it is not over. It
+  outranks done in the chain and rings nothing.
+- `done`/`idle` + delegated: the turn ended and left a shell running. The
+  badge is the ordinary blue bullet and the tooltip names the leftovers. An
+  idle tab is the correct rendering here, and it is what the user was owed and
+  not getting: before this, that turn's done was swallowed for the rest of the
+  session (docs/agent-hooks.md "Delegated work").
+
+Why not a fourth `workState`: `taskWorkState`, `waitingAgents`,
+`cliAgentState` (whose `work_state` is a PUBLISHED CLI contract, and where
+`waiting` already means attention), the sidebar, the tab bar and the dashboard
+would all have to learn a member none of them has an opinion about. Only the
+renderers, the notifier and the queue gate care.
+
+There is a FOURTH rendering, and it is the one that makes the others worth
+having: `idle` + delegated, the same dashed ring. A done on the tab you are looking
+at is acknowledged straight to idle (`isUserWatching`), and idle draws no
+badge at all, so without this the decoration is invisible in the common case
+and a task with two subagents running looks exactly like an inert one. It is
+last in every precedence chain: failed > attention > partial > done >
+working > delegated > dirty, and `taskWorkBadge`'s rungs in the same order. Gated on
+`settledHighlight`, not on `workingIndicator`: it is not a spinner and claims
+nothing is being computed.
+
+Both marks are SVG rings with a 2px stroke, and that is a DPI fix rather than
+a style. The spinner used to be a CSS `border-radius` ring at `border-[1.5px]`,
+which is exactly 3 device pixels at 2x and a HALF pixel at 1x: crisp on a
+retina display, thin and smeared on anything else. 2px is whole-pixel at both.
+The spinner also gained a faint full track under its arc, because hiding a
+quarter of a ring by making one border transparent reads as a ring with a bite
+out of it, where a track plus a brighter arc reads as one object with a
+highlight going round it. `data-mark` says which mark is drawn, since the two
+are no longer distinguishable by their CSS.
+
+Surfaces: the tab strip (`TabBar`), the expanded sidebar row's per-tab badge,
+and the COLLAPSED sidebar row plus the dashboard through `taskWorkBadge`. The
+collapsed row matters most: the tab strip only helps inside the task you are
+already in, and a dev server left running is something you go looking for from
+outside. All of them carry `data-delegated="<label>"` next to
+`data-work-state`. A separate
+attribute rather than a fifth state value, because it accompanies two of them
+and a spec needs to tell those apart. Opacity rather than a colour swap, for
+the reason in this file already: `transition-colors` never repaints a themed
+colour in WKWebView.
+
 ## Settings: where a feature's row belongs
 
 Agent hooks sits under **Agents & Terminals**, not Notifications, and the route

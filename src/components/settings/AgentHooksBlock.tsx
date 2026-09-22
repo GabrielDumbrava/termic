@@ -24,11 +24,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Check, CircleAlert } from "lucide-react";
-import { agentHooksInstall, agentHooksPlan, agentHooksRemove, agentHooksStatus, agentHooksAutoGet, agentHooksAutoSet, agentHooksSync } from "@/lib/ipc";
+import { agentHooksInstall, agentHooksPlan, agentHooksRemove, agentHooksStatus, agentHooksAutoGet, agentHooksAutoSet, agentHooksSync, cachedHomeDir } from "@/lib/ipc";
 import { Toggle } from "@/components/settings/Controls";
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
+import { tildePath } from "@/lib/pathMatch";
 import { agentDisplayName } from "@/lib/agents";
 import type { AgentHookStatus, HookPlan } from "@/lib/types";
 
@@ -46,6 +47,13 @@ export function AgentHooksBlock() {
   // move is to show the actual scripts rather than describe them.
   const [plan, setPlan] = useState<Record<string, HookPlan>>({});
   const [open, setOpen] = useState<string | null>(null);
+  /** Which FILE of the open plan is showing, keyed by agent. An install
+   *  touches the agent's config plus one script per signal, and dumping all
+   *  of them end to end made a disclosure you had to scroll past rather than
+   *  read: codex alone is a 60-line JSON fragment followed by four scripts. */
+  const [planFile, setPlanFile] = useState<Record<string, number>>({});
+  const [home, setHome] = useState("");
+  useEffect(() => { void cachedHomeDir().then(setHome); }, []);
   // COLLAPSED by default. Expanded, this pushed the per-agent tabs (the reason
   // anyone opens this page) below the fold behind two paragraphs of protocol
   // detail. That detail is right for someone deciding to let termic write into
@@ -198,9 +206,6 @@ export function AgentHooksBlock() {
       >
         <ChevronRight className={cn("h-4 w-4 shrink-0 text-[var(--color-fg-faint)] transition-transform", expanded && "rotate-90")} />
         <span className="text-[14px] font-semibold text-[var(--color-fg)]">Agent hooks</span>
-        <span className="rounded bg-[var(--color-accent)]/15 px-1.5 py-0.5 text-[11px] uppercase tracking-wider text-[var(--color-accent)]">
-          Experimental
-        </span>
         {/* Collapsed, this line is the only thing reporting coverage, and the
             count alone made "5 of 5" and "3 of 5" look identical at a glance:
             both are dim grey text ending in "installed", and the digit doing
@@ -306,33 +311,64 @@ export function AgentHooksBlock() {
                       {open === id ? "Hide what this installs" : "Show exactly what this installs"}
                     </button>
                   )}
-                  {open === id && plan[id] && (
-                    <div className="flex flex-col gap-2 rounded bg-[var(--color-bg-subtle)] p-2 text-[12px]">
-                      <div>
-                        <span className="text-[var(--color-fg-subtle)]">Config file: </span>
-                        <code className="break-all">{plan[id].config_path}</code>
-                        {plan[id].config_is_shared && (
-                          <span className="text-[var(--color-fg-subtle)]"> (yours; termic merges into it)</span>
-                        )}
-                      </div>
-                      <div>
-                        <div className="text-[var(--color-fg-subtle)]">Added to that file:</div>
-                        <pre className="overflow-x-auto whitespace-pre">{plan[id].config_fragment}</pre>
-                      </div>
-                      {plan[id].entries.map(en => (
-                        <div key={en.event}>
-                          <div className="text-[var(--color-fg-subtle)]">
-                            <code>{en.event}</code> reports <b>{en.reports}</b>, and runs:
-                          </div>
-                          <div className="break-all"><code>{en.script_path}</code></div>
-                          <pre className="overflow-x-auto whitespace-pre">{en.script_body}</pre>
+                  {open === id && plan[id] && (() => {
+                    // One tab per FILE. Several events share a script (a
+                    // working hook fires on both UserPromptSubmit and
+                    // PreToolUse), so the scripts are grouped by path and the
+                    // events that use them are listed on the tab's own page.
+                    const p = plan[id];
+                    const scripts: { path: string; body: string; events: string[] }[] = [];
+                    for (const en of p.entries) {
+                      const hit = scripts.find(f => f.path === en.script_path);
+                      if (hit) hit.events.push(`${en.event} (${en.reports})`);
+                      else scripts.push({
+                        path: en.script_path,
+                        body: en.script_body,
+                        events: [`${en.event} (${en.reports})`],
+                      });
+                    }
+                    const files = [
+                      { path: p.config_path, body: p.config_fragment, events: [], config: true },
+                      ...scripts.map(f => ({ ...f, config: false })),
+                    ];
+                    const active = Math.min(planFile[id] ?? 0, files.length - 1);
+                    const file = files[active];
+                    return (
+                      <div className="flex flex-col gap-2 rounded bg-[var(--color-bg-subtle)] p-2 text-[12px]">
+                        <div className="flex flex-wrap gap-1">
+                          {files.map((f, i) => (
+                            <button
+                              key={f.path}
+                              type="button"
+                              title={tildePath(f.path, home)}
+                              onClick={() => setPlanFile(m => ({ ...m, [id]: i }))}
+                              className={cn(
+                                "rounded px-2 py-1 text-[11.5px] transition-colors",
+                                i === active
+                                  ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                                  : "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]",
+                              )}
+                            >
+                              {f.path.replace(/^.*\//, "")}
+                            </button>
+                          ))}
                         </div>
-                      ))}
-                      {plan[id].notes.map((n, i) => (
-                        <p key={i} className="text-[var(--color-fg-subtle)]">{n}</p>
-                      ))}
-                    </div>
-                  )}
+                        <div className="break-all text-[var(--color-fg-subtle)]">
+                          <code>{tildePath(file.path, home)}</code>
+                          {file.config && p.config_is_shared && " (yours; termic merges into it)"}
+                        </div>
+                        {file.events.length > 0 && (
+                          <div className="text-[var(--color-fg-subtle)]">
+                            Runs on {file.events.join(", ")}
+                          </div>
+                        )}
+                        <pre className="max-h-[320px] overflow-auto whitespace-pre">{file.body}</pre>
+                        {file.config && p.notes.map((n, i) => (
+                          <p key={i} className="text-[var(--color-fg-subtle)]">{n}</p>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   {err && <p className="text-[12.5px] text-[var(--color-danger)]">{err}</p>}
                 </div>
                   );

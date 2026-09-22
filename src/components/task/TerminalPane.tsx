@@ -33,7 +33,8 @@ import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
-import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, hookOscSessionId } from "@/lib/agentHooks";
+import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId } from "@/lib/agentHooks";
+import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
 import { lastAgentLine } from "@/lib/resumeTail";
 import { parseUsageBody } from "@/lib/agentUsage";
 import { parseContextBody } from "@/lib/agentContext";
@@ -158,6 +159,19 @@ function ceilingOverrideMs(): number | null {
   } catch { return null; }
 }
 
+/** Debug override for the detached-work grace, in ms, read the same way and
+ *  for the same reason as the ceiling's: the real value is five minutes, and a
+ *  spec that waited that out would be the slowest in the suite by an order of
+ *  magnitude. Clamped to >= 1000 ms. */
+function delegatedGraceOverrideMs(): number | null {
+  try {
+    const raw = localStorage.getItem("delegatedGraceMs");
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 1000 ? n : null;
+  } catch { return null; }
+}
+
 /** Decode a raw PTY chunk into a readable string for debug logs.
  *  Control characters get named tokens (<ESC>, <BEL>, etc.); printable
  *  text (including UTF-8) passes through verbatim. Truncates at `max`
@@ -274,6 +288,24 @@ export function TerminalPane({ task, tab, active }: Props) {
   /** The hook turn-edge handler, set where the terminal is wired so the OSC
    *  777 handler (registered earlier) can reach it. */
   const hookTurnRef = useRef<((sub: string, origin: string) => void) | null>(null);
+  /** The hook's DELEGATED report handler, set alongside `hookTurnRef` for the
+   *  same reason: the OSC 777 handler is registered before it exists. */
+  const hookDelegatedRef = useRef<((w: DelegatedWork) => void) | null>(null);
+  /** What the LAST done hook on this pty reported outstanding, which is the
+   *  only thing the carried-over rule compares against (`delegatedVerdict`).
+   *
+   *  Deliberately not the tab field: that one is display, and it is cleared at
+   *  the start of every turn so a stale chip cannot outlive the turn that
+   *  earned it. This is memory, and it has to survive exactly that, or the
+   *  second turn of a session with a shell left running would look like the
+   *  first and be held all over again. Cleared only by a done that reports
+   *  nothing outstanding, and by a respawn. */
+  const delegatedSeenRef = useRef<DelegatedWork | null>(null);
+  /** Wall clock of that report. The carried-over rule needs to know whether a
+   *  HUMAN started the turn that has just ended, and "was there input after
+   *  the last done hook" is how that is asked: every send path stamps
+   *  `lastInputAt`, and a `<task-notification>` resume stamps nothing. */
+  const delegatedSeenAtRef = useRef(0);
   /** Logged once per pty: the first agent-native OSC 133 that was ignored. */
   const native133LoggedRef = useRef(false);
   /** Has a hook for THIS pty actually reached us? Installed is not the same as
@@ -1391,6 +1423,17 @@ const captureArmedRef = useRef(false);
     // env and possibly a different sandbox mode, so it has to demonstrate
     // delivery again rather than inherit a claim the previous process earned.
     hookSeenRef.current = false;
+    delegatedSeenRef.current = null;
+    delegatedSeenAtRef.current = 0;
+    // The DISPLAY too, not just the memory. A restart gets a fresh process,
+    // and whatever the old one had running is either gone with it or no longer
+    // this tab's to report: a restarted agent showing "1 shell" from a process
+    // that no longer exists is a lie the user cannot clear.
+    {
+      const held = (useApp.getState().tabs[task.id]
+        ?.find(t => t.id === tab.id) as TerminalTab | undefined)?.delegatedWork;
+      if (held) patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
+    }
     native133LoggedRef.current = false;
     agentReadyPatchedRef.current = false;
     // Reset sender classification so signal-silent agents (agy, custom CLIs)
@@ -1449,6 +1492,19 @@ const captureArmedRef = useRef(false);
         dbg("state→working", reason);
         localBusy = true;
         workingStartedAtRef.current = Date.now();
+        // A new turn, so last turn's delegated report is stale: whatever it
+        // named is either finished or about to be re-reported by this turn's
+        // own done, ~a second later. Clearing it here rather than on every
+        // working hook is deliberate. The working hook is a HEARTBEAT, many
+        // times per turn, and writing an unchanged value through a store
+        // setter on a PTY-driven path is bear trap 8 (docs/performance.md):
+        // Zustand copies the whole state and every mounted tab re-runs its
+        // selectors. This runs on the edge only, and only when there is
+        // something to clear. `delegatedSeenRef` is NOT cleared: it is the
+        // memory the carried-over rule needs.
+        const held = (useApp.getState().tabs[task.id]
+          ?.find(t => t.id === tab.id) as TerminalTab | undefined)?.delegatedWork;
+        if (held) patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
       } else if (workingStartedAtRef.current === 0) {
         // The absolute ceiling fired mid-turn and cleared the clock. It does
         // not go through here (it calls `fireDone` directly, so `localBusy` is
@@ -1901,6 +1957,17 @@ const captureArmedRef = useRef(false);
         hookTurnRef.current?.(body === HOOK_OSC_WORKING_BODY ? "C" : "D", "hook");
         return false;
       }
+      // A done that found work outstanding. Routed here, with working and
+      // done, because it is the third thing that hook can say and the only one
+      // that used to be said by staying silent. A body we cannot parse is
+      // DROPPED rather than passed on: it is trusted, so falling through would
+      // reach the user as a needs-you banner reading "agent delegated: ...".
+      if (trusted && body.startsWith(HOOK_OSC_DELEGATED_PREFIX)) {
+        const work = parseDelegatedBody(body.slice(HOOK_OSC_DELEGATED_PREFIX.length));
+        if (work) hookDelegatedRef.current?.(work);
+        else logWorkState("hook-delegated-unparsed", `cli=${tab.cli} body=${JSON.stringify(body.slice(0, 120))}`);
+        return false;
+      }
       if (trusted && body === HOOK_OSC_READY_BODY) {
         wdlog("OSC 777 ready (termic hook)", body);
         dbg("osc777-ready", body.slice(0, 200));
@@ -2047,6 +2114,17 @@ const captureArmedRef = useRef(false);
       if (sub === "C") {
         goWorking(`${origin} C`);
       } else if (sub === "D") {
+        // A done that reports nothing outstanding is the agent saying the
+        // whole thing is finished, leftovers included. Drop both the chip and
+        // the memory the carried-over rule compares against: the next hold
+        // starts from nothing, which is what "new work" should mean.
+        if (origin === "hook") {
+          delegatedSeenRef.current = null;
+          delegatedSeenAtRef.current = 0;
+          const held = (useApp.getState().tabs[task.id]
+            ?.find(t => t.id === tab.id) as TerminalTab | undefined)?.delegatedWork;
+          if (held) patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
+        }
         // 133;D is a hard "command ended" — no need to wait SETTLE_MS.
         goIdle(`${origin} D`, 0, true);
         // devin keeps its context window nowhere live, only in its session
@@ -2073,6 +2151,79 @@ const captureArmedRef = useRef(false);
       }
     };
     hookTurnRef.current = hookTurn;
+
+    // The done hook found work outstanding. Until this existed the hook wrote
+    // NOTHING here, which is byte-for-byte what a model mid-token writes, so
+    // the tab span on until the 20-minute liveness ceiling cleared it with no
+    // badge and no bell. See docs/agent-hooks.md "Delegated work".
+    const hookDelegated = (work: DelegatedWork) => {
+      if (!workDoneEnabled) return;
+      const live = useApp.getState().tabs[task.id]
+        ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+      // Did a person ask for the turn that just ended? Input AFTER the last
+      // report is the test. A resume never stamps `lastInputAt`, so an agent
+      // cycling through its own task notifications can never look finished.
+      const humanAsked = (live?.lastInputAt ?? 0) > delegatedSeenAtRef.current;
+      const prev = delegatedSeenRef.current;
+      const verdict = delegatedVerdict(prev, work, humanAsked);
+      delegatedSeenRef.current = work;
+      delegatedSeenAtRef.current = Date.now();
+      // The line to grep when a tab reads wrong. Everything the rule saw and
+      // everything it decided, because "the badge was wrong" is answerable
+      // from this and unanswerable without it.
+      logWorkState("hook-delegated",
+        `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+        + ` held=${delegatedChipText(work)} verdict=${verdict}`
+        + ` agentOwned=${isAgentOwned(work)} humanAsked=${humanAsked}`
+        + ` was=[${prev?.ids.join(",") ?? ""}] now=[${work.ids.join(",")}]`);
+      if (verdict === "shrank") {
+        // Something came back and the rest runs on. Not a finished turn, so
+        // no done and no bell, but it is the one thing a user watching a
+        // three-subagent turn wants to see, and it gets its own badge.
+        patchTab(task.id, tab.id, {
+          delegatedWork: { ...work, partial: true },
+          delegatedSince: Date.now(),
+        });
+        goWorking(`delegated ${work.label} (partial)`);
+        return;
+      }
+      if (verdict === "carried") {
+        // Everything outstanding was ALREADY outstanding when this pty's last
+        // turn ended, so it cannot be what this turn is waiting on: the turn
+        // is over and these are leftovers. This is the whole compounding half
+        // of the bug. Measured: one `sleep 900` backgrounded in turn one held
+        // the `Stop` of every later turn in the session, including a one-word
+        // reply that used no tools at all.
+        //
+        // Keep the report on the tab: the turn ended, the shell did not, and
+        // an idle tab that says "1 shell" is the honest rendering of that.
+        // Refresh it unless it is the same report: the count can fall as
+        // leftovers finish, and a chip that says 2 shells when one is left is
+        // the sort of wrong nobody notices. Compared rather than written
+        // blindly because this runs on a PTY-driven path (bear trap 8).
+        const shown = live?.delegatedWork;
+        const same = shown?.label === work.label && shown?.count === work.count
+          && shown?.ids.join() === work.ids.join();
+        if (!same) patchTab(task.id, tab.id, { delegatedWork: work });
+        const wasWorking = localBusy || live?.workState === "working";
+        if (!wasWorking) return;
+        localBusy = false;
+        // `force`, and this is the one place it is load-bearing outside the
+        // ceiling. claude's `pending` screen patterns (lib/agents.ts) include
+        // "N shells still running", which is on screen for exactly as long as
+        // the leftover shell lives, so `fireDone`'s screen-scan hold would
+        // defer this done forever. That scan is the FALLBACK for the payload
+        // fact this hook has just read directly; it must not overrule it.
+        fireDone(`delegated work carried over (${delegatedChipText(work)})`,
+          "done", false, true, true);
+        return;
+      }
+      // New work, so the turn is genuinely still going. Stay working, and
+      // record WHEN so the detached-work grace has something to measure from.
+      patchTab(task.id, tab.id, { delegatedWork: work, delegatedSince: Date.now() });
+      goWorking(`delegated ${work.label}`);
+    };
+    hookDelegatedRef.current = hookDelegated;
     term.parser.registerOscHandler(133, (data) => {
       const sub = (data.split(";")[0] || "").toUpperCase();
       // termic's hooks no longer speak 133, so for an agent that HAS them,
@@ -3167,6 +3318,7 @@ const captureArmedRef = useRef(false);
     // take, and now that firing it costs nothing but a cleared spinner (see
     // below) there is no reason to keep it tight.
     const absoluteCeilingMs = ceilingOverrideMs() ?? 1_200_000;
+    const detachedGraceMs = delegatedGraceOverrideMs() ?? DELEGATED_DETACHED_GRACE_MS;
     const id = window.setInterval(() => {
       // Same gate as the rest of the state machine — workDoneCapable reads
       // the LIVE registry, so a Settings toggle (or a kind change) takes
@@ -3214,6 +3366,36 @@ const captureArmedRef = useRef(false);
           && Date.now() - lastDataAtRef.current >= QUIET_MS) {
         escAtRef.current = 0;
         interruptWork(`interrupt then quiet (quietMs=${Date.now() - lastDataAtRef.current})`);
+        return;
+      }
+      // DETACHED work, and the one case in this whole state machine that no
+      // signal can decide. A `Stop` only fires once the model loop has
+      // stopped, so a shell in its payload is always detached (a foreground
+      // one produces no `Stop` at all, measured), but detached does not mean
+      // abandoned: the agent is re-invoked when that shell exits. Two runs
+      // with byte-identical payloads went opposite ways, one resuming after
+      // 75s and one never. So this is a clock, and it is the only clock here
+      // that is honest about being one.
+      //
+      // Agent-owned work (a subagent, a workflow) is excluded: it is measured
+      // to come back on its own, and putting a clock on it would announce over
+      // a healthy orchestration. Those keep the 20-minute ceiling below.
+      if (cur && cur.type === "terminal" && cur.workState === "working"
+          && cur.delegatedWork && !isAgentOwned(cur.delegatedWork)
+          && (cur.delegatedSince ?? 0) > 0
+          && Date.now() - (cur.delegatedSince ?? 0) >= detachedGraceMs) {
+        logWorkState("delegated-grace",
+          `cli=${tab.cli} held=${delegatedChipText(cur.delegatedWork)}`
+          + ` ageMs=${Date.now() - (cur.delegatedSince ?? 0)}`
+          + " detached work outlived the grace; calling the turn over");
+        // Announced, unlike the ceiling: the ceiling fires because termic does
+        // not know what the agent is doing, and stopping a spinner on that
+        // basis is all it has earned. This one fires on a fact the agent
+        // reported, that its loop stopped with only detached work left, so
+        // saying so is honest. `force` for the same reason the carried-over
+        // path needs it: "N shells still running" is on the screen.
+        fireDone(`detached work grace (${detachedGraceMs}ms)`,
+          "done", false, true);
         return;
       }
       // The absolute ceiling runs for HOOK-OWNING agents too, and is the only

@@ -113,6 +113,18 @@ set_title "✳ ${name}"
 #               agent_hooks::statusline_body generates; the wire format is
 #               pinned in lib/agentUsage.ts. It must NEVER badge the tab, which
 #               is the half a spec has to prove.
+#   #delegated BODY
+#               a hook turn whose done found work OUTSTANDING: 133;C, then the
+#               DELEGATED report instead of a 133;D, which is what claude's
+#               generated done script writes when its `Stop` payload still
+#               holds a subagent or a backgrounded shell. BODY is everything
+#               after the `agent delegated: ` prefix, e.g. `1 shell b1`. The
+#               grammar is pinned in lib/delegatedWork.ts and produced by
+#               agent_hooks.rs; send the same BODY twice to replay the case
+#               where the same work is still outstanding a turn later.
+#   #hookdone   a plain hook turn that ENDS: 133;C then 133;D, nothing
+#               outstanding. What claude writes when its `Stop` payload has an
+#               empty `background_tasks`, and the only one of these that rings.
 #   #bel        emit a REAL bell, distinct from the BEL that terminates an OSC.
 #   #iip        emit an inline PNG, then Pi's alternate-screen redraw.
 #   #hookattn   reproduce a claude PERMISSION PROMPT with termic's agent hook
@@ -352,6 +364,24 @@ while IFS= read -r line; do
       spin
       echo "FAKE-AGENT echo: ${line}"
       set_title "✳ ${name}"
+      continue ;;
+    "#hookdone")
+      osc133 C
+      spin
+      echo "FAKE-AGENT done"
+      set_title "✳ ${name}"
+      osc133 D
+      continue ;;
+    "#delegated "*)
+      # Order matters and is the measured one: the turn starts, the agent
+      # works, and the report lands where a done would have. Nothing after it,
+      # because that is the point - the real hook writes this INSTEAD of a
+      # done and then says nothing at all, possibly forever.
+      osc133 C
+      spin
+      echo "FAKE-AGENT delegated: ${line#\#delegated }"
+      set_title "✳ ${name}"
+      osc777 "termic;agent delegated: ${line#\#delegated }"
       continue ;;
     "#hookattn")
       spin

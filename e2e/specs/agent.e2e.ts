@@ -40,6 +40,8 @@ import {
   waitForWorkBadgeGone,
   workBadges,
   setWindowPresence,
+  delegatedLabel,
+  workBadgeMark,
 } from "../helpers";
 
 /** ms since the task's agent tab last produced PTY bytes. Not in the DOM. */
@@ -2679,5 +2681,243 @@ describe("closing the main agent tab while another tab is open", () => {
         ?.persisted_tabs ?? [];
       return durable.filter(d => d.session_id).map(d => ({ id: d.id, def: !!d.is_default }));
     }, id)).toEqual([{ id: agentTab, def: true }]);
+  });
+});
+
+// Work the agent DELEGATED and has not finished: a subagent it is waiting on,
+// a shell it backgrounded. Measured against a live claude 2.1.278; the whole
+// measurement set is in docs/agent-hooks.md "Delegated work".
+//
+// Before this, a done hook that found outstanding work wrote NOTHING, which on
+// the wire is byte-for-byte what a model mid-token writes. Three things came
+// out of that, and the three cases below are one each:
+//
+//   - the tab span with no way to tell waiting from thinking,
+//   - the hold was per SESSION, not per turn: one `sleep 900` backgrounded in
+//     turn one held the `Stop` of every later turn, including a one-word reply
+//     that used no tools,
+//   - and a detached shell that never exits held it forever, resolved only by
+//     the 20-minute liveness ceiling, which clears the spinner and tells
+//     nobody.
+//
+// The fixture's `#delegated BODY` writes exactly what the generated script
+// writes (agent_hooks.rs), so these drive the real wire format and not a
+// store poke.
+describe("delegated work", () => {
+  let taskId!: string;
+  // The real grace is five minutes. A spec that waited it out would be the
+  // slowest in the suite by an order of magnitude, so the same debug knob the
+  // ceiling has (localStorage) shortens it.
+  const GRACE_MS = 6_000;
+
+  before(async function () {
+    this.timeout(90_000);
+    await waitForAppShell();
+    await requireTermicApi();
+    await requireWorkBadges();
+    await setHooksOwnState("fakeagent", true);
+    // Read once when the sampler starts, so it has to be set before the tab
+    // mounts, which is why this is a `before` and not inline.
+    await browser.execute((ms) => localStorage.setItem("delegatedGraceMs", String(ms)), GRACE_MS);
+    // The user is AWAY. A done on the tab you are looking at is acknowledged
+    // rather than badged (`isUserWatching` in store/app.ts), so two of these
+    // cases could not tell a turn that ENDED from one that was never
+    // announced. Backgrounding the task would do it too, but then the task
+    // view holds another task and there is no visible terminal to submit
+    // into: presence says the same thing without moving anything.
+    await setWindowPresence(false);
+    taskId = await openTask("e2e-delegated");
+    await waitForAgentReady(taskId);
+  });
+
+  after(async () => {
+    await browser.execute(() => localStorage.removeItem("delegatedGraceMs"));
+    await setHooksOwnState("fakeagent", false);
+    await setWindowPresence(true);
+    if (taskId) await archiveTask(taskId);
+  });
+
+  // Agent-owned work: a subagent. Measured twice, it resumed the turn by
+  // itself after ~70s. So the turn is genuinely still going and the spinner is
+  // right, but the model loop has STOPPED, and a tab that cannot say so leaves
+  // a nine-minute orchestration looking identical to a hung one.
+  it("keeps the turn open for a subagent, and says that is what it is waiting on", async function () {
+    this.timeout(90_000);
+    // The CONTROL first: an ordinary hook turn, working, nothing delegated.
+    // Without it the opacity below is a number with nothing to compare to,
+    // and "the delegated spinner is dimmer" is the kind of claim a screenshot
+    // agrees with whether or not it is true.
+    await submitToAgent(taskId, "#hookturn");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 20_000,
+      message: "the control turn never reached working",
+    });
+    expect(await delegatedLabel(taskId)).toBe(null);
+    const plain = await workBadgeMark(taskId);
+
+    await submitToAgent(taskId, "#delegated 2 subagent a1,a2");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 20_000,
+      message: "a delegated report must leave the turn running",
+    });
+    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", {
+      timeout: 10_000,
+      timeoutMsg: `the badge never said what it was waiting on (saw ${await delegatedLabel(taskId)})`,
+    });
+
+    // Measured, not eyeballed. Both marks are small round outlines and a
+    // screenshot cannot tell them apart, so this asserts which one is drawn
+    // and how fast it turns: the working spinner every second, the
+    // background ring eight times slower. That difference is the whole claim
+    // the badge makes, and an agent waiting two hours on a monitor is the
+    // case it exists for.
+    const held = await workBadgeMark(taskId);
+    if (plain?.kind !== "spinner" || plain?.duration !== "1s") {
+      throw new Error(`the control is not the working spinner: ${JSON.stringify(plain)}`);
+    }
+    // Reduced motion stops the ring, so a machine with the setting on
+    // reports no animation and is still correct.
+    if (held?.kind !== "background" || !["8s", "0s"].includes(held?.duration ?? "")) {
+      throw new Error(`delegated work did not swap the spinner for the ring: ${JSON.stringify(held)}`);
+    }
+
+    // And it STAYS. Agent-owned work is excluded from the detached grace, on
+    // the measurement that it comes back on its own: putting a clock on it
+    // would announce over a healthy orchestration. Well past the grace, and
+    // still short of the ceiling, so a correct fire cannot be read as the bug.
+    await browser.pause(GRACE_MS * 2);
+    const badges = await workBadges(taskId);
+    if (!badges.includes("working")) {
+      throw new Error(
+        `a subagent hold was cut short by the detached grace (badges: ${badges.join()})`,
+      );
+    }
+    await snap("agent-delegated-subagent.png");
+  });
+
+  // THE compounding bug. Same ids as the previous report, so everything
+  // outstanding was already outstanding when the last turn ended: it cannot be
+  // what THIS turn is waiting on. The turn is over.
+  //
+  // Note what this case does NOT do: it never sends a plain done. Before the
+  // carried-over rule there was nothing here to end the turn at all, for the
+  // rest of the session.
+  it("ends a turn whose outstanding work all predates it", async function () {
+    this.timeout(90_000);
+    await submitToAgent(taskId, "#delegated 2 subagent a1,a2");
+    await waitForWorkBadge(taskId, "done", {
+      timeout: 30_000,
+      interval: 300,
+      message: "work that predates the turn either held it open or ended it without announcing",
+    });
+
+    // The leftovers are still running, and a tab that says so is the honest
+    // rendering of a finished turn. This is the decoration half.
+    expect(await delegatedLabel(taskId)).toBe("subagent");
+    await snap("agent-delegated-carried.png");
+
+    // And it OUTLIVES the badge. Coming back to the tab clears the done (the
+    // user has now seen it), which drops the badge entirely and would leave a
+    // tab with two subagents running looking exactly like an inert one. What
+    // is left is the lowest-priority state: a hollow ring that draws only in
+    // a slot nothing else wanted.
+    await setWindowPresence(true);
+    await browser.waitUntil(async () => (await taskViewBadge(taskId)) === "delegated", {
+      timeout: 15_000,
+      timeoutMsg: `the decoration did not outlive the done (badge ${await taskViewBadge(taskId)}`
+        + `, label ${await delegatedLabel(taskId)})`,
+    });
+    expect(await delegatedLabel(taskId)).toBe("subagent");
+    await snap("agent-delegated-idle-ring.png");
+    await setWindowPresence(false);
+  });
+
+  // The reported regression, as a case. Three background tasks reporting back
+  // one at a time: each `Stop` carries the remainder, so every set is a
+  // SUBSET of the one before. A subset test called the turn over after the
+  // first one landed and rang "done" with two still running, which is what a
+  // real session showed. One bell, at the end, and the intermediate landings
+  // show as partial.
+  it("rings once after the LAST of three, and shows the ones in between", async function () {
+    this.timeout(90_000);
+    await submitToAgent(taskId, "#delegated 3 subagent q1,q2,q3");
+    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", {
+      timeout: 20_000,
+      timeoutMsg: "the three-subagent turn never reported what it was waiting on",
+    });
+    expect(await taskViewBadge(taskId)).toBe("working");
+
+    // One lands. Still two to go, so this is NOT a done: it is partial, and
+    // it rings nothing.
+    await submitToAgent(taskId, "#delegated 2 subagent q2,q3");
+    await browser.waitUntil(async () => (await taskViewBadge(taskId)) === "partial", {
+      timeout: 20_000,
+      timeoutMsg: `a landing mid-orchestration did not read as partial (saw ${await taskViewBadge(taskId)})`,
+    });
+    await snap("agent-delegated-partial.png");
+
+    // The second lands. Still partial, still no bell.
+    await submitToAgent(taskId, "#delegated 1 subagent q3");
+    await browser.pause(1_500);
+    if ((await workBadges(taskId)).includes("done")) {
+      throw new Error("rang done with one subagent still running, which is the bug");
+    }
+
+    // The last one. NOW the turn is over, and this is the only bell.
+    await submitToAgent(taskId, "#hookdone");
+    await waitForWorkBadge(taskId, "done", {
+      timeout: 20_000,
+      message: "the turn never ended after the last subagent reported",
+    });
+    expect(await delegatedLabel(taskId)).toBe(null);
+    await snap("agent-delegated-three.png");
+  });
+
+  // Detached work, and the one case in the state machine that no signal can
+  // decide: a `Stop` only fires once the model loop has stopped, so a shell in
+  // its payload is always detached, but detached is not abandoned. Two
+  // measured runs with byte-identical payloads went opposite ways, one
+  // resuming after 75s and one never. So this is a clock, and it is the only
+  // clock here that is honest about being one.
+  it("calls the turn over when only detached work outlives the grace", async function () {
+    this.timeout(90_000);
+    // A NEW id, or the carried-over rule above would end the turn instantly
+    // and this would prove nothing.
+    await submitToAgent(taskId, "#delegated 1 shell b9");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 20_000,
+      message: "the detached report never reached working",
+    });
+    // Waited for, not asserted: the working badge lands on the turn's opening
+    // hook and the delegated report only arrives when the done hook runs, so
+    // an immediate read races the thing under test. It also has to REPLACE the
+    // previous case's `subagent`, which is why the wait is on the value.
+    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "shell", {
+      timeout: 20_000,
+      timeoutMsg: `the detached report never reached the badge (saw ${await delegatedLabel(taskId)})`,
+    });
+
+    // `done`, not merely "not working": this case has to prove the turn is
+    // ANNOUNCED at the grace. The 20-minute ceiling already stops spinners
+    // silently, and telling nobody is the failure this replaces.
+    await waitForWorkBadge(taskId, "done", {
+      timeout: GRACE_MS + 45_000,
+      interval: 500,
+      message: "a detached shell held the turn open past its grace, which is the bug",
+    });
+    // The shell did not stop existing because the turn ended, so the tab has
+    // to keep saying so. This is the decoration surviving a done, which is
+    // the half that makes an idle tab honest rather than inert.
+    if ((await delegatedLabel(taskId)) !== "shell") {
+      const state = await browser.execute((id) => {
+        const t = window.__termic!.useApp.getState().tabs[id][0] as never as
+          { workState?: string; delegatedWork?: unknown };
+        return { work: t.workState, delegated: t.delegatedWork };
+      }, taskId);
+      throw new Error(
+        `the grace done dropped the decoration: badges=${(await workBadges(taskId)).join()}`
+        + ` label=${await delegatedLabel(taskId)} store=${JSON.stringify(state)}`,
+      );
+    }
   });
 });

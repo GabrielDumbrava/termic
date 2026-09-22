@@ -55,6 +55,29 @@ describe("settings", () => {
     }, original);
   });
 
+  // Each switch draws the mark it governs, and the order is the model: every
+  // mid-turn mark hangs off Working, so a user who turns that off does not
+  // get a quieter ring in its place. The rows were four paragraphs
+  // describing small circles before, which is the hardest way to answer
+  // "which dot is that".
+  it("shows one switch per mark, each drawing its own mark", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await browser.execute(() =>
+      window.__termic!.useApp.getState().openSettings("notifications"),
+    );
+    await waitForText("Agent status marks");
+
+    const marks = await browser.execute(() => {
+      const head = [...document.querySelectorAll("div")]
+        .find(d => d.textContent?.trim() === "Agent status marks");
+      const rows = head?.parentElement?.querySelectorAll('[data-testid="work-badge"]');
+      return [...(rows ?? [])].map(el => (el as HTMLElement).dataset.workState);
+    });
+    expect(marks).toEqual(["working", "delegated", "partial", "done", "attention"]);
+    await snap("settings-work-marks.png");
+  });
+
   it("toggles a preference and it lands in the prefs store", async () => {
     await waitForAppShell();
     await requireTermicApi();

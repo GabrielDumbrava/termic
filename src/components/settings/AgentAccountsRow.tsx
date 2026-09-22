@@ -103,12 +103,6 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-[var(--color-fg-faint)]">
           {first ? "Name your current login" : "Credentials"}
-          {/* This half has no page of its own (accounts live on the agent that
-              owns them), so the badge rides the row. Same meaning as the
-              Profiles one: off by default, and we are not confident yet. */}
-          <span className="rounded bg-[var(--color-accent)]/15 px-1.5 py-px tracking-wider text-[var(--color-accent)]">
-            Experimental
-          </span>
         </span>
 
         {view.accounts.map(a => (
