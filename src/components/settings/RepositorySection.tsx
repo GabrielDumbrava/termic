@@ -745,8 +745,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             <div className="text-[14px] font-medium">Files to copy</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
               {isMulti
-                ? <>Copied from this project's own repo root into the root of each new task. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code>). Members get their own list, in Members &amp; scripts above.</>
-                : <>Copied from the repo root into each new task. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code>).</>}
+                ? <>Copied from this project's own repo root into the root of each new task. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code> at the root, <code className="font-mono">**/.env*</code> at any depth). Members get their own list, in Members &amp; scripts above.</>
+                : <>Copied from the repo root into each new task. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code> at the root, <code className="font-mono">**/.env*</code> at any depth).</>}
             </div>
             <textarea
               value={filesText}
