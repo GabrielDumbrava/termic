@@ -2011,7 +2011,7 @@ describe("recursive files to copy (GH #320)", () => {
     await browser.execute(() => document.querySelector(
       'textarea[placeholder*="src/config/local.py"]',
     )?.scrollIntoView({ block: "center" }));
-    await snap("recursive-files-to-copy-settings");
+    await snap("recursive-files-to-copy-settings.png");
   });
 });
 
