@@ -1576,30 +1576,53 @@ describe("agent notifications", () => {
 
     const chip = await browser.$('[data-testid="usage-chip"]');
     await chip.waitForExist({ timeout: 20_000 });
+    // ONE round trip for the whole readout, not fifteen. Every `getAttribute`
+    // and `getText` is a WebDriver command, and this case was spending the
+    // best part of a minute on them; read together they also describe the
+    // chip at ONE instant rather than across the fifteen seconds it used to
+    // take to walk it, which is the difference between a snapshot and a
+    // slideshow when something is re-rendering.
+    const seen = await browser.execute(() => {
+      const q = (sel: string) => document.querySelector(sel) as HTMLElement | null;
+      const chipEl = q('[data-testid="usage-chip"]')!;
+      const fiveH = q('[data-usage-window="5h"]')!;
+      const week = q('[data-usage-window="wk"]')!;
+      return {
+        session: chipEl.dataset.usageSession,
+        weekly: chipEl.dataset.usageWeekly,
+        source: chipEl.dataset.usageSource,
+        level: chipEl.dataset.usageLevel,
+        text: chipEl.innerText,
+        gauges: document.querySelectorAll('[data-testid="usage-gauge"]').length,
+        fiveHText: fiveH.innerText,
+        weekText: week.innerText,
+        fiveHFill: fiveH.dataset.usageFill,
+        weekFill: week.dataset.usageFill,
+        weekBg: getComputedStyle(week).backgroundImage,
+      };
+    });
     // The numbers the USER reads, not the store field behind them.
-    expect(await chip.getAttribute("data-usage-session")).toBe("30");
-    expect(await chip.getAttribute("data-usage-weekly")).toBe("95");
-    expect(await chip.getAttribute("data-usage-source")).toBe("statusline");
-    expect(await chip.getAttribute("data-usage-level")).toBe("critical");
-    expect(await chip.getText()).toContain("30%");
-    expect(await chip.getText()).toContain("95%");
+    expect(seen.session).toBe("30");
+    expect(seen.weekly).toBe("95");
+    expect(seen.source).toBe("statusline");
+    expect(seen.level).toBe("critical");
+    expect(seen.text).toContain("30%");
+    expect(seen.text).toContain("95%");
     // One gauge per window, and each one is the BACKGROUND of its own number,
     // so the 5h figure can never be sitting next to the week's bar. Assert the
     // value each gauge was drawn to rather than counting elements: a gauge
     // pointed at the wrong window is the bug this readout exists to prevent,
     // and two elements of any kind would satisfy a count.
-    expect(await (await browser.$$('[data-testid="usage-gauge"]')).length).toBe(2);
-    const fiveH = await browser.$('[data-usage-window="5h"]');
-    const week = await browser.$('[data-usage-window="wk"]');
-    expect(await fiveH.getText()).toContain("30%");
-    expect(await week.getText()).toContain("95%");
-    expect(await fiveH.getAttribute("data-usage-fill")).toBe("30");
-    expect(await week.getAttribute("data-usage-fill")).toBe("95");
+    expect(seen.gauges).toBe(2);
+    expect(seen.fiveHText).toContain("30%");
+    expect(seen.weekText).toContain("95%");
+    expect(seen.fiveHFill).toBe("30");
+    expect(seen.weekFill).toBe("95");
     // The fill is a gradient with a hard stop at the percentage, so the stop
     // is the thing that has to be there: a background that lost its gradient
     // (a dropped inline style, a theme token that resolved to nothing) still
     // renders a perfectly plausible chip.
-    expect((await week.getCSSProperty("background-image")).value).toContain("gradient");
+    expect(seen.weekBg).toContain("gradient");
   });
 
   // A task runs as many agents as it has tabs. The footer's original rule was
@@ -1768,13 +1791,23 @@ describe("agent notifications", () => {
     await submitToAgent(taskId!, "#usage ctx 170000 200000");
     const gauge = await browser.$('[data-testid="context-gauge"]');
     await gauge.waitForExist({ timeout: 20_000, timeoutMsg: "the context gauge never appeared" });
-    expect(await gauge.getText()).toContain("85%");
-    expect(await gauge.getText()).toContain("ctx");
-    expect(await gauge.getAttribute("data-usage-fill")).toBe("85");
-    const chip = await browser.$('[data-testid="usage-chip"]');
-    expect(await chip.getAttribute("data-context-percent")).toBe("85");
+    // One read, same reason as the case above.
+    const seen = await browser.execute(() => {
+      const g = document.querySelector('[data-testid="context-gauge"]') as HTMLElement;
+      const chipEl = document.querySelector('[data-testid="usage-chip"]') as HTMLElement;
+      return {
+        text: g.innerText,
+        fill: g.dataset.usageFill,
+        contextPercent: chipEl.dataset.contextPercent,
+        planGauges: document.querySelectorAll('[data-testid="usage-gauge"]').length,
+      };
+    });
+    expect(seen.text).toContain("85%");
+    expect(seen.text).toContain("ctx");
+    expect(seen.fill).toBe("85");
+    expect(seen.contextPercent).toBe("85");
     // The plan windows are still there beside it: one chip, both readouts.
-    expect(await (await browser.$$('[data-testid="usage-gauge"]')).length).toBe(2);
+    expect(seen.planGauges).toBe(2);
   });
 
   // Its own `it` for the budget reason the gauge screenshots have one: every
@@ -2841,6 +2874,16 @@ describe("delegated work", () => {
   it("rings once after the LAST of three, and shows the ones in between", async function () {
     this.timeout(90_000);
     await submitToAgent(taskId, "#delegated 3 subagent q1,q2,q3");
+    // TWO waits, and the first one is the point: the previous case leaves a
+    // `subagent` decoration on the tab, so waiting straight for that label
+    // matches the OLD one and asserts against whatever state the turn
+    // happens to be in a millisecond after a submit. The working edge clears
+    // the decoration, so "gone" is the signal that this turn has started and
+    // "back" is the signal that its own report has landed.
+    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === null, {
+      timeout: 20_000,
+      timeoutMsg: "the new turn never cleared the previous report",
+    });
     await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", {
       timeout: 20_000,
       timeoutMsg: "the three-subagent turn never reported what it was waiting on",

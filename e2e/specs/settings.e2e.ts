@@ -43,7 +43,9 @@ const selectRendererByValue = (value: "webgl" | "canvas" | "dom") =>
 // Settings/preferences subsystem. Guards that a real toggle in the Settings
 // overlay flips the pref in the prefs store and the control reflects it.
 describe("settings", () => {
-  const LABEL = "Work-in-progress indicator";
+  // The `workingIndicator` row, renamed when the marks got one switch
+  // each (Settings -> Notifications, "Agent status marks").
+  const LABEL = "Working";
   let original: boolean | undefined;
 
   after(async () => {
