@@ -34,6 +34,7 @@ import { isTerminalFindCombo } from "@/lib/terminalFind";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
+import { IS_WINDOWS } from "@/lib/platform";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
 // `currentTerminalTheme()` picks the matching palette at mount; the
@@ -191,7 +192,10 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           e.stopPropagation();
           return false;
         }
-        if (bindingMatches(e, binds["terminal-paste"])) {
+        // Windows also pastes on plain Ctrl+V, as every Windows terminal does.
+        const winPaste = IS_WINDOWS && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey
+          && (e.key === "v" || e.key === "V");
+        if (winPaste || bindingMatches(e, binds["terminal-paste"])) {
           navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
           e.preventDefault();
           e.stopPropagation();

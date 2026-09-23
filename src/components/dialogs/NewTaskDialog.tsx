@@ -31,6 +31,7 @@ import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
 import { readMemberModes, persistMemberMode, seedMemberMode } from "@/components/dialogs/memberModes";
 import { scoped } from "@/lib/profileScope";
+import { installCommand } from "@/lib/platform";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
@@ -1702,7 +1703,7 @@ export function NewTaskDialog() {
                     Issues need the <span className="mono">{forgeCli}</span> CLI
                   </div>
                   <div className="mt-1">
-                    Install it with <code className="mono">brew install {forgeCli}</code>, then sign in
+                    Install it with <code className="mono">{installCommand(forgeCli)}</code>, then sign in
                     with <code className="mono">{forgeCli} auth login</code>. It also powers the PR card and
                     merge detection.
                   </div>

@@ -2443,6 +2443,13 @@ fn migrate_workspaces_to_tasks() {
 /// a lossy UTF-8 decode would destroy the bytes.
 fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
     let mut cmd = crate::proc_ctl::command("git");
+    // Windows: worktrees live under `%USERPROFILE%\termic\tasks\<project>\<task>`
+    // and routinely hold `node_modules` / `target`, past the 260-character
+    // MAX_PATH that Git for Windows honours unless told otherwise. Set per
+    // call, so it works whatever the user's global config says.
+    if cfg!(windows) {
+        cmd.args(["-c", "core.longpaths=true"]);
+    }
     cmd.args(args).current_dir(cwd);
     // Run with the user's login-shell environment, same as the PTY (see
     // pty_spawn). A GUI-launched .app gets a bare launchd PATH; without this,
@@ -3570,7 +3577,9 @@ fn configure_terminal_env(cmd: &mut CommandBuilder) {
 /// Names are used verbatim (free text per GH #196, no case transform).
 fn valid_port_name(name: &str) -> bool {
     shell_env::is_env_key(name)
-        && !RESERVED_PORT_NAMES.contains(&name)
+        // Windows env names are case-insensitive: a port named `Path` would
+        // replace PATH there.
+        && !RESERVED_PORT_NAMES.iter().any(|r| if cfg!(windows) { r.eq_ignore_ascii_case(name) } else { *r == name })
         && !name.starts_with("TERMIC_PORT_")
 }
 
@@ -8196,10 +8205,19 @@ fn tokenize_home_prefix(path: &str) -> String {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
-        path.replacen(&home, "$HOME", 1)
-    } else {
-        path.to_string()
+        return path.replacen(&home, "$HOME", 1);
     }
+    // Windows: `C:\Users\<name>\x`, any case. Written with `/` so the
+    // committed `.termic.yaml` reads the same on a teammate's Mac, and so
+    // nobody's username lands in the repo.
+    if cfg!(windows) && !home.is_empty() {
+        let lower = path.to_lowercase();
+        let h = home.to_lowercase();
+        if lower == h || lower.starts_with(&format!("{h}\\")) || lower.starts_with(&format!("{h}/")) {
+            return format!("$HOME{}", path[home.len()..].replace('\\', "/"));
+        }
+    }
+    path.to_string()
 }
 
 /// Read a project's committed `.termic.yaml` (at its `root_path`).
@@ -14754,8 +14772,28 @@ fn lsp_patch_initialize(body: &str, root: &Path) -> String {
 /// `file://` URI for an absolute path. Percent-encodes what a path can hold
 /// and a URI cannot; deliberately minimal rather than a dependency.
 fn lsp_path_to_uri(p: &Path) -> String {
+    lsp_path_to_uri_for(&p.to_string_lossy(), cfg!(windows))
+}
+
+/// `lsp_path_to_uri` with the platform injected, so the Windows form is
+/// tested everywhere. Windows: `C:\Users\u\x` -> `file:///C:/Users/u/x`
+/// (the standard form: a leading slash, forward slashes, the drive colon
+/// unencoded). Mirrored byte for byte by `pathToFileUri` (lib/osPath.ts).
+fn lsp_path_to_uri_for(path: &str, windows: bool) -> String {
     let mut out = String::from("file://");
-    for b in p.to_string_lossy().as_bytes() {
+    let mut owned;
+    let mut p: &str = path;
+    if windows {
+        owned = p.strip_prefix(r"\\?\").unwrap_or(p).replace('\\', "/");
+        let b = owned.as_bytes();
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+            out.push('/');
+            out.push_str(&owned[..2]);
+            owned = owned[2..].to_string();
+        }
+        p = &owned;
+    }
+    for b in p.as_bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(*b as char)
@@ -32056,5 +32094,12 @@ mod windows_port_tests {
         assert!(!is_absolute_location("wt"));
         // A drive path is absolute on Windows only, where it is a real root.
         assert_eq!(is_absolute_location("D:\\wt"), cfg!(windows));
+    }
+
+    #[test]
+    fn lsp_uris_take_the_standard_windows_form() {
+        assert_eq!(lsp_path_to_uri_for("/tmp/a#b", false), "file:///tmp/a%23b");
+        assert_eq!(lsp_path_to_uri_for(r"C:\Users\u\a b.ts", true), "file:///C:/Users/u/a%20b.ts");
+        assert_eq!(lsp_path_to_uri_for(r"\\?\D:\x", true), "file:///D:/x");
     }
 }

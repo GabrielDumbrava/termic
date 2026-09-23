@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { useAlignedSpin } from "@/hooks/useAlignedSpin";
+import { installCommand } from "@/lib/platform";
 
 const POLL_MS = 60_000;
 /** CLI re-probe cadence while the card is blocked on a missing / signed-out
@@ -176,7 +177,7 @@ export function PrCard({ task }: { task: Task }) {
     const hint =
       lookup.status === "cli-missing" ? {
         title: `${providerLabel} ${prNoun}s need the ${lookup.provider === "gitlab" ? "glab" : "gh"} CLI`,
-        body: <>Install it with <Code>brew install {lookup.provider === "gitlab" ? "glab" : "gh"}</Code>, then sign in with <Code>{lookup.provider === "gitlab" ? "glab" : "gh"} auth login</Code>.</>,
+        body: <>Install it with <Code>{installCommand(lookup.provider === "gitlab" ? "glab" : "gh")}</Code>, then sign in with <Code>{lookup.provider === "gitlab" ? "glab" : "gh"} auth login</Code>.</>,
       } : lookup.status === "cli-unauthed" ? {
         title: `Sign in to ${providerLabel}`,
         body: <>Run <Code>{lookup.provider === "gitlab" ? "glab" : "gh"} auth login</Code> in a terminal, then refresh.</>,

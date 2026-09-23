@@ -456,7 +456,16 @@ pub fn login_env(base_id: &str, store: &std::path::Path) -> Vec<(String, String)
         LoginStore::SelfHostingDir { env } => vec![(env.into(), p)],
         LoginStore::ParentDir { env, .. } => vec![(env.into(), p)],
         LoginStore::XdgRoot { env, .. } => vec![(env.into(), p)],
-        LoginStore::HomeOnly { .. } => vec![("HOME".into(), p)],
+        // Node reads the home dir from USERPROFILE on Windows, not HOME, so
+        // relocating only HOME there would leave a second account quietly
+        // sharing the first one's login.
+        LoginStore::HomeOnly { .. } => {
+            let mut v = vec![("HOME".to_string(), p.clone())];
+            if cfg!(windows) {
+                v.push(("USERPROFILE".into(), p));
+            }
+            v
+        }
         // No directory at all. The token is not known here: the caller reads
         // it from the account's own store, so this only names the variable.
     });

@@ -40,3 +40,12 @@ export function dragRegion(): { "data-tauri-drag-region"?: boolean; style?: Reco
 export function appRegionStyle(v: "drag" | "no-drag"): Record<string, string> {
   return IS_MAC ? { WebkitAppRegion: v } : {};
 }
+
+/** The one-line install command to show for a CLI the app looks for: Homebrew
+ *  on macOS (and Linux, where it is the common cross-distro answer), winget
+ *  on Windows, where Homebrew does not exist. */
+export function installCommand(tool: string): string {
+  if (!IS_WINDOWS) return `brew install ${tool}`;
+  const winget: Record<string, string> = { gh: "GitHub.cli", glab: "GLab.GLab" };
+  return `winget install ${winget[tool] ?? tool}`;
+}

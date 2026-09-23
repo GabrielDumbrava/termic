@@ -227,6 +227,7 @@ Deeper references — read when working in that area:
 - [docs/agent-states.md](docs/agent-states.md) — every state an agent tab can be in, what produces it, what it draws, and whether it rings
 - [docs/agent-hooks.md](docs/agent-hooks.md) — agent hooks: what each agent reports, the transport (including Docker), and the measurements behind both
 - [docs/sandbox.md](docs/sandbox.md) — sandbox-exec + CONNECT proxy, YOLO interaction, deny debugging
+- [docs/windows.md](docs/windows.md) — the Windows port: building with make under Git Bash, what works differently (Docker-only sandbox, Git Bash scripts, process trees, loopback CLI transport), what is not there yet
 - [docs/shortcuts.md](docs/shortcuts.md) — shortcut system architecture, adding shortcuts, glyph rendering
 - [docs/themes.md](docs/themes.md) — custom theme file format (`~/.config/termic/themes/*.json`), ui/terminal key reference
 - [docs/lsp.md](docs/lsp.md) — language servers: the rules a new one must obey, and `make lsp-smoke`

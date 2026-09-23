@@ -64,6 +64,7 @@ import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agen
 import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
+import { IS_WINDOWS } from "@/lib/platform";
 
 interface Props { task: Task; tab: TerminalTab; active: boolean; }
 
@@ -1249,7 +1250,13 @@ const captureArmedRef = useRef(false);
       }
       if (e.type === "keydown") {
         const binds = usePrefs.getState().shortcuts;
-        if (PASS_TO_APP.some(id => bindingMatches(e, binds[id]))) {
+        // Off macOS the app's Cmd is Ctrl, and plain Ctrl+letter belongs to
+        // the shell (Ctrl+P is readline's previous-line). Only a binding that
+        // also carries Shift or Alt is taken from the terminal there.
+        if (PASS_TO_APP.some(id => {
+          const b = binds[id];
+          return (IS_MAC || !!b?.shift || !!b?.alt) && bindingMatches(e, b);
+        })) {
           return false; // let the global handler take it (file finder, find-in-files, …)
         }
       }
@@ -1290,9 +1297,28 @@ const captureArmedRef = useRef(false);
           .catch(() => {
             // No image on the clipboard (or the read failed): hand the agent
             // the keystroke it was going to get anyway and let it answer.
+            // On Windows Ctrl+V is paste (below), so paste the text instead.
+            if (IS_WINDOWS) {
+              navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+              return;
+            }
             const pid = ptyRef.current;
             if (pid) ipc.ptyWrite(pid, [0x16]).catch(() => {});
           });
+        return false;
+      }
+
+      // Windows: plain Ctrl+V pastes, as in Windows Terminal, conhost and
+      // every other Windows app. (macOS pastes with Cmd+V natively; Linux
+      // keeps Ctrl+V for the shell's quoted-insert and pastes with
+      // Ctrl+Shift+V, below.)
+      if (
+        IS_WINDOWS && e.type === "keydown" && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+        && (e.key === "v" || e.key === "V")
+      ) {
+        navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+        e.preventDefault();
+        e.stopPropagation();
         return false;
       }
 

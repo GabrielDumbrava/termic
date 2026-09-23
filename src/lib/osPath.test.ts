@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toContainerPath, quoteWindowsPath, terminalPathText } from "./osPath";
+import { toContainerPath, quoteWindowsPath, terminalPathText, relUnder, baseName, pathToFileUri, fileUriToPath } from "./osPath";
 
 describe("toContainerPath", () => {
   it("is the identity off Windows", () => {
@@ -25,5 +25,36 @@ describe("terminalPathText", () => {
   });
   it("doubles embedded quotes", () => {
     expect(quoteWindowsPath('C:\\a "b"')).toBe('"C:\\a ""b"""');
+  });
+});
+
+
+describe("relUnder", () => {
+  it("is a segment boundary, not a raw prefix", () => {
+    expect(relUnder("/repo/src/a.ts", "/repo", false)).toBe("src/a.ts");
+    expect(relUnder("/repo-old/a.ts", "/repo", false)).toBeNull();
+    expect(relUnder("/repo", "/repo", false)).toBeNull();
+  });
+  it("ignores case and separator style on Windows", () => {
+    expect(relUnder("c:\\Repo\\src\\a.ts", "C:\\repo", true)).toBe("src/a.ts");
+    expect(relUnder("C:/repo/src/a.ts", "C:\\repo\\", true)).toBe("src/a.ts");
+    expect(relUnder("C:\\repo-old\\a.ts", "C:\\repo", true)).toBeNull();
+  });
+});
+
+describe("file URIs", () => {
+  it("keeps the unix encoding byte for byte", () => {
+    expect(pathToFileUri("/tmp/a#b", false)).toBe("file:///tmp/a%23b");
+    expect(fileUriToPath("file:///tmp/a%23b", false)).toBe("/tmp/a#b");
+  });
+  it("uses file:///C:/... on Windows and round-trips to a native path", () => {
+    expect(pathToFileUri("C:\\Users\\u\\a b.ts", true)).toBe("file:///C:/Users/u/a%20b.ts");
+    expect(fileUriToPath("file:///C:/Users/u/a%20b.ts", true)).toBe("C:\\Users\\u\\a b.ts");
+    // VS Code style (encoded colon) decodes too.
+    expect(fileUriToPath("file:///c%3A/x/y.ts", true)).toBe("c:\\x\\y.ts");
+  });
+  it("takes the last segment on either separator on Windows", () => {
+    expect(baseName("C:\\a\\b.ts", true)).toBe("b.ts");
+    expect(baseName("/a/b.ts", false)).toBe("b.ts");
   });
 });

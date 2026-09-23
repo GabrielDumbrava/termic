@@ -37,7 +37,7 @@ import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2, Flower2, GitPullRe
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import type { DelegatedWork } from "@/lib/delegatedWork";
-import { dragRegion, appRegionStyle } from "@/lib/platform";
+import { dragRegion, appRegionStyle, installCommand } from "@/lib/platform";
 
 type Step = 0 | 1 | 2 | 3 | 4;
 
@@ -379,7 +379,7 @@ function ForgeRows() {
           {!f.found ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
               <span className="font-mono">{f.id}</span> not installed ·{" "}
-              <span className="font-mono">brew install {f.id}</span>
+              <span className="font-mono">{installCommand(f.id)}</span>
             </span>
           ) : !f.authed ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
