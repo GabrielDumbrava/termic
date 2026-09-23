@@ -399,8 +399,8 @@ describe("agent credentials", () => {
           async () => (await loginEnvFor(taskId, envVar)) || false,
           { timeout: 30_000, timeoutMsg: `${agent}: the spawn never recorded ${envVar}` },
         );
-        expect(first).toContain("/logins/");
-        expect(first.endsWith(`/${agent}/work`)).toBe(true);
+        expect(first.replace(/\\/g, "/")).toContain("/logins/");
+        expect(first.replace(/\\/g, "/").endsWith(`/${agent}/work`)).toBe(true);
 
         // Switch to the other real store and respawn: the NEXT process gets a
         // DIFFERENT directory. A running process cannot have its environment

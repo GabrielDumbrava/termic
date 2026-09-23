@@ -513,9 +513,17 @@ export function bindingGlyphs(b: Binding): string[] {
 /** A binding as one string, for tooltips and hints: the glyph run on macOS
  *  (`⌥⌘P`), the Windows / Linux convention elsewhere (`Ctrl+Alt+P`), where
  *  ⌘ and ⌥ are keys nobody has. */
-export function bindingText(b: Binding): string {
-  const g = bindingGlyphs(b);
-  return IS_MAC ? g.join("") : g.map(glyphLabel).join("+");
+export function bindingText(b: Binding, isMac: boolean = IS_MAC): string {
+  if (isMac) return bindingGlyphs(b).join("");
+  // Windows / Linux order: Ctrl, Alt, Shift, then the key (Microsoft's
+  // style guide, and what VS Code and Windows Terminal print). The glyph
+  // order above is the macOS one (⌥⇧⌘), which read "Shift+Ctrl+P".
+  const parts: string[] = [];
+  if (b.cmd) parts.push("Ctrl");
+  if (b.alt) parts.push("Alt");
+  if (b.shift) parts.push("Shift");
+  parts.push(glyphLabel(keyGlyph(b.key)));
+  return parts.join("+");
 }
 
 /** One chip's label: the glyph on macOS, the key's name elsewhere. */

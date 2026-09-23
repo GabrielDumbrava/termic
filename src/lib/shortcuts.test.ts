@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_BINDINGS, FIXED_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
-  bindingMatches, bindingSignature, bindingToCmKey, bindingsEqual, isValidBinding, isReservedKey,
+  bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, isValidBinding, isReservedKey,
 } from "./shortcuts";
 
 // `SHORTCUT_DEFS` is the single source of truth for every bindable key, and it
@@ -221,5 +221,16 @@ describe("AltGr", () => {
   });
   it("still fires it from a real Ctrl+Alt", () => {
     expect(bindingMatches(ev({ ctrlKey: true, altKey: true }), ctrlAltP)).toBe(true);
+  });
+});
+
+describe("bindingText", () => {
+  it("uses the Windows / Linux modifier order off macOS", () => {
+    expect(bindingText({ key: "p", cmd: true, shift: true, alt: false }, false)).toBe("Ctrl+Shift+P");
+    expect(bindingText({ key: "p", cmd: true, shift: false, alt: true }, false)).toBe("Ctrl+Alt+P");
+    expect(bindingText({ key: "ArrowUp", cmd: false, shift: false, alt: true }, false)).toBe("Alt+Up");
+  });
+  it("keeps the glyph run on macOS", () => {
+    expect(bindingText({ key: "p", cmd: true, shift: true, alt: false }, true)).toBe("⇧⌘P");
   });
 });

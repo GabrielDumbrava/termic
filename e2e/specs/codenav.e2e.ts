@@ -20,6 +20,21 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fakeServer = path.join(here, "..", "fixtures", "fake-lsp.mjs");
 
+/** Install the fake server at `dest` the way the platform runs a repo-local
+ *  server: the script itself (shebang + exec bit) on unix, a `.cmd` launcher
+ *  on Windows, which cannot execute an extensionless script (termic looks up
+ *  `<dest>.cmd` there, as it does npm's own shims). Returns what to delete. */
+function installFakeServer(dest: string): string {
+  if (process.platform === "win32") {
+    const cmd = `${dest}.cmd`;
+    writeFileSync(cmd, `@node "${fakeServer}" %*\r\n`);
+    return cmd;
+  }
+  copyFileSync(fakeServer, dest);
+  chmodSync(dest, 0o755);
+  return dest;
+}
+
 /** The checkout the task reads: a main-checkout task runs in the repo root. */
 const taskPath = (taskId: string) =>
   browser.execute(
@@ -142,8 +157,7 @@ describe("Terraform code intelligence", () => {
     taskId = await openTask("lsp-terraform");
     root = await taskPath(taskId);
     mkdirSync(path.join(root, "bin"), { recursive: true });
-    copyFileSync(fakeServer, path.join(root, "bin/terraform-ls"));
-    chmodSync(path.join(root, "bin/terraform-ls"), 0o755);
+    installFakeServer(path.join(root, "bin", "terraform-ls"));
     writeFileSync(path.join(root, files[0]), 'variable "Store" {\n  default = "demo"\n}\n');
     writeFileSync(path.join(root, files[1]), 'Store = "demo"\n');
     writeFileSync(path.join(root, files[2]), 'locals {\n  store = "demo"\n}\n');
@@ -164,7 +178,7 @@ describe("Terraform code intelligence", () => {
         for (const s of servers.filter(s => s.root === r && s.language === "terraform"))
           await t.invoke("lsp_stop", { id: s.id });
       }, root);
-      for (const rel of [...files, "bin/terraform-ls", ".fake-lsp.json"])
+      for (const rel of [...files, "bin/terraform-ls", "bin/terraform-ls.cmd", ".fake-lsp.json"])
         rmSync(path.join(root, rel), { force: true });
     }
     await setTypeChecking(false);
@@ -224,8 +238,7 @@ describe("code intelligence", () => {
     // this spec needs — no production build flag, no test-only language.
     const bin = path.join(root, "node_modules", ".bin");
     mkdirSync(bin, { recursive: true });
-    copyFileSync(fakeServer, path.join(bin, "tsgo"));
-    chmodSync(path.join(bin, "tsgo"), 0o755);
+    installFakeServer(path.join(bin, "tsgo"));
     writeFileSync(path.join(root, "navme.ts"), "export const answer = 42;\n");
     // A SECOND file with the same basename, which the fixture reports one
     // usage in: two files called navme.ts is what makes the popup's row

@@ -83,9 +83,11 @@ describe("top-bar tooltips name their shortcut", () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-bar-tips");
-    await expectTip('[data-testid="command-palette-button"]', "Command palette (\u21e7\u2318P)");
-    await expectTip('[data-testid="prompts-menu"]', "Prompts (\u2325\u2318P)");
-    await expectTip('[data-testid="toggle-right-panel"]', "Toggle right panel (\u2325\u2318B)");
+    // The keys as each platform writes them (lib/shortcuts.ts bindingText).
+    const win = process.platform === "win32";
+    await expectTip('[data-testid="command-palette-button"]', `Command palette (${win ? "Ctrl+Shift+P" : "\u21e7\u2318P"})`);
+    await expectTip('[data-testid="prompts-menu"]', `Prompts (${win ? "Ctrl+Alt+P" : "\u2325\u2318P"})`);
+    await expectTip('[data-testid="toggle-right-panel"]', `Toggle right panel (${win ? "Ctrl+Alt+B" : "\u2325\u2318B"})`);
   });
 });
 

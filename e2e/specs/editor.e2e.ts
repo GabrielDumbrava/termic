@@ -3755,7 +3755,7 @@ describe("unviewable file notice", () => {
     // The copy the user reads, and the two ways out.
     expect(text).toContain("This looks like a binary file, so the editor can't show it.");
     expect(text).toContain("Open in default app");
-    expect(text).toContain("Reveal in Finder");
+    expect(text).toContain(`Reveal in ${process.platform === "win32" ? "File Explorer" : "Finder"}`);
     // Neither the raw Rust message nor the old red framing survives.
     expect(text).not.toContain("UTF-8");
     expect(text).not.toContain("Error:");
@@ -3823,7 +3823,7 @@ describe("unviewable file notice", () => {
       "This file is too large for the editor to show (3.0 MB).",
     );
     expect(text).toContain("Open in default app");
-    expect(text).toContain("Reveal in Finder");
+    expect(text).toContain(`Reveal in ${process.platform === "win32" ? "File Explorer" : "Finder"}`);
     // Same as the binary case: no raw message, no red framing.
     expect(text).not.toContain("bytes)");
     expect(text).not.toContain("Error:");

@@ -293,8 +293,9 @@ describe("image paste", () => {
       window.__termic!.ipc.clipboardImageSave(new Uint8Array(bytes as number[])), PNG) as string;
     // Under the shared clipboard dir, which Docker mode mounts read-only at
     // this same absolute path, so what gets typed resolves in both worlds.
-    expect(path).toContain("/clipboard/");
-    expect(path).toMatch(/\/pasted-\d+-[0-9a-f]{8}\.png$/);
+    const p = path.replace(/\\/g, "/");
+    expect(p).toContain("/clipboard/");
+    expect(p).toMatch(/\/pasted-\d+-[0-9a-f]{8}\.png$/);
   });
 
   it("refuses bytes that are not an image, rather than writing a fake .png", async () => {

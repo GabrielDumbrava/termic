@@ -120,7 +120,13 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
     // THE tab_id assertion: find_tab_pty resolves the returned id via
     // PtyRole.tab_id, with no default-tab fallback to hide a broken
     // thread behind.
-    const r = await rpc({ cmd: "logs", task: "cli-tabs", tab: secondTabId });
+    // Polled: a live PTY is not yet a printed banner, and the fake agent
+    // takes longer to start under Git Bash on Windows than bash on macOS.
+    let r: any;
+    await browser.waitUntil(async () => {
+      r = await rpc({ cmd: "logs", task: "cli-tabs", tab: secondTabId });
+      return r.ok && String(r.data?.data ?? "").includes("FAKE-AGENT ready");
+    }, { timeout: 15_000, timeoutMsg: "the tab's own PTY never showed the agent's banner" });
     expect(r.ok).toBe(true);
     expect(r.data.source).toBe("agent");
     expect(r.data.data).toContain("FAKE-AGENT ready");
