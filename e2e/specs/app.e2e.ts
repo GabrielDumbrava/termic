@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, clickByText, clickWhenVisible, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickWhenVisible, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible, controlConnect } from "../helpers";
 
 const artifacts = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -636,9 +636,8 @@ describe("windowless mode", () => {
   /** Unauthenticated `raise` over the control socket (cli_server.rs handles it
    *  before the auth gate, so it works with the CLI setting off). */
   async function raiseOverSocket(): Promise<void> {
-    const net = await import("node:net");
     await new Promise<void>((resolve, reject) => {
-      const c = net.createConnection(socketPath);
+      const c = controlConnect(socketPath);
       c.on("error", reject);
       c.on("connect", () => c.write(JSON.stringify({ id: "e2e", cmd: "raise" }) + "\n"));
       const t = setTimeout(() => { c.destroy(); reject(new Error("raise timed out")); }, 10_000);

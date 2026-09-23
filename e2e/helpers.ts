@@ -10,6 +10,15 @@ import { fileURLToPath } from "node:url";
 import { dataDir } from "../wdio.conf.js";
 
 const socketPath = path.join(dataDir, "termic.sock");
+
+/** Connect to the app's control plane. Unix: the socket file itself. Windows:
+ *  the file holds the loopback `host:port` the app listens on
+ *  (termic_proto::local). */
+export function controlConnect(file: string = socketPath): net.Socket {
+  if (process.platform !== "win32") return net.createConnection(file);
+  const [host, port] = fs.readFileSync(file, "utf8").trim().split(/:(?=\d+$)/);
+  return net.createConnection({ host, port: Number(port) });
+}
 /** Per-boot CLI token, read fresh: the app rewrites it on every launch. */
 const cliToken = () => fs.readFileSync(path.join(dataDir, "cli-token"), "utf8").trim();
 
@@ -1184,7 +1193,7 @@ export async function workBadges(taskId: string): Promise<Array<WorkBadge | null
  */
 export function cliRpc(cmd: Record<string, unknown>): Promise<any> {
   return new Promise((resolve, reject) => {
-    const c = net.createConnection(socketPath);
+    const c = controlConnect();
     let buf = "";
     const to = setTimeout(() => {
       c.destroy();

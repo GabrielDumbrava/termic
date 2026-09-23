@@ -89,3 +89,45 @@ jobs:
         run: |
           powershell -NoProfile -Command "Get-Process | Where-Object { \$_.Path -like \"\$env:LOCALAPPDATA\\Termic\\*\" } | Stop-Process -Force" || true
           make uninstall
+
+  e2e:
+    # The WebdriverIO suite on WebView2 (the embedded WebDriver supports it).
+    # Experimental like the rest of this workflow: it reports, it does not
+    # gate. Screenshots are skipped in CI (CI=true).
+    name: Windows e2e (WebdriverIO, WebView2)
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Seed e2e fixture profile
+        run: node scripts/e2e-seed.mjs
+      - name: Build e2e binary
+        run: npm run e2e:build
+      - name: Run e2e suite
+        run: npm run test:e2e
+      - name: Collect the debug log
+        if: failure()
+        run: |
+          mkdir -p .e2e/artifacts
+          cp "$TEMP/termic-debug.log" .e2e/artifacts/ 2>/dev/null || true
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts-windows
+          path: .e2e/artifacts
+          if-no-files-found: ignore
+          include-hidden-files: true
