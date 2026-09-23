@@ -90,3 +90,34 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&fl).unwrap(), "yo");
     }
 }
+
+/// `fs::remove_dir_all`, patient on Windows.
+///
+/// Windows refuses to delete a directory while any process still has a
+/// handle or its working directory inside it (os error 32, a sharing
+/// violation, or 5 for a file mid-delete). Archive stops the task's agents
+/// and scripts first, but a killed process lets go of its handles slightly
+/// AFTER TerminateProcess returns, so the first attempt can lose that race.
+/// Retry for a few seconds on exactly those errors. Unix deletes open
+/// directories fine, so there it is a single call.
+pub fn remove_dir_all_settled(path: &Path) -> io::Result<()> {
+    if !cfg!(windows) {
+        return std::fs::remove_dir_all(path);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut wait = std::time::Duration::from_millis(50);
+    loop {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e)
+                if matches!(e.raw_os_error(), Some(32) | Some(5) | Some(145))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(std::time::Duration::from_millis(500));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}

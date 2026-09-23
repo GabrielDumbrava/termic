@@ -13,6 +13,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A newer push supersedes an older run of the same ref: Windows runners are
+# the scarce resource here, and a stale e2e run can hold one for an hour.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Windows (vitest + cargo test)
@@ -97,6 +103,9 @@ jobs:
     name: Windows e2e (WebdriverIO, WebView2)
     runs-on: windows-latest
     continue-on-error: true
+    # The suite takes ~20 min on macOS; a hang must not hold a runner for
+    # GitHub's default six hours.
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -112,6 +121,10 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      # Specs commit in the fixture repo; a fresh runner has no identity.
+      - run: |
+          git config --global user.name "termic e2e"
+          git config --global user.email "e2e@termic.dev"
       - name: Seed e2e fixture profile
         run: node scripts/e2e-seed.mjs
       - name: Build e2e binary

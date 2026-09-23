@@ -9690,9 +9690,10 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
                     } else {
                         all_projects.iter().find(|p| p.id == m.project_id).map(|mp| mp.root_path.clone())
                     };
-                    if let Some(repo_path) = repo_path {
+                    let mut member_git_err: Option<String> = None;
+                    if let Some(repo_path) = &repo_path {
                         if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&repo_path)) {
-                            errs.push(format!("worktree remove {}: {e}", m.dir_name));
+                            member_git_err = Some(format!("worktree remove {}: {e}", m.dir_name));
                         }
                         if delete_branch && !m.branch.is_empty() {
                             if let Err(e) = git(&["branch", "-D", &m.branch], Path::new(&repo_path)) {
@@ -9701,10 +9702,15 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
                         }
                     }
                     if Path::new(&m.path).exists() {
-                        if let Err(e) = fs::remove_dir_all(&m.path) {
+                        if let Err(e) = fs_link::remove_dir_all_settled(Path::new(&m.path)) {
+                            errs.extend(member_git_err.take());
                             errs.push(format!("rm member dir {}: {e}", m.dir_name));
+                        } else if let Some(repo_path) = &repo_path {
+                            let _ = git(&["worktree", "prune"], Path::new(repo_path));
+                            member_git_err = None;
                         }
                     }
+                    errs.extend(member_git_err);
                 }
             }
         }
@@ -9713,10 +9719,14 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
     // Non-git host (issue #4): the wrapper is a plain dir we mkdir'd, not
     // a git worktree, so skip the git teardown — `fs::remove_dir_all`
     // below cleans it up. (Member worktrees were already removed above.)
+    // A failed `git worktree remove` only counts if the directory is still
+    // there afterwards: on Windows it fails while a just-killed process still
+    // holds the tree, and the patient delete below finishes the job.
+    let mut git_remove_err: Option<String> = None;
     if let Some(p) = &proj {
         if !p.non_git {
             if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
-                errs.push(format!("worktree remove: {e}"));
+                git_remove_err = Some(format!("worktree remove: {e}"));
             }
             if delete_branch && !w.branch.is_empty() {
                 if let Err(e) = git(&["branch", "-D", &w.branch], Path::new(&p.root_path)) {
@@ -9726,10 +9736,18 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
         }
     }
     if Path::new(&w.path).exists() {
-        if let Err(e) = fs::remove_dir_all(&w.path) {
+        if let Err(e) = fs_link::remove_dir_all_settled(Path::new(&w.path)) {
+            errs.extend(git_remove_err.take());
             errs.push(format!("rm worktree dir: {e}"));
+        } else if let Some(p) = proj.as_ref().filter(|p| !p.non_git) {
+            // Git's own remove failed but the directory is gone now: drop
+            // git's record of it too, or the branch stays "checked out" there,
+            // and the failure no longer counts.
+            let _ = git(&["worktree", "prune"], Path::new(&p.root_path));
+            git_remove_err = None;
         }
     }
+    errs.extend(git_remove_err);
     // Tidy up now-empty ancestors (the project folder, then the legacy
     // `workspaces/` root once its last task is gone). Best-effort, empty-only.
     prune_empty_worktree_ancestors(Path::new(&w.path));

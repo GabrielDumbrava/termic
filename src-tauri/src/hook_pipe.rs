@@ -184,7 +184,6 @@ pub(crate) fn env_path_for(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::sync::Mutex;
 
     #[test]
@@ -197,9 +196,11 @@ mod tests {
         pipe.serve(done.clone(), Arc::new(move |b: &[u8]| g.lock().unwrap().push(b.to_vec())));
 
         // Two hooks, each opening the pipe as a file, the way a script does.
+        // Back to back, through the same writer `termic hook-emit` uses: the
+        // second one lands while the server is between instances, which is
+        // the busy window write_report exists to ride out.
         for body in ["\x1b]777;notify;termic;agent working\x07", "\x1b]777;notify;termic;agent done\x07"] {
-            let mut f = std::fs::OpenOptions::new().write(true).open(&path).expect("open as a file");
-            f.write_all(body.as_bytes()).unwrap();
+            termic_cli::write_report(std::path::Path::new(&path), body.as_bytes()).expect("write");
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while got.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {

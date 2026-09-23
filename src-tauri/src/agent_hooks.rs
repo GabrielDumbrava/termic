@@ -3940,7 +3940,15 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     fn bound_emits_wraps_every_chain_and_nothing_else() {
         let src = "a\n  emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true\nexit 0\n";
         let out = bound_emits(src);
-        assert!(out.starts_with("a\n  ( emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty ) </dev/null >/dev/null 2>&1 &\n"), "{out}");
+        // Windows routes a host PTY's report through `termic hook-emit` and
+        // keeps the ordinary chain for a Docker container (hook_pipe.rs).
+        let chain = "emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty";
+        let call = if cfg!(windows) {
+            format!("if [ -n \"$TERMIC_PTY_PIPE\" ]; then emit /dev/stdout | \"$TERMIC_CLI\" hook-emit \"$TERMIC_PTY\"; else {chain}; fi")
+        } else {
+            chain.to_string()
+        };
+        assert!(out.starts_with(&format!("a\n  ( {call} ) </dev/null >/dev/null 2>&1 &\n")), "{out}");
         assert!(out.contains("  ( sleep 2; kill \"$termic_w\" )"));
         assert!(out.ends_with("exit 0\n"));
         // Every generated script is bounded: no bare chain survives.
