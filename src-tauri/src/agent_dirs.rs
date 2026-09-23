@@ -723,7 +723,13 @@ mod instance_dir_tests {
             ("GEMINI_CLI_HOME".to_string(), "/data/logins/claude/work".to_string()),
         ]);
         assert_eq!(login_env("opencode", store), vec![("XDG_DATA_HOME".to_string(), "/data/logins/claude/work".to_string())]);
-        assert_eq!(login_env("pi", store), vec![("HOME".to_string(), "/data/logins/claude/work".to_string())]);
+        // Windows also relocates USERPROFILE, which is where Node reads the
+        // home dir there.
+        let mut pi = vec![("HOME".to_string(), "/data/logins/claude/work".to_string())];
+        if cfg!(windows) {
+            pi.push(("USERPROFILE".to_string(), "/data/logins/claude/work".to_string()));
+        }
+        assert_eq!(login_env("pi", store), pi);
         // An unmeasured agent gets NOTHING, which is the caller's signal that
         // it cannot hold a second account.
         assert!(login_env("some-unmapped-cli", store).is_empty());
