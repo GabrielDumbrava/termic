@@ -9275,26 +9275,51 @@ pub(crate) fn stop_task_ptys(manager: &PtyManager, task_id: &str) -> usize {
     // Counts every matching slot, including any without a child_pid, so the
     // reported number keeps matching kill_task_ptys. Only the ones with a pid
     // can be signalled.
-    let victims: Vec<Option<u32>> = {
+    let victims: Vec<(Option<u32>, PtyWriter)> = {
         let map = manager.inner.lock();
         map.iter()
             .filter(|(_, slot)| slot.task_id.as_deref() == Some(task_id))
-            .map(|(_, slot)| slot.child_pid)
+            .map(|(_, slot)| (slot.child_pid, slot.writer.clone()))
             .collect()
     };
     let count = victims.len();
-    graceful_then_kill(&victims.into_iter().flatten().collect::<Vec<_>>());
+    graceful_then_kill(&victims);
     count
 }
 
+/// The shared writer half of a PTY slot.
+type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
 /// SIGTERM, wait for exit up to STOP_GRACE, SIGKILL the remainder.
 /// Split out so both the task-tagged and the role-tagged sweeps share it.
-fn graceful_then_kill(pids: &[u32]) {
+///
+/// Windows has no SIGTERM for a console program. The graceful step there is
+/// Ctrl+C typed into the pseudoconsole, which ConPTY delivers to the agent as
+/// a console Ctrl+C: the same thing a user interrupting it does. Written on
+/// its own thread per PTY, because a terminal whose program stopped reading
+/// blocks the write, and a stuck write must not hold up the kill below.
+fn graceful_then_kill(victims: &[(Option<u32>, PtyWriter)]) {
+    let pids: Vec<u32> = victims.iter().filter_map(|(p, _)| *p).collect();
     if pids.is_empty() {
         return;
     }
-    for &pid in pids {
-        proc_ctl::signal_pid(pid as i32, proc_ctl::Sig::Term);}
+    if cfg!(windows) {
+        for (pid, writer) in victims {
+            if pid.is_none() {
+                continue;
+            }
+            let writer = writer.clone();
+            std::thread::spawn(move || {
+                let mut w = writer.lock();
+                let _ = w.write_all(b"\x03");
+                let _ = w.flush();
+            });
+        }
+    } else {
+        for &pid in &pids {
+            proc_ctl::signal_pid(pid as i32, proc_ctl::Sig::Term);
+        }
+    }
     // `kill(pid, 0)` probes liveness without signalling. A pid the waiter has
     // already reaped fails with ESRCH, which is the exit we are waiting for.
     let alive = |pid: u32| proc_ctl::pid_alive(pid as i32);
@@ -9306,7 +9331,8 @@ fn graceful_then_kill(pids: &[u32]) {
         std::thread::sleep(STOP_POLL);
     }
     for &pid in pids.iter().filter(|&&p| alive(p)) {
-        proc_ctl::signal_pid(pid as i32, proc_ctl::Sig::Kill);}
+        proc_ctl::signal_pid(pid as i32, proc_ctl::Sig::Kill);
+    }
 }
 
 /// Role-tagged counterpart of `stop_task_ptys`, same SIGTERM-then-SIGKILL
@@ -9319,18 +9345,18 @@ fn graceful_then_kill(pids: &[u32]) {
 /// task-tagged sweep because `task_set_sandbox` reuses that one, and a
 /// sandbox edit has no business killing the user's scratch shell.
 pub(crate) fn stop_task_role_ptys(manager: &PtyManager, task_id: &str) -> usize {
-    let victims: Vec<Option<u32>> = {
+    let victims: Vec<(Option<u32>, PtyWriter)> = {
         let map = manager.inner.lock();
         map.values()
             .filter(|slot| {
                 slot.task_id.is_none()
                     && slot.role.as_ref().is_some_and(|r| r.task_id == task_id)
             })
-            .map(|slot| slot.child_pid)
+            .map(|slot| (slot.child_pid, slot.writer.clone()))
             .collect()
     };
     let count = victims.len();
-    graceful_then_kill(&victims.into_iter().flatten().collect::<Vec<_>>());
+    graceful_then_kill(&victims);
     count
 }
 
@@ -9355,7 +9381,7 @@ pub(crate) fn stop_task_role_ptys(manager: &PtyManager, task_id: &str) -> usize 
 ///
 /// Returns how many PTYs were live when we started.
 pub(crate) fn stop_tab_ptys(manager: &PtyManager, task_id: &str, tab_id: &str) -> usize {
-    let victims: Vec<Option<u32>> = {
+    let victims: Vec<(Option<u32>, PtyWriter)> = {
         let map = manager.inner.lock();
         map.values()
             .filter(|slot| {
@@ -9363,11 +9389,11 @@ pub(crate) fn stop_tab_ptys(manager: &PtyManager, task_id: &str, tab_id: &str) -
                     r.task_id == task_id && r.tab_id.as_deref() == Some(tab_id)
                 })
             })
-            .map(|slot| slot.child_pid)
+            .map(|slot| (slot.child_pid, slot.writer.clone()))
             .collect()
     };
     let count = victims.len();
-    graceful_then_kill(&victims.into_iter().flatten().collect::<Vec<_>>());
+    graceful_then_kill(&victims);
     count
 }
 

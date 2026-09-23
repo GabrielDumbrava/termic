@@ -89,7 +89,9 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
 - **Processes.** No process groups: stopping a script, a language server or
   an agent kills its process tree (`proc_ctl.rs`, a ToolHelp snapshot with
   a creation-time check so a reused pid is never mistaken for a child).
-  There is no graceful SIGTERM for console programs, so Stop is forceful.
+  There is no SIGTERM for console programs: archiving a task types Ctrl+C
+  into each agent's terminal and gives it the same grace period before the
+  tree kill; a script's Stop is forceful.
   Every background command is spawned with `CREATE_NO_WINDOW`.
 - **CLI control plane.** Loopback TCP on an ephemeral port, whose address
   is written into the `termic.sock` path (`termic_proto::local`). The

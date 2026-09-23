@@ -88,12 +88,11 @@ by `docker run -it`), which M1 also answers.
 
 `proc_ctl.rs` tree-kills with `TerminateProcess`. Two things remain:
 
-- **Graceful stop.** `graceful_then_kill` (transcript flush before archive)
-  and the run-script restart (port release) wait for a SIGTERM that Windows
-  cannot send, so they are forceful. Options: write `\x03` to an agent's
-  PTY, or drop the master (`ClosePseudoConsole` sends `CTRL_CLOSE_EVENT`),
-  then wait, then kill. `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)` does not
-  reach a process started with `CREATE_NO_WINDOW`.
+- **Graceful stop, scripts.** Agents get a Ctrl+C typed into their
+  pseudoconsole and STOP_GRACE to exit before the tree kill
+  (`graceful_then_kill`). A run script restarted for port release has no
+  console to type into (`CREATE_NO_WINDOW`), so it is killed outright;
+  `GenerateConsoleCtrlEvent` does not reach a process without a console.
 - **Job Objects** would make a tree kill exact (no snapshot race, children
   cannot escape) and let the handle replace the pid in `RUNNING_SCRIPTS`,
   `LSP_SERVERS` and the grep map. The PTY side needs
