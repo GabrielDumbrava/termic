@@ -65,10 +65,14 @@ fn build_cli_sidecar() {
         .expect("failed to spawn cargo for the termic-cli sidecar");
     assert!(status.success(), "building the termic-cli sidecar failed");
 
-    let built = sidecar_target_dir.join(&target).join(profile_dir).join("termic-cli");
+    // Windows executables carry `.exe`, and tauri-build's externalBin
+    // check looks for `termic-cli-<triple>.exe`. Derived from TARGET, not
+    // std::env::consts: this script runs on the host.
+    let exe = if target.contains("windows") { ".exe" } else { "" };
+    let built = sidecar_target_dir.join(&target).join(profile_dir).join(format!("termic-cli{exe}"));
     let binaries = manifest_dir.join("binaries");
     std::fs::create_dir_all(&binaries).expect("create src-tauri/binaries");
-    let dest = binaries.join(format!("termic-cli-{target}"));
+    let dest = binaries.join(format!("termic-cli-{target}{exe}"));
     std::fs::copy(&built, &dest)
         .unwrap_or_else(|e| panic!("copy {} -> {}: {e}", built.display(), dest.display()));
 

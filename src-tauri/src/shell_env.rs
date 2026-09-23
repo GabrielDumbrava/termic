@@ -30,7 +30,7 @@
 //! VS Code, Cursor, Zed, GitHub Desktop all do the same thing for the
 //! same reason. See e.g. microsoft/vscode `shellEnv.ts`.
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Condvar, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -338,10 +338,31 @@ pub fn spawn_env() -> (String, Vec<(String, String)>) {
 pub fn login_shell() -> String {
     RESOLVED_SHELL
         .get_or_init(|| {
-            let preferred = passwd_shell().or_else(|| std::env::var("SHELL").ok());
-            pick_shell(preferred, |p| std::path::Path::new(p).exists())
+            #[cfg(windows)]
+            return windows_shell();
+            #[cfg(not(windows))]
+            {
+                let preferred = passwd_shell().or_else(|| std::env::var("SHELL").ok());
+                pick_shell(preferred, |p| std::path::Path::new(p).exists())
+            }
         })
         .clone()
+}
+
+/// Windows has no passwd shell. PowerShell 7 (`pwsh`) when installed, as
+/// Windows Terminal defaults to, then the inbox Windows PowerShell, then
+/// `%COMSPEC%` (cmd.exe), which always exists.
+#[cfg(windows)]
+fn windows_shell() -> String {
+    if let Some(p) = which_in("pwsh", &std::env::var("PATH").unwrap_or_default()) {
+        return p.to_string_lossy().into_owned();
+    }
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let ps = std::path::Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if ps.is_file() {
+        return ps.to_string_lossy().into_owned();
+    }
+    std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
 }
 
 /// The current user's login shell from the passwd database
@@ -426,8 +447,19 @@ fn run_probe_loop(
 /// One full probe attempt: run the shell, and on success turn its env
 /// dump into the `LoginEnv` to swap in. `None` on timeout/failure/empty.
 fn probe_once() -> Option<LoginEnv> {
-    let probed = probe_login_shell().filter(|v| !v.is_empty())?;
-    Some(env_from_probe(&probed))
+    // Windows has no login shell whose rc files hold the real PATH: a GUI
+    // app inherits the registry-backed user + machine PATH from Explorer,
+    // which re-reads it whenever an installer broadcasts the change. So
+    // the inherited environment IS the resolved one, and "probing" it is
+    // instant and cannot fail. (Spawning `/bin/sh -ilc env` here would
+    // fail every time and pin the static fallback for the whole session.)
+    #[cfg(windows)]
+    return Some(LoginEnv { path: std::env::var("PATH").unwrap_or_default(), inject: Vec::new() });
+    #[cfg(not(windows))]
+    {
+        let probed = probe_login_shell().filter(|v| !v.is_empty())?;
+        Some(env_from_probe(&probed))
+    }
 }
 
 /// The env served before any probe succeeds: the inherited PATH from a
@@ -534,7 +566,7 @@ fn probe_login_shell() -> Option<Vec<(String, String)>> {
     // hardcoded zsh/bash here: whatever the user's shell is, we ask it.
     let shell = login_shell();
 
-    let mut child = Command::new(&shell)
+    let mut child = crate::proc_ctl::command(&shell)
         // `env` dumps the whole exported environment in one round-trip.
         .args(["-ilc", "env"])
         .stdin(Stdio::null())
@@ -615,18 +647,98 @@ pub(crate) fn is_env_key(k: &str) -> bool {
 /// per shell), but covers the common static installers so at least
 /// `claude`, `codex`, `gemini` resolve.
 pub(crate) fn fallback_path(current: &str) -> String {
-    let mut seen: std::collections::HashSet<String> =
-        current.split(':').map(String::from).collect();
-    let mut out = current.to_string();
+    let mut dirs: Vec<std::path::PathBuf> = path_dirs(current);
     for p in fallback_dirs() {
-        if seen.insert(p.clone()) {
-            if !out.is_empty() {
-                out.push(':');
-            }
-            out.push_str(p);
+        let p = std::path::PathBuf::from(p);
+        if !dirs.contains(&p) {
+            dirs.push(p);
         }
     }
-    out
+    join_path_dirs(&dirs)
+}
+
+/// The directories of a PATH-style list, in order, empties dropped. The
+/// platform separator decides the split: `;` on Windows, where `:` is
+/// part of every drive letter, `:` elsewhere. Every PATH walk in the app
+/// goes through this rather than `split(':')`.
+pub fn path_dirs(path: &str) -> Vec<std::path::PathBuf> {
+    std::env::split_paths(path).filter(|p| !p.as_os_str().is_empty()).collect()
+}
+
+/// Inverse of `path_dirs`. An entry that cannot be represented (it
+/// contains the separator itself) is dropped rather than corrupting the
+/// whole list.
+pub fn join_path_dirs(dirs: &[std::path::PathBuf]) -> String {
+    let ok: Vec<&std::path::PathBuf> =
+        dirs.iter().filter(|d| std::env::join_paths([d.as_path()]).is_ok()).collect();
+    std::env::join_paths(ok)
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The file names to try for a command `bin` inside one directory.
+///
+/// Unix: just `bin`. Windows: a bare name is resolved through PATHEXT
+/// (`claude` -> `claude.exe`, `codex` -> `codex.cmd`), and the bare name
+/// itself is NOT tried: npm writes an extensionless POSIX shell shim next
+/// to every `.cmd` one, which exists but cannot be executed, so finding
+/// it first would report an agent as installed and then fail to spawn
+/// it. A name that already has an extension is tried as is.
+pub fn exe_candidates(bin: &str) -> Vec<String> {
+    if cfg!(windows) && std::path::Path::new(bin).extension().is_none() {
+        let pathext = std::env::var("PATHEXT").unwrap_or_default();
+        return exe_candidates_with(bin, &pathext);
+    }
+    vec![bin.to_string()]
+}
+
+/// Pure half of `exe_candidates`, so the Windows rule is tested on every
+/// platform.
+pub(crate) fn exe_candidates_with(bin: &str, pathext: &str) -> Vec<String> {
+    let exts: Vec<String> = if pathext.trim().is_empty() {
+        vec![".COM".into(), ".EXE".into(), ".BAT".into(), ".CMD".into()]
+    } else {
+        pathext.split(';').filter(|e| !e.is_empty()).map(str::to_string).collect()
+    };
+    exts.iter().map(|e| format!("{bin}{}", e.to_ascii_lowercase())).collect()
+}
+
+/// Whether `p` names something a PATH lookup should accept: a regular
+/// file, and on unix one with an execute bit (a README that shares the
+/// name is not a command).
+pub fn is_executable_file(p: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
+/// Resolve a command name against a PATH-style list: the first
+/// directory holding an executable `bin` (or, on Windows, `bin` plus a
+/// PATHEXT extension). The one PATH walk every lookup shares.
+pub fn which_in(bin: &str, path: &str) -> Option<std::path::PathBuf> {
+    let names = exe_candidates(bin);
+    for dir in path_dirs(path) {
+        for n in &names {
+            let cand = dir.join(n);
+            if is_executable_file(&cand) {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// `which_in` against the resolved spawn PATH.
+pub fn which(bin: &str) -> Option<std::path::PathBuf> {
+    which_in(bin, &resolved_path())
 }
 
 /// The well-known tool dirs, resolved against this account. The one
@@ -685,6 +797,12 @@ fn passwd_name() -> Option<String> {
 /// The dir list itself, split out from the account lookups so it stays
 /// testable for an account with no resolvable home or user name.
 fn fallback_extras(home: &str, user: &str) -> Vec<String> {
+    // Windows: nothing to add. The inherited PATH already comes from the
+    // registry (see `probe_once`), and every dir below is a unix layout.
+    if cfg!(windows) {
+        let _ = (home, user);
+        return Vec::new();
+    }
     // Nix profiles lead: a nix-darwin login PATH puts them ahead of
     // homebrew and of /usr/bin, so when a tool exists in both places
     // this picks the same binary the user's own terminal runs. Within
@@ -730,6 +848,40 @@ fn fallback_extras(home: &str, user: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exe_candidates_follow_pathext_and_skip_the_bare_shim() {
+        assert_eq!(
+            exe_candidates_with("codex", ".COM;.EXE;.CMD"),
+            vec!["codex.com", "codex.exe", "codex.cmd"]
+        );
+        // An empty PATHEXT still finds npm's .cmd shims.
+        assert!(exe_candidates_with("claude", "").contains(&"claude.cmd".to_string()));
+        assert!(!exe_candidates_with("claude", "").contains(&"claude".to_string()));
+    }
+
+    #[test]
+    fn which_in_finds_an_executable_and_ignores_a_plain_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = if cfg!(windows) { "tool.exe" } else { "tool" };
+        let f = dir.path().join(name);
+        std::fs::write(&f, "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(which_in("tool", &dir.path().to_string_lossy()), None);
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = join_path_dirs(&[std::path::PathBuf::from("/nonexistent-termic"), dir.path().to_path_buf()]);
+        assert_eq!(which_in("tool", &path), Some(f));
+    }
+
+    #[test]
+    fn path_dirs_round_trips_through_the_platform_separator() {
+        let dirs = vec![std::path::PathBuf::from("/a/b"), std::path::PathBuf::from("/c")];
+        assert_eq!(path_dirs(&join_path_dirs(&dirs)), dirs);
+    }
 
     #[test]
     fn fallback_path_adds_homebrew_when_missing() {

@@ -12,6 +12,7 @@
 // their own flags. `key` is a normalized token: a lowercase letter ("l"),
 // punctuation ("[", "]", ","), an arrow ("ArrowUp"…), or the sentinel "1-9"
 // for the "jump to tab N" range (matches any digit 1-9 with the modifiers).
+import { IS_MAC } from "./platform";
 
 export type Binding = {
   cmd: boolean;
@@ -458,10 +459,7 @@ export function bindingToCmKey(b: Binding): string {
  *  platform (Ctrl+L on Linux/Windows hits the same command as ⌘L on a Mac);
  *  this flag only changes how modifiers are LABELLED. Detected once from the
  *  user agent — synchronous, unlike Tauri's async `platform()`. */
-export const IS_MAC: boolean = (() => {
-  if (typeof navigator === "undefined") return true;
-  return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent || "");
-})();
+export { IS_MAC };
 
 /** The Cmd-or-Ctrl modifier reads as "Cmd" on macOS, "Ctrl" elsewhere; the
  *  Option-or-Alt modifier reads as "Option" on macOS, "Alt" elsewhere. */

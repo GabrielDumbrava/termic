@@ -4,6 +4,7 @@ fn main() {
     // Rust panic with exit 101: the runtime ignores SIGPIPE by default
     // and println! panics on EPIPE. 141 is outside, and compatible
     // with, the 0-10 exit contract.
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }

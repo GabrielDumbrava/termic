@@ -1383,7 +1383,7 @@ pub fn write_dockerfile(contents: &str) -> Result<(), String> {
 /// launchd, which misses `/usr/local/bin`, `/opt/homebrew/bin`, `~/.docker/bin`,
 /// OrbStack, and custom DOCKER_HOST / DOCKER_CONTEXT settings in shell profiles.
 pub fn docker_cmd() -> Command {
-    let mut cmd = Command::new("docker");
+    let mut cmd = crate::proc_ctl::command("docker");
     let (path, inject) = crate::shell_env::spawn_env();
     cmd.env("PATH", path);
     for (k, v) in inject {

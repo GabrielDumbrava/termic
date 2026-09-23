@@ -1,0 +1,64 @@
+name: Windows
+
+# The Windows port (docs/ideas/windows.md). Experimental and NOT a required
+# check: it exists so the port cannot silently rot, and so a Windows tester
+# gets an installer from every push without owning a Rust toolchain.
+#
+# Runs on pushes to main and to the port's branch, on PRs, and by hand.
+
+on:
+  push:
+    branches: [main, feature/windows]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Windows (vitest + cargo test)
+    runs-on: windows-latest
+    steps:
+      # .gitattributes pins LF, this is belt and braces for the checkout
+      # itself (Git for Windows defaults core.autocrlf to true).
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm test
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --workspace --lib
+
+  installer:
+    # An unsigned NSIS installer for manual testing, uploaded as an artifact.
+    # Not signed and not an updater release: createUpdaterArtifacts is off
+    # because the updater signing key only exists in the release workflow.
+    name: Windows installer (unsigned, for testing)
+    runs-on: windows-latest
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build the NSIS installer
+        shell: bash
+        run: npm run tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termic-windows-x64-setup
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

@@ -4767,6 +4767,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     /// `ready_output_for` with extra env for the hook process. The entrypoint
     /// is always cleared first: the test runner may itself be running under
     /// claude, whose value would otherwise decide the case.
+    #[cfg(unix)]
     fn ready_output_with_env(agent: &str, payload: &str, extra: &[(&str, &str)]) -> String {
         use std::io::Read;
         use std::process::{Command, Stdio};

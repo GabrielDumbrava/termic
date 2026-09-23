@@ -57,8 +57,11 @@ const buildOne = (triple) => {
     "build", "--release", "-p", "termic-cli",
     "--target", triple, "--target-dir", targetDir,
   ]);
-  const built = resolve(targetDir, triple, "release", "termic-cli");
-  const dest = resolve(binaries, `termic-cli-${triple}`);
+  // Windows executables carry `.exe`; Tauri's externalBin expects
+  // `termic-cli-<triple>.exe` there.
+  const exe = triple.includes("windows") ? ".exe" : "";
+  const built = resolve(targetDir, triple, "release", `termic-cli${exe}`);
+  const dest = resolve(binaries, `termic-cli-${triple}${exe}`);
   copyFileSync(built, dest);
   console.log(`sidecar: ${dest}`);
   return dest;
