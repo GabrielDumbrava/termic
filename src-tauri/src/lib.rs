@@ -4922,7 +4922,13 @@ fn profile_update(app: AppHandle, slug: String, name: Option<String>, accent: Op
 ///
 /// One action from the user's side, which is why the popover does not
 /// distinguish them: switching profiles IS opening a window.
-#[tauri::command]
+///
+/// `(async)`: it may CREATE a window, and a synchronous command runs on the
+/// main thread, where building a webview window deadlocks on Windows
+/// (WebView2 needs the message loop the command is blocking; wry#583). The
+/// first Windows e2e run caught it: "creating a profile did not open its
+/// window".
+#[tauri::command(async)]
 fn profile_open(app: AppHandle, slug: String) -> Result<(), String> {
     use tauri::Manager;
     // Chrome's tie-break for a project that lives in several profiles is
@@ -9229,7 +9235,9 @@ fn focus_window_unless_e2e(win: &tauri::WebviewWindow) {
     }
 }
 
-#[tauri::command]
+/// `(async)` for the same reason as `profile_open`: building a window from a
+/// synchronous command deadlocks on Windows.
+#[tauri::command(async)]
 fn procmon_open_window(app: AppHandle) -> Result<(), String> {
     use tauri::Manager;
     if let Some(win) = app.get_webview_window(PROCMON_WINDOW) {
