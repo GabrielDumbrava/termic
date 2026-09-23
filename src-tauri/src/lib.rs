@@ -25773,7 +25773,9 @@ mod tests {
         // resolved from PATH under a different Ruby cannot see them.
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("bin")).unwrap();
-        let binstub = dir.path().join("bin/ruby-lsp");
+        // Windows runs the `.bat` beside a Bundler binstub, never the
+        // extensionless script itself.
+        let binstub = dir.path().join(if cfg!(windows) { "bin/ruby-lsp.bat" } else { "bin/ruby-lsp" });
         fs::write(&binstub, "#!/bin/sh\n").unwrap();
         #[cfg(unix)]
         {
@@ -26012,7 +26014,7 @@ mod tests {
     fn terraform_uses_the_project_server_with_serve() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("bin")).unwrap();
-        let local = dir.path().join("bin/terraform-ls");
+        let local = dir.path().join(if cfg!(windows) { "bin/terraform-ls.exe" } else { "bin/terraform-ls" });
         fs::write(&local, "#!/bin/sh\n").unwrap();
         let (exe, args) = lsp_resolve_server(dir.path(), "terraform").unwrap();
         assert_eq!(Path::new(&exe), local);
