@@ -49,3 +49,26 @@ export function installCommand(tool: string): string {
   const winget: Record<string, string> = { gh: "GitHub.cli", glab: "GLab.GLab" };
   return `winget install ${winget[tool] ?? tool}`;
 }
+
+/** "Your Mac" in copy, "this computer" elsewhere. */
+export const THIS_MACHINE: string = IS_MAC ? "your Mac" : "this computer";
+
+/** A key combination written the macOS way (`⇧⌘B`, `⌘↵`, `⌥`), for copy.
+ *  Returned as is on macOS; elsewhere spelled out in the Windows / Linux
+ *  order and names (`Ctrl+Shift+B`, `Ctrl+Enter`, `Alt`), because ⌘ and ⌥
+ *  are keys those keyboards do not have. */
+export function kbd(mac: string, isMac: boolean = IS_MAC): string {
+  if (isMac) return mac;
+  const mods: string[] = [];
+  let rest = "";
+  for (const ch of mac) {
+    if (ch === "⌘" || ch === "⌃") mods.push("Ctrl");
+    else if (ch === "⌥") mods.push("Alt");
+    else if (ch === "⇧") mods.push("Shift");
+    else if (ch === "↵") rest += "Enter";
+    else rest += ch;
+  }
+  const order = ["Ctrl", "Alt", "Shift"];
+  const sorted = order.filter(m => mods.includes(m));
+  return [...sorted, ...(rest ? [rest] : [])].join("+");
+}

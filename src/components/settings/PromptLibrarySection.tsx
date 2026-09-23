@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { AppDialog } from "@/components/ui/Dialog";
 import { cn } from "@/lib/utils";
 import { GripVertical, Copy, Trash2, RotateCcw, Eye, EyeOff, Plus, Pencil } from "lucide-react";
+import { kbd } from "@/lib/platform";
 
 interface DragState {
   id: string;
@@ -186,7 +187,7 @@ export function PromptLibrarySection() {
           <p className="mt-0.5 max-w-xl text-[12.5px] text-[var(--color-fg-dim)]">
             Reusable prompts for the Prompts menu in the top bar. When you fire one, you pick
             where it goes: an existing agent (queued if it is busy) or a new agent. Drag to
-            reorder. Built-ins can be edited and reset. Open the palette with ⌥⌘P to search
+            reorder. Built-ins can be edited and reset. Open the palette with {kbd("⌥⌘P")} to search
             and fire them by keyboard.
           </p>
         </div>

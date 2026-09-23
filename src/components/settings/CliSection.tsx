@@ -108,7 +108,7 @@ export function CliSection() {
       <Block first>
         <Toggle
           label="Enable CLI"
-          hint={`Let the ${name} command drive this app from any shell: create tasks and stream their setup, wait for an agent to go quiet, list and check tasks, archive them, and add or remove projects. On by default, and access needs a token only this Mac's user can read. Agents in an enforced sandbox never get access. Turning this off refuses every command immediately (the command stays installed).`}
+          hint={`Let the ${name} command drive this app from any shell: create tasks and stream their setup, wait for an agent to go quiet, list and check tasks, archive them, and add or remove projects. On by default, and access needs a token only your user account on this computer can read. Agents in an enforced sandbox never get access. Turning this off refuses every command immediately (the command stays installed).`}
           value={cliEnabled}
           onChange={saveCliEnabled}
         />

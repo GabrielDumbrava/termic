@@ -14195,7 +14195,15 @@ fn slugify(s: &str) -> String {
             prev_dash = false;
         }
     }
-    out.trim_matches('-').to_string()
+    let out = out.trim_matches('-').to_string();
+    // Windows cannot create a directory with a reserved device name, and the
+    // slug is a worktree directory. On every OS, so a task named on a Mac
+    // still checks out on a teammate's Windows machine. Mirrored in utils.ts.
+    let reserved = matches!(out.as_str(), "con" | "prn" | "aux" | "nul")
+        || (out.len() == 4
+            && (out.starts_with("com") || out.starts_with("lpt"))
+            && matches!(out.as_bytes()[3], b'1'..=b'9'));
+    if reserved { format!("{out}-1") } else { out }
 }
 
 /// Recursively copy a file or directory. `fs::copy` ONLY handles files, so
@@ -25452,6 +25460,13 @@ mod tests {
             ("mă-duc", "m-duc"),
             ("🚀 ship it", "ship-it"),
             ("日本語 heading", "heading"),
+            // Windows reserved device names cannot be directories.
+            ("CON", "con-1"),
+            ("nul", "nul-1"),
+            ("com1", "com1-1"),
+            ("lpt9", "lpt9-1"),
+            ("com10", "com10"),
+            ("console", "console"),
         ] {
             let got = slugify(input);
             assert_eq!(got, want, "slugify({input:?})");

@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { createQuickTask, derivedBranch } from "@/lib/quickTask";
 import { GitBranch, SquareChevronRight } from "lucide-react";
+import { kbd } from "@/lib/platform";
 
 export function CustomCommandDialog() {
   const projectId = useUI(s => s.customCommandProjectId);
@@ -132,7 +133,7 @@ export function CustomCommandDialog() {
           {isWorktree ? "Runs in the new worktree" : "Runs in the main checkout"}, e.g.{" "}
           <code className="mono">ssh box</code>, <code className="mono">npm run dev</code>,{" "}
           <code className="mono">python</code>. A multiline bash script is fine.
-          Press <kbd className="font-mono">⌘↵</kbd> to launch.
+          Press <kbd className="font-mono">{kbd("⌘↵")}</kbd> to launch.
         </span>
       </label>
 

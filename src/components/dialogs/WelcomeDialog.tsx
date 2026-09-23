@@ -37,7 +37,7 @@ import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2, Flower2, GitPullRe
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import type { DelegatedWork } from "@/lib/delegatedWork";
-import { dragRegion, appRegionStyle, installCommand } from "@/lib/platform";
+import { dragRegion, appRegionStyle, installCommand, IS_MAC } from "@/lib/platform";
 
 type Step = 0 | 1 | 2 | 3 | 4;
 
@@ -860,7 +860,7 @@ function StepTheme() {
                   {t.label}
                 </span>
                 <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                  {t.id === "auto" && "follows macOS"}
+                  {t.id === "auto" && (IS_MAC ? "follows macOS" : "follows the system")}
                   {t.id === "light" && "cream + terracotta"}
                   {t.id === "claude" && "warm charcoal + clay"}
                   {t.id === "dark" && "deeper near-black"}

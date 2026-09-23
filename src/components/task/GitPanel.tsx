@@ -52,6 +52,7 @@ import { usePr } from "@/store/pr";
 // so the two panels cannot drift. Re-exported here because this is where they
 // used to live and DiffPane / ComparePanel import from this module.
 import { SC, COL, INK, LBL } from "@/lib/gitStatus";
+import { kbd } from "@/lib/platform";
 export { SC, COL, INK, LBL };
 
 export type ViewMode = "tree" | "list" | "combined";
@@ -1623,7 +1624,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
         </Tip>
       )}
       {canOpenFile && (
-        <Tip side="left" content="Open the file (⌥-click the row)">
+        <Tip side="left" content={`Open the file (${kbd("⌥")}-click the row)`}>
           <button
             onClick={(e) => { e.stopPropagation(); onOpenFile(file.path); }}
             // The row's dblclick STAGES, and a button that stops only

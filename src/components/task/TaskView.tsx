@@ -45,6 +45,7 @@ import { isSvgPath, keepsDisplayWhenHidden, previewKindForPath } from "@/lib/pre
 import { restoreScratchTabs } from "@/lib/scratchTabs";
 import { CodeIntelChip } from "./CodeIntelChip";
 import { FILE_MANAGER } from "@/lib/openExternal";
+import { kbd } from "@/lib/platform";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
@@ -79,7 +80,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
     return (
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 text-[12px]">
         <span className="min-w-0 flex-1 truncate text-[var(--color-fg-faint)]">
-          Scratchpad, not saved to the project yet. ⌘S picks a place for it.
+          Scratchpad, not saved to the project yet. {kbd("⌘S")} picks a place for it.
         </span>
         <button
           data-testid="syntax-button"

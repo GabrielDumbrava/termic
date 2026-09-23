@@ -12,6 +12,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { taskSetCustomCommand } from "@/lib/ipc";
 import { SquareChevronRight } from "lucide-react";
+import { kbd } from "@/lib/platform";
 
 export function EditCommandDialog() {
   const taskId = useUI(s => s.editCommandTaskId);
@@ -81,7 +82,7 @@ export function EditCommandDialog() {
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         />
         <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
-          Press <kbd className="font-mono">⌘↵</kbd> to save.
+          Press <kbd className="font-mono">{kbd("⌘↵")}</kbd> to save.
         </span>
       </label>
 

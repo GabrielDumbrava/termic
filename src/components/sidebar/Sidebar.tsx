@@ -52,6 +52,7 @@ import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
 import { delegatedTitle } from "@/lib/delegatedWork";
 import { FILE_MANAGER } from "@/lib/openExternal";
+import { kbd } from "@/lib/platform";
 
 /** Pick a default name for a freshly-created task (repo-root OR worktree).
  *  Format: "<agent>-N" where N is the next unused index for that CLI among
@@ -2199,7 +2200,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               removed earlier for a different reason: it duplicated the button
               in the PROJECTS header, which is where the action belongs, next
               to the list it acts on. */}
-          <Tip content="Settings (⌘,)">
+          <Tip content={`Settings (${kbd("⌘,")})`}>
             <Button size="icon" variant="icon" className={compact ? undefined : "ml-auto"}
                     onClick={() => openSettings()}>
               <Settings className={iconSize(compact)} />

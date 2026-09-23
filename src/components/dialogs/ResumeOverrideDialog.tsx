@@ -17,6 +17,7 @@ import { taskSetResumeOverride, ptyKill } from "@/lib/ipc";
 import { isTerminalCli } from "@/lib/agents";
 import type { TerminalTab } from "@/lib/types";
 import { History, RotateCcw } from "lucide-react";
+import { kbd } from "@/lib/platform";
 
 export function ResumeOverrideDialog() {
   const taskId = useUI(s => s.resumeOverrideTaskId);
@@ -126,7 +127,7 @@ export function ResumeOverrideDialog() {
         <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
           The agent handles a missing session (e.g. claude opens its resume
           picker). {canRestart
-            ? <>Press <kbd className="font-mono">⌘↵</kbd> to save &amp; restart the running agent.</>
+            ? <>Press <kbd className="font-mono">{kbd("⌘↵")}</kbd> to save &amp; restart the running agent.</>
             : <>Press <kbd className="font-mono">↵</kbd> to save.</>}
         </span>
       </label>
