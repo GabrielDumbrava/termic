@@ -50,11 +50,15 @@ fn writer(payload: &str) -> CommandBuilder {
 }
 
 fn run(payload: &str) -> Vec<u8> {
+    run_cmd(writer(payload))
+}
+
+fn run_cmd(cmd: CommandBuilder) -> Vec<u8> {
     let pty = NativePtySystem::default();
     let pair = pty
         .openpty(PtySize { rows: 30, cols: 120, pixel_width: 0, pixel_height: 0 })
         .expect("openpty");
-    let mut child = pair.slave.spawn_command(writer(payload)).expect("spawn");
+    let mut child = pair.slave.spawn_command(cmd).expect("spawn");
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().expect("reader");
     let (tx, rx) = std::sync::mpsc::channel();
@@ -107,7 +111,65 @@ fn printable(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// `--emit-conout <hex>`: open the CONSOLE (not stdout, which an agent pipes
+/// away from a hook) and write the bytes there. This is what a Windows hook
+/// transport would do; the probe runs itself in this mode as a grandchild.
+#[cfg(windows)]
+fn emit_conout(hex: &str) {
+    use std::io::Write;
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect();
+    match std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+        Ok(mut f) => {
+            let _ = f.write_all(&bytes);
+            let _ = f.write_all(b"PROBE-END");
+        }
+        Err(e) => eprintln!("CONOUT$ open failed: {e}"),
+    }
+}
+
+/// A Node parent (the agent) spawning this probe (the hook) with its stdio
+/// piped, as agents spawn hooks, then the hook writing to the console.
+#[cfg(windows)]
+fn hook_writer(payload: &str, hide: bool) -> CommandBuilder {
+    let hex: String = payload.bytes().map(|b| format!("{b:02x}")).collect();
+    let me = std::env::current_exe().unwrap().to_string_lossy().replace('\\', "\\\\");
+    let js = format!(
+        "const r=require('child_process').spawnSync('{me}',['--emit-conout','{hex}'],{{stdio:'pipe',windowsHide:{hide}}});\
+         if(r.stderr&&r.stderr.length)console.error(String(r.stderr));"
+    );
+    let mut c = CommandBuilder::new("node.exe");
+    c.args(["-e", &js]);
+    c
+}
+
+/// The same, but the hook is a Git Bash script writing to `/dev/tty`, which is
+/// how termic's existing hook scripts would reach the terminal if
+/// `TERMIC_PTY=/dev/tty` were enough on Windows.
+#[cfg(windows)]
+fn bash_hook_writer(payload: &str, hide: bool) -> CommandBuilder {
+    let oct: String = payload.bytes().map(|b| format!("\\{b:03o}")).collect();
+    let bash = r"C:\Program Files\Git\bin\bash.exe".replace('\\', "\\\\");
+    let js = format!(
+        "const r=require('child_process').spawnSync('{bash}',['-c',\"printf '{oct}PROBE-END' > /dev/tty\"],{{stdio:'pipe',windowsHide:{hide}}});\
+         if(r.stderr&&r.stderr.length)console.error(String(r.stderr));"
+    );
+    let mut c = CommandBuilder::new("node.exe");
+    c.args(["-e", &js]);
+    c
+}
+
 fn main() {
+    #[cfg(windows)]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("--emit-conout") {
+            emit_conout(args.get(2).map(String::as_str).unwrap_or(""));
+            return;
+        }
+    }
     println!("PTY escape-sequence passthrough ({})", std::env::consts::OS);
     for (name, payload) in CASES {
         let out = run(payload);
@@ -121,6 +183,33 @@ fn main() {
         if !passed {
             let tail = &out[out.len().saturating_sub(300)..];
             println!("    got: {}", printable(tail));
+        }
+    }
+
+    // The hook path: agent (node) -> hook (piped stdio) -> CONOUT$.
+    #[cfg(windows)]
+    {
+        println!("Hook path: a node parent spawns a child with piped stdio; the child writes to CONOUT$");
+        let payload = CASES[0].1;
+        let cases: Vec<(String, CommandBuilder)> = vec![
+            ("OSC 777 via CONOUT$ (windowsHide: false)".into(), hook_writer(payload, false)),
+            ("OSC 777 via CONOUT$ (windowsHide: true)".into(), hook_writer(payload, true)),
+            ("OSC 777 via Git Bash > /dev/tty (windowsHide: false)".into(), bash_hook_writer(payload, false)),
+            ("OSC 777 via Git Bash > /dev/tty (windowsHide: true)".into(), bash_hook_writer(payload, true)),
+        ];
+        for (name, cmd) in cases {
+            let out = run_cmd(cmd);
+            let passed = out.windows(payload.len()).any(|w| w == payload.as_bytes());
+            let ended = out.windows(9).any(|w| w == b"PROBE-END");
+            println!(
+                "{} {name}{}",
+                if passed { "PASS-THROUGH" } else { "DROPPED     " },
+                if ended { "" } else { "  (child output never arrived)" },
+            );
+            if !passed {
+                let tail = &out[out.len().saturating_sub(300)..];
+                println!("    got: {}", printable(tail));
+            }
         }
     }
 }

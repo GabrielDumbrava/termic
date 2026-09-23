@@ -15009,6 +15009,69 @@ fn lsp_install_spec(language: &str) -> Option<LspInstall> {
             sha256: "a559eaa29920e4c12718fba101f2055f1da0ad8bc458ef9dc1a670778cc66901",
             bytes: 14_834_607, archive: "gz", exe_in_archive: "", args: &[],
         },
+        // Windows. Digests are the publishers' own (the GitHub release asset
+        // digest, HashiCorp's SHA256SUMS), and each archive was opened to
+        // confirm the executable's path inside it.
+        ("terraform", "windows", "x86_64") => LspInstall {
+            label: "terraform-ls", version: "0.39.0", repo: "",
+            asset: "terraform-ls_0.39.0_windows_amd64.zip",
+            url: "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_windows_amd64.zip",
+            sha256: "6edc885fe113f6a7fd049622ed0bd255141e68c84acc2fce1bb6a54c1f47bfe1",
+            bytes: 31_165_056, archive: "zip", exe_in_archive: "terraform-ls.exe", args: &["serve"],
+        },
+        ("terraform", "windows", "aarch64") => LspInstall {
+            label: "terraform-ls", version: "0.39.0", repo: "",
+            asset: "terraform-ls_0.39.0_windows_arm64.zip",
+            url: "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_windows_arm64.zip",
+            sha256: "4701a880e6cf441a7b24bb9a0bd5f156fdbcd35aee5fa6663c3f08e85f2234fd",
+            bytes: 30_360_959, archive: "zip", exe_in_archive: "terraform-ls.exe", args: &["serve"],
+        },
+        ("typescript", "windows", "x86_64") => LspInstall {
+            label: "TypeScript 7", version: "7.0.2",
+            repo: "microsoft/typescript", asset: "typescript-win32-x64.tgz",
+            url: "https://github.com/microsoft/typescript/releases/download/v7.0.2/typescript-win32-x64.tgz",
+            sha256: "61fc4e141d2bc687db580e71bbfa63b9c209f0310645d82ca1b457eb3a24fd19",
+            bytes: 9_776_626, archive: "tar.gz", exe_in_archive: "package/lib/tsc.exe",
+            args: &["--lsp", "--stdio"],
+        },
+        ("typescript", "windows", "aarch64") => LspInstall {
+            label: "TypeScript 7", version: "7.0.2",
+            repo: "microsoft/typescript", asset: "typescript-win32-arm64.tgz",
+            url: "https://github.com/microsoft/typescript/releases/download/v7.0.2/typescript-win32-arm64.tgz",
+            sha256: "0a73534e6ee50cdbb2a29ac48657ca0ad13cf0f424cf63808e4df7baeb87b8be",
+            bytes: 8_900_840, archive: "tar.gz", exe_in_archive: "package/lib/tsc.exe",
+            args: &["--lsp", "--stdio"],
+        },
+        ("python", "windows", "x86_64") => LspInstall {
+            label: "ty", version: "0.0.73",
+            repo: "astral-sh/ty", asset: "ty-x86_64-pc-windows-msvc.zip",
+            url: "https://github.com/astral-sh/ty/releases/download/0.0.73/ty-x86_64-pc-windows-msvc.zip",
+            sha256: "774f39828acec8dd77755503efc1986862bb276104d8251cdad953c0874c7d7f",
+            bytes: 11_897_438, archive: "zip", exe_in_archive: "ty.exe",
+            args: &["server"],
+        },
+        ("python", "windows", "aarch64") => LspInstall {
+            label: "ty", version: "0.0.73",
+            repo: "astral-sh/ty", asset: "ty-aarch64-pc-windows-msvc.zip",
+            url: "https://github.com/astral-sh/ty/releases/download/0.0.73/ty-aarch64-pc-windows-msvc.zip",
+            sha256: "ef992fa568eb5d4b342edf4d5cfcaca0e0e6e7fa29cbb937a6c12fbc5dfe674e",
+            bytes: 11_589_456, archive: "zip", exe_in_archive: "ty.exe",
+            args: &["server"],
+        },
+        ("rust", "windows", "x86_64") => LspInstall {
+            label: "rust-analyzer", version: "2026-08-17.4",
+            repo: "rust-lang/rust-analyzer", asset: "rust-analyzer-x86_64-pc-windows-msvc.zip",
+            url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-08-17.4/rust-analyzer-x86_64-pc-windows-msvc.zip",
+            sha256: "3212cc9e7ab3f6b07f97be681c2a7200f73fb0463e6f8055c214ebe0b00901f2",
+            bytes: 17_452_536, archive: "zip", exe_in_archive: "rust-analyzer.exe", args: &[],
+        },
+        ("rust", "windows", "aarch64") => LspInstall {
+            label: "rust-analyzer", version: "2026-08-17.4",
+            repo: "rust-lang/rust-analyzer", asset: "rust-analyzer-aarch64-pc-windows-msvc.zip",
+            url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-08-17.4/rust-analyzer-aarch64-pc-windows-msvc.zip",
+            sha256: "604562665e30aed593ec87397bfa157b4601e2d72f3a01bb8b32776302c179f2",
+            bytes: 15_618_764, archive: "zip", exe_in_archive: "rust-analyzer.exe", args: &[],
+        },
         _ => return None,
     })
 }
@@ -15248,16 +15311,38 @@ fn split_command_line(line: &str) -> Vec<String> {
 }
 
 /// Resolve ONE named candidate, or nothing. Split out so the preference and
+/// A server executable inside the checkout, `rel` written in its unix layout
+/// (`.venv/bin/ty`, `node_modules/.bin/tsgo`). On Windows a venv keeps its
+/// executables in `Scripts\` and they carry `.exe`, and npm writes a `.cmd`
+/// next to an extensionless POSIX shell shim that `is_file()` would accept
+/// and CreateProcess cannot run: resolve through PATHEXT instead.
+fn lsp_local_exe(root: &Path, rel: &str) -> Option<String> {
+    lsp_local_exe_for(root, rel, cfg!(windows))
+}
+
+fn lsp_local_exe_for(root: &Path, rel: &str, windows: bool) -> Option<String> {
+    if !windows {
+        let cand = root.join(rel);
+        return cand.is_file().then(|| cand.to_string_lossy().to_string());
+    }
+    let rel = rel.replacen(".venv/bin/", ".venv/Scripts/", 1);
+    let rel_path = Path::new(&rel);
+    let dir = root.join(rel_path.parent().unwrap_or(Path::new("")));
+    let name = rel_path.file_name()?.to_string_lossy().into_owned();
+    shell_env::exe_candidates_with(&name, &std::env::var("PATHEXT").unwrap_or_default())
+        .into_iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
 /// the default order cannot drift: both go through the same probes.
 fn lsp_resolve_named(root: &Path, language: &str, name: &str) -> Option<(String, Vec<String>)> {
     let path_env = shell_env::resolved_path();
     let on_path = |exe: &str| -> Option<String> {
         shell_env::which_in(exe, &path_env).map(|p| p.to_string_lossy().to_string())
     };
-    let local = |rel: &str| -> Option<String> {
-        let cand = root.join(rel);
-        cand.is_file().then(|| cand.to_string_lossy().to_string())
-    };
+    let local = |rel: &str| -> Option<String> { lsp_local_exe(root, rel) };
     match (language, name) {
         ("python", "zuban") => local(".venv/bin/zuban")
             .or_else(|| on_path("zuban"))
@@ -15296,10 +15381,7 @@ fn lsp_resolve_server(root: &Path, language: &str) -> Option<(String, Vec<String
     let on_path = |exe: &str| -> Option<String> {
         shell_env::which_in(exe, &path_env).map(|p| p.to_string_lossy().to_string())
     };
-    let local = |rel: &str| -> Option<String> {
-        let cand = root.join(rel);
-        cand.is_file().then(|| cand.to_string_lossy().to_string())
-    };
+    let local = |rel: &str| -> Option<String> { lsp_local_exe(root, rel) };
 
     let from_toolchain = match language {
         // TypeScript 7 is a native Go binary (`tsgo`), no Node runtime at all.
@@ -25910,7 +25992,6 @@ mod tests {
         assert!(lsp_resolve_server(dir.path(), "hcl").is_none());
     }
 
-    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn every_pinned_server_names_a_digest_and_a_payload() {
         // A pin with an empty digest would download and run an unverified
@@ -32117,5 +32198,24 @@ mod windows_port_tests {
         assert_eq!(lsp_path_to_uri_for("/tmp/a#b", false), "file:///tmp/a%23b");
         assert_eq!(lsp_path_to_uri_for(r"C:\Users\u\a b.ts", true), "file:///C:/Users/u/a%20b.ts");
         assert_eq!(lsp_path_to_uri_for(r"\\?\D:\x", true), "file:///D:/x");
+    }
+
+    #[test]
+    fn a_checkout_local_server_uses_the_windows_layout_there() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join(".venv/Scripts")).unwrap();
+        fs::write(d.path().join(".venv/Scripts/ty.exe"), "x").unwrap();
+        fs::create_dir_all(d.path().join("node_modules/.bin")).unwrap();
+        // npm's pair: an unrunnable sh shim and the .cmd that works.
+        fs::write(d.path().join("node_modules/.bin/tsgo"), "#!/bin/sh").unwrap();
+        fs::write(d.path().join("node_modules/.bin/tsgo.cmd"), "@echo off").unwrap();
+
+        let ty = lsp_local_exe_for(d.path(), ".venv/bin/ty", true).unwrap();
+        assert!(ty.replace('\\', "/").ends_with(".venv/Scripts/ty.exe"), "{ty}");
+        let tsgo = lsp_local_exe_for(d.path(), "node_modules/.bin/tsgo", true).unwrap();
+        assert!(tsgo.ends_with("tsgo.cmd"), "{tsgo}");
+        // Unix keeps the literal path.
+        assert!(lsp_local_exe_for(d.path(), "node_modules/.bin/tsgo", false).unwrap().ends_with("/tsgo"));
+        assert_eq!(lsp_local_exe_for(d.path(), ".venv/bin/ty", false), None);
     }
 }
