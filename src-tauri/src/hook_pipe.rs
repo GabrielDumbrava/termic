@@ -29,7 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING, PIPE_ACCESS_INBOUND,
@@ -104,8 +105,14 @@ impl HookPipe {
             let mut next = first as HANDLE;
             loop {
                 // SAFETY: `next` is a pipe instance we created and own.
+                //
+                // A client that connected, wrote and closed BEFORE this call
+                // (a fast hook, landing between two instances) makes it return
+                // ERROR_NO_DATA, not success: the report is still buffered and
+                // has to be read, or it is lost. ERROR_PIPE_CONNECTED is the
+                // same race with the client still open.
                 let connected = unsafe { ConnectNamedPipe(next, std::ptr::null_mut()) } != 0
-                    || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+                    || matches!(unsafe { GetLastError() }, ERROR_PIPE_CONNECTED | ERROR_NO_DATA);
                 if done.load(Ordering::Acquire) {
                     unsafe { CloseHandle(next) };
                     return;
