@@ -161,6 +161,79 @@ fn bash_hook_writer(payload: &str, hide: bool) -> CommandBuilder {
     c
 }
 
+/// A named-pipe server that collects everything written to it: is a named
+/// pipe a file a hook can `printf >` into? One instance per writer; each
+/// accepts one client and reads until it disconnects.
+#[cfg(windows)]
+fn pipe_collect(name: &str) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{ReadFile, PIPE_ACCESS_INBOUND};
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+    let wide: Vec<u16> = format!(r"\\.\pipe\{name}").encode_utf16().chain(Some(0)).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut all = Vec::new();
+        // Accept successive clients for a few seconds (a writer may open,
+        // write, close; a second attempt in the same chain opens again).
+        let until = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < until {
+            // SAFETY: plain Win32 pipe calls on a handle we own.
+            unsafe {
+                let h = CreateNamedPipeW(
+                    wide.as_ptr(),
+                    PIPE_ACCESS_INBOUND,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                    PIPE_UNLIMITED_INSTANCES,
+                    0,
+                    65536,
+                    0,
+                    std::ptr::null(),
+                );
+                if h == INVALID_HANDLE_VALUE {
+                    break;
+                }
+                ConnectNamedPipe(h, std::ptr::null_mut());
+                let mut buf = [0u8; 4096];
+                loop {
+                    let mut n = 0u32;
+                    let ok = ReadFile(h, buf.as_mut_ptr(), buf.len() as u32, &mut n, std::ptr::null_mut());
+                    if ok == 0 || n == 0 {
+                        break;
+                    }
+                    all.extend_from_slice(&buf[..n as usize]);
+                }
+                DisconnectNamedPipe(h);
+                CloseHandle(h);
+                if all.windows(9).any(|w| w == b"PROBE-END") {
+                    break;
+                }
+            }
+        }
+        let _ = tx.send(all);
+    });
+    rx
+}
+
+#[cfg(windows)]
+fn pipe_case(label: &str, payload: &str, make: impl FnOnce(&str) -> std::process::Command) {
+    let name = format!("termic-probe-{}", std::process::id() as u64 * 1000 + label.len() as u64);
+    let rx = pipe_collect(&name);
+    std::thread::sleep(Duration::from_millis(300));
+    let out = make(&name).output();
+    let got = rx.recv_timeout(Duration::from_secs(15)).unwrap_or_default();
+    let passed = got.windows(payload.len()).any(|w| w == payload.as_bytes());
+    println!("{} {label}", if passed { "PASS-THROUGH" } else { "DROPPED     " });
+    if !passed {
+        println!("    pipe got: {}", printable(&got));
+        if let Ok(o) = out {
+            println!("    writer stderr: {}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+    }
+}
+
 fn main() {
     #[cfg(windows)]
     {
@@ -210,6 +283,34 @@ fn main() {
                 let tail = &out[out.len().saturating_sub(300)..];
                 println!("    got: {}", printable(tail));
             }
+        }
+
+        // A named pipe as the hook's target file, written the way the hook
+        // scripts write (`printf ... > "$TERMIC_PTY"`) and the way the JS
+        // plugins do (`fs.appendFileSync(TERMIC_PTY, ...)`).
+        println!("Named pipe as TERMIC_PTY:");
+        let oct: String = payload.bytes().map(|b| format!("\\{b:03o}")).collect();
+        let bash = r"C:\Program Files\Git\bin\bash.exe";
+        for form in ["//./pipe/", r"\\.\pipe\"] {
+            let oct = oct.clone();
+            pipe_case(&format!("Git Bash printf > {form}NAME"), payload, move |name| {
+                let mut c = std::process::Command::new(bash);
+                c.env("TERMIC_PTY", format!("{form}{name}"));
+                c.args(["-c", &format!("printf '{oct}PROBE-END' > \"$TERMIC_PTY\"")]);
+                c
+            });
+        }
+        let hex: String = payload.bytes().map(|b| format!("{b:02x}")).collect();
+        for form in ["//./pipe/", r"\\.\pipe\"] {
+            let hex = hex.clone();
+            pipe_case(&format!("node fs.appendFileSync({form}NAME)"), payload, move |name| {
+                let mut c = std::process::Command::new("node.exe");
+                c.env("TERMIC_PTY", format!("{form}{name}"));
+                c.args(["-e", &format!(
+                    "require('fs').appendFileSync(process.env.TERMIC_PTY, Buffer.concat([Buffer.from('{hex}','hex'),Buffer.from('PROBE-END')]))"
+                )]);
+                c
+            });
         }
     }
 }

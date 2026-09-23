@@ -106,6 +106,10 @@ windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Pipes",
+  "Win32_Storage_FileSystem",
+  "Win32_Security",
+  "Win32_System_IO",
 ] }
 # WebView2's settings object, to switch off its browser accelerator keys
 # (lib.rs `disable_browser_accelerators`). Both are what wry itself uses.
