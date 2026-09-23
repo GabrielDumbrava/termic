@@ -841,7 +841,7 @@ describe("termic new --base resolves or refuses (GH report, 1.3.2)", () => {
       // Give the branch its own commit, push it, then delete it locally so
       // the name survives only as refs/remotes/origin/e2e-remote-only.
       gitIn(fixture, "checkout -q e2e-remote-only");
-      gitIn(fixture, "-c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m 'remote-only tip'");
+      gitIn(fixture, "-c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m \"remote-only tip\"");
       tip = gitIn(fixture, "rev-parse HEAD");
       gitIn(fixture, "push -q origin e2e-remote-only");
       gitIn(fixture, "checkout -q main");

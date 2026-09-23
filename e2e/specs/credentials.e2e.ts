@@ -950,7 +950,8 @@ describe("agent credentials", () => {
   // puts in, and no plan usage at all. "Usage unknown" used to be gated on
   // usage alone, so this agent's footer was empty forever with nothing saying
   // that installing hooks is what fills it.
-  it("offers the hooks install for an agent whose only readout is the context window", async () => {
+  // A grok-based agent: agent hooks are claude-only on Windows (docs/windows.md).
+  (process.platform === "win32" ? it.skip : it)("offers the hooks install for an agent whose only readout is the context window", async () => {
     await resetUsage();
     await browser.execute(async (a) => {
       const t = window.__termic!;

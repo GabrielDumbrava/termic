@@ -194,6 +194,11 @@ export interface AppState {
    *  work was still outstanding, and its own `Stop` correctly stayed silent
    *  the whole time. Refreshed by `refreshAgentHooks`. */
   agentHooksInstalled: Record<string, boolean>;
+  /** Whether termic can install hooks for each agent at all, from the same
+   *  status read. False for an agent whose hooks do not work on this OS
+   *  (Windows: everything but claude-based agents, agent_hooks.rs
+   *  `hooks_work_for`), where offering the install would only fail. */
+  agentHooksSupported: Record<string, boolean>;
   /** Per-project spotlight: project_id → ws_id of the currently spotlighted
    *  task, or absent if none. Updated by spotlight://status events and
    *  hydrated from the Rust side on app start. Session-only (not persisted). */
@@ -716,6 +721,7 @@ export const useApp = create<AppState>((set, get) => ({
   previewBrowser: "",
   detectedClis: {},
   agentHooksInstalled: {},
+  agentHooksSupported: {},
   spotlightTaskId: {},
 
   setSpotlight: (projectId, taskId) =>
@@ -840,11 +846,15 @@ export const useApp = create<AppState>((set, get) => ({
   refreshAgentHooks: async () => {
     try {
       const ids = get().agents.filter(a => a.kind !== "terminal").map(a => a.id);
-      const rows = await Promise.all(
-        ids.map(id => ipc.agentHooksStatus(id).then(s => [id, s.host.installed] as const)
-          .catch(() => [id, false] as const)),
+      const statuses = await Promise.all(
+        ids.map(id => ipc.agentHooksStatus(id).then(s => [id, s.host.installed, s.supported] as const)
+          .catch(() => [id, false, true] as const)),
       );
-      set({ agentHooksInstalled: Object.fromEntries(rows) });
+      const rows = statuses.map(([id, on]) => [id, on] as const);
+      set({
+        agentHooksInstalled: Object.fromEntries(rows),
+        agentHooksSupported: Object.fromEntries(statuses.map(([id, , ok]) => [id, ok])),
+      });
       // Logged because the SPAWN line lies about this until it resolves. This
       // is async and a tab can spawn first, so the trace showed
       // `hooksInstalled=false` for an agent whose hooks were installed and

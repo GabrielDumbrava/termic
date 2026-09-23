@@ -697,7 +697,8 @@ describe("file tree", () => {
     rmSync(path.join(fixture, "e2e-unreadable-sibling.txt"), { force: true });
   });
 
-  it("offers a retry when a folder cannot be read at all", async () => {
+  // `chmod 000` does not make a folder unreadable on Windows.
+  (process.platform === "win32" ? it.skip : it)("offers a retry when a folder cannot be read at all", async () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = taskId ?? (await openTask("e2e-tree"));
@@ -989,21 +990,21 @@ describe("open a file in its default app", () => {
   it("opens a binary the editor cannot render", async () => {
     // .blend is not valid UTF-8, so clicking it only ever gets the "it looks
     // binary" editor message. The case with no in-app answer at all.
-    const paths = await openExternally("e2e-model.blend");
+    const paths = (await openExternally("e2e-model.blend")).map((p: string) => p.replace(/\\/g, "/"));
     expect(paths.some((p) => p.endsWith("/e2e-model.blend"))).toBe(true);
     // Absolute, not task-relative: the backend shells out with no task context.
-    expect(paths[paths.length - 1].startsWith("/")).toBe(true);
+    expect(/^(\/|[A-Za-z]:\/)/.test(paths[paths.length - 1])).toBe(true);
   });
 
   it("opens a text file the editor renders perfectly well", async () => {
-    const paths = await openExternally("e2e-part.scad");
+    const paths = (await openExternally("e2e-part.scad")).map((p: string) => p.replace(/\\/g, "/"));
     expect(paths.some((p) => p.endsWith("/e2e-part.scad"))).toBe(true);
   });
 
   it("opens an image that has its own in-app viewer", async () => {
     // A PNG already previews in the app, so the external open is an ADDITION
     // here. "termic can show it" is not a reason to withhold the real editor.
-    const paths = await openExternally("e2e-shot.png");
+    const paths = (await openExternally("e2e-shot.png")).map((p: string) => p.replace(/\\/g, "/"));
     expect(paths.some((p) => p.endsWith("/e2e-shot.png"))).toBe(true);
   });
 

@@ -1238,11 +1238,13 @@ export function cliRpc(cmd: Record<string, unknown>): Promise<any> {
  *  `npm run build:cli`". */
 export function cliBinary(): string {
   const dir = path.resolve("src-tauri/binaries");
-  const triple = process.platform === "darwin"
-    ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
-    : (process.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu");
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const triple = process.platform === "darwin" ? `${arch}-apple-darwin`
+    : process.platform === "win32" ? `${arch}-pc-windows-msvc`
+    : `${arch}-unknown-linux-gnu`;
   const candidates = process.platform === "darwin"
     ? [`termic-cli-universal-apple-darwin`, `termic-cli-${triple}`]
+    : process.platform === "win32" ? [`termic-cli-${triple}.exe`]
     : [`termic-cli-${triple}`];
   for (const name of candidates) {
     const full = path.join(dir, name);

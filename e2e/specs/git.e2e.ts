@@ -2191,7 +2191,7 @@ describe("pr card (#21)", () => {
       status: "cli-missing",
       message: "",
       pr: null,
-    }, ["need the gh CLI", "brew install gh"]);
+    }, ["need the gh CLI", process.platform === "win32" ? "winget install GitHub.cli" : "brew install gh"]);
   });
 
   it("tells the user to sign in when the CLI is unauthenticated", async () => {
