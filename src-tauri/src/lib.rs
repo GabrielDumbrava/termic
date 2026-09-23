@@ -8748,9 +8748,8 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     // monitor: its inner_size never trips the minimum, and nudging it
     // to the cursor's monitor would un-zoom it. So the clamp-up and
     // cursor-monitor reposition below apply only to normally-sized
-    // windows. position_on_cursor_monitor itself no-ops when the
-    // restored position is already on the cursor's monitor, so it
-    // cooperates with this restore.
+    // windows. position_on_cursor_monitor preserves a restored position
+    // only when the whole window fits on that monitor.
     if !win.is_maximized().unwrap_or(false) {
         // tauri-plugin-window-state restores prior bounds verbatim — it
         // does NOT enforce minWidth / minHeight. If a previous session
@@ -23099,9 +23098,25 @@ fn round_window_corners_for_tahoe(win: &tauri::WebviewWindow) {
     }
 }
 
+/// Whether every edge of a restored window stays inside one monitor.
+fn window_fits_monitor(
+    win_pos: tauri::PhysicalPosition<i32>,
+    win_size: tauri::PhysicalSize<u32>,
+    monitor_pos: tauri::PhysicalPosition<i32>,
+    monitor_size: tauri::PhysicalSize<u32>,
+) -> bool {
+    let left = i64::from(win_pos.x);
+    let top = i64::from(win_pos.y);
+    let mon_left = i64::from(monitor_pos.x);
+    let mon_top = i64::from(monitor_pos.y);
+    left >= mon_left
+        && top >= mon_top
+        && left + i64::from(win_size.width) <= mon_left + i64::from(monitor_size.width)
+        && top + i64::from(win_size.height) <= mon_top + i64::from(monitor_size.height)
+}
+
 /// Center the window on whichever monitor the OS cursor is currently on.
-/// Skips the nudge when the window is already on the cursor's monitor (so we
-/// don't fight the window-state plugin's restore on subsequent launches).
+/// Keep the restored position only if the whole window fits there.
 fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
     let cursor = win.cursor_position()?;
     let monitors = win.available_monitors()?;
@@ -23114,19 +23129,10 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
     });
     let target = match on_monitor { Some(m) => m, None => return Ok(()) };
 
-    // Skip if the window is already on the right monitor — don't override a
-    // saved position that the user explicitly chose.
-    if let Ok(cur_pos) = win.outer_position() {
-        let p = target.position();
-        let s = target.size();
-        if cur_pos.x >= p.x && cur_pos.x < p.x + s.width as i32
-            && cur_pos.y >= p.y && cur_pos.y < p.y + s.height as i32
-        {
-            return Ok(());
-        }
-    }
-
-    // Clamp the window to the target monitor before positioning.
+    // Clamp the window to the target monitor before deciding whether its
+    // saved position can be kept. A saved top-left corner may be on-screen
+    // while the window is many screens wide (including the beta's old saved
+    // bounds), leaving the centered Settings content outside the viewport.
     // tauri-plugin-window-state may have restored a size that's
     // larger than the CURRENT monitor (saved on a 4K, now on a
     // laptop screen; saved fullscreen on a different display;
@@ -23147,6 +23153,15 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
         win_size = win.outer_size()?;
     }
 
+    // Keep an explicitly chosen position when the entire restored window is
+    // visible. A corner alone is insufficient: the window may still extend
+    // past the edge even after its size has been clamped.
+    if let Ok(cur_pos) = win.outer_position() {
+        if window_fits_monitor(cur_pos, win_size, *p, *s) {
+            return Ok(());
+        }
+    }
+
     let x = p.x + (s.width as i32 - win_size.width as i32) / 2;
     let y = p.y + (s.height as i32 - win_size.height as i32) / 2;
     win.set_position(tauri::PhysicalPosition::new(x, y))?;
@@ -23155,6 +23170,23 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn restored_window_must_fit_entirely_on_monitor() {
+        use tauri::{PhysicalPosition as Pos, PhysicalSize as Size};
+
+        let monitor = Pos::new(0, 0);
+        let display = Size::new(3440, 2160);
+        assert!(!super::window_fits_monitor(
+            Pos::new(0, 66), Size::new(13824, 2168), monitor, display,
+        ));
+        assert!(!super::window_fits_monitor(
+            Pos::new(3300, 100), Size::new(500, 600), monitor, display,
+        ));
+        assert!(super::window_fits_monitor(
+            Pos::new(100, 100), Size::new(1920, 1000), monitor, display,
+        ));
+    }
 
     // ───────── profiles: the data layer (docs/plans/profiles.md) ─────────
     //
