@@ -33,7 +33,7 @@ import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
-import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId } from "@/lib/agentHooks";
+import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId, sessionHolder } from "@/lib/agentHooks";
 import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
 import { lastAgentLine } from "@/lib/resumeTail";
 import { parseUsageBody } from "@/lib/agentUsage";
@@ -2018,6 +2018,25 @@ const captureArmedRef = useRef(false);
         // undone by the next Enter, back to a session nothing was said in.
         pendingSessionUuidRef.current = null;
         sessionReportedRef.current = true;
+        // Another tab's conversation, picked in a shared cwd's picker: keep
+        // this tab's pointer where it was rather than swap the two tasks (see
+        // sessionHolder). Checked only when the id is new to this tab, so the
+        // lookup stays off the steady-state path.
+        const holder = live?.sessionId !== reported
+          ? sessionHolder(reported, { taskId: task.id, tabId: tab.id },
+              useApp.getState().tasks, useApp.getState().tabs)
+          : null;
+        if (holder) {
+          logWorkState("session-foreign",
+            `cli=${tab.cli} task=${JSON.stringify(task.name)} id=${reported}`
+            + ` holder=${JSON.stringify(holder.taskName)}`);
+          useUI.getState().pushToast(
+            `That ${agentDisplayName(tab.cli)} conversation belongs to "${holder.taskName}", so Termic did not save it to this tab.`
+            + ` Two tabs on one conversation lock each other out: continue it in "${holder.taskName}", or /resume another one here.`,
+            "info",
+          );
+          return false;
+        }
         if (live?.sessionId !== reported) {
           logWorkState("session-reported",
             `cli=${tab.cli} task=${JSON.stringify(task.name)} id=${reported}`);
@@ -2871,7 +2890,13 @@ const captureArmedRef = useRef(false);
             setGen(g => g + 1);
             return;
           }
-          if (fastExit && lastSpawnWasResumeRef.current) {
+          // A CLEAN exit is never a failed resume. Every refusal measured exits
+          // non-zero (claude's "No conversation found" and "running in another
+          // terminal", codex's "active writer": all 1), while quitting a tab
+          // with Ctrl+C right after a relaunch exits 0. Reading that as "the id
+          // is dead" cleared a good id and opened the picker, and in a main
+          // checkout the picker's top row is a sibling task's conversation.
+          if (fastExit && lastSpawnWasResumeRef.current && code !== 0) {
             // Rapid exit during a resume attempt = the stored session
             // doesn't resolve anymore (id-CLI: log rotated / deleted;
             // legacy: "no conversation to continue"). Drop the bad
