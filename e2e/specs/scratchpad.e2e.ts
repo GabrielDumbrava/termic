@@ -230,7 +230,7 @@ describe("scratchpads", () => {
 
     await browser.execute(() => {
       document.querySelector(".cm-content")!.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }),
+        new KeyboardEvent("keydown", { key: "s", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true }),
       );
     });
     await browser.waitUntil(
@@ -291,7 +291,7 @@ describe("scratchpads", () => {
     for (let i = 0; i < 3; i++) {
       await browser.execute(() => {
         window.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "n", metaKey: true, altKey: true, bubbles: true,
+          key: "n", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, altKey: true, bubbles: true,
         }));
       });
       await browser.waitUntil(async () => (await pads(taskId)).length === i + 1, {
@@ -359,7 +359,7 @@ describe("scratchpads", () => {
     // A fresh pad, straight through the shortcut path this time.
     await browser.execute(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "n", metaKey: true, altKey: true, bubbles: true,
+        key: "n", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, altKey: true, bubbles: true,
       }));
     });
     await browser.waitUntil(async () => (await pads(taskId)).length === 1, {

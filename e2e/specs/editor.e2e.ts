@@ -398,7 +398,7 @@ describe("editor save", () => {
       document
         .querySelector(".cm-content")!
         .dispatchEvent(
-          new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }),
+          new KeyboardEvent("keydown", { key: "s", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true }),
         );
     });
     await browser.waitUntil(
@@ -1779,7 +1779,7 @@ describe("directory links", () => {
     // defaultPrevented is exactly "some MarkdownPreview took it".
     const claimed = await browser.execute(() => {
       const ev = new KeyboardEvent("keydown", {
-        key: "f", metaKey: true, bubbles: true, cancelable: true,
+        key: "f", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
       });
       window.dispatchEvent(ev);
       return ev.defaultPrevented;
@@ -1801,7 +1801,7 @@ describe("directory links", () => {
     const cmdBracket = (key: string) =>
       browser.execute((k) => {
         window.dispatchEvent(
-          new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true }),
+          new KeyboardEvent("keydown", { key: k, [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true }),
         );
       }, key);
 
@@ -1842,7 +1842,7 @@ describe("directory links", () => {
     );
 
     await browser.execute(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", metaKey: true, bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true }));
     });
 
     // The listing must not have moved.
@@ -1898,7 +1898,7 @@ describe("directory links", () => {
     );
 
     await browser.execute(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", metaKey: true, bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true }));
     });
 
     // Give anything that WOULD happen a chance to happen: the task switch was
@@ -1941,7 +1941,7 @@ describe("directory links", () => {
     const back = () =>
       browser.execute(() => {
         window.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "[", metaKey: true, bubbles: true }),
+          new KeyboardEvent("keydown", { key: "[", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true }),
         );
       });
 
@@ -1972,7 +1972,7 @@ describe("directory links", () => {
     // And Opt+Cmd+Down, which is what switching tasks is FOR, still does.
     await browser.execute(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "ArrowDown", metaKey: true, altKey: true, bubbles: true,
+        key: "ArrowDown", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, altKey: true, bubbles: true,
       }));
     });
     await browser.waitUntil(
@@ -2077,7 +2077,7 @@ const waitFind = async (ok: (p: FindPaint) => boolean, msg: string, taskId?: str
 const pressCmdF = () =>
   browser.execute(() => {
     window.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true }),
+      new KeyboardEvent("keydown", { key: "f", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true }),
     );
   });
 
@@ -2904,7 +2904,7 @@ describe("comment on an editor selection for the agent", () => {
     await selectLines(1, 2);
     await browser.execute(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "l", metaKey: true, shiftKey: true, bubbles: true,
+        key: "l", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, shiftKey: true, bubbles: true,
       }));
     });
     await writeComment("and mention the fixture");
@@ -2924,7 +2924,7 @@ describe("comment on an editor selection for the agent", () => {
     }, taskId!);
     await browser.execute(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "l", metaKey: true, shiftKey: true, bubbles: true,
+        key: "l", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, shiftKey: true, bubbles: true,
       }));
     });
     expect(await browser.execute(() => !!document.querySelector(".tc-comment-textarea"))).toBe(false);

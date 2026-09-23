@@ -4837,6 +4837,7 @@ fn profile_seeded_tasks_path(name: String) -> (String, String) {
 
 #[tauri::command]
 fn profile_create(app: AppHandle, args: CreateProfileArgs) -> Result<ProfileView, String> {
+    dlog("[profile] create: start");
     // Under the lock: creating the FIRST profile also adopts the existing
     // install, and both entries have to land in one write or the registry is
     // briefly a registry that names one of two profiles.
@@ -4881,6 +4882,7 @@ fn profile_create(app: AppHandle, args: CreateProfileArgs) -> Result<ProfileView
     };
     // Every window's strip has to learn there is now more than one profile.
     forget_task_window(None);
+    dlog("[profile] create: tray");
     rebuild_tray_menu(&app);
     let _ = app.emit("termic://profiles-changed", ());
     Ok(view)
@@ -4936,6 +4938,7 @@ fn profile_open(app: AppHandle, slug: String) -> Result<(), String> {
     //
     // Under the lock and NOTHING ELSE under it: `build_profile_window` below
     // writes the registry too, and holding this across it would deadlock.
+    dlog(&format!("[profile] open {slug}: start"));
     let id = with_registry(|_g, reg| {
         if reg.get(&slug).is_none() {
             return Err(format!("no such profile: {slug}"));
@@ -4957,7 +4960,9 @@ fn profile_open(app: AppHandle, slug: String) -> Result<(), String> {
     // Whoever focuses LAST wins, so the target goes last.
     //
     // A profile window is a window: an app that was windowless has one again.
+    dlog("[profile] open: leave_windowless");
     leave_windowless(&app);
+    dlog("[profile] open: build");
     let win = match app.get_webview_window(&id.window_label()) {
         Some(w) => w,
         None => build_profile_window(&app, &id).map_err(|e| e.to_string())?,
@@ -4967,11 +4972,14 @@ fn profile_open(app: AppHandle, slug: String) -> Result<(), String> {
         // not a build, and nothing else would clear the "user closed it" mark.
         root_brought_back();
     }
+    dlog("[profile] open: show");
     let _ = win.unminimize();
     let _ = win.show();
     focus_window_unless_e2e(&win);
     // The menu marks the open profiles, so opening one changes it.
+    dlog("[profile] open: tray");
     rebuild_tray_menu(&app);
+    dlog("[profile] open: done");
     Ok(())
 }
 
@@ -8961,7 +8969,9 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
             .traffic_light_position(tauri::LogicalPosition::new(16.0, traffic_y));
     }
 
+    dlog(&format!("[profile] build {label}: builder.build"));
     let win = builder.build()?;
+    dlog(&format!("[profile] build {label}: built"));
     disable_browser_accelerators(&win);
 
     // Restore saved bounds ourselves (the plugin skips "main" via

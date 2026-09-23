@@ -326,7 +326,7 @@ describe("command palette", () => {
         .querySelector('[data-testid="command-palette-button"]')
         ?.getAttribute("aria-label"),
     );
-    expect(ariaLabel).toBe("Command palette (\u21e7\u2318P)");
+    expect(ariaLabel).toBe(`Command palette (${process.platform === "win32" ? "Ctrl+Shift+P" : "\u21e7\u2318P"})`);
     await clickWhenVisible('[data-testid="command-palette-button"]');
     await browser.waitUntil(async () => (await paletteOpen()) === false, {
       timeout: 5_000,
@@ -628,7 +628,10 @@ describe("more dialogs open", () => {
 // Cases: close goes windowless without killing the task; panes sit at zero
 // geometry while windowless; agent output still flows while windowless
 // (the whole point of a daemon); raise restores window + panes.
-describe("windowless mode", () => {
+// macOS only: closing the window keeps the app running in the menu bar
+// there. On Windows closing the window quits, by design (docs/windows.md),
+// so this suite would close the app under every later case.
+(process.platform === "win32" ? describe.skip : describe)("windowless mode", () => {
   let taskId!: string;
 
   // Same constant wdio launches the app with, rather than a second hard-coded

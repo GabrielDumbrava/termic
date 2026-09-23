@@ -67,7 +67,7 @@ const modClickWord = (taskId: string, word: string) =>
     const coords = view.coordsAtPos(at + 1);
     const content = dom.querySelector(".cm-content") as HTMLElement;
     content.dispatchEvent(new MouseEvent("mousedown", {
-      bubbles: true, cancelable: true, button: 0, metaKey: true,
+      bubbles: true, cancelable: true, button: 0, [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true,
       clientX: Math.round(coords.left + 1), clientY: Math.round((coords.top + coords.bottom) / 2),
     }));
   }, taskId, word);
@@ -465,7 +465,7 @@ describe("code intelligence", () => {
     // 1. The handshake carried BOTH roots. The CM client sends only rootUri;
     //    a server that reads only workspaceFolders (ruby-lsp) would otherwise
     //    index nothing, silently.
-    expect(seen.initialize.workspaceFolders[0].uri).toContain(root.split("/").pop());
+    expect(seen.initialize.workspaceFolders[0].uri).toContain(root.split(/[\\/]/).pop());
     expect(seen.initialize.rootUri).toContain("file://");
     // 2. The server→client request was answered, with the right ARITY. This
     //    is the reply the CM client would have sent -32601 to, and the one ty
@@ -510,7 +510,8 @@ describe("code intelligence", () => {
     await ensureActiveTask(taskId);
   });
 
-  it("lists the server in Activity, where it can be stopped", async () => {
+  // The Activity monitor is macOS / Linux only (procmon_other.rs).
+  (process.platform === "win32" ? it.skip : it)("lists the server in Activity, where it can be stopped", async () => {
     // These are the first thing termic runs that can cost more than every
     // agent in the window combined, so they are sampled like everything else
     // rather than described in a settings pane.
@@ -668,7 +669,7 @@ describe("code intelligence", () => {
         const view = dom!.__cmView;
         const rect = view.coordsAtPos(at);
         view.contentDOM.dispatchEvent(new MouseEvent("mousedown", {
-          bubbles: true, cancelable: true, metaKey: true, button: 0,
+          bubbles: true, cancelable: true, [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, button: 0,
           clientX: rect.left + 1, clientY: (rect.top + rect.bottom) / 2,
         }));
       }, taskId, offset);
@@ -778,14 +779,14 @@ describe("code intelligence", () => {
     // Back returns to the CALL SITE, not to the previous definition. ⌘[ is
     // IntelliJ's key; it is Previous Task app-wide and claimed CONDITIONALLY
     // here, the same way a folder listing already claims it (issue #151).
-    await pressInEditor("[", { metaKey: true });
+    await pressInEditor("[", { [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
     await browser.waitUntil(async () => Math.abs((await head()) - startedAt) <= 1, {
       timeout: 10_000,
       timeoutMsg: "Back did not return to where the jump started",
     });
 
     // And Forward retraces it.
-    await pressInEditor("]", { metaKey: true });
+    await pressInEditor("]", { [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
     await browser.waitUntil(async () => (await head()) === 13, {
       timeout: 10_000, timeoutMsg: "Forward did not retrace the jump",
     });
@@ -803,7 +804,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", metaKey: true, bubbles: true, cancelable: true,
+        key: "F12", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 10_000);
@@ -1058,11 +1059,11 @@ describe("code intelligence", () => {
     const titles = await browser.execute((sel) =>
       [...document.querySelectorAll(`${sel} .cm-lsp-usages-row`)].map(el => (el as HTMLElement).title), popup) as string[];
     expect(titles.length).toBe(3);
-    for (const t of titles) expect(t).toMatch(/^\/.*navme\.ts:\d+$/);
+    for (const t of titles) expect(t).toMatch(/^(\/|[A-Za-z]:\\).*navme\.ts:\d+$/);
     expect(titles[2]).toContain("/nested/navme.ts:");
     const footerTitle = await browser.execute((sel) =>
       (document.querySelector(`${sel} .cm-lsp-usages-footer`) as HTMLElement).title, popup) as string;
-    expect(footerTitle).toMatch(/^\/.*navme\.ts$/);
+    expect(footerTitle).toMatch(/^(\/|[A-Za-z]:\\).*navme\.ts$/);
 
     // Height assertions are relative to the room actually below the popup.
     // CodeMirror already shrinks a tooltip to the space under its anchor, and
@@ -1183,7 +1184,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", metaKey: true, bubbles: true, cancelable: true,
+        key: "F12", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 15_000);
@@ -1198,7 +1199,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", metaKey: true, bubbles: true, cancelable: true,
+        key: "F12", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 10_000);
