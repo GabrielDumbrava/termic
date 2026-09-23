@@ -8770,7 +8770,9 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
                 let _ = win.set_size(tauri::LogicalSize::new(1400.0_f64, 900.0));
             }
         }
-        let _ = position_on_cursor_monitor(&win);
+        if let Err(e) = position_on_cursor_monitor(&win) {
+            dlog(&format!("[window] could not fit {label} on a monitor: {e}"));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -23115,19 +23117,31 @@ fn window_fits_monitor(
         && top + i64::from(win_size.height) <= mon_top + i64::from(monitor_size.height)
 }
 
-/// Center the window on whichever monitor the OS cursor is currently on.
+fn point_on_monitor(x: i64, y: i64, monitor: &tauri::Monitor) -> bool {
+    let pos = monitor.position();
+    let size = monitor.size();
+    x >= i64::from(pos.x)
+        && x < i64::from(pos.x) + i64::from(size.width)
+        && y >= i64::from(pos.y)
+        && y < i64::from(pos.y) + i64::from(size.height)
+}
+
+/// Center on the cursor's monitor, falling back to the saved window's monitor.
 /// Keep the restored position only if the whole window fits there.
 fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
-    let cursor = win.cursor_position()?;
     let monitors = win.available_monitors()?;
-    let on_monitor = monitors.iter().find(|m| {
-        let pos = m.position();
-        let size = m.size();
-        let in_x = (cursor.x as i32) >= pos.x && (cursor.x as i32) < pos.x + size.width as i32;
-        let in_y = (cursor.y as i32) >= pos.y && (cursor.y as i32) < pos.y + size.height as i32;
-        in_x && in_y
-    });
-    let target = match on_monitor { Some(m) => m, None => return Ok(()) };
+    let cursor = win.cursor_position().ok();
+    let saved_pos = win.outer_position().ok();
+    // Cursor lookup can fail at launch (or land outside the monitor list
+    // while Spaces are changing). Never let that skip the size clamp: use
+    // the monitor containing the restored top-left, then the first display.
+    let target = cursor.as_ref()
+        .and_then(|pos| monitors.iter().find(|m| point_on_monitor(pos.x as i64, pos.y as i64, m)))
+        .or_else(|| saved_pos.as_ref().and_then(|pos| {
+            monitors.iter().find(|m| point_on_monitor(i64::from(pos.x), i64::from(pos.y), m))
+        }))
+        .or_else(|| monitors.first());
+    let target = match target { Some(m) => m, None => return Ok(()) };
 
     // Clamp the window to the target monitor before deciding whether its
     // saved position can be kept. A saved top-left corner may be on-screen
@@ -23149,7 +23163,11 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
     if win_size.width > max_w || win_size.height > max_h {
         let new_w = win_size.width.min(max_w);
         let new_h = win_size.height.min(max_h);
-        let _ = win.set_size(tauri::PhysicalSize::new(new_w, new_h));
+        win.set_size(tauri::PhysicalSize::new(new_w, new_h))?;
+        dlog(&format!(
+            "[window] clamped restored size {}x{} to {}x{}",
+            win_size.width, win_size.height, new_w, new_h,
+        ));
         win_size = win.outer_size()?;
     }
 
