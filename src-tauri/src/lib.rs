@@ -1322,7 +1322,26 @@ fn git_tracks_path(repo: &Path, path: &Path) -> bool {
 /// `./wt`, `../siblings`)? Both levels of the setting branch on exactly this.
 fn is_absolute_location(s: &str) -> bool {
     let t = s.trim();
-    t.starts_with('/') || t == "~" || t.starts_with("~/")
+    // `Path::is_absolute` so `D:\wt` counts on Windows. Treating it as
+    // relative made `root.join("D:\wt")` return `D:\wt` itself, without
+    // the per-project subdirectory: every project shared one tasks root.
+    std::path::Path::new(t).is_absolute()
+        || t.starts_with('/')
+        || t == "~"
+        || t.starts_with("~/")
+        || (cfg!(windows) && t.starts_with("~\\"))
+}
+
+/// A single path component a user typed as a NAME (a rename, a member
+/// directory): not empty, not `.`/`..`, and no separator. `\` counts as a
+/// separator on Windows, where `..\x` would otherwise rename outside the
+/// directory the name is meant to live in.
+fn is_plain_name(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && !s.contains('/')
+        && !(cfg!(windows) && (s.contains('\\') || s.contains(':')))
 }
 
 /// Per-project subdirectory under an ABSOLUTE tasks path, so projects sharing
@@ -1418,7 +1437,7 @@ pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // file; we must write through to its target. canonicalize fails on a
     // DANGLING link (dotfiles target not created yet), so follow links by
     // hand in that case rather than clobbering the link.
-    let resolved = fs::canonicalize(dest).unwrap_or_else(|_| {
+    let resolved = dunce::canonicalize(dest).unwrap_or_else(|_| {
         let mut cur = dest.to_path_buf();
         for _ in 0..8 {
             match fs::read_link(&cur) {
@@ -1610,12 +1629,18 @@ fn expand_tilde(path: &str) -> String {
     // `~` and `~/…` only — NOT `~user` or `~work`, which name no home we can
     // resolve. `is_absolute_location` draws the same line, and the tasks-path
     // UI mirrors it, so all three must agree on what a tilde means.
-    let Some(rest) = trimmed.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with('/'))
+    let Some(rest) = trimmed
+        .strip_prefix('~')
+        .filter(|r| r.is_empty() || r.starts_with('/') || (cfg!(windows) && r.starts_with('\\')))
     else {
         return trimmed.to_string();
     };
+    // Join rather than concatenate, so the result uses the platform
+    // separator after the home dir (`C:\Users\u\x`, not `C:\Users\u/x`).
+    let rest = rest.trim_start_matches(['/', '\\']);
     dirs::home_dir()
-        .map(|h| format!("{}{rest}", h.to_string_lossy()))
+        .map(|h| if rest.is_empty() { h } else { h.join(rest) })
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| trimmed.to_string())
 }
 
@@ -1631,7 +1656,7 @@ fn expand_tilde(path: &str) -> String {
 /// `expand_tilde` this does not trim: an env value's surrounding whitespace is
 /// the caller's business, not ours.
 fn expand_tilde_env(value: &str) -> String {
-    if value == "~" || value.starts_with("~/") {
+    if value == "~" || value.starts_with("~/") || (cfg!(windows) && value.starts_with("~\\")) {
         expand_tilde(value)
     } else {
         value.to_string()
@@ -1647,7 +1672,7 @@ fn normalize_member(mut m: ProjectMember) -> Result<ProjectMember, String> {
     let pb = PathBuf::from(&expanded);
     if !pb.exists() { return Err(format!("{} does not exist", expanded)); }
     if !pb.is_dir() { return Err(format!("{} is not a directory", expanded)); }
-    let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
+    let canon = dunce::canonicalize(&pb).map_err(|e| e.to_string())?;
     let is_git = git(&["rev-parse", "--git-dir"], &canon).is_ok();
     m.non_git = !is_git;
     m.root_path = canon.to_string_lossy().into_owned();
@@ -2154,7 +2179,7 @@ fn link_config_dir(repo: &Path, wt: &Path, name: &str) {
     if dst.symlink_metadata().is_ok() {
         return;
     }
-    let target = fs::canonicalize(&src).unwrap_or(src);
+    let target = dunce::canonicalize(&src).unwrap_or(src);
     // The list is not dirs-only (`.mcp.json` is a file, GH #251);
     // symlink_any picks the right Windows link kind.
     let linked = fs_link::symlink_any(&target, &dst).is_ok();
@@ -5248,7 +5273,7 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
         return Err(format!("{} is not a git repo. Confirm adding it as a plain folder.", expanded));
     }
     let mut list = load_projects_all();
-    let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
+    let canon = dunce::canonicalize(&pb).map_err(|e| e.to_string())?;
     if project_path_taken(&list, &window_profile(&window), &canon.to_string_lossy()) {
         // NOTE: the "project already added" substring is load-bearing for
         // cli_server::handle_project_add's idempotent re-add.
@@ -5451,7 +5476,7 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
     };
 
     let mut list = load_projects_all();
-    let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
+    let canon = dunce::canonicalize(&pb).map_err(|e| e.to_string())?;
     if project_path_taken(&list, &window_profile(&window), &canon.to_string_lossy()) {
         return Err("a project at this path is already added".into());
     }
@@ -5702,7 +5727,7 @@ fn link_repo_mode_members(host_dir: &Path, members: &[ProjectMember], first_port
     let mut next_member_port = first_port;
     for pm in members {
         let dir_name = pm.name.clone();
-        if dir_name.is_empty() || dir_name.contains('/') { continue; }
+        if !is_plain_name(&dir_name) { continue; }
         if !seen.insert(dir_name.clone()) { continue; }
         let target = host_dir.join(&dir_name);
         // If the link already exists from a previous open-repo,
@@ -5716,7 +5741,7 @@ fn link_repo_mode_members(host_dir: &Path, members: &[ProjectMember], first_port
             // can spell the same directory differently (/var vs /private/var).
             let is_member_itself = !meta.file_type().is_symlink()
                 && matches!(
-                    (fs::canonicalize(&target), fs::canonicalize(&pm.root_path)),
+                    (dunce::canonicalize(&target), dunce::canonicalize(&pm.root_path)),
                     (Ok(a), Ok(b)) if a == b
                 );
             if !is_our_link && !is_member_itself {
@@ -5992,7 +6017,7 @@ pub struct ImportableWorktree {
 /// Canonicalize for set-membership comparison, falling back to the raw
 /// string when the path can't be resolved (e.g. it was deleted).
 fn canon_str(p: &str) -> String {
-    fs::canonicalize(p)
+    dunce::canonicalize(p)
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|_| p.to_string())
 }
@@ -6815,7 +6840,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         // defends (the parent exists + is non-empty, so symlink/worktree-add
         // fail and roll back), but reject it up front as defense-in-depth so
         // no archive/teardown path can ever operate on `..`.
-        if dir_name.contains('/') || dir_name.is_empty() || dir_name == "." || dir_name == ".." {
+        if !is_plain_name(&dir_name) {
             return Err(format!("invalid member dir name: {dir_name:?}"));
         }
         if !seen_dirs.insert(dir_name.clone()) {
@@ -7242,7 +7267,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
                 use std::process::Stdio;
                 emit_scoped(&app2, &format!("setup-output://{}", ws_id),
                     serde_json::json!({ "line": format!("[{label}] $ {script}") }));
-                let mut cmd = crate::proc_ctl::command("bash");
+                let mut cmd = crate::proc_ctl::command(shell_env::script_bash());
                 // Real login-shell env so setup finds bun/nvm/etc. and
                 // sees the user's $EDITOR; `bash -l` alone misses what the
                 // user set in their actual shell (fish/zsh rc) (#16, #17).
@@ -8805,6 +8830,36 @@ fn root_brought_back() {
 /// identity: `tauri-plugin-window-state` keys saved frames by it, so each
 /// profile remembers its own geometry, and the root profile keeps the literal
 /// `main` label a pre-profiles install already has a frame saved under.
+/// WebView2 ships browser keys on by default: F5 / Ctrl+R / Ctrl+Shift+R
+/// reload the page, Ctrl+P prints, Ctrl+F and F3 open a find bar, Ctrl+U
+/// shows the source. In this app a reload drops every terminal's scrollback
+/// and all UI state, and Ctrl+R / Ctrl+P / Ctrl+F are shortcuts the app and
+/// the shells inside it want. Tauri has no setter for this, so reach the
+/// WebView2 settings object directly. Clipboard and editing keys are not
+/// browser accelerators and keep working. WKWebView has no such keys.
+fn disable_browser_accelerators(win: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    {
+        let _ = win.with_webview(|wv| {
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+            use windows_core::Interface;
+            // SAFETY: COM calls on the live controller Tauri hands us, on
+            // the thread it runs this closure on.
+            unsafe {
+                if let Ok(core) = wv.controller().CoreWebView2() {
+                    if let Ok(settings) = core.Settings() {
+                        if let Ok(s3) = settings.cast::<ICoreWebView2Settings3>() {
+                            let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false.into());
+                        }
+                    }
+                }
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = win;
+}
+
 fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri::WebviewWindow> {
     use tauri::Manager;
     let label = id.window_label();
@@ -8846,6 +8901,7 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     }
 
     let win = builder.build()?;
+    disable_browser_accelerators(&win);
 
     // Restore saved bounds ourselves (the plugin skips "main" via
     // skip_initial_state) so the ordering is deterministic. SIZE +
@@ -9139,6 +9195,7 @@ fn procmon_open_window(app: AppHandle) -> Result<(), String> {
     .min_inner_size(560.0, 320.0)
     .build()
     .map_err(|e| e.to_string())?;
+    disable_browser_accelerators(&win);
     // Remember WHERE the monitor was, never how big. The window-state plugin
     // puts saved bounds back verbatim and does not honour min_inner_size, and
     // its saved 880x620 came back as 440x310 logical on a 2x display, under
@@ -12387,12 +12444,12 @@ fn reject_escaping_segments(rel: &str) -> Result<PathBuf, String> {
 fn safe_task_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
     let pb = reject_escaping_segments(rel)?;
     let target = ws_path.join(&pb);
-    let canon_base = fs::canonicalize(ws_path)
+    let canon_base = dunce::canonicalize(ws_path)
         .map_err(|e| format!("{}: {e}", ws_path.display()))?;
     // Name the path in every error. These strings surface in the file tree and
     // in bug reports (GH #250), where "No such file or directory" on its own
     // says nothing about WHICH path went missing.
-    let canon_target = fs::canonicalize(&target)
+    let canon_target = dunce::canonicalize(&target)
         .map_err(|e| format!("{}: {e}", target.display()))?;
     if !canon_target.starts_with(&canon_base) {
         // A symlink out of the task is the usual way to land here, and where it
@@ -12452,7 +12509,7 @@ fn safe_task_read_path_in(project_root: Option<&Path>, base: &Path, rel: &str) -
         return Err(strict);
     }
     let Some(root) = project_root else { return Err(strict) };
-    let (Ok(canon_root), Ok(target)) = (fs::canonicalize(root), fs::canonicalize(base.join(&pb)))
+    let (Ok(canon_root), Ok(target)) = (dunce::canonicalize(root), dunce::canonicalize(base.join(&pb)))
     else {
         return Err(strict);
     };
@@ -12491,8 +12548,8 @@ struct PathStat {
 fn check_task_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat, String> {
     let pb = reject_escaping_segments(rel)?;
     let target = ws_path.join(&pb);
-    let canon_base = fs::canonicalize(ws_path).map_err(|e| e.to_string())?;
-    if let Ok(canon) = fs::canonicalize(&target) {
+    let canon_base = dunce::canonicalize(ws_path).map_err(|e| e.to_string())?;
+    if let Ok(canon) = dunce::canonicalize(&target) {
         if !canon.starts_with(&canon_base) {
             return Err(format!("path escapes task: {rel}"));
         }
@@ -12506,7 +12563,7 @@ fn check_task_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat, Stri
             _ => break, // exhausted ancestors without finding one that exists (shouldn't happen: ws_path itself always exists)
         }
         if probe.exists() {
-            let canon = fs::canonicalize(probe).map_err(|e| e.to_string())?;
+            let canon = dunce::canonicalize(probe).map_err(|e| e.to_string())?;
             if !canon.starts_with(&canon_base) {
                 return Err(format!("path escapes task: {rel}"));
             }
@@ -12581,7 +12638,7 @@ fn read_capped_file(abs: &Path, cap: u64) -> Result<Vec<u8>, String> {
 pub fn attachments_dir() -> PathBuf {
     let raw = std::env::temp_dir().join("termic-attachments");
     let _ = std::fs::create_dir_all(&raw);
-    std::fs::canonicalize(&raw).unwrap_or(raw)
+    dunce::canonicalize(&raw).unwrap_or(raw)
 }
 
 /// Where an image pasted into a terminal is written. See `attachments_dir`
@@ -13206,7 +13263,7 @@ fn safe_task_path_for_create(ws_path: &Path, rel: &str) -> Result<PathBuf, Strin
     if pb.as_os_str().is_empty() {
         return Err("empty path".into());
     }
-    let canon_base = fs::canonicalize(ws_path).map_err(|e| format!("{}: {e}", ws_path.display()))?;
+    let canon_base = dunce::canonicalize(ws_path).map_err(|e| format!("{}: {e}", ws_path.display()))?;
     // Longest existing prefix of `pb`, walking from the full path backwards.
     let comps: Vec<_> = pb.components().collect();
     for split in (0..=comps.len()).rev() {
@@ -13215,7 +13272,7 @@ fn safe_task_path_for_create(ws_path: &Path, rel: &str) -> Result<PathBuf, Strin
         if !probe.exists() {
             continue;
         }
-        let canon_head = fs::canonicalize(&probe).map_err(|e| format!("{}: {e}", probe.display()))?;
+        let canon_head = dunce::canonicalize(&probe).map_err(|e| format!("{}: {e}", probe.display()))?;
         if !canon_head.starts_with(&canon_base) {
             return Err(format!("path escapes task: {rel} -> {}", canon_head.display()));
         }
@@ -13415,7 +13472,7 @@ async fn scratch_promote_target_exists(task_id: String, rel_path: String) -> Res
 fn task_path_rename(id: String, path: String, new_name: String) -> Result<String, String> {
     let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let trimmed = new_name.trim();
-    if trimmed.is_empty() || trimmed.contains('/') || trimmed == "." || trimmed == ".." {
+    if !is_plain_name(trimmed) {
         return Err(format!("invalid name: {new_name:?}"));
     }
     let (cwd, rel) = resolve_task_git_path(&w, &path)?;
@@ -13815,11 +13872,11 @@ fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEnt
         })
     };
     let canon_target = if rel.is_empty() {
-        fs::canonicalize(&base).map_err(|e| format!("{}: {e}", base.display()))?
+        dunce::canonicalize(&base).map_err(|e| format!("{}: {e}", base.display()))?
     } else if let Some((member, remainder)) = &member_hit {
         let mp = PathBuf::from(&member.path);
         if remainder.is_empty() {
-            fs::canonicalize(&mp).map_err(|e| format!("{}: {e}", mp.display()))?
+            dunce::canonicalize(&mp).map_err(|e| format!("{}: {e}", mp.display()))?
         } else {
             safe_task_path(&mp, remainder)?
         }
@@ -13892,7 +13949,7 @@ fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEnt
         let present: HashSet<String> = out.iter().map(|e| e.name.clone()).collect();
         for m in &w.composition {
             if m.mode != MemberMode::RepoRoot { continue; }
-            if m.dir_name.is_empty() || m.dir_name.contains('/') { continue; }
+            if !is_plain_name(&m.dir_name) { continue; }
             if present.contains(&m.dir_name) { continue; }
             // Absent from the listing. Only relink when the slot is truly
             // empty (never clobber real user content sharing the name) and
@@ -14324,7 +14381,7 @@ fn run_script(script: &str, cwd: &Path, port: u16, name: &str, extra: &[NamedPor
     // missing — GUI launch starts from a bare launchd env. Without this,
     // `bun`/`nvm`/etc. are "command not found" in setup/run scripts even
     // though they work in a terminal (#16), and `$EDITOR` is wrong (#17).
-    let mut cmd = crate::proc_ctl::command("bash");
+    let mut cmd = crate::proc_ctl::command(shell_env::script_bash());
     let (path, inject) = shell_env::spawn_env();
     cmd.arg("-lc").arg(script).current_dir(cwd)
         .env("PATH", path)
@@ -14371,7 +14428,7 @@ fn run_script_streaming(
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     thread::spawn(move || {
-        let mut cmd = crate::proc_ctl::command("bash");
+        let mut cmd = crate::proc_ctl::command(shell_env::script_bash());
         let (setup_path, setup_inject) = shell_env::spawn_env();
         cmd.arg("-lc")
             .arg(&script)
@@ -17253,7 +17310,7 @@ fn task_run_script_stream(
         }
         // `process_group(0)` puts the child in its own group so we can kill
         // the whole tree later via `kill(-pgid, SIGTERM)`.
-        let mut cmd = crate::proc_ctl::command("bash");
+        let mut cmd = crate::proc_ctl::command(shell_env::script_bash());
         let (run_path, run_inject) = shell_env::spawn_env();
         cmd.arg("-lc").arg(&script)
             .current_dir(&cwd)
@@ -17901,6 +17958,12 @@ fn default_shell() -> String {
     shell_env::login_shell()
 }
 
+/// The shell for command tabs (see `commandShell` in lib/loginShell.ts).
+#[tauri::command]
+fn script_shell() -> String {
+    shell_env::script_bash().to_string_lossy().into_owned()
+}
+
 #[tauri::command]
 fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
@@ -17960,6 +18023,11 @@ async fn install_notification_sound(app: AppHandle, resource: String, file_name:
 
 #[tauri::command]
 fn notify(title: String, body: String) {
+    // osascript is macOS-only; elsewhere notifications go through
+    // tauri-plugin-notification from the webview (ipc.ts), not this.
+    if !cfg!(target_os = "macos") {
+        return;
+    }
     let script = format!(
         r#"display notification "{b}" with title "{t}" sound name "Glass""#,
         b = body.replace('"', "'"),
@@ -20797,7 +20865,8 @@ fn run_capture_command_blocking(
     agent_id: Option<&str>,
     docker: bool,
 ) -> Result<String, String> {
-    let mut c = crate::proc_ctl::command("sh");
+    // Git Bash's own `bash` on Windows (see script_bash); `sh` elsewhere.
+    let mut c = crate::proc_ctl::command(if cfg!(windows) { shell_env::script_bash() } else { "sh".into() });
     // `-c`, not `-lc`: the login env is injected below, and re-sourcing the
     // profile chain on top of it would only re-strip PATH on some setups.
     c.args(["-c", cmd]).current_dir(cwd);
@@ -20858,7 +20927,7 @@ fn discovery_dismiss(window: tauri::Window, path: String, dismissed: bool) -> Re
     // symlinked or non-normalized input still lands on the same key. A deleted
     // repo can't canonicalize; fall back to the raw path so a stale entry is
     // still removable.
-    let canon = fs::canonicalize(&path)
+    let canon = dunce::canonicalize(&path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or(path);
     let mut s = load_settings_in(&window_profile(&window));
@@ -21133,7 +21202,7 @@ fn discover_repos_inner(
     let push_repo = |path: &PathBuf,
                      out: &mut Vec<(DiscoveredRepo, std::time::SystemTime)>,
                      seen: &mut std::collections::HashSet<String>| {
-        let canon = fs::canonicalize(path).unwrap_or(path.clone());
+        let canon = dunce::canonicalize(path).unwrap_or(path.clone());
         let path_str = canon.to_string_lossy().into_owned();
         if !seen.insert(path_str.clone()) { return; } // already discovered
         let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
@@ -22895,7 +22964,7 @@ pub fn run() {
             pty_spawn, pty_write, pty_resize, pty_kill,
             procmon_start, procmon_sample, procmon_stop, procmon_signal, procmon_open_window,
             lsp_offer, lsp_catalog, lsp_install, lsp_install_zuban, lsp_check_update, lsp_update, lsp_start, lsp_send, lsp_stop, lsp_reap_foreign, lsp_list,
-            notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, tasks_path_conflicts, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
+            notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             docker_check, docker_image_status, docker_get_dockerfile, docker_default_dockerfile, docker_set_dockerfile, docker_build_image, docker_agent_dirs, docker_command_preview,
             automation::automation_result,
@@ -24557,7 +24626,7 @@ mod tests {
                 Some(&account),
             );
             assert!(
-                spec.mounts.iter().any(|m| m.host.ends_with("/claude/work") && m.container == "/root/.claude"),
+                spec.mounts.iter().any(|m| m.host.replace('\\', "/").ends_with("/claude/work") && m.container == "/root/.claude"),
                 "the container must get the ACCOUNT's config dir: {:?}", spec.mounts,
             );
         });
@@ -24762,7 +24831,7 @@ mod tests {
             let env = crate::account_login_env(None, "claude", &agents, LoginRealm::Host);
             assert_eq!(env.len(), 1);
             assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
-            assert!(env[0].1.ends_with("logins/claude/work"), "{}", env[0].1);
+            assert!(env[0].1.replace('\\', "/").ends_with("logins/claude/work"), "{}", env[0].1);
             // And the directory is created, so the agent's first write cannot
             // fail on a missing parent.
             assert!(Path::new(&env[0].1).is_dir());
@@ -24777,7 +24846,7 @@ mod tests {
             let agents = vec![agent_with("agy", &["Work"], Some("Work"))];
             let env = crate::account_login_env(None, "agy", &agents, LoginRealm::Host);
             let home = env.iter().find(|(k, _)| k == "GEMINI_CLI_HOME").expect("no GEMINI_CLI_HOME");
-            assert!(home.1.ends_with("logins/agy/work"), "{}", home.1);
+            assert!(home.1.replace('\\', "/").ends_with("logins/agy/work"), "{}", home.1);
             // ...and the SHAPE says the agent writes one level down, which is
             // the whole reason the variable gets the parent.
             assert!(matches!(
@@ -24804,7 +24873,7 @@ mod tests {
             let agents = vec![agent_with("claude", &[], None), clone];
             let env = crate::account_login_env(None, "next-claude", &agents, LoginRealm::Host);
             assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR", "a clone must use its base's variable");
-            assert!(env[0].1.contains("logins/next-claude/work"), "{}", env[0].1);
+            assert!(env[0].1.replace('\\', "/").contains("logins/next-claude/work"), "{}", env[0].1);
         });
     }
 
@@ -24869,7 +24938,7 @@ mod tests {
             let agents = vec![a];
             let env = crate::account_login_env(None, "claude", &agents, LoginRealm::Host);
             assert_eq!(env.len(), 1);
-            assert!(env[0].1.ends_with("logins/claude/work"), "{}", env[0].1);
+            assert!(env[0].1.replace('\\', "/").ends_with("logins/claude/work"), "{}", env[0].1);
         });
     }
 
@@ -24887,7 +24956,7 @@ mod tests {
             assert_eq!(agents[0].adopted_account, None);
             // Work still relocates, as it always did.
             let env = crate::account_login_env(None, "claude", &agents, LoginRealm::Host);
-            assert!(env[0].1.ends_with("logins/claude/work"), "{}", env[0].1);
+            assert!(env[0].1.replace('\\', "/").ends_with("logins/claude/work"), "{}", env[0].1);
         });
     }
 
@@ -25168,6 +25237,7 @@ mod tests {
         assert_eq!(reply["result"], serde_json::json!([null, null]));
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn termics_own_zuban_is_the_last_resort_not_the_first() {
         // A project's own copy, then the user's, then termic's. Anything else
@@ -25552,6 +25622,7 @@ mod tests {
         assert!(args.is_empty(), "ruby-lsp takes no arguments: {args:?}");
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn a_project_setting_is_layered_over_termics_own_answer() {
         // The user's block wins, key by key, without erasing the interpreter
@@ -25638,6 +25709,7 @@ mod tests {
         assert!(reply.get("error").is_none());
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn python_gets_the_checkouts_interpreter_and_everything_else_gets_null() {
         // pyright and basedpyright find the interpreter through
@@ -25785,6 +25857,7 @@ mod tests {
         assert!(lsp_resolve_server(dir.path(), "hcl").is_none());
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn every_pinned_server_names_a_digest_and_a_payload() {
         // A pin with an empty digest would download and run an unverified
@@ -25832,6 +25905,7 @@ mod tests {
         assert!(lsp_unpack_zip(b"not a zip", &staging, "terraform-ls").is_err());
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn terraform_download_uses_the_tested_pin_without_a_release_api() {
         let spec = lsp_install_spec("terraform").unwrap();
@@ -25939,6 +26013,7 @@ mod tests {
         assert!(lsp_candidate_runs(good.to_str().unwrap(), &["--version"]));
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn the_checkouts_own_toolchain_wins_over_path() {
         // A repo pinning its own TypeScript must be the one driven, or
@@ -25986,7 +26061,7 @@ mod tests {
         // `docker-agents/muse/local/share/muse`, which is exactly what
         // `host_subpath_for("/root/.local/share/muse")` produces (pinned in
         // docker.rs's own test).
-        assert!(dock.ends_with("docker-agents/muse/local/share"), "got {dock}");
+        assert!(dock.replace('\\', "/").ends_with("docker-agents/muse/local/share"), "got {dock}");
 
         // An agent with no `.local/share` state dir is left alone rather than
         // pointed at a directory that does not exist.
@@ -26007,6 +26082,7 @@ mod tests {
         assert_eq!(out, "ses_abc123");
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn capture_sees_the_login_shell_path() {
         // The regression: a CLI installed outside the launchd PATH (opencode
@@ -27191,7 +27267,7 @@ mod tests {
         // about WHICH path is missing (GH #250).
         let ws = tempdir().unwrap();
         let err = safe_task_path(ws.path(), "docs/gone").unwrap_err();
-        assert!(err.contains("docs/gone"), "{err}");
+        assert!(err.replace('\\', "/").contains("docs/gone"), "{err}");
         assert!(err.contains("os error 2"), "{err}");
     }
 
@@ -27577,6 +27653,7 @@ mod tests {
         assert!(split_browser_command("").unwrap().is_empty());
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn browser_program_exists_finds_a_path_and_a_path_lookup() {
         // An absolute path to something that is really there, and a bare name
@@ -27908,6 +27985,7 @@ mod tests {
             }
         }
 
+        #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
         #[test]
         fn resolution_returns_the_path_to_launch_not_just_a_yes() {
             // The bug this pins: answering only "it exists somewhere on the
@@ -27927,6 +28005,7 @@ mod tests {
             assert_eq!(resolve_external_app("/nope/termic-no-such-editor-xyz"), None);
         }
 
+        #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
         #[test]
         fn resolution_returns_a_full_path_from_a_dir_only_a_shell_rc_exports() {
             // The reachable Linux case: an editor in a directory the login
@@ -31950,5 +32029,32 @@ mod agents_save_account_fields_tests {
         carry_account_fields(&[stored], &mut incoming);
 
         assert!(incoming.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod windows_port_tests {
+    use super::*;
+
+    #[test]
+    fn plain_names_refuse_separators_and_dot_dirs() {
+        assert!(is_plain_name("api"));
+        assert!(is_plain_name("my-task.v2"));
+        for bad in ["", ".", "..", "a/b", "../x"] {
+            assert!(!is_plain_name(bad), "{bad:?} must be refused");
+        }
+        // `..\x` would rename outside the directory on Windows.
+        assert_eq!(is_plain_name("..\\x"), !cfg!(windows));
+        assert_eq!(is_plain_name("C:x"), !cfg!(windows));
+    }
+
+    #[test]
+    fn absolute_locations_include_tilde_and_the_platform_root() {
+        assert!(is_absolute_location("/wt"));
+        assert!(is_absolute_location("~"));
+        assert!(is_absolute_location("~/wt"));
+        assert!(!is_absolute_location("wt"));
+        // A drive path is absolute on Windows only, where it is a real root.
+        assert_eq!(is_absolute_location("D:\\wt"), cfg!(windows));
     }
 }

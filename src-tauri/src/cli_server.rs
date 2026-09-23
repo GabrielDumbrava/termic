@@ -3527,17 +3527,27 @@ pub(crate) fn resolve_by_name<'a>(
 }
 
 fn canon(p: &str) -> String {
-    std::fs::canonicalize(p)
+    dunce::canonicalize(p)
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|_| p.to_string())
 }
 
 fn under(path: &str, base: &str) -> bool {
+    // Windows paths use `\`, may arrive with `/` from a POSIX-ish shell,
+    // and are case-insensitive: normalize both sides before the prefix test.
+    if cfg!(windows) {
+        let norm = |s: &str| s.replace('/', "\\").to_lowercase();
+        return under_sep(&norm(path), norm(base).trim_end_matches('\\'), b'\\');
+    }
+    under_sep(path, base, b'/')
+}
+
+fn under_sep(path: &str, base: &str, sep: u8) -> bool {
     !base.is_empty()
         && (path == base
             || (path.len() > base.len()
                 && path.starts_with(base)
-                && path.as_bytes()[base.len()] == b'/'))
+                && path.as_bytes()[base.len()] == sep))
 }
 
 /// cwd resolution, worktree first then longest project-path prefix
@@ -7718,6 +7728,7 @@ mod tests {
 
     /// Appending twice is the failure this has to prevent, and "twice" has
     /// more spellings than our own.
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn an_rc_that_already_has_the_dir_is_left_alone() {
         let home = dirs::home_dir().unwrap_or_default();
@@ -7829,6 +7840,7 @@ mod tests {
         assert_eq!(reconcile_target("termic", Some(cur.clone()), &legacy), Some(cur));
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn symlink_atomic_replaces_without_a_gap() {
         let tmp = tempfile::tempdir().unwrap();

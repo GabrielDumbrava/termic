@@ -51,6 +51,7 @@ import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
 import { delegatedTitle } from "@/lib/delegatedWork";
+import { FILE_MANAGER } from "@/lib/openExternal";
 
 /** Pick a default name for a freshly-created task (repo-root OR worktree).
  *  Format: "<agent>-N" where N is the next unused index for that CLI among
@@ -1586,7 +1587,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   )}
                   <ContextMenuItem onSelect={() => openPath(p.root_path).catch(() => {})}>
                     <FolderOpen />
-                    Reveal in Finder
+                    Reveal in {FILE_MANAGER}
                   </ContextMenuItem>
                   <ContextMenuItem onSelect={() => copyToClipboard(p.root_path, "path")}>
                     <Copy />

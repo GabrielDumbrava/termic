@@ -22,3 +22,21 @@ export let SEATBELT_AVAILABLE: boolean = IS_MAC;
 export function setSeatbeltAvailableForTests(v: boolean): void {
   SEATBELT_AVAILABLE = v;
 }
+
+/** Window-drag regions, macOS only.
+ *
+ *  On macOS the title bar is hidden (an overlay title bar with traffic
+ *  lights), so the app's own bar, and a dialog's backdrop, have to move the
+ *  window. Windows keeps its native title bar, so none of that is needed,
+ *  and it would do harm: WebView2 honours `-webkit-app-region: drag` (wry
+ *  enables non-client region support), which turns every covered element
+ *  into window caption, and a dialog's full-screen backdrop would swallow
+ *  every click in the dialog. Spread `dragRegion()` where the macOS build
+ *  wants a drag surface, `noDragRegion()` where it carves one out. */
+export function dragRegion(): { "data-tauri-drag-region"?: boolean; style?: Record<string, string> } {
+  return IS_MAC ? { "data-tauri-drag-region": true, style: { WebkitAppRegion: "drag" } } : {};
+}
+
+export function appRegionStyle(v: "drag" | "no-drag"): Record<string, string> {
+  return IS_MAC ? { WebkitAppRegion: v } : {};
+}

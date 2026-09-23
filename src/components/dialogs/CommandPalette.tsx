@@ -25,7 +25,7 @@ import { readRecents, recentIds, recordRecent } from "@/lib/paletteRecent";
 import { usePrefs, type BuiltinThemeMode, type ThemeMode } from "@/store/prefs";
 import { useUpdate } from "@/store/update";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
-import { bindingGlyphs, type ShortcutId } from "@/lib/shortcuts";
+import { bindingGlyphs, type ShortcutId, glyphLabel, IS_MAC } from "@/lib/shortcuts";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import { taskSetYolo, openPath, procmonOpenWindow } from "@/lib/ipc";
 import { profileOpen } from "@/lib/ipc";
@@ -782,7 +782,7 @@ export function CommandPalette() {
                         // Plain gray glyph text on the right (Conductor-style),
                         // not boxed keycaps.
                         <span className="shrink-0 text-[12px] tracking-wide text-[var(--color-fg-faint)]">
-                          {glyphs.join("")}
+                          {IS_MAC ? glyphs.join("") : glyphs.map(glyphLabel).join("+")}
                         </span>
                       )}
                     </button>

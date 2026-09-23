@@ -107,6 +107,10 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_Threading",
   "Win32_System_Diagnostics_ToolHelp",
 ] }
+# WebView2's settings object, to switch off its browser accelerator keys
+# (lib.rs `disable_browser_accelerators`). Both are what wry itself uses.
+webview2-com = "0.38"
+windows-core = "0.61"
 
 # macOS-only: raw Objective-C bridge used to round the window's content
 # layer on macOS Tahoe (26+) so the WKWebView corners match the system's

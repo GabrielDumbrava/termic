@@ -14,7 +14,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFile
 // invasive, flake-prone app-side port→datadir mapping. Stability wins.
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
-const appBinary = path.join(repoRoot, "src-tauri", "target", "debug", "termic");
+const appBinary = path.join(repoRoot, "src-tauri", "target", "debug", process.platform === "win32" ? "termic.exe" : "termic");
 /** Exported so specs that need the control socket agree with the launcher. */
 export const dataDir = path.join(repoRoot, ".e2e", "profile");
 /** Where `TERMIC_E2E_TIMING=1` writes per-test durations. */

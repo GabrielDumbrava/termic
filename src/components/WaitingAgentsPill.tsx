@@ -9,7 +9,7 @@ import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
 import { Bell } from "lucide-react";
-import { bindingGlyphs } from "@/lib/shortcuts";
+import { bindingGlyphs, bindingText } from "@/lib/shortcuts";
 import { waitingCount, jumpToNextWaiting } from "@/lib/waitingAgents";
 
 export function WaitingAgentsPill() {
@@ -23,7 +23,7 @@ export function WaitingAgentsPill() {
 
   if (!settled || count < 1) return null;
 
-  const glyphs = bindingGlyphs(binding).join("");
+  const glyphs = bindingText(binding);
   const label = `Jump to next waiting agent${glyphs ? ` (${glyphs})` : ""}`;
 
   return (

@@ -30,6 +30,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import * as ipc from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { showDragGhost, moveDragGhost, hideDragGhost } from "@/lib/dragGhost";
+import { useApp } from "@/store/app";
+import { shellEscapePath, terminalPathText } from "@/lib/osPath";
 
 // Per-terminal drop metadata. We store getters (not bare values) so a Restart
 // that mints a fresh pty id — or a sandbox toggle that flips mid-session — is
@@ -126,7 +128,7 @@ export function startPathDrag(
     if (!target || !ptyId) return;   // released outside a terminal, or its PTY exited
     // No sandbox prompt, unlike a Finder drop: the path lives inside the task
     // worktree, which the seatbelt profile already grants.
-    writePaths(ptyId, [pathForTerminal(path, target.taskId)]);
+    writePaths(ptyId, [pathForTerminal(path, target.taskId)], target.taskId);
   };
 
   // Escape aborts, and so does a pointercancel (WKWebView can interrupt a
@@ -172,18 +174,19 @@ function swallowNextClick(): void {
 // exact shape the agent CLIs already receive when you drag a screenshot into
 // iTerm, so spaces / parens / $ / & / etc. survive verbatim into the prompt
 // (or into a plain shell, where the escaping is also correct).
-export function shellEscapePath(p: string): string {
-  return p.replace(/[^A-Za-z0-9._/-]/g, "\\$&");
-}
+export { shellEscapePath };
 
 function parentDir(p: string): string {
-  const i = p.lastIndexOf("/");
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return i > 0 ? p.slice(0, i) : p;
 }
 
-// Write space-joined escaped paths into the PTY, as if typed at the prompt.
-function writePaths(ptyId: string, paths: string[]): void {
-  const text = paths.map(shellEscapePath).join(" ") + " ";
+// Write space-joined paths into the PTY, as if typed at the prompt: escaped
+// for a POSIX shell, quoted for a Windows one, and as the container sees
+// them for a Docker task (terminalPathText).
+function writePaths(ptyId: string, paths: string[], taskId?: string): void {
+  const docker = !!taskId && !!useApp.getState().tasks.find(t => t.id === taskId)?.docker_sandbox_enabled;
+  const text = paths.map(p => terminalPathText(p, docker)).join(" ") + " ";
   ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(text))).catch(() => {});
 }
 
@@ -249,7 +252,7 @@ export async function initTerminalDropHandler(): Promise<void> {
     // Unsandboxed terminals (scratch shell, non-sandboxed agents): insert the
     // raw path immediately, exactly like macOS Terminal. No prompt.
     if (!target.sandboxed()) {
-      writePaths(ptyId, paths);
+      writePaths(ptyId, paths, target.taskId);
       return;
     }
 
@@ -275,7 +278,7 @@ async function handleSandboxedDrop(ptyId: string, taskId: string, paths: string[
       try { staged.push(await ipc.terminalStageFile(taskId, src)); }
       catch (e) { useUI.getState().pushToast(`Couldn't stage ${src}: ${e}`, "error"); }
     }
-    if (staged.length > 0) writePaths(ptyId, staged);
+    if (staged.length > 0) writePaths(ptyId, staged, taskId);
     return;
   }
 
@@ -290,7 +293,7 @@ async function handleSandboxedDrop(ptyId: string, taskId: string, paths: string[
     try { await ipc.taskSandboxAddAllowedPath(taskId, path); added++; }
     catch (e) { useUI.getState().pushToast(`Couldn't allow ${path}: ${e}`, "error"); }
   }
-  writePaths(ptyId, paths);
+  writePaths(ptyId, paths, taskId);
   if (added > 0) {
     useUI.getState().pushToast(
       "Path allowed. Restart the agent for the sandbox to pick it up.",

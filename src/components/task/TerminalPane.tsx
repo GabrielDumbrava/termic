@@ -58,7 +58,7 @@ import { TerminalFindBar } from "@/components/task/TerminalFindBar";
 import { isTerminalFindCombo } from "@/lib/terminalFind";
 import * as ipc from "@/lib/ipc";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
-import { loginShell, loginShellArgs } from "@/lib/loginShell";
+import { commandShell, loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, spawnResumeShape, resumeIdArgsForCli, resumePickerArgsForCli, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS, STICKY_DONE_MS, ATTENTION_ECHO_MS, builtinBaseId, BUILTIN_OUTPUT_SIGNALS, resolveAgent } from "@/lib/agents";
 import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
@@ -2532,7 +2532,11 @@ const captureArmedRef = useRef(false);
         // the user's login shell ($SHELL, falling back to bash/fish/sh),
         // mirroring the AuxTerminal scratch shell. Hard-coding zsh here
         // locked out users without it (#13).
-        const userShell = isAgent ? "" : await loginShell();
+        // A tab that RUNS a command gets commandShell (Git Bash on Windows,
+        // since those commands are POSIX shell); a bare shell tab gets the
+        // user's own interactive shell.
+        const runsCommand = (isCustom && !!tab.command) || isRegistryTerminal;
+        const userShell = isAgent ? "" : await (runsCommand ? commandShell() : loginShell());
         if (cancelled) return;
         const spawnCmd = isAgent ? spawnCommandForCli(tab.cli) : userShell;
         // Custom / registry terminal: run the launch command, then drop

@@ -26,7 +26,7 @@ import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
-import { loginShell } from "@/lib/loginShell";
+import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
@@ -245,7 +245,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       if (cancelled) return;
       try {
         const { id: ptyId } = await ipc.ptySpawn({
-          cwd: taskPath, cmd: shell, args: ["-l"],
+          cwd: taskPath, cmd: shell, args: loginShellArgs(shell),
           // Signal terminal theme so prompts / status bars that honor
           // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right
           // colors for the current chrome.

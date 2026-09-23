@@ -34,7 +34,7 @@ import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { useFileViewed, useIsViewed } from "@/store/fileViewed";
 import { useReviewComments } from "@/store/reviewComments";
-import { bindingMatches, bindingGlyphs } from "@/lib/shortcuts";
+import { bindingMatches, bindingGlyphs, bindingText } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { Button } from "@/components/ui/Button";
@@ -136,7 +136,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
   // Resolved (user-overridable) bindings for the contextual Git shortcuts.
   const stageBinding = usePrefs(s => s.shortcuts["stage-file"]);
   const discardBinding = usePrefs(s => s.shortcuts["discard-file"]);
-  const stageGlyph = bindingGlyphs(stageBinding).join("");
+  const stageGlyph = bindingText(stageBinding);
 
   const [activeRepoDir, setActiveRepoDir] = useState<string>("");
   // Dir of a repo the user just committed. Its pill stays visible and focused

@@ -37,11 +37,15 @@ jobs:
         run: cargo test --workspace --lib
 
   installer:
-    # An unsigned NSIS installer for manual testing, uploaded as an artifact.
-    # Not signed and not an updater release: createUpdaterArtifacts is off
-    # because the updater signing key only exists in the release workflow.
-    name: Windows installer (unsigned, for testing)
+    # `make install` end to end, the way a Windows developer runs it from Git
+    # Bash: build the NSIS installer, install it silently per user, launch
+    # it. Then check the app is actually running, and uninstall. The
+    # installer is uploaded for manual testing (unsigned, no updater).
+    name: Windows make install (+ unsigned installer)
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
@@ -53,12 +57,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: GNU make
+        run: choco install make -y --no-progress
       - run: npm ci
-      - name: Build the NSIS installer
-        shell: bash
-        run: npm run tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - run: make doctor
+      - name: make install
+        run: make install
       - uses: actions/upload-artifact@v4
         with:
           name: termic-windows-x64-setup
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
+      - name: The installed app is running
+        run: |
+          sleep 15
+          powershell -NoProfile -Command "Get-Process | Where-Object { \$_.Path -like \"\$env:LOCALAPPDATA\\Termic\\*\" } | Format-Table Id, Path -AutoSize"
+          powershell -NoProfile -Command "if (-not (Get-Process | Where-Object { \$_.Path -like \"\$env:LOCALAPPDATA\\Termic\\*\" })) { exit 1 }"
+      - name: make uninstall
+        if: always()
+        run: |
+          powershell -NoProfile -Command "Get-Process | Where-Object { \$_.Path -like \"\$env:LOCALAPPDATA\\Termic\\*\" } | Stop-Process -Force" || true
+          make uninstall

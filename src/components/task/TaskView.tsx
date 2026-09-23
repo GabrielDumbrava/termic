@@ -44,6 +44,7 @@ import { dirnamePosix, MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
 import { isSvgPath, keepsDisplayWhenHidden, previewKindForPath } from "@/lib/previewPaths";
 import { restoreScratchTabs } from "@/lib/scratchTabs";
 import { CodeIntelChip } from "./CodeIntelChip";
+import { FILE_MANAGER } from "@/lib/openExternal";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
@@ -125,7 +126,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
         </button>
         <button
           onClick={() => revealPath(tab.path).catch(() => {})}
-          title="Reveal in Finder"
+          title={`Reveal in ${FILE_MANAGER}`}
           className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         >
           <FolderOpen className="h-3.5 w-3.5" />

@@ -736,6 +736,43 @@ pub fn which_in(bin: &str, path: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// The bash that runs `.termic.yaml` setup / run / archive scripts and
+/// agent session-capture commands (`bash -lc <script>`).
+///
+/// Unix: `bash` from PATH. Windows: Git for Windows' own bash, located
+/// explicitly. A bare `bash` there is a trap: Git's installer puts only
+/// `Git\cmd` on PATH, so the lookup falls through to
+/// `System32\bash.exe`, which is the WSL launcher, and the script runs
+/// inside a Linux distro (or fails with "no distribution installed").
+/// Scripts in `.termic.yaml` are committed to user repos and written as
+/// POSIX shell, so Git Bash is also what keeps one script dialect across
+/// a team's Macs and Windows machines.
+pub fn script_bash() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(p) = git_bash() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("bash")
+}
+
+/// `...\Git\cmd\git.exe` (or `...\Git\bin\git.exe`,
+/// `...\Git\mingw64\bin\git.exe`) -> `...\Git\bin\bash.exe`.
+#[cfg(windows)]
+fn git_bash() -> Option<std::path::PathBuf> {
+    static BASH: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    BASH.get_or_init(|| {
+        let git = which("git")?;
+        git.ancestors()
+            .skip(1)
+            .take(3)
+            .flat_map(|root| [root.join("bin").join("bash.exe"), root.join("usr").join("bin").join("bash.exe")])
+            .find(|p| p.is_file())
+    })
+    .clone()
+}
+
 /// `which_in` against the resolved spawn PATH.
 pub fn which(bin: &str) -> Option<std::path::PathBuf> {
     which_in(bin, &resolved_path())
@@ -883,6 +920,7 @@ mod tests {
         assert_eq!(path_dirs(&join_path_dirs(&dirs)), dirs);
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn fallback_path_adds_homebrew_when_missing() {
         let result = fallback_path("/usr/bin:/bin");
@@ -902,6 +940,7 @@ mod tests {
         assert!(result.starts_with("/usr/bin:/bin"), "original path must be at the start");
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn fallback_path_empty_current_path() {
         let result = fallback_path("");
@@ -920,6 +959,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn fallback_path_adds_nix_profile_dirs() {
         let extras = fallback_extras("/Users/x", "x");
@@ -933,6 +973,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn fallback_path_adds_system_nix_dirs_without_home_or_user() {
         // A GUI process can launch with neither set. The two system-wide
@@ -942,6 +983,7 @@ mod tests {
         assert!(extras.iter().any(|p| p == "/nix/var/nix/profiles/default/bin"));
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn fallback_path_adds_xdg_nix_profile_dir() {
         // use-xdg-base-directories (nix 2.14+) moves the per-user
@@ -950,6 +992,7 @@ mod tests {
         assert!(extras.iter().any(|p| p == "/Users/x/.local/state/nix/profile/bin"));
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn fallback_path_prefers_nix_over_homebrew() {
         // A nix-darwin login PATH puts the nix profiles ahead of
@@ -977,6 +1020,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn fallback_path_keeps_nix_dirs_in_nix_darwin_order() {
         let extras = fallback_extras("/Users/x", "x");

@@ -2068,7 +2068,7 @@ fn compute_home_denies(home: &str, user_allowed: &[String], runtime: &[String]) 
 /// Seatbelt evaluates the *canonical* path; a worktree symlinked
 /// somewhere else would otherwise fail writes through the symlink.
 pub(crate) fn canonicalize_or_keep(p: &str) -> String {
-    fs::canonicalize(p)
+    dunce::canonicalize(p)
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|_| p.to_string())
 }
@@ -2617,6 +2617,7 @@ mod tests {
 
     // ── builtin_runtime_paths ─────────────────────────────────────────
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn the_login_store_allow_survives_the_control_plane_deny() {
         // ORDER, not presence. The control-plane deny covers the whole termic

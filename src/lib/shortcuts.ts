@@ -510,6 +510,19 @@ export function bindingGlyphs(b: Binding): string[] {
   return out;
 }
 
+/** A binding as one string, for tooltips and hints: the glyph run on macOS
+ *  (`⌥⌘P`), the Windows / Linux convention elsewhere (`Ctrl+Alt+P`), where
+ *  ⌘ and ⌥ are keys nobody has. */
+export function bindingText(b: Binding): string {
+  const g = bindingGlyphs(b);
+  return IS_MAC ? g.join("") : g.map(glyphLabel).join("+");
+}
+
+/** One chip's label: the glyph on macOS, the key's name elsewhere. */
+export function displayGlyph(glyph: string): string {
+  return IS_MAC ? glyph : glyphLabel(glyph);
+}
+
 /** Stable signature for conflict detection (two ids sharing one = a clash). */
 export function bindingSignature(b: Binding): string {
   return `${b.cmd ? "C" : ""}${b.shift ? "S" : ""}${b.alt ? "A" : ""}:${b.key}`;

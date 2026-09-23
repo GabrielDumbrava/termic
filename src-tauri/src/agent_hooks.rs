@@ -2852,7 +2852,18 @@ pub fn remove(target: &Target) -> Result<(), String> {
 /// that reaches termic; see `event_for` / `uses_terminal_sequence`.
 pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin", "pi", "copilot", "muse"];
 
+/// Hooks report by writing an OSC sequence straight to the agent's PTY
+/// slave (`TERMIC_PTY`, from `ptsname`). Windows' ConPTY has no slave
+/// device to name, so on Windows the scripts would all exit at their first
+/// line and report nothing, while the agent's config carried entries that
+/// looked installed. Until a Windows transport exists (docs/ideas/windows.md,
+/// "Agent hooks"), hooks are not offered there at all.
+pub(crate) const HOOKS_AVAILABLE: bool = cfg!(unix);
+
 fn check_supported(agent_id: &str) -> Result<(), String> {
+    if !HOOKS_AVAILABLE {
+        return Err("agent hooks are not available on Windows yet".into());
+    }
     // A duplicated agent is supported when what it was cloned FROM is. It runs
     // the same binary and reads the same config shape, and the only reason it
     // was rejected before is that this list holds built-in names.
@@ -3044,7 +3055,7 @@ pub fn agent_hooks_plan(agent_id: String) -> Result<HookPlan, String> {
 #[tauri::command]
 pub fn agent_hooks_status(agent_id: String) -> AgentHookStatus {
     AgentHookStatus {
-        supported: SUPPORTED.contains(&base_of(&agent_id).as_str()),
+        supported: HOOKS_AVAILABLE && SUPPORTED.contains(&base_of(&agent_id).as_str()),
         host: status(&Target::Host(agent_id.clone())),
         docker: status(&Target::Docker(agent_id.clone())),
         agent_id,
@@ -3121,6 +3132,9 @@ pub(crate) fn should_sync(c: SyncCheck) -> bool {
 #[tauri::command(async)]
 pub fn agent_hooks_sync() -> Vec<String> {
     let mut updated = Vec::new();
+    if !HOOKS_AVAILABLE {
+        return updated;
+    }
     // Every agent in the registry, not just the built-in names: a clone is
     // exactly as entitled to a working set of hooks as what it was copied from,
     // and it is the clone whose config dir may have moved.
