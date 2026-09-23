@@ -69,28 +69,17 @@ next key (Alt+arrow bindings).
 
 ## 2. Agent hooks
 
-Not offered on Windows (`agent_hooks::HOOKS_AVAILABLE`). The ready / working
-/ done signals, the `/clear` resume fix and the usage line all come from
-them, so this is the biggest missing piece.
+Done for claude: a per-PTY named pipe as `TERMIC_PTY` (`hook_pipe.rs`), and
+the generated scripts write through `termic hook-emit` on Windows, because
+neither Git Bash's `>` nor Node's append mode can open a named pipe
+(measured). An end-to-end test runs claude's real scripts through Git Bash on
+the Windows runner.
 
-Today a hook script `printf`s an OSC to `$TERMIC_PTY`, the PTY slave path
-from `ptsname` (`lib.rs`, `pty_slave_path`; `None` off unix). ConPTY has no
-slave path, and M1 rules out the two console shortcuts (`CONOUT$` needs an
-unhidden hook, `/dev/tty` does not exist). The design:
-
-- Per spawn, a PTY-scoped nonce (`TERMIC_PTY_KEY`; safe in env, it can only
-  inject parser signals into one pane).
-- `termic hook-emit <body>` (the bundled CLI, already on the agent's PATH and
-  in `TERMIC_CLI`) sends the OSC body over the control plane, authenticated
-  by that nonce; the server feeds it into that pane's output exactly as if
-  the agent had printed it, so the frontend parser is unchanged.
-- The hook scripts keep their shape and swap the final `printf > $TERMIC_PTY`
-  for the CLI call when `TERMIC_PTY_KEY` is set. They run in whatever shell
-  the agent uses for hooks (Claude Code: Git Bash); for an agent that runs
-  them in cmd or PowerShell, register the CLI directly instead of a `.sh`.
-
-Docker tasks are unaffected: their hooks write to `/proc/1/fd/1` inside the
-container, relayed by `docker run -it`, and ConPTY passes that through.
+Left: the other agents. Their hook commands are registered as `.sh` paths,
+which only work if the agent runs hooks in Git Bash (M3). For an agent that
+uses cmd or PowerShell, register `bash.exe <script>` or the CLI directly.
+The opencode / pi JS plugins would need `fs.writeFileSync` (not append) or a
+spawn of `termic hook-emit`.
 
 ## 3. Processes
 

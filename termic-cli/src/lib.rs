@@ -16,6 +16,30 @@ use std::io::Read as _;
 use termic_proto as proto;
 use termic_proto::exit_code;
 
+/// `termic hook-emit <target>`: copy stdin (an agent hook's OSC report) to
+/// `target`, the terminal the hook reports to.
+///
+/// Exists for Windows, where `target` is the named pipe the app serves in
+/// place of a PTY slave (src-tauri/src/hook_pipe.rs): Git Bash's `>` cannot
+/// open a named pipe, and this opens it for writing the ordinary way. Also
+/// correct for a plain file or a tty on unix, though the scripts only use it
+/// on Windows. Exit 0 when written, 1 otherwise; never prints (a hook's
+/// output is the agent's to render).
+pub fn hook_emit(target: Option<&std::path::Path>) -> i32 {
+    use std::io::{Read, Write};
+    /// A report is a few OSC sequences; anything larger is not one.
+    const MAX: u64 = 64 * 1024;
+    let Some(target) = target else { return 1 };
+    let mut body = Vec::new();
+    if std::io::stdin().lock().take(MAX).read_to_end(&mut body).is_err() || body.is_empty() {
+        return 1;
+    }
+    match std::fs::OpenOptions::new().write(true).open(target) {
+        Ok(mut f) => i32::from(f.write_all(&body).and_then(|_| f.flush()).is_err()),
+        Err(_) => 1,
+    }
+}
+
 pub mod attach;
 pub mod client;
 pub mod output;

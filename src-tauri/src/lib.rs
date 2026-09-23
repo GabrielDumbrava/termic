@@ -38,6 +38,8 @@ mod sandbox;
 mod proxy;
 mod proc_ctl;
 mod fs_link;
+#[cfg(windows)]
+mod hook_pipe;
 mod repo_config;
 mod shell_env;
 mod automation;
@@ -4017,6 +4019,17 @@ fn pty_spawn(
     if let Some(path) = pty_slave_path(&pair.master) {
         cmd.env("TERMIC_PTY", path);
     }
+    // Windows: no slave device, so a named pipe stands in for it, served
+    // below and fed into this PTY's output (hook_pipe.rs). Created before the
+    // spawn so a startup hook finds it. Docker tasks keep /proc/1/fd/1.
+    #[cfg(windows)]
+    let hook_pipe = if is_docker { None } else { hook_pipe::HookPipe::create() };
+    #[cfg(windows)]
+    if let Some(p) = &hook_pipe {
+        cmd.env("TERMIC_PTY", p.env_path());
+        // Tells the hook scripts to write through `termic hook-emit`.
+        cmd.env("TERMIC_PTY_PIPE", "1");
+    }
 
     // Stop grok scanning ~/.claude/settings.json for hooks.
     //
@@ -4115,6 +4128,24 @@ fn pty_spawn(
     };
     #[cfg(not(target_os = "macos"))]
     let mut sudo_watch: Option<sudo_touchid::SudoWatch> = None;
+    // Serve the hook pipe into the same buffer and feed the reader fills.
+    #[cfg(windows)]
+    let hook_pipe_path = hook_pipe.map(|pipe| {
+        let path = pipe.env_path();
+        let buf_h = pty_buf.clone();
+        let feed_h = feed.clone();
+        pipe.serve(
+            reader_done.clone(),
+            Arc::new(move |bytes: &[u8]| {
+                buf_h.0.lock().extend_from_slice(bytes);
+                buf_h.1.notify_all();
+                if let Some(feed) = &feed_h {
+                    feed.push(bytes);
+                }
+            }),
+        );
+        path
+    });
     thread::spawn(move || {
         let mut buf = [0u8; 65536];
         loop {
@@ -4167,6 +4198,12 @@ fn pty_spawn(
             let _b = buf_r.0.lock();
             done_r.store(true, Ordering::Release);
             buf_r.1.notify_all();
+        }
+        // The hook pipe's accept loop waits for a client; one last empty
+        // connection lets it see `done` and exit with the PTY.
+        #[cfg(windows)]
+        if let Some(p) = &hook_pipe_path {
+            hook_pipe::wake(p);
         }
     });
 

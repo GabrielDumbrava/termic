@@ -111,6 +111,13 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
 - **Keys.** Ctrl stands in for Cmd, and shortcut hints read `Ctrl+Alt+P`.
   In a terminal, plain Ctrl+letter goes to the shell (Ctrl+P is readline's,
   not the file finder), and Ctrl+V pastes, as in every Windows terminal.
+- **Agent hooks.** There is no PTY slave to write to, so each PTY gets a
+  named pipe the app serves (`hook_pipe.rs`), exported as `TERMIC_PTY`;
+  whatever a hook writes there joins that PTY's output. Git Bash cannot open
+  a named pipe with `>`, so on Windows the generated scripts write through
+  `"$TERMIC_CLI" hook-emit "$TERMIC_PTY"` (`bound_emits`). Claude only for
+  now: its hooks run in Git Bash. An end-to-end test runs claude's real
+  scripts on the Windows runner.
 - **Editor.** A file whose line breaks are all CRLF is saved as CRLF.
 - **Language servers.** The pinned downloads have Windows x64 and arm64
   entries; a server in the checkout is looked up in `.venv\Scripts` and as
@@ -123,10 +130,9 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
 
 ## Not on Windows yet
 
-- **Agent hooks** (the ready / working / done signals and the usage line):
-  their transport writes to the PTY slave device, which ConPTY does not
-  have. Not offered on Windows; agent state falls back to output-based
-  detection.
+- **Agent hooks for agents other than claude.** Claude's hooks work (they
+  run in Git Bash). Which shell codex, gemini and the rest run hooks in on
+  Windows is unmeasured, so theirs are not offered yet.
 - **Installing `termic` onto PATH** from Settings. Agents inside Termic
   still get it.
 - **Activity monitor**, **PDF preview** (needs a CSP change), **code
