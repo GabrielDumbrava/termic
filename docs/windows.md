@@ -110,6 +110,12 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   In a terminal, plain Ctrl+letter goes to the shell (Ctrl+P is readline's,
   not the file finder), and Ctrl+V pastes, as in every Windows terminal.
 - **Editor.** A file whose line breaks are all CRLF is saved as CRLF.
+- **Language servers.** The pinned downloads have Windows x64 and arm64
+  entries; a server in the checkout is looked up in `.venv\Scripts` and as
+  npm's `.cmd` (`lsp_local_exe`).
+- **Names.** A task name never becomes a Windows reserved device name
+  (`con`, `nul`, `com1`...), on every OS, so it checks out everywhere.
+- **AltGr** never fires a Ctrl+Alt shortcut.
 - **Closing the window quits**, as Windows users expect. The macOS
   close-to-menu-bar behaviour is macOS-only.
 
@@ -121,8 +127,5 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   detection.
 - **Installing `termic` onto PATH** from Settings. Agents inside Termic
   still get it.
-- **Language-server downloads.** Servers on PATH work; the pinned downloads
-  have no Windows entries, and repo-local Python venvs and `node_modules`
-  shims use unix layouts.
 - **Activity monitor**, **PDF preview** (needs a CSP change), **code
   signing and updates**, and the **e2e suite** on Windows.

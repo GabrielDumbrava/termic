@@ -19024,11 +19024,13 @@ fn browser_program_exists(program: &str) -> bool {
     };
     #[cfg(not(unix))]
     let is_exec = |p: &std::path::Path| p.is_file();
-    if program.contains('/') {
+    if program.contains('/') || (cfg!(windows) && program.contains('\\')) {
         return is_exec(std::path::Path::new(program));
     }
     let Some(paths) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&paths).any(|dir| is_exec(&dir.join(program)))
+    // exe_candidates: on Windows `msedge` is `msedge.exe` (PATHEXT).
+    let names = shell_env::exe_candidates(program);
+    std::env::split_paths(&paths).any(|dir| names.iter().any(|n| is_exec(&dir.join(n))))
 }
 
 /// Validate a browser command template for the Settings UI. `Ok(())` for an
@@ -32217,5 +32219,13 @@ mod windows_port_tests {
         // Unix keeps the literal path.
         assert!(lsp_local_exe_for(d.path(), "node_modules/.bin/tsgo", false).unwrap().ends_with("/tsgo"));
         assert_eq!(lsp_local_exe_for(d.path(), ".venv/bin/ty", false), None);
+    }
+
+    #[test]
+    fn a_windows_browser_preset_path_is_checked_as_a_path() {
+        // The preset form: a quoted absolute path with spaces, backslashes kept.
+        let argv = browser_argv(r#""C:\Program Files\Google\Chrome\Application\chrome.exe" --incognito"#, "https://x/").unwrap();
+        assert_eq!(argv[0], r"C:\Program Files\Google\Chrome\Application\chrome.exe");
+        assert_eq!(argv[1], "--incognito");
     }
 }

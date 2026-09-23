@@ -24,14 +24,14 @@ grep for the symbol next to it.
 These decide designs below. Each is an afternoon on a Windows machine.
 Write the answer here, with how it was measured, and delete the question.
 
-**M1. Does ConPTY pass unknown OSC sequences through?** Decides agent hooks
-(section 2). portable-pty 0.8.1 creates the pseudoconsole without
-`PSEUDOCONSOLE_PASSTHROUGH_MODE` (`portable-pty-0.8.1/src/win/psuedocon.rs:86`)
-and prefers a `conpty.dll` shipped next to the app (`:54`). Test: spawn
-`cmd /c echo` of `ESC ] 777 ; notify ; a ; b BEL` through a portable-pty
-and dump what the master reads. Repeat with a current OpenConsole
-`conpty.dll` beside the binary, and with the passthrough flag patched in.
-Also check OSC 133 (prompt marks), which the terminal uses today.
+**M1. Answered: ConPTY passes OSC through.** Measured on the
+`windows-latest` runner (`src-tauri/examples/conpty_osc_probe.rs`, run by
+`.github/workflows/windows.yml`): OSC 777, OSC 9, OSC 133 and both
+terminators reach the app byte for byte through portable-pty 0.8.1's
+ConPTY, no passthrough flag or bundled `conpty.dll` needed. The same probe
+measures the hook path (a node parent spawning a child with piped stdio,
+the child writing to `CONOUT$`, or from Git Bash to `/dev/tty`); see the
+workflow log for the result, which decides section 2.
 
 **M2. Docker Desktop mounts** (the Docker port is built on these, untested):
 - does `-v C:\Users\u\x:/c/Users/u/x` parse on the Windows docker CLI, or
@@ -128,19 +128,10 @@ by `docker run -it`), which M1 also answers.
 
 ## 5. Language servers
 
-Servers already on PATH work. Missing:
-
-- Windows entries in `lsp_install_spec` (`lib.rs`): ty and rust-analyzer
-  ship `.zip` with an `.exe`, terraform-ls `_windows_amd64.zip`; tsgo's
-  asset name is unchecked. SHA-256 pins come from the release pages. The
-  installed binary must be `server.exe`, not `server`.
-- Repo-local servers use unix layouts: `.venv/bin/*` is `.venv\Scripts\*.exe`
-  on Windows, and `node_modules/.bin/tsgo` is an extensionless shell shim
-  (probe `.cmd` first). The tests pinning the unix layouts are
-  `#[cfg(unix)]` for now (`the_checkouts_own_toolchain_wins_over_path`,
-  `python_gets_the_checkouts_interpreter_and_everything_else_gets_null`,
-  `termics_own_zuban_is_the_last_resort_not_the_first`).
-- zuban's own venv (`Scripts\python.exe`, `py -3`).
+Done: pinned Windows downloads, and the Windows checkout layouts. Left:
+zuban's own venv installer (`Scripts\python.exe`, `py -3`), and the tests
+that pin the unix layouts are `#[cfg(unix)]`
+(`the_checkouts_own_toolchain_wins_over_path` and its neighbours).
 
 ## 6. Smaller gaps
 
@@ -149,24 +140,9 @@ Servers already on PATH work. Missing:
   cover it (`previewPaths.ts`). A CSP change: maintainer only
   (`src/lib/cspGuard.test.ts`).
 - **Activity monitor** (`procmon_other.rs` answers "unsupported").
-- Remaining macOS copy: hardcoded `⌘` strings (`TabBar.tsx`,
-  `RightPanel.tsx`, `EditCommandDialog.tsx`, `CustomCommandDialog.tsx`,
-  `ResumeOverrideDialog.tsx`, `closeTab.ts`, `TaskView.tsx`,
-  `PromptLibrarySection.tsx`, `ComparePanel.tsx`, `GitPanel.tsx`, the hints
-  in `shortcuts.ts`), "on your Mac" in `DockerSection.tsx`,
-  `sandboxSwitchCopy.ts`, `WelcomeDialog.tsx`, the CLI hint's "this Mac's
-  user".
-- AltGr: bail out of `bindingMatches` when
-  `e.getModifierState("AltGraph")`, so Ctrl+Alt bindings never fire from a
-  German or Polish AltGr key.
-- `slugify` lets `con`, `nul`, `aux`, `com1` through as task directory names;
-  creating the directory then fails. The Rust and TS slugify are pinned equal
-  by a test, so change both.
-- The Seatbelt-only UI that is still visible when a task has no Seatbelt at
-  all: the footer's deny chip and monitor, the command-palette entries.
-  They show nothing off macOS, but they should not render.
-- Browser presets for the preview browser (`previewBrowser.ts`) fall into
-  the Linux list on Windows.
+- Remaining macOS copy: the Settings sandbox text in `RepositorySection.tsx`
+  and `TaskSandboxDialog.tsx` describes Seatbelt, which Windows never shows
+  as a choice but still explains.
 - Tray icon: `icon_as_template(true)` is a macOS idea; check it is visible on
   a dark taskbar.
 
