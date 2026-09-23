@@ -37,30 +37,9 @@ help: ## Show this help (default target).
 # ─── setup ────────────────────────────────────────────────────────────
 
 ifdef IS_WINDOWS
-setup: ## One-shot dev env bootstrap (rust/node + npm install + cargo check).
-	@echo "→ Termic dev environment bootstrap (Windows)"
-	@if ! command -v cargo >/dev/null 2>&1; then \
-	    echo "  installing rustup + stable toolchain"; \
-	    winget install --silent --accept-package-agreements --accept-source-agreements Rustlang.Rustup; \
-	    echo "  ✗ open a NEW Git Bash so rustup is on PATH, then re-run make setup"; exit 1; \
-	else \
-	    echo "  ✓ cargo present ($$(cargo --version))"; \
-	fi
-	@if ! command -v node >/dev/null 2>&1; then \
-	    echo "  installing node 22"; \
-	    winget install --silent --accept-package-agreements --accept-source-agreements OpenJS.NodeJS.22; \
-	    echo "  ✗ open a NEW Git Bash so node is on PATH, then re-run make setup"; exit 1; \
-	else \
-	    echo "  ✓ node present ($$(node --version))"; \
-	fi
-	@echo "→ Installing npm packages"
-	@npm install
-	@echo "→ Seeding the e2e fixture profile"
-	@node scripts/e2e-seed.mjs || true
-	@echo "→ Pre-fetching Rust crate index (cargo check)"
-	@cd src-tauri && cargo check >/dev/null
-	@echo ""
-	@echo "✓ Setup complete. Try: make dev"
+setup: ## One-shot dev env bootstrap (build tools, rust, node, make via winget + npm install + cargo check).
+	@# Also runnable without make: bash scripts/setup-windows.sh
+	@bash scripts/setup-windows.sh
 else
 setup: ## One-shot dev env bootstrap (rust/node + npm install + cargo check).
 	@echo "→ Termic dev environment bootstrap"
@@ -122,7 +101,13 @@ doctor: ## Verify the dev env without installing anything (CI-friendly, exits no
 	        echo "  ✗ $$name: missing"; fail=1; \
 	    fi; \
 	}; \
-	if [ -z "$(IS_WINDOWS)" ]; then check brew brew --version; else check bash bash --version; check make make --version; fi; \
+	if [ -z "$(IS_WINDOWS)" ]; then check brew brew --version; else \
+	    check make make --version; check git git --version; \
+	    vsw="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"; \
+	    if [ -x "$$vsw" ] && [ -n "$$("$$vsw" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null)" ]; then \
+	        echo "  ✓ C++ build tools: present"; \
+	    else echo "  ✗ C++ build tools: missing"; fail=1; fi; \
+	fi; \
 	check rust cargo --version; \
 	check node node --version; \
 	if [ -d node_modules ]; then \

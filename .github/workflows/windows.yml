@@ -35,6 +35,13 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace --lib
+      # A measurement, not a gate: does ConPTY pass the escape sequences
+      # agent hooks and prompt marks rely on through to the app?
+      # (docs/ideas/windows.md, "Measure first", M1.)
+      - name: ConPTY escape-sequence passthrough (measurement)
+        working-directory: src-tauri
+        continue-on-error: true
+        run: cargo run --example conpty_osc_probe
 
   installer:
     # `make install` end to end, the way a Windows developer runs it from Git
@@ -59,7 +66,11 @@ jobs:
           workspaces: src-tauri
       - name: GNU make
         run: choco install make -y --no-progress
-      - run: npm ci
+      # The setup a developer runs on a fresh machine: it must find every
+      # tool the runner already has, install nothing, and still do the repo
+      # steps (npm install, cargo check).
+      - name: make setup
+        run: make setup
       - run: make doctor
       - name: make install
         run: make install

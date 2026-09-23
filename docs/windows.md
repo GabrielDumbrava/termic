@@ -9,32 +9,33 @@ still to do, and the measurements that decide how, is in
 
 ## Building it
 
-Everything runs from **Git Bash** (it comes with Git for Windows, which the
-app needs anyway). One-time setup:
+Everything runs from **Git Bash**, which comes with
+[Git for Windows](https://git-scm.com/download/win) (the app needs Git
+anyway). Then, in the clone:
 
-1. Admin PowerShell: enable long paths, then reboot.
+```sh
+bash scripts/setup-windows.sh    # or `make setup` once GNU make is installed
+```
 
-   ```powershell
-   New-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem `
-     -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
-   ```
+It installs whatever is missing through winget and skips what is there:
+the Visual Studio C++ build tools, WebView2, Rust (rustup), Node 22 and GNU
+make, picking each one up in the same run (no new shell needed). Then it sets
+`git config --global core.longpaths true`, runs `npm install`, seeds the e2e
+fixture and runs a first `cargo check`. `WITH_DOCKER=1` also installs Docker
+Desktop, for the Docker sandbox (use the WSL2 backend, Linux containers).
 
-   Optional: Settings, System, For developers, Developer Mode on. Without
-   it the app links directories with junctions and files with hard links
-   instead of symlinks (`src-tauri/src/fs_link.rs`), which works for
-   everything it links.
-2. Visual Studio Build Tools with the C++ workload:
-   `winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`
-3. `winget install Git.Git`, then in Git Bash:
-   `git config --global core.autocrlf false` and
-   `git config --global core.longpaths true`. (`.gitattributes` pins LF
-   for this repo regardless.)
-4. GNU make: `winget install ezwinports.make`.
-5. For Docker mode: Docker Desktop with the WSL2 backend, in Linux
-   containers mode (`wsl --install`, then `winget install Docker.DockerDesktop`).
-6. Then, in Git Bash, in the clone: `make setup`. It installs Rust and
-   Node 22 through winget if they are missing (open a new Git Bash when it
-   says so and run it again), then `npm install` and a first `cargo check`.
+It never elevates. Two machine-wide settings need an admin, so it checks
+them and prints the command instead:
+
+- **Windows long paths** (recommended: worktrees with `node_modules` or
+  `target` pass 260 characters). Admin PowerShell, then reboot:
+  `New-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force`
+- **Developer Mode** (optional). Without it the app links directories with
+  junctions and files with hard links instead of symlinks
+  (`src-tauri/src/fs_link.rs`), which works for everything it links.
+
+`make doctor` checks the result without installing anything. CI runs
+`make setup` on every push, on a runner that already has everything.
 
 Daily use is the same as on macOS:
 

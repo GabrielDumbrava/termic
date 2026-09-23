@@ -182,15 +182,13 @@ built and installed by CI on every push, but it is new and not yet used day
 to day. Docker mode is the sandbox on Windows; the macOS Seatbelt sandbox
 does not exist there.
 
-From Git Bash (it comes with [Git for Windows](https://git-scm.com/download/win)),
-with the [C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-and GNU make (`winget install ezwinports.make`) installed:
+From Git Bash (it comes with [Git for Windows](https://git-scm.com/download/win)):
 
 ```sh
 git clone https://github.com/simion/termic
 cd termic
-make setup      # rust + node through winget if missing, npm install, cargo check
-make install    # builds the NSIS installer, installs it per user, launches it
+bash scripts/setup-windows.sh   # installs build tools, Rust, Node, make via winget; npm install; cargo check
+make install                    # builds the NSIS installer, installs it per user, launches it
 ```
 
 The installer is unsigned, so SmartScreen warns on first run. Setup details,
