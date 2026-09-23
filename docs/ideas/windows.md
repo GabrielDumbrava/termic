@@ -24,14 +24,21 @@ grep for the symbol next to it.
 These decide designs below. Each is an afternoon on a Windows machine.
 Write the answer here, with how it was measured, and delete the question.
 
-**M1. Answered: ConPTY passes OSC through.** Measured on the
-`windows-latest` runner (`src-tauri/examples/conpty_osc_probe.rs`, run by
-`.github/workflows/windows.yml`): OSC 777, OSC 9, OSC 133 and both
-terminators reach the app byte for byte through portable-pty 0.8.1's
-ConPTY, no passthrough flag or bundled `conpty.dll` needed. The same probe
-measures the hook path (a node parent spawning a child with piped stdio,
-the child writing to `CONOUT$`, or from Git Bash to `/dev/tty`); see the
-workflow log for the result, which decides section 2.
+**M1. Answered.** Measured on the `windows-latest` runner
+(`src-tauri/examples/conpty_osc_probe.rs`, run by
+`.github/workflows/windows.yml`), through portable-pty 0.8.1's ConPTY with
+no passthrough flag and no bundled `conpty.dll`:
+
+| Path | Result |
+|---|---|
+| The PTY's own child writes OSC 777, OSC 9, OSC 133 (BEL or ST) | passes through byte for byte |
+| A hook: a node parent spawns a child with piped stdio, `windowsHide: false`; the child writes to `CONOUT$` | passes through |
+| The same with `windowsHide: true` (`CREATE_NO_WINDOW`) | lost: the child has no console to open |
+| A Git Bash hook writing to `/dev/tty` | fails: `/dev/tty: No such device or address` |
+
+So a console-writing hook helper works only for an agent that spawns hooks
+without hiding them, which is unknown per agent (M3). Section 2's control
+plane design does not depend on it.
 
 **M2. Docker Desktop mounts** (the Docker port is built on these, untested):
 - does `-v C:\Users\u\x:/c/Users/u/x` parse on the Windows docker CLI, or
@@ -68,21 +75,22 @@ them, so this is the biggest missing piece.
 
 Today a hook script `printf`s an OSC to `$TERMIC_PTY`, the PTY slave path
 from `ptsname` (`lib.rs`, `pty_slave_path`; `None` off unix). ConPTY has no
-slave path. Two designs, chosen by M1:
+slave path, and M1 rules out the two console shortcuts (`CONOUT$` needs an
+unhidden hook, `/dev/tty` does not exist). The design:
 
-- **If ConPTY passes OSC through:** a `termic hook <signal>` subcommand of
-  the bundled CLI reads the hook's stdin JSON in Rust (replacing the
-  scripts' `tr` / `awk`) and writes the OSC to `CONOUT$`, which the hook
-  inherits from the agent's console.
-- **If not:** per spawn, a PTY-scoped nonce (`TERMIC_PTY_KEY`; safe in env,
-  it can only inject parser signals into one pane), and `termic hook
-  <signal>` sends the payload over the control plane, authenticated by it.
-  The server feeds the same OSC bodies into that pane's parser.
+- Per spawn, a PTY-scoped nonce (`TERMIC_PTY_KEY`; safe in env, it can only
+  inject parser signals into one pane).
+- `termic hook-emit <body>` (the bundled CLI, already on the agent's PATH and
+  in `TERMIC_CLI`) sends the OSC body over the control plane, authenticated
+  by that nonce; the server feeds it into that pane's output exactly as if
+  the agent had printed it, so the frontend parser is unchanged.
+- The hook scripts keep their shape and swap the final `printf > $TERMIC_PTY`
+  for the CLI call when `TERMIC_PTY_KEY` is set. They run in whatever shell
+  the agent uses for hooks (Claude Code: Git Bash); for an agent that runs
+  them in cmd or PowerShell, register the CLI directly instead of a `.sh`.
 
-Either way the agent's config registers a direct `.exe` invocation, not a
-`.sh` path, and the opencode / pi JS plugins spawn the same executable.
-Docker tasks may already work (their hooks write to `/proc/1/fd/1`, relayed
-by `docker run -it`), which M1 also answers.
+Docker tasks are unaffected: their hooks write to `/proc/1/fd/1` inside the
+container, relayed by `docker run -it`, and ConPTY passes that through.
 
 ## 3. Processes
 
