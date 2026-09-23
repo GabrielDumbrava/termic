@@ -25783,7 +25783,7 @@ mod tests {
             fs::set_permissions(&binstub, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let (exe, args) = lsp_resolve_server(dir.path(), "ruby").expect("a ruby server");
-        assert_eq!(exe, binstub.to_string_lossy());
+        assert_eq!(Path::new(&exe), binstub.as_path());
         assert!(args.is_empty(), "ruby-lsp takes no arguments: {args:?}");
     }
 
