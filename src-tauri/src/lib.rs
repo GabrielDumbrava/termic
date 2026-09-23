@@ -26710,7 +26710,7 @@ mod tests {
         let root = tempdir().unwrap();
         mkrepo(root.path(), "keep");
         mkrepo(root.path(), "hide");
-        let hide_canon = fs::canonicalize(root.path().join("hide"))
+        let hide_canon = dunce::canonicalize(root.path().join("hide"))
             .unwrap().to_string_lossy().into_owned();
         let dismissed: std::collections::HashSet<String> = [hide_canon].into();
         let repos = discover_repos_inner(root.path(), &Default::default(), &dismissed).unwrap();
@@ -27130,7 +27130,7 @@ mod tests {
         assert!(safe_task_path(wt.path(), ".claude").is_err());
 
         let dir = safe_task_read_path_in(Some(repo.path()), wt.path(), ".claude").unwrap();
-        assert_eq!(dir, fs::canonicalize(repo.path().join(".claude")).unwrap());
+        assert_eq!(dir, dunce::canonicalize(repo.path().join(".claude")).unwrap());
         // …and files under it, which is what the editor opens.
         let file = safe_task_read_path_in(Some(repo.path()), wt.path(), ".claude/settings.json").unwrap();
         assert!(file.ends_with(".claude/settings.json"));
@@ -27202,11 +27202,11 @@ mod tests {
         fs::create_dir_all(ws.path().join("docs")).unwrap();
         // Existing folder, new file.
         let p = safe_task_path_for_create(ws.path(), "docs/notes.md").unwrap();
-        assert_eq!(p, fs::canonicalize(ws.path()).unwrap().join("docs/notes.md"));
+        assert_eq!(p, dunce::canonicalize(ws.path()).unwrap().join("docs/notes.md"));
         // Neither the folder nor the file exists yet: the picker lets you type
         // a new one, and promote mkdir -p's it.
         let p = safe_task_path_for_create(ws.path(), "a/b/c/notes.md").unwrap();
-        assert_eq!(p, fs::canonicalize(ws.path()).unwrap().join("a/b/c/notes.md"));
+        assert_eq!(p, dunce::canonicalize(ws.path()).unwrap().join("a/b/c/notes.md"));
     }
 
     #[cfg(unix)]
@@ -27306,7 +27306,8 @@ mod tests {
         let ws = tempdir().unwrap();
         let err = safe_task_path(ws.path(), "docs/gone").unwrap_err();
         assert!(err.replace('\\', "/").contains("docs/gone"), "{err}");
-        assert!(err.contains("os error 2"), "{err}");
+        // ENOENT is 2; Windows reports a missing PARENT as 3 (path not found).
+        assert!(err.contains("os error 2") || err.contains("os error 3"), "{err}");
     }
 
     #[test]
