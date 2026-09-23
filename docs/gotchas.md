@@ -457,6 +457,22 @@ Whenever you add a window LABEL, add it to a capability in the same change, and
 remember `tauri.conf.json` / capabilities changes need a quit + relaunch, not a
 reload.
 
+## A window built from a synchronous command deadlocks on Windows
+
+A `#[tauri::command]` without `async` runs on the main thread. Building a
+webview window there works on macOS and hangs on Windows: WebView2 creation
+needs the message loop that the command is blocking (wry#583). Nothing errors;
+the command just never returns and the window never appears.
+
+`profile_open` and `procmon_open_window` shipped like that, and nothing on
+macOS could show it. The first Windows e2e run did: "creating a profile did
+not open its window", then every later profile case timed out. Both are
+`#[tauri::command(async)]` now.
+
+Any command that can CREATE a window (`WebviewWindowBuilder::new`,
+`build_profile_window`) is `(async)`, or `async fn`. Tauri documents that
+for every platform; Windows is where skipping it costs a hang.
+
 ## Docker is a SECOND REALM, and it does not inherit host fixes
 
 Three separate bugs in one feature, all the same shape: a rule implemented for
