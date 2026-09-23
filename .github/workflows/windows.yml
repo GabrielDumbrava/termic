@@ -104,8 +104,9 @@ jobs:
     runs-on: windows-latest
     continue-on-error: true
     # The suite takes ~20 min on macOS; a hang must not hold a runner for
-    # GitHub's default six hours.
-    timeout-minutes: 90
+    # GitHub's default six hours. The run step has its own, shorter limit so
+    # the artifact steps below still get to run.
+    timeout-minutes: 100
     defaults:
       run:
         shell: bash
@@ -130,14 +131,18 @@ jobs:
       - name: Build e2e binary
         run: npm run e2e:build
       - name: Run e2e suite
+        timeout-minutes: 75
         run: npm run test:e2e
+      # always(): a timed-out or cancelled run is exactly the one whose app
+      # log is needed, and failure() is false for both.
       - name: Collect the debug log
-        if: failure()
+        if: always()
         run: |
           mkdir -p .e2e/artifacts
           cp "$TEMP/termic-debug.log" .e2e/artifacts/ 2>/dev/null || true
-      - name: Upload artifacts on failure
-        if: failure()
+          cp "$(cygpath -u "$LOCALAPPDATA")/Temp/termic-debug.log" .e2e/artifacts/localtemp-termic-debug.log 2>/dev/null || true
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-artifacts-windows
