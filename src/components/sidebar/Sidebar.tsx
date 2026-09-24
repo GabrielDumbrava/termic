@@ -1687,10 +1687,18 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   // leave the match hidden behind the caption. (The layout
                   // already runs over the FILTERED rows, so a group with no
                   // matches is not drawn at all.)
-                  const groupCollapsed = !compact && !filterOn && !!collapsedTaskGroups[seg.group.id];
+                  //
+                  // Two facts, kept apart: `groupCollapsed` is the STORED state,
+                  // which the chevron always shows and toggles; `rowsHidden` is
+                  // whether this render hides members. Folding the filter into
+                  // the first made the chevron point "expanded" while filtering,
+                  // so a click collapsed the group invisibly and it snapped shut
+                  // the moment the filter cleared, looking like lost tasks.
+                  const groupCollapsed = !compact && !!collapsedTaskGroups[seg.group.id];
+                  const rowsHidden = groupCollapsed && !filterOn;
                   // (And the row being dragged: it must not vanish from under
                   // the cursor while it hovers a collapsed group.)
-                  const shown = groupCollapsed
+                  const shown = rowsHidden
                     ? seg.tasks.filter(t => t.id === activeTask || t.id === dragTaskId)
                     : seg.tasks;
                   return (
@@ -1703,6 +1711,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       count={seg.tasks.length}
                       memberIds={seg.tasks.map(t => t.id)}
                       collapsed={groupCollapsed}
+                      summarized={rowsHidden}
                       onToggleCollapsed={() => setTaskGroupCollapsed(seg.group.id, !groupCollapsed)}
                       dragging={dragBlockId === seg.group.id && blockDragArmed.current?.projectId === p.id}
                       dragTy={dragBlockTy}

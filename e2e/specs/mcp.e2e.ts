@@ -401,6 +401,21 @@ describe("MCP tools/call: a real task round-trip through the live webview", () =
       );
       const bad = await call("task_group", { task: "mcp-task", color: "mauve" });
       expect(bad.isError).toBe(true);
+      // noGroup beats the caller header, as --no-group beats $TERMIC_TASK_ID.
+      const out = (await rpc(
+        "tools/call",
+        { name: "task_new", arguments: { name: "mcp-ungrouped", project: "fixture-repo", agent: "fakeagent", noGroup: true } },
+        { "x-termic-task": taskId! },
+      )).result;
+      expect(out.isError).toBe(false);
+      const outId = out.structuredContent.task.id;
+      try {
+        const g = await browser.execute(async (id) =>
+          ((await window.__termic!.ipc.tasksList()) as any[]).find(t => t.id === id)?.group ?? null, outId);
+        expect(g).toBeNull();
+      } finally {
+        await archiveTask(outId);
+      }
     } finally {
       await archiveTask(childId);
     }

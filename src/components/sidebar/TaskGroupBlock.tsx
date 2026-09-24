@@ -20,7 +20,7 @@ import { useUI } from "@/store/ui";
 import type { TaskGroup } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export function TaskGroupBlock({ group, projectId, label, compact, count, memberIds, collapsed = false, onToggleCollapsed, dragging = false, dragTy = 0, onDragPointerDown, children }: {
+export function TaskGroupBlock({ group, projectId, label, compact, count, memberIds, collapsed = false, summarized = collapsed, onToggleCollapsed, dragging = false, dragTy = 0, onDragPointerDown, children }: {
   group: TaskGroup;
   projectId: string;
   /** Resolved by `groupLabel`: own name, else the lead's live name. */
@@ -33,6 +33,11 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
   /** Members hidden behind the caption (the Sidebar passes only the active
    *  task's row as children then, if it is one of them). */
   collapsed?: boolean;
+  /** The members are actually hidden this render, so the caption carries
+   *  their marks. Differs from `collapsed` while a filter is on: the chevron
+   *  still shows (and toggles) the stored collapse, but the matching rows
+   *  are on screen, so a summary would repeat them. */
+  summarized?: boolean;
   onToggleCollapsed?: () => void;
   /** This block is being dragged by its caption: it follows the cursor. */
   dragging?: boolean;
@@ -119,6 +124,7 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
               data-no-drag
               data-testid={`task-group-toggle-${group.id}`}
               aria-label={collapsed ? "Expand group" : "Collapse group"}
+              title={collapsed ? "Expand group" : "Collapse group"}
               aria-expanded={!collapsed}
               onClick={(e) => { e.stopPropagation(); onToggleCollapsed?.(); }}
               onDoubleClick={(e) => e.stopPropagation()}
@@ -152,7 +158,7 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
                 <span data-testid={`task-group-label-${group.id}`} className="truncate">{label}</span>
               )}
             </div>
-            {renaming === null && (collapsed
+            {renaming === null && (summarized
               ? <GroupBadges groupId={group.id} memberIds={memberIds} count={count} />
               : <span className="ml-auto shrink-0 pr-1 tabular-nums text-[11px] font-normal text-[var(--color-fg-faint)]">{count}</span>)}
           </div>
@@ -195,8 +201,12 @@ function GroupBadges({ groupId, memberIds, count }: { groupId: string; memberIds
     { settledHighlight, workingIndicator, attentionIndicator },
     partialPref,
   ).join(","));
+  // The count stays beside the marks: it is what says "N tasks are tucked
+  // away in here". With the marks alone, a collapsed group read as a group
+  // whose tasks had vanished.
+  const countEl = <span className="shrink-0 tabular-nums text-[11px] font-normal text-[var(--color-fg-faint)]">{count}</span>;
   if (!key) {
-    return <span className="ml-auto shrink-0 pr-1 tabular-nums text-[11px] font-normal text-[var(--color-fg-faint)]">{count}</span>;
+    return <span className="ml-auto flex shrink-0 items-center pr-1">{countEl}</span>;
   }
   return (
     <span
@@ -213,6 +223,7 @@ function GroupBadges({ groupId, memberIds, count }: { groupId: string; memberIds
       ) : (
         <TaskWorkBadge key={k} reason={k as "attention" | "done" | "working" | "delegated"} />
       ))}
+      <span className="ml-0.5" data-testid={`task-group-count-${groupId}`}>{countEl}</span>
     </span>
   );
 }

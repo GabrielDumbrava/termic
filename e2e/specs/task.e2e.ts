@@ -2868,6 +2868,24 @@ describe("task groups", () => {
         }, child1);
         throw new Error(`collapsed caption showed ${await badges()} instead of attention,done; done member: ${why}`);
       });
+      // Every mark sits on one centre line. Measured, since a bell riding the
+      // text baseline a pixel or two above the dot is exactly the kind of
+      // thing a screenshot shows and cannot quantify.
+      const centres = await browser.execute((g) => {
+        const box = document.querySelector(`[data-testid="task-group-badges-${g}"]`)!;
+        return [...box.children].filter((c) => !(c as HTMLElement).dataset.testid?.startsWith("task-group-count")).map((c) => {
+          const glyph = (c.querySelector("svg, span") ?? c) as Element;
+          const r = glyph.getBoundingClientRect();
+          return r.top + r.height / 2;
+        });
+      }, orch) as number[];
+      expect(centres.length).toBe(2);
+      expect(Math.abs(centres[0] - centres[1])).toBeLessThanOrEqual(1);
+      // ...and the member count stays, so a collapsed group still says how
+      // many tasks it holds rather than looking emptied.
+      expect(await browser.execute(
+        (g) => document.querySelector(`[data-testid="task-group-count-${g}"]`)?.textContent?.trim() ?? null, orch,
+      )).toBe("4");
       await snap("task-groups-19-collapsed-marks.png");
 
       // Navigating to a member (the path every "go to task" takes) opens it.
@@ -2893,6 +2911,48 @@ describe("task groups", () => {
         s.setTaskGroupCollapsed(ids[2], false);
       }, [child1, child2, orch]);
     }
+  });
+
+  it("a filter shows its matches inside a collapsed group, and hides groups with none", async () => {
+    const input = `[data-testid="project-filter-input-${fixtureProjectId}"]`;
+    const typeFilter = async (v: string) => {
+      if (!(await browser.execute((sel) => !!document.querySelector(sel), input))) {
+        await $(`[data-testid="project-filter-toggle-${fixtureProjectId}"]`).click();
+        await waitVisible(input);
+      }
+      await browser.execute((sel, val) => {
+        const el = document.querySelector(sel) as HTMLInputElement;
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(el, val);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, input, v);
+    };
+    await browser.execute(() => window.__termic!.useApp.setState({ activeTaskId: null }));
+    await browser.execute((g) => window.__termic!.useApp.getState().setTaskGroupCollapsed(g, true), orch);
+    await browser.waitUntil(async () => (await blockRows(orch)).length === 0, { timeout: 5_000 });
+    try {
+      // A match inside the collapsed group is shown, the rest of it is not,
+      // and the caption stays so you can see which group it is in.
+      await typeFilter("grp-worker-2");
+      await browser.waitUntil(async () => (await blockRows(orch)).join() === child2, {
+        timeout: 5_000, timeoutMsg: "a filter match inside a collapsed group stayed hidden",
+      });
+      // The chevron still says collapsed while the filter shows the match,
+      // so it cannot be clicked into a state you do not see.
+      const expanded = () => browser.execute(
+        (g) => document.querySelector(`[data-testid="task-group-toggle-${g}"]`)?.getAttribute("aria-expanded") ?? null, orch,
+      );
+      expect(await expanded()).toBe("false");
+      await snap("task-groups-21-filter-in-collapsed.png");
+      // Nothing in the group matches: no caption for an empty group.
+      await typeFilter("grp-loose");
+      await waitGone(block(orch));
+      expect(await browser.execute((sel) => !!document.querySelector(sel), row(loose))).toBe(true);
+    } finally {
+      await browser.execute(() => window.__termic!.useUI.setState({ taskFilters: {} }));
+      await browser.execute((g) => window.__termic!.useApp.getState().setTaskGroupCollapsed(g, false), orch);
+    }
+    // Clearing the filter restores the whole group.
+    await browser.waitUntil(async () => (await blockRows(orch)).length === 4, { timeout: 5_000 });
   });
 
   it("--no-group, no $TERMIC_TASK_ID, or a stale id all create an ungrouped task", async () => {
@@ -3214,6 +3274,59 @@ describe("task groups", () => {
     for (const id of [orch, child1, child2]) expect(disk[id]).toBeNull();
     await dismissOverlays();
     await snap("task-groups-18-ungrouped.png");
+  });
+});
+
+// Focusing a task looks up its PR (store/pr.ts initPrRefreshOnFocus), which
+// is what discovers a PR its agent opened from the terminal. The fixture's
+// remote is a local bare repo, so the lookup answers "not a forge" rather
+// than finding a PR; the case asserts the LOOKUP ran on focus, the thing that
+// was missing. The other triggers (agent spawn, the Git tab's card) are kept
+// out of the way first, or they would pass this without the fix.
+describe("PR lookup on task focus", () => {
+  let wt: string | undefined;
+  let main: string | undefined;
+  after(async () => {
+    for (const id of [wt, main].filter(Boolean) as string[]) await archiveTask(id);
+  });
+
+  const fetchedAt = (id: string) =>
+    browser.execute((t) => window.__termic!.usePr.getState().byTask[t]?.fetchedAt ?? 0, id) as Promise<number>;
+
+  it("runs a lookup when a worktree task becomes active, and never for a main checkout", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const r = await cliRpc({ cmd: "new", name: `pr-focus-${Date.now()}`, project: "fixture-repo", agent: "fakeagent", mode: "worktree" });
+    expect(r.ok).toBe(true);
+    wt = r.data.task.id;
+    main = await openTask("pr-focus-main", false);
+    // Let the spawn-time lookup land, then forget it: what follows must come
+    // from the focus alone.
+    await waitForAgentReady(wt!);
+    await browser.waitUntil(async () => !(await browser.execute(
+      (t) => !!window.__termic!.usePr.getState().byTask[t]?.loading, wt!)), { timeout: 15_000 });
+    await browser.execute((ids) => {
+      const t = window.__termic!;
+      const by = { ...t.usePr.getState().byTask };
+      for (const id of ids) delete by[id];
+      t.usePr.setState({ byTask: by });
+      t.useApp.setState({ activeTaskId: null });
+    }, [wt!, main]);
+
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), wt!);
+    await browser.waitUntil(async () => (await fetchedAt(wt!)) > 0, {
+      timeout: 15_000, timeoutMsg: "focusing a worktree task did not look up its PR",
+    });
+    // The Git tab was never on screen, so this was the focus trigger.
+    expect(await browser.execute(
+      () => document.querySelector('[data-testid="right-tab"][data-tab="Git"][aria-selected="true"]') !== null,
+    )).toBe(false);
+
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), main);
+    // Give a wrongly-fired lookup the time the one above took, then check.
+    await browser.waitUntil(async () => (await browser.execute(
+      (id) => window.__termic!.useApp.getState().activeTaskId === id, main)), { timeout: 5_000 });
+    expect(await fetchedAt(main)).toBe(0);
   });
 });
 
