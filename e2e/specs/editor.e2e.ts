@@ -297,11 +297,19 @@ describe("terminal cmd+click opens a permanent tab", () => {
   });
 
   it("pins the file in place when it is the one already in the preview slot", async () => {
-    // Close README, then make it the preview occupant.
-    await browser.execute((id, tid) => window.__termic!.useApp.getState().closeTab(id, tid), taskId, (await tabFor("README.md")).id);
-    await browser.execute((id) => window.__termic!.useApp.getState().openPreviewTab(id, {
-      type: "edit", path: "README.md", title: "README.md",
-    }), taskId);
+    // Close README, then make it the preview occupant. Retried until it
+    // STAYS the preview: the case above clicks in a loop, and each click
+    // resolves its path over IPC, so on a slow runner a late one can land
+    // after this reopen and pin README again.
+    await browser.waitUntil(async () => {
+      const open = await tabFor("README.md");
+      if (open) await browser.execute((id, tid) => window.__termic!.useApp.getState().closeTab(id, tid), taskId, open.id);
+      await browser.execute((id) => window.__termic!.useApp.getState().openPreviewTab(id, {
+        type: "edit", path: "README.md", title: "README.md",
+      }), taskId);
+      await browser.pause(500);
+      return (await tabFor("README.md"))?.preview === true;
+    }, { timeout: 15_000, interval: 100, timeoutMsg: "README never stayed in the preview slot" });
     const before = await tabFor("README.md");
     expect(before.preview).toBe(true);
 
