@@ -473,6 +473,23 @@ Any command that can CREATE a window (`WebviewWindowBuilder::new`,
 `build_profile_window`) is `(async)`, or `async fn`. Tauri documents that
 for every platform; Windows is where skipping it costs a hang.
 
+## ConPTY gives the reader no EOF when the child exits
+
+On unix, the PTY reader hits EOF when the last process holding the slave
+exits, and the waiter fires `pty-exit` once the reader has drained. ConPTY
+keeps its output pipe open until the pseudoconsole itself is closed, so on
+Windows a child that exits by itself left the reader blocked forever and
+`pty-exit` never fired. Nothing errors: a failed `--resume` never retried
+and never opened the picker, and an agent that quit never showed its
+exited banner. A killed PTY was fine, because `pty_kill` drops the slot,
+which closes the pseudoconsole.
+
+Seen in the Windows e2e debug log: `child exited code=Some(1)` for a dead
+resume, then no `pty-exit` and no respawn. The waiter now does what
+`pty_kill` does after a 200 ms drain. `conpty_osc_probe` measures both
+halves (EOF or not with the pseudoconsole open, then once it is closed),
+with macOS as the control.
+
 ## Docker is a SECOND REALM, and it does not inherit host fixes
 
 Three separate bugs in one feature, all the same shape: a rule implemented for

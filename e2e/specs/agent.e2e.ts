@@ -1954,6 +1954,11 @@ describe("agent notifications", () => {
             [id!]: [...s.tabs[id!], {
               id: "e2e-second-agent-tab", type: "terminal", cli: second,
               title: second, is_default: false,
+              // As if it had spawned on the ordinary login. `fakeagent-2` is
+              // not a real command: unix forks it and fails the exec later,
+              // Windows refuses it at spawn, and a chip for an agent that
+              // never spawned has no account to show.
+              liveAccount: null,
             }],
           },
         }));
