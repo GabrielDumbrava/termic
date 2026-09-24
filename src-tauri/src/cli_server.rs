@@ -1090,6 +1090,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         agent_args,
         mode,
         base,
+        checkout,
         from,
         resume,
         sandbox,
@@ -1128,10 +1129,22 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             "from adopts an existing worktree; it cannot combine with a mode or base".into(),
         );
     }
+    // Checkout shape: an existing branch into a NEW worktree, so it can
+    // neither adopt one (`from`) nor run in the main checkout. Same reason
+    // as above for checking what clap already forbids.
+    if checkout.is_some() && (from.is_some() || mode.as_deref() == Some("main")) {
+        return fail(
+            ErrorCode::BadRequest,
+            "checkout puts an existing branch in a new worktree; it cannot combine with from or the main checkout".into(),
+        );
+    }
+    if checkout.as_deref().is_some_and(|b| b.trim().is_empty()) {
+        return fail(ErrorCode::BadRequest, "checkout needs a branch name".into());
+    }
     let mut trimmed = name.trim();
-    // With `from` the name is optional: the webview derives it from the
-    // worktree's branch, the GUI import default.
-    if trimmed.is_empty() && from.is_none() {
+    // With `from` or `checkout` the name is optional: the webview derives
+    // it from the branch, as the GUI import and checkout do.
+    if trimmed.is_empty() && from.is_none() && checkout.is_none() {
         return fail(ErrorCode::BadRequest, "the task name is empty".into());
     }
     // An empty prompt would mint a prompt id nothing ever reports on
@@ -1182,6 +1195,12 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         return fail(
             ErrorCode::BadRequest,
             format!("project \"{}\" is a plain folder (non-git); from needs a git worktree", proj.name),
+        );
+    }
+    if proj.non_git && checkout.is_some() {
+        return fail(
+            ErrorCode::BadRequest,
+            format!("project \"{}\" is a plain folder (non-git); checkout needs a git repository", proj.name),
         );
     }
 
@@ -1293,6 +1312,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         "agentArgs": agent_args,
         "mode": mode,
         "base": base,
+        "checkout": checkout.as_deref().map(str::trim),
         "from": from,
         "resume": resume,
         "sandbox": sandbox,
@@ -5822,6 +5842,7 @@ mod tests {
             agent_args: Vec::new(),
             mode: None,
             base: None,
+            checkout: None,
             from: None,
             resume: None,
             sandbox: None,
@@ -6071,6 +6092,58 @@ mod tests {
         }
         let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
         assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    // ── new --checkout: an existing branch into a new worktree ───────
+
+    fn checkout_cmd(branch: &str) -> Command {
+        let mut cmd = new_cmd("", Some("web"));
+        if let Command::New { checkout, .. } = &mut cmd {
+            *checkout = Some(branch.into());
+        }
+        cmd
+    }
+
+    #[test]
+    fn new_checkout_forwards_the_branch_and_lets_the_name_be_derived() {
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        let reply = handle(&req(checkout_cmd(" origin/alice/fix "), Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        let (_, params) = &calls[0];
+        assert_eq!(params["checkout"], "origin/alice/fix");
+        // Empty name goes through: the webview derives it from the branch.
+        assert_eq!(params["name"], "");
+    }
+
+    #[test]
+    fn new_checkout_shape_guards_fire_before_any_rpc() {
+        let host = StubHost::default();
+        // checkout + the main checkout, checkout + from, and a blank branch.
+        let mut main = checkout_cmd("alice/fix");
+        if let Command::New { mode, .. } = &mut main {
+            *mode = Some("main".into());
+        }
+        let mut from = checkout_cmd("alice/fix");
+        if let Command::New { from, .. } = &mut from {
+            *from = Some("/elsewhere/wt".into());
+        }
+        for cmd in [main, from, checkout_cmd("  ")] {
+            let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        }
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_checkout_on_a_non_git_project_is_refused() {
+        let mut host = StubHost::default();
+        host.projects[0].non_git = true;
+        let err = handle(&req(checkout_cmd("alice/fix"), Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("non-git"), "{}", err.message);
         assert!(host.rpc_calls.lock().unwrap().is_empty());
     }
 

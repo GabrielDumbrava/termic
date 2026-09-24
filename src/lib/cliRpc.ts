@@ -28,6 +28,7 @@ import {
   onPtyData,
   projectAdd,
   ptyAlive,
+  projectBranchContext,
   projectGitBranches,
   projectRemove,
   settingsLoad,
@@ -56,6 +57,7 @@ import {
   type NewTaskMode,
 } from "@/lib/quickTask";
 import { slugify } from "@/lib/utils";
+import { checkoutTaskName, remoteNames } from "@/lib/existingBranch";
 import { padHandler } from "@/lib/scratchCli";
 import type { SandboxMode, Task, TerminalTab } from "@/lib/types";
 
@@ -118,6 +120,11 @@ interface NewTaskParams {
   /** "worktree" | "main"; absent = the GUI's remembered mode. */
   mode?: string;
   base?: string;
+  /** EXISTING branch to check out into the new worktree (`new --checkout`):
+   *  local, `<remote>/<branch>`, or only on the remote. Forces worktree
+   *  mode; with it `base` is only the diff baseline and `name` may be
+   *  empty. */
+  checkout?: string;
   /** Existing worktree to ADOPT instead of creating one (GH #169,
    *  `new --from`). Path already canonicalized and project-matched by
    *  the server; Rust still validates it is a worktree of this repo. */
@@ -160,7 +167,14 @@ async function mainCheckoutSandbox(
  *  GUI would: derived + auto-numbered branch for worktrees, the shared
  *  repo checkout for main mode. */
 async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
-  const name = p.name.trim();
+  const checkout = checkoutBranchOf(p);
+  let name = (p.name ?? "").trim();
+  // `new --checkout` may leave the name to us: the branch minus its remote,
+  // the same default the New Task dialog's Existing branch mode shows.
+  if (checkout && !name) {
+    const ctx = await projectBranchContext(p.projectId).catch(() => null);
+    name = checkoutTaskName(checkout, ctx ? remoteNames(ctx) : []);
+  }
   const cli = typeof p.agent === "string" && p.agent ? p.agent : undefined;
   const pins = sandboxPins(p.sandbox);
   return withCreateLock(async () => {
@@ -181,6 +195,23 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
     if (slugify(name) === "") {
       throw new Error("Task name must contain at least one letter or number.");
     }
+    const base_branch = typeof p.base === "string" && p.base.trim() ? p.base.trim() : null;
+    // The branch as asked for, never derived or auto-numbered: Rust checks
+    // it out as it exists, and an unknown one is an error, not a new branch.
+    if (checkout) {
+      return taskCreate({
+        id: crypto.randomUUID(),
+        project_id: p.projectId,
+        name,
+        cli,
+        agent_args: p.agentArgs,
+        base_branch,
+        branch: checkout,
+        checkout_existing: true,
+        resume_session_id: resume,
+        ...(pins ?? {}),
+      });
+    }
     let branch = derivedBranch(name, usePrefs.getState().branchPrefix);
     // Auto-number past an existing branch, the dialog's behavior
     // (issue #129). Best-effort: on failure the Rust backstop still
@@ -196,12 +227,17 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
       name,
       cli,
       agent_args: p.agentArgs,
-      base_branch: typeof p.base === "string" && p.base.trim() ? p.base.trim() : null,
+      base_branch,
       branch,
       resume_session_id: resume,
       ...(pins ?? {}),
     });
   });
+}
+
+/** The branch `new --checkout` asked for, or undefined for any other create. */
+function checkoutBranchOf(p: NewTaskParams): string | undefined {
+  return typeof p.checkout === "string" && p.checkout.trim() ? p.checkout.trim() : undefined;
 }
 
 /** Rust's import refusals cross the string-only RPC error channel with the
@@ -372,8 +408,9 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   const p = raw as NewTaskParams;
   if (typeof p?.projectId !== "string" || !p.projectId) throw new Error("new_task requires a projectId");
   const importing = typeof p.from === "string" && !!p.from;
-  // Importing derives a missing name from the worktree's branch.
-  if (!importing && (typeof p?.name !== "string" || !p.name.trim())) {
+  const checkout = checkoutBranchOf(p);
+  // Importing and checking out derive a missing name from the branch.
+  if (!importing && !checkout && (typeof p?.name !== "string" || !p.name.trim())) {
     throw new Error("new_task requires a name");
   }
   // Cold launch: the RPC ready-latch can beat loadAll, and an
@@ -399,9 +436,14 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   // checkout for them and so do we (the server already rejected an
   // EXPLICIT --worktree with a clear error).
   const nonGit = useApp.getState().projects.find(pr => pr.id === p.projectId)?.non_git === true;
+  // The server refuses this first; the store is re-checked because a
+  // checkout on a plain folder would otherwise quietly open the main
+  // checkout instead.
+  if (checkout && nonGit) throw new Error("checkout needs a git repository; this project is a plain folder");
+  // A checkout is always a worktree: the branch goes into its own folder.
   const mode: NewTaskMode = nonGit
     ? "repo_root"
-    : p.mode === "worktree" ? "worktree" : p.mode === "main" ? "repo_root" : readNewTaskMode();
+    : checkout || p.mode === "worktree" ? "worktree" : p.mode === "main" ? "repo_root" : readNewTaskMode();
 
   const task = importing ? await importTask(p) : await createTask(p, mode);
   // Before anything mounts, so the first spawn composes the flags in.

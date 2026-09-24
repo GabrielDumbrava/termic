@@ -239,6 +239,13 @@ attaches work started outside Termic (GH #169). It also works without \
 --from, though agents look sessions up by directory, so it is most useful \
 where the task's directory matches the session's (--from or --main).
 
+With --checkout <BRANCH> the new worktree checks out an EXISTING branch \
+instead of cutting one, for reviewing or continuing someone else's work: a \
+local branch, <remote>/<branch>, or a name that only exists on the remote \
+(fetched and tracked). It never creates a branch from the base; an unknown \
+one is an error. --base then only sets what the diff compares against, and \
+the name defaults to the branch.
+
 Without --wait the command returns at spawn; a prompt keeps injecting \
 app-side but is NOT confirmed. With --wait it blocks until the prompt is \
 confirmed delivered AND that turn settles (or, with no prompt, until the \
@@ -269,8 +276,8 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         /// Task name (seeds the branch for worktree tasks). A
         /// <project>/<name> prefix targets that project, like the
         /// other verbs; with --project the name stays literal.
-        /// Optional with --from: it defaults to the worktree's branch.
-        #[arg(required_unless_present = "from")]
+        /// Optional with --from or --checkout: it defaults to the branch.
+        #[arg(required_unless_present_any = ["from", "checkout"])]
         name: Option<String>,
         /// Prompt to inject once the agent is ready. `-` reads stdin.
         #[arg(short, long)]
@@ -300,8 +307,15 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         #[arg(long)]
         main: bool,
         /// Base branch for the worktree (default: the repo's default base).
+        /// With --checkout, what the diff compares against.
         #[arg(long, conflicts_with = "main")]
         base: Option<String>,
+        /// Check out this EXISTING branch into the new worktree instead of
+        /// cutting a new one: a local branch, <remote>/<branch>, or a name
+        /// only on the remote (fetched and tracked). Never creates a
+        /// branch; an unknown one is an error. Implies --worktree.
+        #[arg(long, value_name = "BRANCH", conflicts_with_all = ["main", "from"])]
+        checkout: Option<String>,
         /// Adopt an EXISTING worktree of the project's repo as the task,
         /// instead of creating one. The path must already be a registered
         /// git worktree (`git worktree add` done by you or a script); no
@@ -1690,6 +1704,7 @@ fn execute_new(
         worktree,
         main,
         base,
+        checkout,
         from,
         resume,
         sandbox,
@@ -1707,7 +1722,7 @@ fn execute_new(
     }
     let timeout_ms = timeout.as_deref().map(parse_duration_ms).transpose()?;
     let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
-    let mode = if *worktree {
+    let mode = if *worktree || checkout.is_some() {
         Some("worktree".to_string())
     } else if *main {
         Some("main".to_string())
@@ -1733,6 +1748,7 @@ fn execute_new(
         agent_args: task_agent_args,
         mode,
         base: base.clone(),
+        checkout: checkout.clone(),
         from,
         resume: resume.clone(),
         sandbox: sandbox.clone(),
@@ -2690,6 +2706,25 @@ mod tests {
         .is_ok());
         // Sandbox values are validated at parse time.
         assert!(Cli::try_parse_from(["termic", "new", "x", "--sandbox", "jail"]).is_err());
+    }
+
+    #[test]
+    fn new_checkout_flag_rules() {
+        // An existing branch goes into a NEW worktree: not the main
+        // checkout, and not an adopted worktree either.
+        assert!(Cli::try_parse_from(["termic", "new", "x", "--checkout", "alice/fix", "--main"]).is_err());
+        assert!(Cli::try_parse_from(["termic", "new", "--checkout", "alice/fix", "--from", "/wt"]).is_err());
+        // The name is optional with it (the branch names the task), and
+        // --base (the diff baseline) and --worktree still combine.
+        let cli = Cli::try_parse_from([
+            "termic", "new", "--checkout", "origin/alice/fix", "--base", "origin/dev", "--worktree",
+        ])
+        .unwrap();
+        let Cmd::New { name, checkout, .. } = cli.cmd else { panic!() };
+        assert_eq!(name, None);
+        assert_eq!(checkout.as_deref(), Some("origin/alice/fix"));
+        // Without --from or --checkout the name is still required.
+        assert!(Cli::try_parse_from(["termic", "new", "--base", "dev"]).is_err());
     }
 
     #[test]

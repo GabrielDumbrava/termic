@@ -245,6 +245,46 @@ A plain shell or registry terminal has no prompt box, so the composed prompt has
 nowhere to go: the column says so at the point the issue was chosen rather than
 letting Create drop it silently.
 
+## Checking out an existing branch
+
+For reviewing or continuing someone else's branch in its own folder, beside
+whatever the main checkout is doing. The "Existing branch" switch on the New
+Task title line (worktree mode, single-repo git projects, the same gate as
+"Import a worktree") and `termic new --checkout <branch>` both send
+`task_create` with `checkout_existing: true`, and Rust's
+`checkout_existing_branch` (lib.rs) decides what that means:
+
+- a **local** branch is used as it is, even when the remote one has moved on:
+  it may hold your own commits, and a checkout must not move it;
+- otherwise the branch is looked up on the remote, taking `origin/alice/fix`
+  or a bare `alice/fix` (the default remote). It is **fetched** first when
+  "fetch before create" is on, so a branch pushed since your last fetch works,
+  then gets a local branch **tracking** it, which is what `git checkout` DWIMs
+  to and what makes push and pull on it reach their branch;
+- an unknown name is an **error**. It never falls through to the new-branch
+  path, which is the whole reason the mode exists: typing a remote-only branch
+  into the ordinary "Branch name" field makes `rev-parse --verify` miss it and
+  cuts a fresh branch of that name from main, so an agent reviews main under
+  the colleague's branch name and nothing says so.
+
+"Branch from" becomes "Compare against" in this mode: nothing is cut from it,
+so it only sets `Task.base_branch`, the ref the diff pane compares against. A
+typed one has to resolve, like `--base` on the new-branch path, or the diff
+would quietly fall back to HEAD.
+
+The picker lists `project_branch_context` (local git, no network): local
+branches, then remote ones whose name is not already local, capped at
+`BRANCH_CHOICES_MAX` rows (`src/lib/existingBranch.ts`). The typed text is the
+value and the rows only fill it in, so a branch nobody has fetched yet is still
+one keystroke away, and the field says it will be fetched. Name may stay
+blank: it defaults to the branch minus its remote, shown as the placeholder.
+
+**Restore does not know a task was a checkout.** `task_restore_sync` recreates
+a missing branch by cutting it from the base. That only matters with
+Settings > Tasks > "Delete the branch when archiving" on (off by default),
+which deletes the local tracking branch, so restoring such a task gives a
+fresh branch off main. Check the branch out again instead.
+
 ## Title bar contents, and what moved out of it
 
 Left to right: traffic lights (reserved unless full-screen), sidebar toggle,

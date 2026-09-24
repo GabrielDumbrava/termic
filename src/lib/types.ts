@@ -474,6 +474,12 @@ export interface CreateTaskArgs {
   agent_args?: string[];
   base_branch?: string | null;
   branch?: string | null;
+  /** Check out `branch` as it EXISTS (locally, or on the remote, fetched
+   *  and tracked) instead of cutting a new branch from `base_branch`, which
+   *  then only sets what the diff compares against. An unknown branch is an
+   *  error, never a fresh branch. The dialog's "Existing branch" mode and
+   *  `termic new --checkout`. */
+  checkout_existing?: boolean;
   /** Pre-generated task UUID. Pass this if you want to subscribe to
    *  `setup-output://<id>` / `setup-done://<id>` events BEFORE invoking — the
    *  alternative (using server-generated ID returned from the call) has a

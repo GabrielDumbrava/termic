@@ -67,7 +67,12 @@ use std::io::{self, BufRead, Read, Write};
 ///
 /// v13: the `pad_*` verbs. An agent creates, writes, reads and lists its
 /// task's scratchpads, and an open pad shows the write live.
-pub const PROTOCOL_VERSION: u32 = 13;
+///
+/// v14: `new` gains `checkout`, an EXISTING branch to check out into the
+/// new worktree (fetched and tracked when it only exists on the remote)
+/// instead of cutting a new one. A v13 server would drop the field and
+/// quietly cut a fresh branch named after the task.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// serde default for `QuitData::running`.
 pub(crate) fn default_true() -> bool { true }
@@ -259,8 +264,16 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
         /// Base branch for a worktree task. Absent = the repo default.
+        /// With `checkout`, only what the diff compares against.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base: Option<String>,
+        /// Check out this EXISTING branch into the new worktree (v14): a
+        /// local branch, `<remote>/<branch>`, or a name that only exists
+        /// on the remote (fetched and tracked). Never cuts a new branch;
+        /// an unknown one is an error. Implies worktree mode; exclusive
+        /// with `from`. `name` may be empty, the webview derives it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkout: Option<String>,
         /// Adopt this EXISTING registered worktree instead of creating
         /// one (GH #169). Absolute path (the CLI canonicalizes). Mutually
         /// exclusive with mode/base; no setup script runs.
@@ -1613,6 +1626,7 @@ mod tests {
                 agent_args: vec!["--effort".into(), "high".into(), "--model".into(), "opus".into()],
                 mode: Some("worktree".into()),
                 base: Some("develop".into()),
+                checkout: None,
                 from: None,
                 resume: None,
                 sandbox: Some("enforce-fs".into()),
@@ -1631,6 +1645,27 @@ mod tests {
                 agent_args: Vec::new(),
                 mode: None,
                 base: None,
+                checkout: None,
+                from: None,
+                resume: None,
+                sandbox: None,
+                yolo: false,
+                project: None,
+                open: false,
+                wait: false,
+                timeout_ms: None,
+                cwd: None,
+            },
+            // v14 checkout shape: an existing branch, the name left to the app.
+            Command::New {
+                name: String::new(),
+                prompt: None,
+                prompt_ref: None,
+                agent: None,
+                agent_args: Vec::new(),
+                mode: Some("worktree".into()),
+                base: Some("origin/develop".into()),
+                checkout: Some("origin/alice/fix".into()),
                 from: None,
                 resume: None,
                 sandbox: None,
@@ -1650,6 +1685,7 @@ mod tests {
                 agent_args: Vec::new(),
                 mode: None,
                 base: None,
+                checkout: None,
                 from: Some("/tasks/web/poll-linear".into()),
                 resume: Some("018f2c1e-aaaa-bbbb-cccc-1234567890ab".into()),
                 sandbox: None,

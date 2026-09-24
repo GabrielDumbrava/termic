@@ -810,6 +810,12 @@ pub struct CreateTaskArgs {
     pub base_branch: Option<String>,
     /// Explicit branch name. If omitted, defaults to `slugify(name)`.
     pub branch: Option<String>,
+    /// Check out `branch` as it EXISTS (locally, or on the remote, fetched
+    /// and tracked) instead of cutting a new branch from `base_branch`, which
+    /// then only sets what the diff compares against. An unknown branch is
+    /// an error here, never a fresh branch. See `checkout_existing_branch`.
+    #[serde(default)]
+    pub checkout_existing: bool,
     /// Optional client-supplied task ID. Lets the frontend subscribe
     /// to `setup-output://<id>` + `setup-done://<id>` BEFORE invoking
     /// create — without this, the empty-script branch race-emits done
@@ -2629,6 +2635,88 @@ fn try_resolve_base_ref(repo: &Path, base: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Turn the branch a user asked to CHECK OUT (New Task's "Existing branch"
+/// mode, `termic new --checkout`) into a local branch that exists, so the
+/// ordinary `git worktree add <path> <branch>` can take it from there.
+///
+/// `requested` is a local branch (`alice/fix`), a remote-tracking one
+/// (`origin/alice/fix`), or a bare name that so far exists only on the remote
+/// (a colleague's branch, possibly pushed after the last fetch). The last two
+/// become a local branch tracking the remote one, which is what
+/// `git checkout <name>` DWIMs to and what makes push and pull on it work.
+///
+/// NEVER cuts a branch from a base. The new-branch path does exactly that for
+/// a name it cannot find, which is how a colleague's remote-only branch used
+/// to come out as a fresh branch off main wearing their branch's name: the
+/// agent reviewed main and nothing said so. Here an unknown name is an error.
+///
+/// A local branch wins over the remote one even when the two have diverged:
+/// it may hold the user's own commits, and a checkout must not move it.
+///
+/// Split out of `task_create_sync` so it can be tested (that function takes an
+/// `AppHandle`); `progress` is its `emit_create_progress`.
+fn checkout_existing_branch(
+    repo: &Path,
+    requested: &str,
+    fetch: bool,
+    progress: &mut dyn FnMut(String),
+) -> std::result::Result<String, String> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err("name the branch to check out.".into());
+    }
+    let invalid = || format!("'{requested}' is not a valid branch name.");
+    // The name reaches `git fetch` and `git branch` as an argument, so a
+    // leading dash would be read as an option. Checked before
+    // check-ref-format, which would otherwise take it as one too.
+    if requested.starts_with('-') || git(&["check-ref-format", "--branch", requested], repo).is_err() {
+        return Err(invalid());
+    }
+    let has = |r: &str| git(&["rev-parse", "--verify", "--quiet", r], repo).is_ok();
+    let is_local = |b: &str| has(&format!("refs/heads/{b}"));
+    if is_local(requested) {
+        progress(format!("Using local branch '{requested}'."));
+        return Ok(requested.to_string());
+    }
+    // `origin/alice/fix` names its remote; a bare `alice/fix` means the
+    // default one. Only a CONFIGURED remote counts as a prefix, so a branch
+    // that merely contains a slash is not split.
+    let remotes: Vec<String> = git(&["remote"], repo)
+        .map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default();
+    let (remote, name) = match requested.split_once('/') {
+        Some((r, rest)) if !rest.is_empty() && remotes.iter().any(|x| x == r) => {
+            (r.to_string(), rest.to_string())
+        }
+        _ => (detect_default_remote(repo), requested.to_string()),
+    };
+    if name.starts_with('-') {
+        return Err(invalid());
+    }
+    if is_local(&name) {
+        progress(format!("Using local branch '{name}'."));
+        return Ok(name);
+    }
+    let remote_ref = format!("{remote}/{name}");
+    if fetch {
+        progress(format!("Fetching '{remote_ref}'…"));
+        // Not fatal: offline, or a remote that wants credentials, still
+        // leaves whatever this repo fetched last, which may well be enough.
+        if let Err(e) = fetch_ref(repo, &remote_ref) {
+            progress(format!("{e}. Using what this repo already has."));
+        }
+    }
+    let tracking = format!("refs/remotes/{remote_ref}");
+    if has(&format!("{tracking}^{{commit}}")) {
+        git(&["branch", "--track", &name, &tracking], repo).map_err(|e| e.to_string())?;
+        progress(format!("Created local branch '{name}' tracking '{remote_ref}'."));
+        return Ok(name);
+    }
+    Err(format!(
+        "no branch '{requested}' in this repo or on {remote}. Check the name, or push the branch first."
+    ))
 }
 
 /// The ref a task's diff is taken against, or None when the worktree has no
@@ -6151,8 +6239,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
 
     // Reuse existing branch if present, else create new from base. If the
     // branch is already checked out in another worktree (often the main
-    // checkout), git refuses — fall back to checking out the branch
-    // detached so the new worktree still works.
+    // checkout), git refuses, and that surfaces as an error below: git
+    // allows a branch in only one worktree at a time.
     //
     // `--no-track` is critical: creating a new branch directly from a
     // remote-tracking base (e.g. "origin/main") would otherwise set
@@ -6182,6 +6270,41 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         .map(|p| p.join("git-crypt").exists())
         .unwrap_or(false);
 
+    // Checking out an EXISTING branch (New Task's "Existing branch" mode,
+    // `termic new --checkout`): resolve it to a local branch first, fetching
+    // and tracking a remote-only one, so the reuse path below takes it as it
+    // is. It must never reach the new-branch path, which would cut a fresh
+    // branch with that name from the base.
+    let checkout = args.checkout_existing;
+    let branch = if checkout {
+        let fetch = fetch_before_create_enabled();
+        // The base only sets what the diff compares against here, but it
+        // still has to be fresh: a colleague who branched from a newer main
+        // than this repo's last fetch would otherwise have main's commits
+        // mixed into their diff. Same fetch the new-branch path does.
+        if fetch {
+            emit_create_progress(&app, &task_id, format!("Fetching '{base_full}'…"));
+            git_fetch_base(&repo, &base_full);
+        }
+        // A typed base that names nothing would quietly compare against HEAD.
+        // Checked BEFORE the branch resolves, so a refusal leaves no branch
+        // behind.
+        if user_supplied_base {
+            if try_resolve_base_ref(&repo, &base_full).is_none() {
+                return Err(format!(
+                    "compare-against ref '{base_full}' does not resolve in {}. \
+                     Fetch it first (git fetch origin {base_full}), or pass a ref that exists.",
+                    repo.display(),
+                ));
+            }
+        }
+        checkout_existing_branch(&repo, &branch, fetch, &mut |line| {
+            emit_create_progress(&app, &task_id, line)
+        })?
+    } else {
+        branch
+    };
+
     let branch_exists = git(&["rev-parse", "--verify", &branch], &repo).is_ok();
     let wt_arg = wt_path.to_str().unwrap();
     let add_args: Vec<&str> = if has_git_crypt {
@@ -6192,7 +6315,10 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         vec!["worktree", "add", wt_arg, &branch]
     };
     let add_result = if branch_exists {
-        emit_create_progress(&app, &task_id, format!("Branch '{branch}' already exists locally, reusing it."));
+        // A checkout already said which branch it is using and how it got it.
+        if !checkout {
+            emit_create_progress(&app, &task_id, format!("Branch '{branch}' already exists locally, reusing it."));
+        }
         emit_create_progress(&app, &task_id, format!("Adding worktree at {}…", wt_path.display()));
         git(&add_args, &repo)
     } else {
@@ -6242,10 +6368,16 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     };
     if let Err(e) = add_result {
         if e.to_string().contains("already used by worktree") {
-            return Err(format!(
-                "branch '{}' is already checked out elsewhere. Pick a different task name.",
-                branch
-            ));
+            // The branch was the whole point of a checkout, so renaming the
+            // task is no way out: the other worktree has to let go of it.
+            return Err(if checkout {
+                format!(
+                    "branch '{branch}' is already checked out in another worktree, \
+                     and git allows a branch in only one at a time."
+                )
+            } else {
+                format!("branch '{branch}' is already checked out elsewhere. Pick a different task name.")
+            });
         }
         return Err(e.to_string());
     }
@@ -28144,6 +28276,139 @@ mod tests {
         // ...and the tolerant wrapper keeps its fallback, so nothing that
         // depends on it changes behaviour.
         assert_eq!(resolve_base_ref(repo, "this-ref-does-not-exist"), "HEAD");
+    }
+
+    // ──────────────── checkout_existing_branch ────────────────
+
+    /// A bare `origin`, a `colleague` repo that pushes to it, and a `work`
+    /// clone taken after the colleague pushed `alice/fix`. So `work` has
+    /// `refs/remotes/origin/alice/fix` and no local `alice/fix`: the shape of
+    /// "review someone else's branch". Returns (tempdir, work, colleague).
+    fn checkout_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin.git");
+        let colleague = dir.path().join("colleague");
+        let work = dir.path().join("work");
+        fs::create_dir_all(&origin).unwrap();
+        fs::create_dir_all(&colleague).unwrap();
+        git_run(&origin, &["init", "--bare", "-b", "main"]);
+        git_init_with_commit(&colleague);
+        git_set_identity(&colleague);
+        git_run(&colleague, &["remote", "add", "origin", &origin.to_string_lossy()]);
+        git_run(&colleague, &["push", "origin", "main"]);
+        git_run(&colleague, &["checkout", "-b", "alice/fix"]);
+        git_commit_file(&colleague, "fix.txt", "the fix\n", "fix");
+        git_run(&colleague, &["push", "origin", "alice/fix"]);
+        git_run(dir.path(), &["clone", "-q", &origin.to_string_lossy(), &work.to_string_lossy()]);
+        git_set_identity(&work);
+        (dir, work, colleague)
+    }
+
+    fn local_branches(repo: &Path) -> String {
+        git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"], repo).unwrap()
+    }
+
+    #[test]
+    fn checkout_uses_a_local_branch_as_it_is() {
+        let (_dir, work, _colleague) = checkout_fixture();
+        git_run(&work, &["branch", "mine"]);
+        let before = local_branches(&work);
+        let got = checkout_existing_branch(&work, "mine", true, &mut |_| {}).unwrap();
+        assert_eq!(got, "mine");
+        assert_eq!(local_branches(&work), before, "a local branch must not be recreated or moved");
+    }
+
+    #[test]
+    fn checkout_tracks_a_branch_that_only_exists_on_the_remote() {
+        // Both spellings a user reaches for: the bare name the colleague said,
+        // and the `origin/...` ref the picker lists.
+        for requested in ["alice/fix", "origin/alice/fix"] {
+            let (_dir, work, colleague) = checkout_fixture();
+            let mut lines = Vec::new();
+            let got = checkout_existing_branch(&work, requested, false, &mut |l| lines.push(l)).unwrap();
+            assert_eq!(got, "alice/fix", "{requested}");
+            assert_eq!(
+                git_rev(&work, "refs/heads/alice/fix"),
+                git_rev(&colleague, "alice/fix"),
+                "{requested}: the local branch must sit on the COLLEAGUE's commit, not on main",
+            );
+            assert_eq!(
+                git(&["rev-parse", "--abbrev-ref", "alice/fix@{upstream}"], &work).unwrap().trim(),
+                "origin/alice/fix",
+                "{requested}: push and pull on it have to reach their branch",
+            );
+            assert!(lines.iter().any(|l| l.contains("tracking 'origin/alice/fix'")), "{lines:?}");
+        }
+    }
+
+    #[test]
+    fn checkout_fetches_a_branch_pushed_after_the_last_fetch() {
+        let (_dir, work, colleague) = checkout_fixture();
+        git_run(&colleague, &["checkout", "-b", "bob/late"]);
+        git_commit_file(&colleague, "late.txt", "late\n", "late");
+        git_run(&colleague, &["push", "origin", "bob/late"]);
+
+        // Without the fetch, this repo has never heard of it.
+        assert!(checkout_existing_branch(&work, "bob/late", false, &mut |_| {}).is_err());
+        assert!(git(&["rev-parse", "--verify", "--quiet", "refs/heads/bob/late"], &work).is_err());
+
+        let got = checkout_existing_branch(&work, "bob/late", true, &mut |_| {}).unwrap();
+        assert_eq!(got, "bob/late");
+        assert_eq!(git_rev(&work, "refs/heads/bob/late"), git_rev(&colleague, "bob/late"));
+    }
+
+    #[test]
+    fn checkout_of_an_unknown_branch_is_an_error_and_creates_nothing() {
+        // The bug this exists for: the new-branch path turns an unknown name
+        // into a fresh branch off the base, and an agent then reviews main
+        // under the colleague's branch name.
+        let (_dir, work, _colleague) = checkout_fixture();
+        let before = local_branches(&work);
+        let err = checkout_existing_branch(&work, "nobody/has-this", true, &mut |_| {}).unwrap_err();
+        assert!(err.contains("no branch 'nobody/has-this'") && err.contains("origin"), "{err}");
+        assert_eq!(local_branches(&work), before, "a refused checkout must leave no branch behind");
+    }
+
+    #[test]
+    fn checkout_in_a_repo_with_no_remote_is_a_clean_error() {
+        // detect_default_remote answers "origin" even when there is none, and
+        // fetch_ref no-ops for it, so this has to fall through to the error.
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git_init_with_commit(repo);
+        let err = checkout_existing_branch(repo, "feature/x", true, &mut |_| {}).unwrap_err();
+        assert!(err.contains("no branch 'feature/x'"), "{err}");
+        git_run(repo, &["branch", "feature/x"]);
+        assert_eq!(checkout_existing_branch(repo, "feature/x", true, &mut |_| {}).unwrap(), "feature/x");
+    }
+
+    #[test]
+    fn checkout_refuses_names_git_would_read_as_options_or_reject() {
+        let (_dir, work, _colleague) = checkout_fixture();
+        assert!(checkout_existing_branch(&work, "  ", true, &mut |_| {}).unwrap_err().contains("name the branch"));
+        for bad in ["--upload-pack=touch pwned", "-x", "origin/-x", "a..b", "has space", "ends.lock"] {
+            let err = checkout_existing_branch(&work, bad, true, &mut |_| {}).unwrap_err();
+            assert!(err.contains("not a valid branch name"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn checkout_prefers_the_local_branch_over_a_diverged_remote_one() {
+        // The local copy may hold the user's own review commits: checking the
+        // branch out again must not move it to wherever the remote went.
+        let (_dir, work, colleague) = checkout_fixture();
+        git_run(&work, &["checkout", "-q", "alice/fix"]);
+        git_commit_file(&work, "mine.txt", "mine\n", "my note");
+        git_run(&work, &["checkout", "-q", "main"]);
+        let mine = git_rev(&work, "refs/heads/alice/fix");
+        git_run(&colleague, &["checkout", "-q", "alice/fix"]);
+        git_commit_file(&colleague, "more.txt", "more\n", "more");
+        git_run(&colleague, &["push", "origin", "alice/fix"]);
+
+        let got = checkout_existing_branch(&work, "origin/alice/fix", true, &mut |_| {}).unwrap();
+        assert_eq!(got, "alice/fix");
+        assert_eq!(git_rev(&work, "refs/heads/alice/fix"), mine);
+        assert_ne!(git_rev(&work, "refs/remotes/origin/alice/fix"), mine, "the fetch did move the remote ref");
     }
 
     #[test]
