@@ -431,7 +431,8 @@ describe("YOLO default for new tasks", () => {
     await setProjectDefault(null);
   });
 
-  it("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
+  // The Seatbelt cards are macOS only.
+  (process.platform === "darwin" ? it : it.skip)("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
     await setAppDefault(false);
     await openDialog();
     await pickSandbox("ENFORCING (filesystem + network)");

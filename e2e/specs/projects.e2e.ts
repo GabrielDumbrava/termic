@@ -2421,9 +2421,14 @@ describe("quick-create YOLO note", () => {
 
   it("stays quiet when the project's cage already turns YOLO on", async () => {
     await setAppDefault(true);
-    await setProject({ default_sandbox: true, default_sandbox_mode: "enforce" });
+    // Seatbelt is macOS only (off it, a Seatbelt default reads as Off);
+    // Docker is a cage on every OS.
+    const cage = process.platform === "darwin"
+      ? { default_sandbox: true, default_sandbox_mode: "enforce" }
+      : { default_docker: true };
+    await setProject(cage);
     expect(await noteShown()).toBe(false);
-    await setProject({ default_sandbox: false, default_sandbox_mode: null });
+    await setProject({ default_sandbox: false, default_sandbox_mode: null, default_docker: false });
   });
 });
 
