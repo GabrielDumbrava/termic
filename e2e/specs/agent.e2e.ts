@@ -1946,7 +1946,18 @@ describe("agent notifications", () => {
           },
           "statusline");
       }, agent, session, weekly);
+    /** The footer IS the container the chip rule is written against, so its
+     *  width is set directly (see the narrow half below). */
+    const setFooterWidth = (px: string) => browser.execute((w) => {
+      const el = [...document.querySelectorAll('[data-testid="task-footer"]')]
+        .find(e => e.getClientRects().length > 0) as HTMLElement | undefined;
+      if (el) el.style.width = w;
+    }, px);
     try {
+      // Room for both, whatever the window: on a 1024px one (the CI runner's)
+      // the task footer is already below the threshold and drops the second
+      // chip, which is the narrow case, not this one.
+      await setFooterWidth("1200px");
       await browser.execute((id, second) => {
         window.__termic!.useApp.setState((s: any) => ({
           tabs: {
@@ -1954,11 +1965,6 @@ describe("agent notifications", () => {
             [id!]: [...s.tabs[id!], {
               id: "e2e-second-agent-tab", type: "terminal", cli: second,
               title: second, is_default: false,
-              // As if it had spawned on the ordinary login. `fakeagent-2` is
-              // not a real command: unix forks it and fails the exec later,
-              // Windows refuses it at spawn, and a chip for an agent that
-              // never spawned has no account to show.
-              liveAccount: null,
             }],
           },
         }));
@@ -1984,11 +1990,6 @@ describe("agent notifications", () => {
       // assert nothing here. The rule itself is evaluated by the real engine
       // either way. The chip that survives is the one whose tab is on screen,
       // which is the task's own agent.
-      const setFooterWidth = (px: string) => browser.execute((w) => {
-        const el = [...document.querySelectorAll('[data-testid="task-footer"]')]
-          .find(e => e.getClientRects().length > 0) as HTMLElement | undefined;
-        if (el) el.style.width = w;
-      }, px);
       await setFooterWidth("600px");
       await browser.waitUntil(
         async () => (await shown()).length === 1,
@@ -1999,7 +2000,7 @@ describe("agent notifications", () => {
       // it comes back with the room.
       expect((await chips()).map(c => c.agent)).toEqual(["fakeagent", SECOND]);
 
-      await setFooterWidth("");
+      await setFooterWidth("1200px");
       await browser.waitUntil(
         async () => (await shown()).length === 2,
         { timeout: 8_000, timeoutMsg: "the second chip never came back with the room" });
