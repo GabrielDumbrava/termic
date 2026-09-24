@@ -105,7 +105,7 @@ The rule that separates them, and that any future action must pick a side of:
 
 > **Navigation is immediate, state change is a modal, destruction is not a link.**
 
-`open` only selects something that already exists, so it just happens. **`new` never creates anything** — it fills the form and a human presses Create. That is the whole security model for accepting a `prompt`: links are authored in the ticket tracker, so whoever can file or edit an issue (in many orgs that includes external reporters) controls the text. It is also why an unregistered `project` is a hard error rather than a fallback to "the first project" or a silent project add. Do not add an auto-create or skip-confirmation option.
+`open` only selects something that already exists, so it just happens. **`new` never creates anything** — it fills the form and a human presses Create. That is the whole security model for accepting a `prompt`: links are authored in the ticket tracker, so whoever can file or edit an issue (in many orgs that includes external reporters) controls the text. It is also why an unregistered `project` is a hard error rather than a fallback to "the first project" or a silent project add. Do not add an auto-create or skip-confirmation option. The same reasoning keeps a YOLO default (Settings → Sandbox) from applying to a link that carries a `prompt`: the dialog starts with YOLO unticked and says why (`yoloHeld` in `NewTaskDialog.tsx`, which also steps back when an issue fills the prompt), so text someone else wrote reaches an agent that still asks before it runs anything. The user can tick it.
 
 ### Percent-encoding the `prompt`
 

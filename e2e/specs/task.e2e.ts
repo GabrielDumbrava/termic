@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
 // (scoped via the name input's dialog — there can be more than one
@@ -242,6 +243,239 @@ describe("create task wizard", () => {
     } catch {
       /* already gone */
     }
+  });
+});
+
+// Default YOLO for new tasks (Settings → Sandbox, overridable per project).
+//
+// A default must never be a silent auto-approve on an uncaged task, so all it
+// does is SEED the New Task dialog's checkbox, which the user reads before
+// Create. Driven through the real dialog, and checked where it shows: the
+// checkbox, the red ⚡ on the new row, and the FIRST spawn's argv. That last
+// one is the point of setting it at create: a flag set after the tab mounts
+// only reaches the agent through a restart.
+describe("YOLO default for new tasks", () => {
+  const NAME_INPUT = 'input[placeholder="fix login bug"]';
+  const created: string[] = [];
+  let projectId!: string;
+  let saved: { pref: boolean; project: boolean | null } | null = null;
+
+  const setAppDefault = (on: boolean) =>
+    browser.execute((v) => window.__termic!.usePrefs.getState().setDefaultYolo(v), on);
+
+  /** Set the project's own answer through the same IPC Settings uses. */
+  const setProjectDefault = (v: boolean | null) =>
+    browser.execute(async (pid, val) => {
+      const t = window.__termic!;
+      const p = t.useApp.getState().projects.find((x: any) => x.id === pid);
+      await t.ipc.projectUpdate({ ...p, default_yolo: val });
+      await t.useApp.getState().loadAll();
+    }, projectId, v);
+
+  /** Open the dialog on Main checkout with FakeAgent picked, so every case
+   *  starts from the same shape whatever the last one left remembered. */
+  const openDialog = async () => {
+    await browser.execute((pid) => window.__termic!.useUI.getState().openNewTask(pid), projectId);
+    await waitVisible(`[role="dialog"] ${NAME_INPUT}`, 8_000);
+    await clickDialogButton("Main checkout");
+    await clickDialogButton("FakeAgent");
+  };
+
+  const closeDialog = async () => {
+    await browser.execute(() => window.__termic!.useUI.getState().closeNewTask());
+    await waitGone(`[role="dialog"] ${NAME_INPUT}`);
+  };
+
+  /** What the dialog's YOLO control shows, or null when it is not rendered. */
+  const yoloControl = () =>
+    browser.execute((sel) => {
+      const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
+      const el = dlg?.querySelector('[data-testid="new-task-yolo"]');
+      if (!el) return null;
+      const box = el.querySelector('input[type="checkbox"]') as HTMLInputElement;
+      return { state: el.getAttribute("data-yolo-state"), checked: box.checked, disabled: box.disabled };
+    }, NAME_INPUT);
+
+  const clickYolo = () =>
+    browser.execute((sel) => {
+      const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
+      (dlg?.querySelector('[data-testid="new-task-yolo"] input') as HTMLElement).click();
+    }, NAME_INPUT);
+
+  /** Click one of the sandbox picker's cards by its heading. */
+  const pickSandbox = (heading: string) =>
+    browser.execute((sel, h) => {
+      const dlg = document.querySelector(sel)?.closest('[role="dialog"]');
+      const btn = [...(dlg?.querySelectorAll("button") ?? [])].find(
+        (b) => b.querySelector("span")?.textContent?.trim() === h,
+      );
+      (btn as HTMLElement).click();
+    }, NAME_INPUT, heading);
+
+  /** Name the task, Create, and return the created task once it lands. */
+  const createNamed = async (name: string) => {
+    await browser.execute((sel, n) => {
+      const input = document.querySelector(`[role="dialog"] ${sel}`) as HTMLInputElement;
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!
+        .set!.call(input, n);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, NAME_INPUT, name);
+    await clickDialogButton("Create");
+    await browser.waitUntil(
+      () => browser.execute((n) =>
+        window.__termic!.useApp.getState().tasks.some((t: any) => t.name === n && !t.archived), name),
+      { timeout: 15_000, timeoutMsg: `the dialog did not create ${name}` },
+    );
+    const task = await browser.execute((n) =>
+      window.__termic!.useApp.getState().tasks.find((t: any) => t.name === n && !t.archived), name) as any;
+    created.push(task.id);
+    return task;
+  };
+
+  /** Argv of every spawn a task has made, oldest first (the fixture logs it:
+   *  terminal output is a canvas, so this is the only way to read it). */
+  const spawnArgv = (id: string): string[] => {
+    const log = path.join(dataDir, "e2e-agent-argv.log");
+    if (!existsSync(log)) return [];
+    return readFileSync(log, "utf8").split("\n")
+      .filter((l) => l.startsWith(id + "\t"))
+      .map((l) => l.slice(id.length + 1));
+  };
+
+  const firstSpawnArgv = async (id: string) => {
+    await browser.waitUntil(async () => spawnArgv(id).length > 0, {
+      timeout: 20_000, timeoutMsg: "the agent never spawned",
+    });
+    return spawnArgv(id)[0];
+  };
+
+  /** The red ⚡ on the task's sidebar row: YOLO without a cage. */
+  const rowBadge = (id: string) =>
+    browser.execute((i) =>
+      !!document.querySelector(`[data-sidebar-task-row="${i}"] [data-testid="task-yolo-badge"]`), id);
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const info = await browser.execute(() => {
+      const t = window.__termic!;
+      const p = t.useApp.getState().projects.find((x: any) => x.name === "fixture-repo");
+      return { id: p.id as string, project: (p.default_yolo ?? null) as boolean | null,
+        pref: !!t.usePrefs.getState().defaultYolo };
+    });
+    projectId = info.id;
+    saved = { pref: info.pref, project: info.project };
+    await setAppDefault(false);
+    await setProjectDefault(null);
+  });
+
+  after(async () => {
+    await browser.execute(() => window.__termic!.useUI.getState().closeNewTask()).catch(() => {});
+    for (const id of created) await archiveTask(id).catch(() => {});
+    if (saved) {
+      await setAppDefault(saved.pref);
+      await setProjectDefault(saved.project);
+    }
+  });
+
+  it("leaves YOLO unticked, and the agent asking, when nothing sets a default", async () => {
+    await openDialog();
+    expect(await yoloControl()).toEqual({ state: "off", checked: false, disabled: false });
+    const task = await createNamed(`e2e-yolo-off-${Date.now()}`);
+    expect(task.yolo).toBe(false);
+    expect(await firstSpawnArgv(task.id)).not.toContain("--dangerously-skip-permissions");
+    expect(await rowBadge(task.id)).toBe(false);
+  });
+
+  it("starts ticked from the app-wide default, and the FIRST spawn already skips prompts", async () => {
+    await setAppDefault(true);
+    await openDialog();
+    await snap("new-task-yolo-default-on.png");
+    expect(await yoloControl()).toEqual({ state: "on", checked: true, disabled: false });
+    const task = await createNamed(`e2e-yolo-on-${Date.now()}`);
+    expect(task.yolo).toBe(true);
+    // No restart involved: the flag is on the command line of spawn #1.
+    expect(await firstSpawnArgv(task.id)).toContain("--dangerously-skip-permissions");
+    await browser.waitUntil(() => rowBadge(task.id), {
+      timeout: 5_000, timeoutMsg: "no red YOLO badge on the new task's row",
+    });
+  });
+
+  it("lets the user untick the default for one task", async () => {
+    await setAppDefault(true);
+    await openDialog();
+    await clickYolo();
+    expect(await yoloControl()).toEqual({ state: "off", checked: false, disabled: false });
+    const task = await createNamed(`e2e-yolo-unticked-${Date.now()}`);
+    expect(task.yolo).toBe(false);
+    expect(await firstSpawnArgv(task.id)).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("lets the project's own Off beat the app-wide On", async () => {
+    await setAppDefault(true);
+    await setProjectDefault(false);
+    await openDialog();
+    expect(await yoloControl()).toEqual({ state: "off", checked: false, disabled: false });
+    await closeDialog();
+    // ...and the project's On beats the app-wide Off.
+    await setAppDefault(false);
+    await setProjectDefault(true);
+    await openDialog();
+    expect((await yoloControl())?.state).toBe("on");
+    await closeDialog();
+    await setProjectDefault(null);
+  });
+
+  it("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
+    await setAppDefault(false);
+    await openDialog();
+    await pickSandbox("ENFORCING (filesystem + network)");
+    await browser.waitUntil(async () => (await yoloControl())?.state === "auto", {
+      timeout: 5_000, timeoutMsg: "the YOLO control never switched to auto under Enforcing",
+    });
+    expect(await yoloControl()).toEqual({ state: "auto", checked: true, disabled: true });
+    // Monitoring blocks nothing, so it is not a cage: the choice is live again.
+    await pickSandbox("MONITORING");
+    await browser.waitUntil(async () => (await yoloControl())?.state === "off", {
+      timeout: 5_000, timeoutMsg: "the YOLO control stayed on auto under Monitoring",
+    });
+    await pickSandbox("OFF");
+    await closeDialog();
+  });
+
+  it("hides for a task whose default tab is not an agent", async () => {
+    await setAppDefault(true);
+    await openDialog();
+    expect(await yoloControl()).not.toBeNull();
+    await clickDialogButton("Terminal");
+    await browser.waitUntil(async () => (await yoloControl()) === null, {
+      timeout: 5_000, timeoutMsg: "the YOLO control is still up for a Terminal task",
+    });
+    await closeDialog();
+  });
+
+  it("seeds the Race dialog's YOLO from the same default", async () => {
+    const raceYolo = () =>
+      browser.execute(() => {
+        const box = document.querySelector('[data-testid="race-yolo"] input') as HTMLInputElement | null;
+        return box ? box.checked : null;
+      });
+    const openRace = async () => {
+      await browser.execute((pid) => window.__termic!.useUI.getState().openRace(pid), projectId);
+      await browser.waitUntil(async () => (await raceYolo()) !== null, {
+        timeout: 8_000, timeoutMsg: "race dialog never appeared",
+      });
+    };
+    const closeRace = () => browser.execute(() => window.__termic!.useUI.getState().closeRace());
+
+    await setAppDefault(true);
+    await openRace();
+    expect(await raceYolo()).toBe(true);
+    await closeRace();
+    await setAppDefault(false);
+    await openRace();
+    expect(await raceYolo()).toBe(false);
+    await closeRace();
   });
 });
 

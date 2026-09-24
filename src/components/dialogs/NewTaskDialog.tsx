@@ -20,11 +20,12 @@ import { withCreateLock } from "@/lib/createLock";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { uniqueBranch, derivedBranch } from "@/lib/quickTask";
 import { cn } from "@/lib/utils";
-import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History } from "lucide-react";
+import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap } from "lucide-react";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
+import { projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
-import { selectionToFields, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext } from "@/lib/types";
+import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
@@ -134,6 +135,23 @@ export function NewTaskDialog() {
   // SandboxSelection (off / Seatbelt's 3 modes / docker) rather than a
   // separate mode + engine - see SandboxPicker.tsx.
   const [selection, setSelection] = useState<SandboxSelection>("off");
+  // YOLO for THIS task, seeded on open from the project's default, then the
+  // app-wide one (Settings → Sandbox). Unlike the sandbox picker it does NOT
+  // remember the last pick: that habit is not scoped to a project, so ticking
+  // it once in a trusted repo would pre-tick it in the next untrusted one.
+  // What gets SENT is `yoloForCreate` (off for a caged task or a non-agent).
+  const [yolo, setYolo] = useState(false);
+  // Set when the default said YOLO but the first message was written by
+  // someone else (a deep link's `prompt`, or a picked issue), so the box
+  // starts unticked and the hint says why. docs/ipc.md's deep-link model is
+  // that a human reads the form before Create because whoever can edit the
+  // ticket controls that text; skipping the agent's prompts on it would turn
+  // "reads the form" into "approves every command the text talks it into".
+  // Cleared the moment the user ticks or unticks the box themselves.
+  const [yoloHeld, setYoloHeld] = useState<"link" | "issue" | null>(null);
+  // The resolved default at open, for "blank task instead": once the issue's
+  // text is cleared out of the box, nothing foreign is left and it applies.
+  const yoloDefaultRef = useRef(false);
   // Sandbox is macOS-only. On unsupported platforms, disable every
   // Seatbelt card except Off so we never save a mode that would only fail
   // later at spawn.
@@ -215,6 +233,12 @@ export function NewTaskDialog() {
   // Derived: Seatbelt cage on (Docker is its own separate flag below).
   // Drives the 2-column layout + "send lists" gating.
   const sandbox = !dockerWanted && sandboxMode !== "off" && canSandbox;
+  // YOLO is moot inside a cage (spawn turns it on, `isTaskCaged`) and has no
+  // meaning when the default tab is not an agent, so the checkbox shows the
+  // first as "auto" and hides for the second.
+  const yoloCaged = isTaskCaged({ sandbox_mode: sandboxMode, docker_sandbox_enabled: dockerWanted });
+  const yoloApplies = !isTerminalCli(cli);
+  const yoloArg = yoloForCreate(yolo, selection, yoloApplies);
   // Import mode (issue #5): instead of branching a fresh worktree, adopt
   // one that already exists on disk. Only offered for single-repo git
   // projects (multi composition / non-git folders don't apply). When on,
@@ -441,6 +465,11 @@ export function NewTaskDialog() {
       p?.default_sandbox_mode ?? (p?.default_sandbox ? "enforce" : null);
     const globalDefault = usePrefs.getState().globalDefaultSandboxKind;
     setSelection(readLastSandbox() ?? projectDefaultSandbox ?? globalDefault);
+    const yoloDefault = projectYoloDefault(p, usePrefs.getState().defaultYolo);
+    yoloDefaultRef.current = yoloDefault;
+    const promptFromLink = !!seed?.prompt;
+    setYolo(yoloDefault && !promptFromLink);
+    setYoloHeld(yoloDefault && promptFromLink ? "link" : null);
     // Seed with project's lists immediately; once Settings loads,
     // merge global defaults on top (dedupe-preserving order).
     setSbRw((p?.sandbox_rw_paths ?? []).join("\n"));
@@ -716,6 +745,10 @@ export function NewTaskDialog() {
     // opens "GitHub issue #266:" is actively wrong on a task that is no longer
     // about that issue, and "blank task instead" says what it clears.
     if (issueSelected) setPrompt("");
+    // The issue's text just left the box, so the reason YOLO stepped back
+    // left with it (see `yoloHeld`). Not e2e-covered: picking an issue needs
+    // a real forge, which the fixture repo is not.
+    if (yoloHeld === "issue") { setYolo(yoloDefaultRef.current); setYoloHeld(null); }
     setIssueSelected(null);
     setErr(null);
   }
@@ -738,6 +771,11 @@ export function NewTaskDialog() {
     // and picking a second issue has to replace the first one's prompt or the
     // agent gets handed two.
     setPrompt(buildIssuePrompt(issue, MAX_PROMPT_CHARS));
+    // The issue's author wrote that prompt, so a YOLO default steps back
+    // (see `yoloHeld`). A box the user ticked themselves steps back too: the
+    // text it was ticked for has just been replaced. One already held for a
+    // link now says "the issue", since that is whose text is in the box.
+    if (yolo || yoloHeld) { setYolo(false); setYoloHeld("issue"); }
     setErr(null);
   }
 
@@ -759,6 +797,7 @@ export function NewTaskDialog() {
         // the agent switches to one with nothing to resume, but the typed
         // value would otherwise still ride along.
         resumeOverrideArg(),
+        yoloArg,
       ));
       await loadAll();
       setActive(w.id);
@@ -793,6 +832,8 @@ export function NewTaskDialog() {
         undefined,
         undefined, // no externally-started session id from this dialog
         resumeOverrideArg(),
+        undefined, // no agent args from this dialog
+        yoloArg,
       ));
       await loadAll();
       setActive(w.id);
@@ -887,6 +928,7 @@ export function NewTaskDialog() {
           docker_sandbox_enabled: dockerWanted,
           docker_extra_mounts:    dockerWanted ? splitLines(dockerMounts) : undefined,
           resume_override: resumeOverrideArg(),
+          yolo: yoloArg,
         }));
       } else {
         await withCreateLock(() => taskCreate({
@@ -911,6 +953,7 @@ export function NewTaskDialog() {
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
           docker_sandbox_enabled: dockerWanted,
           docker_extra_mounts:    dockerWanted ? splitLines(dockerMounts) : undefined,
+          yolo: yoloArg,
         }));
       }
       await loadAll();
@@ -1580,6 +1623,47 @@ export function NewTaskDialog() {
             </div>
           )}
         </Field>
+        )}
+
+        {/* YOLO, seeded from the defaults (this project's, then Settings →
+            Sandbox) and shown BEFORE Create, so a default is never a silent
+            auto-approve on an uncaged task. The same two states as the Race
+            dialog's checkbox: live and red when the agent would run uncaged,
+            disabled "auto" when the cage already turns it on. */}
+        {yoloApplies && (
+          <Field
+            label="YOLO"
+            hint={yoloCaged
+              ? "Auto-on: the sandbox is the boundary, so the agent's own prompts are skipped."
+              : !yolo && yoloHeld
+                ? `Off for this task: the first message came from ${yoloHeld === "link" ? "a link" : "the issue"}, so someone else wrote it. Tick it if you trust the text.`
+                : yolo
+                ? "Nothing cages the agent: it runs every command without asking. Change it later from the task menu."
+                : "The agent asks before running commands. The default is set in Settings → Sandbox."}
+          >
+            <label
+              data-testid="new-task-yolo"
+              data-yolo-state={yoloCaged ? "auto" : yolo ? "on" : "off"}
+              data-yolo-held={yoloHeld ?? undefined}
+              className={cn(
+                "flex w-fit items-center gap-2 text-[13px] select-none",
+                yoloCaged
+                  ? "cursor-default text-[var(--color-fg-faint)]"
+                  : "cursor-pointer text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                !yoloCaged && yolo && "text-[var(--color-err)] hover:text-[var(--color-err)]",
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={yoloCaged || yolo}
+                disabled={yoloCaged}
+                onChange={e => { setYolo(e.target.checked); setYoloHeld(null); }}
+                className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0 disabled:cursor-default"
+              />
+              <Zap className="h-3.5 w-3.5 shrink-0" fill={yoloCaged || yolo ? "currentColor" : "none"} />
+              {yoloCaged ? "Auto-on inside the sandbox" : "Skip permission prompts"}
+            </label>
+          </Field>
         )}
       </div>
 
