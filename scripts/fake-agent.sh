@@ -193,7 +193,20 @@ if [ -n "$picker" ]; then
     IFS= read -r -n1 first || { picker_log "<eof>"; exit 1; }
     [ "$first" != "$esc" ] && break
     if IFS= read -r -n1 -t 0.15 _next; then
-      while IFS= read -r -n1 -t 0.05 _more; do :; done
+      # Skip exactly ONE reply, not everything that follows it: a focus-in
+      # report (ESC [ I, which ConPTY turns on for every console) lands right
+      # before the keys typed after focusing the terminal, and draining by
+      # timing swallowed the whole typed line with it. CSI runs to a final
+      # byte in @..~; OSC to BEL or ESC \; anything else is ESC plus one.
+      case "$_next" in
+        "[") while IFS= read -r -n1 -t 0.15 _more; do
+               case "$_more" in [@-~]) break ;; esac
+             done ;;
+        "]") while IFS= read -r -n1 -t 0.15 _more; do
+               case "$_more" in $'\a'|"$esc") break ;; esac
+             done
+             [ "${_more:-}" = "$esc" ] && IFS= read -r -n1 -t 0.15 _more ;;
+      esac
       continue
     fi
     picker_log "<esc>"
