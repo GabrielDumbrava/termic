@@ -180,17 +180,26 @@ if [ -n "$picker" ]; then
   # device-attribute and focus queries this way), so an ESC followed at once
   # by more bytes is one of those and is skipped; a lone ESC is the key.
   esc="$(printf '\033')"
+  picker_log() {
+    [ -n "${TERMIC_DATA_DIR:-}" ] && printf '%s\t%s\n' "${TERMIC_TASK_ID:-}" "$1" \
+      >> "${TERMIC_DATA_DIR}/e2e-picker.log" 2>/dev/null
+    return 0
+  }
   while :; do
-    IFS= read -r -n1 first || exit 1
+    IFS= read -r -n1 first || { picker_log "<eof>"; exit 1; }
     [ "$first" != "$esc" ] && break
     if IFS= read -r -n1 -t 0.15 _next; then
       while IFS= read -r -n1 -t 0.05 _more; do :; done
       continue
     fi
+    picker_log "<esc>"
     exit 1
   done
   IFS= read -r rest || true
   choice="${first}${rest}"
+  # What the picker read, escaped, for a spec that fails on one platform
+  # only: the line is the whole story and the terminal is a canvas.
+  picker_log "$(printf '%q' "$choice")"
   case "$choice" in
     "pick "*)
       osc777 "termic;agent ready for input"
