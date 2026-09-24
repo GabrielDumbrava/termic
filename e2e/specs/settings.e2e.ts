@@ -3278,8 +3278,19 @@ describe("agent hooks", () => {
     // Collapsed by default: expanded, this pushed the per-agent tabs (the
     // reason anyone opens the page) below the fold behind two paragraphs of
     // protocol detail.
-    await browser.execute(() =>
-      (document.querySelector('[data-testid="agent-hooks-toggle"]') as HTMLElement | null)?.click());
+    // Clicked until it opens: the block re-renders as the seeded detection
+    // lands, and a click on the node it replaces changes nothing.
+    await browser.waitUntil(() => browser.execute(() => {
+      const t = document.querySelector('[data-testid="agent-hooks-toggle"]') as HTMLElement | null;
+      const w = window as any;
+      // At most one click a second, so a slow re-render is never clicked
+      // shut again.
+      if (t?.getAttribute("aria-expanded") !== "true" && Date.now() - (w.__e2eHooksClick ?? 0) > 1000) {
+        w.__e2eHooksClick = Date.now();
+        t?.click();
+      }
+      return t?.getAttribute("aria-expanded") === "true";
+    }), { timeout: 10_000, interval: 300, timeoutMsg: "the Agent hooks block never expanded" });
     // Only agents that can actually be wired get a row. An agent the installer
     // cannot help ("not supported yet", "not needed, its terminal already
     // reports this") is a row you can do nothing with, and there were more of
