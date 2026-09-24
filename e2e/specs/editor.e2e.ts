@@ -208,7 +208,7 @@ describe("editor open", () => {
     await browser.waitUntil(async () => !!(await tabOf(path.join(dir, "other.md"))), {
       timeout: 8_000, timeoutMsg: "a relative link in an external document did not open its sibling",
     });
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
   });
 });
 

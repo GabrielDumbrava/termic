@@ -65,7 +65,7 @@ describe("scratchpads", () => {
     // untracked file left here survives into the next run and the git spec's
     // "Working tree is clean" boots red for a reason that has nothing to do
     // with git. Untracked dirt is the spec's to clean.
-    rmSync(path.join(fixture, "notes"), { recursive: true, force: true });
+    rmSync(path.join(fixture, "notes"), { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("opens from the + menu as an untitled, permanently-dirty tab", async () => {

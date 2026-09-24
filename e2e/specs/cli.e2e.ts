@@ -596,7 +596,7 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
       expect(r.error.code).toBe("bad_request");
       expect(r.error.message).toContain("not a git worktree");
     } finally {
-      fs.rmSync(plain, { recursive: true, force: true });
+      fs.rmSync(plain, { recursive: true, force: true, maxRetries: 10 });
     }
   });
 

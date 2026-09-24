@@ -275,8 +275,8 @@ describe("code intelligence", () => {
     ]) {
       rmSync(path.join(root, rel), { force: true });
     }
-    rmSync(path.join(root, "nested"), { recursive: true, force: true });
-    rmSync(path.join(root, "node_modules"), { recursive: true, force: true });
+    rmSync(path.join(root, "nested"), { recursive: true, force: true, maxRetries: 10 });
+    rmSync(path.join(root, "node_modules"), { recursive: true, force: true, maxRetries: 10 });
     // Never hand the next spec file a standing confirm: one is on screen at a
     // time, and an unanswered one blocks the whole window.
     await browser.execute(() => window.__termic!.useUI.getState().resolveConfirm(false));

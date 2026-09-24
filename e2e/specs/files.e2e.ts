@@ -644,7 +644,7 @@ describe("file tree", () => {
   const resetUnreadable = (dir: string) => {
     if (!existsSync(dir)) return;
     try { execSync(`chmod -R u+rwx "${dir}"`); } catch { /* already readable */ }
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
   };
 
   it("keeps a folder's contents when a settle reload cannot read it", async () => {
@@ -693,7 +693,7 @@ describe("file tree", () => {
     } finally {
       execSync(`chmod 755 "${dir}"`);
     }
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
     rmSync(path.join(fixture, "e2e-unreadable-sibling.txt"), { force: true });
   });
 
@@ -754,7 +754,7 @@ describe("file tree", () => {
       });
     } finally {
       execSync(`chmod 755 "${dir}"`);
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
     }
   });
 
@@ -808,7 +808,7 @@ describe("file tree", () => {
       // A directory symlink is a directory to Windows: unlink refuses it
       // (EISDIR / EPERM) and rmdir removes the link without its target.
       try { unlinkSync(link); } catch { try { rmdirSync(link); } catch { /* gone */ } }
-      rmSync(outside, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true, maxRetries: 10 });
     }
   });
 

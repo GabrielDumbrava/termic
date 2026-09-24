@@ -194,7 +194,7 @@ function signIn(agent: string, name: string): void {
  *  an account the previous case had signed in. Untracked files a spec creates
  *  are the spec's to remove. */
 function signOutAll(agent: string): void {
-  rmSync(join(dataDir, "logins", agent), { recursive: true, force: true });
+  rmSync(join(dataDir, "logins", agent), { recursive: true, force: true, maxRetries: 10 });
 }
 
 /** Forget every usage reading. In-memory only, so this is the whole reset.

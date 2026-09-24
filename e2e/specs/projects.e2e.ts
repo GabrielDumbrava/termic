@@ -24,7 +24,7 @@ describe("project add/remove", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, projectId);
     }
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("adds a git repo as a project", async () => {
@@ -100,7 +100,7 @@ describe("project add/remove", () => {
       } else {
         await browser.execute(() => window.__termic!.useUI.getState().closeNewProject());
       }
-      rmSync(dir2, { recursive: true, force: true });
+      rmSync(dir2, { recursive: true, force: true, maxRetries: 10 });
     }
   });
 
@@ -233,7 +233,7 @@ describe("discover repos", () => {
       `git -C "${sub}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
     );
   });
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10 }));
 
   it("finds a git repo inside a folder", async () => {
     await waitForAppShell();
@@ -347,7 +347,7 @@ describe("import worktree", () => {
           await window.__termic!.useApp.getState().loadAll();
         }, projectId);
       }
-      rmSync(bare, { recursive: true, force: true });
+      rmSync(bare, { recursive: true, force: true, maxRetries: 10 });
     }
   });
 });
@@ -626,8 +626,8 @@ describe("branch new tasks from", () => {
         }, projectId)
         .catch(() => {});
     }
-    for (const r of remotes) rmSync(remotePath(r), { recursive: true, force: true });
-    rmSync(dir, { recursive: true, force: true });
+    for (const r of remotes) rmSync(remotePath(r), { recursive: true, force: true, maxRetries: 10 });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("adds the repo and reports its branch context", async () => {
@@ -933,7 +933,7 @@ describe("sidebar project drag", () => {
       }, id);
     }
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
-    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 10 });
   });
 
   // Project ids in sidebar order.
@@ -1310,7 +1310,7 @@ describe("dashboard", () => {
       window.__termic!.useApp.getState().setView("dashboard");
     }, GROUP);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
-    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("renders a group folder with its members inside it", async () => {
@@ -1620,7 +1620,7 @@ describe("multi member modes (New Task dialog)", () => {
         await window.__termic!.useApp.getState().loadAll();
       }
     }, projectId);
-    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("seeds every git member row on Worktree when nothing is remembered", async () => {
@@ -1744,7 +1744,7 @@ describe("multi main checkout (New Task dialog)", () => {
         await window.__termic!.useApp.getState().loadAll();
       }
     }, projectId, savedMode);
-    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("shows the host-level toggle; Main checkout replaces the member rows with a run-live note", async () => {
@@ -2074,7 +2074,7 @@ describe("multi files to copy (GH #264)", () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     if (taskId) await archiveTask(taskId);
     await sweepProjects();
-    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("copies the host list into the task root and each member's own list into its worktree", async () => {
@@ -2087,7 +2087,7 @@ describe("multi files to copy (GH #264)", () => {
         const t = window.__termic!;
         const member = (root_path: string, files_to_copy: string[]) => ({
           root_path,
-          name: root_path.split("/").pop()!,
+          name: root_path.split(/[\\/]/).pop()!,
           base_branch: "main",
           setup_script: "", run_script: "", archive_script: "",
           files_to_copy,
@@ -2451,7 +2451,7 @@ describe("new project from a git URL", () => {
       + `&& git -C "${work}" -c user.email=e2e@termic.dev -c user.name=alice commit -q --allow-empty -m init `
       + `&& git -C "${work}" clone -q --bare . "${origin}/repo.git"`,
     );
-    rmSync(work, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true, maxRetries: 10 });
     parent = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-into-")));
   });
 
@@ -2463,8 +2463,8 @@ describe("new project from a git URL", () => {
       }, addedId);
     }
     // Both are this spec's own temp dirs; the clone lands inside `parent`.
-    rmSync(origin, { recursive: true, force: true });
-    rmSync(parent, { recursive: true, force: true });
+    rmSync(origin, { recursive: true, force: true, maxRetries: 10 });
+    rmSync(parent, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("proposes a destination from the URL and refuses to guess without one", async () => {

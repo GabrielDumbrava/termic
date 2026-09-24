@@ -1599,7 +1599,7 @@ describe("check out an existing branch", () => {
       quiet(fixture, `update-ref -d refs/remotes/origin/${b}`);
       quiet(origin, `branch -D ${b}`);
     }
-    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 10 });
   });
 
   /** Open New Task for fixture-repo in worktree mode, then flip to the
@@ -2020,7 +2020,7 @@ describe("agent race", () => {
       ]) {
         try {
           for (const entry of readdirSync(dir)) {
-            if (entry.startsWith(stale)) rmSync(path.join(dir, entry), { recursive: true, force: true });
+            if (entry.startsWith(stale)) rmSync(path.join(dir, entry), { recursive: true, force: true, maxRetries: 10 });
           }
         } catch { /* the directory may not exist on this machine */ }
       }
@@ -2536,7 +2536,7 @@ describe("sidebar task drag", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, otherProjectId);
     }
-    if (otherDir) rmSync(otherDir, { recursive: true, force: true });
+    if (otherDir) rmSync(otherDir, { recursive: true, force: true, maxRetries: 10 });
   });
 
   // Sidebar rows, NOT `[data-task-id]` — that one is MainArea's mounted

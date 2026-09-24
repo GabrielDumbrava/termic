@@ -1595,8 +1595,8 @@ describe("default tasks path", () => {
       }, projectId);
     }
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
-    rmSync(repoDir, { recursive: true, force: true });
-    rmSync(absRoot, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true, maxRetries: 10 });
+    rmSync(absRoot, { recursive: true, force: true, maxRetries: 10 });
   });
 
   // The setting is REQUIRED, so a loaded profile always carries a real value
@@ -3180,7 +3180,7 @@ describe("agent hooks", () => {
     // no longer there.
     expect(readFileSync(settingsPath, "utf8")).toBe(userConfig);
     expect(existsSync(scriptDir)).toBe(false);
-    rmSync(`${dataDir}/.claude`, { recursive: true, force: true });
+    rmSync(`${dataDir}/.claude`, { recursive: true, force: true, maxRetries: 10 });
   });
 
   // Only claude's hooks run on Windows so far (docs/windows.md).
@@ -3214,7 +3214,7 @@ describe("agent hooks", () => {
       await window.__termic!.invoke("agent_hooks_remove", { agentId: "devin" }));
     expect(readFileSync(devinConfig, "utf8")).toBe(userDevinConfig);
     expect(existsSync(devinScripts)).toBe(false);
-    rmSync(devinDir, { recursive: true, force: true });
+    rmSync(devinDir, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("refuses a malformed config rather than clobbering it", async () => {
@@ -3230,7 +3230,7 @@ describe("agent hooks", () => {
     expect(err).toBeTruthy();
     // Untouched: a config we could not parse is a config we must not rewrite.
     expect(readFileSync(settingsPath, "utf8")).toBe("{ this is not json");
-    rmSync(`${dataDir}/.claude`, { recursive: true, force: true });
+    rmSync(`${dataDir}/.claude`, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("shows an honest per-agent row instead of pretending every agent is wired", async () => {

@@ -1485,7 +1485,7 @@ describe("git commit & push", () => {
       }
     }
     execGit(`git -C "${fixture}" clean -fd`);
-    rmSync(bare, { recursive: true, force: true });
+    rmSync(bare, { recursive: true, force: true, maxRetries: 10 });
   });
 
   it("commits and pushes to the remote", async () => {
@@ -1722,7 +1722,7 @@ describe("git multi-repo panel", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, projectId);
     }
-    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
   });
 
   /** The repo pills, in render order. There is exactly one Git panel in the
