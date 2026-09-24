@@ -3203,6 +3203,11 @@ describe("task groups", () => {
     manualGid = child1;
     const input = `[data-testid="task-group-rename-${manualGid}"]`;
     await waitVisible(input);
+    // The whole name is selected, so typing replaces it.
+    await browser.waitUntil(() => browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLInputElement | null;
+      return !!el && el.value.length > 0 && el.selectionStart === 0 && el.selectionEnd === el.value.length;
+    }, input), { timeout: 5_000, timeoutMsg: "a new group's name was not selected for renaming" });
     await $(input).setValue("Hand-made");
     await browser.keys("Enter");
     await browser.waitUntil(async () => (await label(manualGid)) === "Hand-made", {

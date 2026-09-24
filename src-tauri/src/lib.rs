@@ -5049,9 +5049,12 @@ fn profile_delete_preview_sync(app: &AppHandle, slug: &str) -> Result<ProfileDel
 }
 
 #[tauri::command]
-async fn profile_delete(app: AppHandle, slug: String, delete_worktrees: bool) -> Result<(), String> {
+async fn profile_delete(app: AppHandle, window: tauri::Window, slug: String, delete_worktrees: bool) -> Result<(), String> {
     let app2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || profile_delete_sync(&app2, &slug, delete_worktrees))
+    // The CALLING window, from Tauri itself: the label is taken here, before
+    // the blocking hop, because a `Window` is what the command carries.
+    let caller = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || profile_delete_sync(&app2, &slug, delete_worktrees, &caller))
         .await
         .map_err(|e| e.to_string())??;
     forget_task_window(None);
@@ -5060,19 +5063,14 @@ async fn profile_delete(app: AppHandle, slug: String, delete_worktrees: bool) ->
     Ok(())
 }
 
-/// Is `label` the window this request came from?
-///
-/// `profile_delete` runs on a blocking thread and does not carry the calling
-/// `Window`, so the focused window stands in for it: the user just clicked a
-/// button in that dialog, so it is focused by construction.
-fn is_calling_window(app: &AppHandle, label: &str) -> bool {
-    use tauri::Manager;
-    app.webview_windows()
-        .iter()
-        .any(|(l, w)| l == label && w.is_focused().unwrap_or(false))
-}
-
-fn profile_delete_sync(app: &AppHandle, slug: &str, delete_worktrees: bool) -> Result<(), String> {
+/// `caller` is the label of the window that sent the request. It used to be
+/// inferred as "whichever window is focused", on the reasoning that the user
+/// just clicked in it. That holds for a person and fails for anything driving
+/// an unfocused window: the full e2e suite, run while someone uses the
+/// machine, deleted the profile of the very window it was driving, which then
+/// vanished mid-suite. The command receives its window from Tauri, so there
+/// is nothing to infer.
+fn profile_delete_sync(app: &AppHandle, slug: &str, delete_worktrees: bool, caller: &str) -> Result<(), String> {
     use tauri::Manager;
     let g = global_dir().map_err(|e| e.to_string())?;
     let mut reg = profiles::load_registry(&g);
@@ -5096,7 +5094,7 @@ fn profile_delete_sync(app: &AppHandle, slug: &str, delete_worktrees: bool) -> R
     // same rule `profile_close` already enforces.
     let label = id.window_label();
     if let Some(win) = app.get_webview_window(&label) {
-        if win.label() == label && is_calling_window(app, &label) {
+        if win.label() == caller {
             return Err("switch to another profile before deleting this one".into());
         }
         // Its PTYs die with the window, which is what the dialog warned about.

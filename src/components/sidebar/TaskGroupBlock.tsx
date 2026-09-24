@@ -57,10 +57,17 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
   const inputRef = useRef<HTMLInputElement | null>(null);
   // A menu closing restores focus after autoFocus has run; take it back two
   // frames later (TaskRow's rename does the same).
+  // Select the whole name the moment a rename starts, so typing replaces it.
+  // Unconditional: `autoFocus` has usually focused the field already, and a
+  // select gated on "not focused yet" never ran, leaving the caret at the
+  // end. Once now, and again two frames on for a menu whose close hands
+  // focus back after us.
   useEffect(() => {
     if (renaming === null) return;
+    const take = () => { inputRef.current?.focus(); inputRef.current?.select(); };
+    take();
     const r = requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (document.activeElement !== inputRef.current) { inputRef.current?.focus(); inputRef.current?.select(); }
+      if (document.activeElement !== inputRef.current) take();
     }));
     return () => cancelAnimationFrame(r);
   }, [renaming !== null]);
