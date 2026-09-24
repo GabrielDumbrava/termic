@@ -290,19 +290,15 @@ mod tests {
     }
 }
 
-/// Method-chain form of `new_group` / `hide_console`, for builder chains
+/// Method-chain form of `new_group`, for builder chains
 /// like `Command::new(x).stdout(..).new_group().spawn()`.
 pub trait CommandProcExt {
     fn new_group(&mut self) -> &mut Self;
-    fn hide_console(&mut self) -> &mut Self;
 }
 
 impl CommandProcExt for std::process::Command {
     fn new_group(&mut self) -> &mut Self {
         new_group(self)
-    }
-    fn hide_console(&mut self) -> &mut Self {
-        hide_console(self)
     }
 }
 

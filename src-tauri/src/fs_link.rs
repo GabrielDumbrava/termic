@@ -46,19 +46,17 @@ mod imp {
     /// `mklink /J` is a cmd.exe builtin; there is no std API for
     /// junctions. The target must be absolute.
     fn junction(target: &Path, link: &Path) -> io::Result<()> {
-        use crate::proc_ctl::CommandProcExt as _;
         let target = if target.is_absolute() {
             target.to_path_buf()
         } else {
             std::env::current_dir()?.join(target)
         };
-        let out = std::process::Command::new("cmd")
+        let out = crate::proc_ctl::command("cmd")
             .arg("/C")
             .arg("mklink")
             .arg("/J")
             .arg(link)
             .arg(&target)
-            .hide_console()
             .output()?;
         if out.status.success() {
             Ok(())

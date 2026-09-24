@@ -4960,27 +4960,35 @@ fn profile_open(app: AppHandle, slug: String) -> Result<(), String> {
     // Whoever focuses LAST wins, so the target goes last.
     //
     // A profile window is a window: an app that was windowless has one again.
-    dlog("[profile] open: leave_windowless");
-    leave_windowless(&app);
-    dlog("[profile] open: build");
-    let win = match app.get_webview_window(&id.window_label()) {
-        Some(w) => w,
-        None => build_profile_window(&app, &id).map_err(|e| e.to_string())?,
-    };
-    if id.is_root() {
-        // The root is hidden, never destroyed, so reopening it is a show and
-        // not a build, and nothing else would clear the "user closed it" mark.
-        root_brought_back();
-    }
-    dlog("[profile] open: show");
-    let _ = win.unminimize();
-    let _ = win.show();
-    focus_window_unless_e2e(&win);
-    // The menu marks the open profiles, so opening one changes it.
-    dlog("[profile] open: tray");
-    rebuild_tray_menu(&app);
-    dlog("[profile] open: done");
-    Ok(())
+    // The window work runs ON the main thread, from the event loop rather
+    // than from inside this IPC handler: building a window inside the
+    // handler deadlocks on Windows (wry#583), and building it from a worker
+    // thread returns before the window exists, after which every window
+    // call is a round trip to a main thread that is busy creating it (both
+    // froze the app in the Windows e2e run). This is how the startup window
+    // is made, which always worked.
+    on_main_thread(&app, move |app| {
+        dlog("[profile] open: leave_windowless");
+        leave_windowless(app);
+        dlog("[profile] open: build");
+        let win = match app.get_webview_window(&id.window_label()) {
+            Some(w) => w,
+            None => build_profile_window(app, &id).map_err(|e| e.to_string())?,
+        };
+        if id.is_root() {
+            // The root is hidden, never destroyed, so reopening it is a show and
+            // not a build, and nothing else would clear the "user closed it" mark.
+            root_brought_back();
+        }
+        dlog("[profile] open: show");
+        let _ = win.unminimize();
+        let _ = win.show();
+        focus_window_unless_e2e(&win);
+        // The menu marks the open profiles, so opening one changes it.
+        rebuild_tray_menu(app);
+        dlog("[profile] open: done");
+        Ok(())
+    })
 }
 
 /// Stop using profiles, keeping every byte of data.
@@ -8934,6 +8942,23 @@ fn disable_browser_accelerators(win: &tauri::WebviewWindow) {
     let _ = win;
 }
 
+/// Run `f` on the main thread, from the event loop, and wait for its result.
+/// For window creation from a command (see `profile_open`). Must be called
+/// OFF the main thread, i.e. from an `(async)` command, or it would wait on
+/// itself.
+fn on_main_thread<T: Send + 'static>(
+    app: &AppHandle,
+    f: impl FnOnce(&AppHandle) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f(&handle));
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())?
+}
+
 /// Register `disable_browser_accelerators` for when the page has loaded, on
 /// the main thread, with the webview fully created.
 fn without_browser_accelerators<'a>(
@@ -9265,6 +9290,10 @@ fn focus_window_unless_e2e(win: &tauri::WebviewWindow) {
 /// synchronous command deadlocks on Windows.
 #[tauri::command(async)]
 fn procmon_open_window(app: AppHandle) -> Result<(), String> {
+    on_main_thread(&app, procmon_open_window_main)
+}
+
+fn procmon_open_window_main(app: &AppHandle) -> Result<(), String> {
     use tauri::Manager;
     if let Some(win) = app.get_webview_window(PROCMON_WINDOW) {
         let _ = win.unminimize();
@@ -9273,7 +9302,7 @@ fn procmon_open_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let win = tauri::WebviewWindowBuilder::new(
-        &app,
+        app,
         PROCMON_WINDOW,
         // Its own Vite entry (activity.html), NOT index.html: the monitor's
         // webview must not load xterm / WebGL / CodeMirror to draw a table.
@@ -22233,7 +22262,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let app2 = app.clone();
                 let slug = slug.to_string();
                 leave_windowless(app);
-                tauri::async_runtime::spawn(async move {
+                tauri::async_runtime::spawn_blocking(move || {
                     let _ = profile_open(app2, slug);
                 });
                 return;
