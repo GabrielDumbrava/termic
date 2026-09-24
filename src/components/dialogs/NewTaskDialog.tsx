@@ -24,7 +24,8 @@ import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, Circ
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
-import { selectionToFields, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup } from "@/lib/types";
+import { selectionToFields, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext } from "@/lib/types";
+import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
 import { readMemberModes, persistMemberMode, seedMemberMode } from "@/components/dialogs/memberModes";
@@ -236,6 +237,16 @@ export function NewTaskDialog() {
   const [issueLoading, setIssueLoading] = useState(false);
   const [issueSelected, setIssueSelected] = useState<ForgeIssue | null>(null);
   const [issueQuery, setIssueQuery] = useState("");
+  // Existing-branch mode: check out a branch that already exists (typically
+  // someone else's, to review it) into a new worktree instead of cutting one.
+  // Same shape as import mode: a picker replaces the branch field, and the
+  // task-type toggle goes because the answer is always a worktree.
+  // `checkoutBranch` is its own state rather than `branch`, so the
+  // name-to-branch derive effect below can never overwrite a picked branch.
+  const [checkoutMode, setCheckoutMode] = useState(false);
+  const [checkoutBranch, setCheckoutBranch] = useState("");
+  const [checkoutRefs, setCheckoutRefs] = useState<BranchContext | null>(null);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
   // Resume-args override, set at create so it applies from the FIRST spawn.
   // Exactly the field the task menu's "Resume override" edits
   // (Task.resume_override, task_set_resume_override): same storage, same
@@ -501,6 +512,12 @@ export function NewTaskDialog() {
     setIssueMode(false);
     setIssueSelected(null);
     setIssueLookup(null);
+    // Existing-branch mode is per-open too, like issue mode beside it: a
+    // branch picked for one project must not survive into the next open.
+    setCheckoutMode(false);
+    setCheckoutBranch("");
+    setCheckoutRefs(null);
+    setCheckoutLoading(false);
     // A seed can ask to open straight into the issue picker (the palette's
     // "New task from an issue…" row routes through the project picker and
     // arrives here). Only where issues are a thing at all - `canImp` is the
@@ -572,6 +589,7 @@ export function NewTaskDialog() {
   function enterImport() {
     if (!projectId) return;
     setImportMode(true);
+    setCheckoutMode(false);
     setErr(null);
     if (importList.length === 0 && !importLoading) loadImportable(projectId);
   }
@@ -603,6 +621,30 @@ export function NewTaskDialog() {
     seedPromptWhenReady(taskId, prompt.trim(), SETUP_SPAWN_DEADLINE_MS);
   }
 
+  /** Flip into existing-branch mode. Re-reads the repo's branches on every
+   *  entry (local git, no network), so one fetched since the dialog opened
+   *  shows up. A branch this repo has never fetched is simply typed: Rust
+   *  fetches it on create (`checkout_existing_branch`). */
+  function enterCheckout() {
+    if (!projectId) return;
+    setCheckoutMode(true);
+    setImportMode(false);
+    setImportSelected(null);
+    if (issueMode) exitIssues();
+    setErr(null);
+    setCheckoutLoading(true);
+    projectBranchContext(projectId)
+      .then(setCheckoutRefs)
+      .catch(e => setErr(String(e)))
+      .finally(() => setCheckoutLoading(false));
+  }
+
+  function exitCheckout() {
+    setCheckoutMode(false);
+    setCheckoutBranch("");
+    setErr(null);
+  }
+
   // Adopt an existing worktree. No worktree-add / file-copy / setup
   // script, so this skips the streaming phases entirely.
   /** Flip into issue mode and fetch. Re-fetches on every entry so a freshly
@@ -610,6 +652,7 @@ export function NewTaskDialog() {
   function enterIssues() {
     setIssueMode(true);
     setImportMode(false);
+    setCheckoutMode(false);
     setErr(null);
     if (!projectId) return;
     setIssueLoading(true);
@@ -645,6 +688,26 @@ export function NewTaskDialog() {
       i.labels.some(l => l.toLowerCase().includes(q)),
     );
   }, [issueLookup, issueQuery]);
+
+  // The picker's rows, filtered by what is typed. Local git only, so this is
+  // cheap; the cap in branchChoices is what keeps a repo with thousands of
+  // remote refs from rendering thousands of buttons.
+  const checkoutView = useMemo(
+    () => (checkoutRefs ? branchChoices(checkoutRefs, checkoutBranch) : null),
+    [checkoutRefs, checkoutBranch],
+  );
+  // Memoized with the rows: both walk every remote ref, and this dialog
+  // re-renders on each keystroke in ANY field.
+  const checkoutRemotes = useMemo(() => (checkoutRefs ? remoteNames(checkoutRefs) : []), [checkoutRefs]);
+  const checkoutUnfetched = useMemo(
+    () => !!checkoutRefs && !!checkoutBranch.trim() && !isKnownBranch(checkoutRefs, checkoutBranch),
+    [checkoutRefs, checkoutBranch],
+  );
+  // The task name a checkout gets when Name is left blank: the branch minus
+  // its remote, the same default `termic new --checkout` uses. Shown as the
+  // Name field's placeholder, so the default is visible before Create.
+  const checkoutName = checkoutTaskName(checkoutBranch, checkoutRemotes);
+  const effectiveName = checkoutMode ? (name.trim() || checkoutName) : name.trim();
 
   function exitIssues() {
     setIssueMode(false);
@@ -762,7 +825,8 @@ export function NewTaskDialog() {
     // task the sidebar quick menu's Main checkout creates, so the two entry
     // points can't drift into different task shapes.
     if (mode === "repo_root") { submitRepoRoot(); return; }
-    if (!projectId || !name.trim() || !branch.trim()) return;
+    const taskBranch = checkoutMode ? checkoutBranch.trim() : branch.trim();
+    if (!projectId || !effectiveName || !taskBranch) return;
     if (submittingRef.current) return;
     submittingRef.current = true;
     const taskId = crypto.randomUUID();
@@ -791,7 +855,7 @@ export function NewTaskDialog() {
     // this IS the fix for GH #242 (worktree creation no longer locks the
     // whole window behind a modal). The dialog closes on the next line;
     // CreatingTaskPane (MainArea) and PendingTaskRow (Sidebar) take over.
-    pendingAdd({ id: taskId, projectId, name: name.trim(), cli });
+    pendingAdd({ id: taskId, projectId, name: effectiveName, cli });
     setActive(taskId);
     close();
     try {
@@ -828,10 +892,14 @@ export function NewTaskDialog() {
         await withCreateLock(() => taskCreate({
           id: taskId,
           project_id: projectId,
-          name: name.trim(),
+          name: effectiveName,
           cli,
           base_branch: base.trim() || null,
-          branch: branch.trim(),
+          branch: taskBranch,
+          // Existing-branch mode: Rust checks the branch out as it is and
+          // never cuts a new one, so an unknown name fails here instead of
+          // becoming a fresh branch off the base.
+          checkout_existing: checkoutMode || undefined,
           // Capability-gated like import: the field hides when the agent has
           // nothing to resume, but typed state would otherwise ride along.
           resume_override: resumeOverrideArg(),
@@ -879,7 +947,7 @@ export function NewTaskDialog() {
       // (worktree/multi creates close the dialog immediately; see submit()).
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={isMulti ? (mode === "repo_root" ? "New multi-repo task in the main checkout" : "New multi-repo task") : importMode ? "Import existing worktree" : mode === "repo_root" ? "New task in the main checkout" : "New task in a worktree"}
+      title={isMulti ? (mode === "repo_root" ? "New multi-repo task in the main checkout" : "New multi-repo task") : importMode ? "Import existing worktree" : checkoutMode ? "Check out an existing branch" : mode === "repo_root" ? "New task in the main checkout" : "New task in a worktree"}
       description={undefined}
       // The four mode switches ride the title line rather than each taking a
       // `gap-4` form row. They are chrome - "make this a different KIND of
@@ -892,11 +960,27 @@ export function NewTaskDialog() {
           {/* Import (issue #5): adopt a worktree that already exists on disk
               instead of branching a fresh one. Only offered when there is
               actually something to adopt, hence the count. */}
-          {canImport && !importMode && mode === "worktree" && importList.length > 0 && (
+          {canImport && !importMode && !checkoutMode && mode === "worktree" && importList.length > 0 && (
             <button type="button" onClick={enterImport} {...dialogTitleAction}>
               <FolderGit2 className="h-3.5 w-3.5" />
               Import a worktree
               <span className="text-[var(--color-fg-faint)]">({importList.length})</span>
+            </button>
+          )}
+          {/* Check out a branch that already exists (a colleague's, to
+              review it) instead of cutting a new one. Worktree mode only,
+              like import: the point is a separate folder for a separate
+              agent. */}
+          {canImport && !importMode && !checkoutMode && mode === "worktree" && (
+            <button type="button" data-testid="checkout-branch-toggle" onClick={enterCheckout} {...dialogTitleAction}>
+              <GitBranch className="h-3.5 w-3.5" />
+              Existing branch
+            </button>
+          )}
+          {checkoutMode && (
+            <button type="button" data-testid="checkout-branch-exit" onClick={exitCheckout} {...dialogTitleAction}>
+              <Plus className="h-3.5 w-3.5" />
+              New branch instead
             </button>
           )}
           {/* Start from an issue. Only for repos actually hosted on a forge
@@ -904,7 +988,7 @@ export function NewTaskDialog() {
               gh/glab can reach). Doubles as the discovery point for the CLIs:
               a GitHub repo whose owner has never installed gh still sees the
               entry and learns what it would buy them. */}
-          {canIssues && forgeProvider && !issueMode && !importMode && (
+          {canIssues && forgeProvider && !issueMode && !importMode && !checkoutMode && (
             <button type="button" onClick={enterIssues} {...dialogTitleAction}>
               <CircleDot className="h-3.5 w-3.5" />
               From a {forgeProvider === "gitlab" ? "GitLab" : "GitHub"} issue
@@ -950,8 +1034,8 @@ export function NewTaskDialog() {
         issueMode && sandbox
           ? "max-w-[107rem]"
           : issueMode || sandbox
-            ? (isMulti ? "max-w-[95.5rem]" : importMode ? "max-w-[83.5rem]" : "max-w-[71.5rem]")
-            : (isMulti ? "max-w-3xl" : importMode ? "max-w-2xl" : "max-w-xl")
+            ? (isMulti ? "max-w-[95.5rem]" : importMode || checkoutMode ? "max-w-[83.5rem]" : "max-w-[71.5rem]")
+            : (isMulti ? "max-w-3xl" : importMode || checkoutMode ? "max-w-2xl" : "max-w-xl")
       }
       // A long worktree form (sandbox panel, multi-repo members, …) can
       // exceed the viewport — pin Cancel/Create to the bottom instead of
@@ -966,7 +1050,7 @@ export function NewTaskDialog() {
               variant="primary"
               type="submit"
               form="new-task-form"
-              disabled={busy || !name.trim() || (mode === "repo_root" ? false : importMode ? !importSelected : !branch.trim())}
+              disabled={busy || !effectiveName || (mode === "repo_root" ? false : importMode ? !importSelected : checkoutMode ? !checkoutBranch.trim() : !branch.trim())}
             >
               {importMode ? "Import" : "Create"}
             </Button>
@@ -1039,7 +1123,7 @@ export function NewTaskDialog() {
             (and, for multi, the per-member list: every member runs live) and
             creates in the repo's live checkout. Non-git projects can't
             worktree, so the Worktree button is disabled there. */}
-        {!importMode && (
+        {!importMode && !checkoutMode && (
           <div className="flex flex-col gap-1.5">
             {/* Label + toggle share one row (not label-above-control like
                 every other Field) — this is the field people re-adjust most
@@ -1095,14 +1179,79 @@ export function NewTaskDialog() {
             naming) follows as its own field, not folded into this group. */}
         <div className="flex flex-col gap-2">
           <Field label="Name">
-            <Input value={name} onChange={e => setName(e.target.value)} placeholder="fix login bug" autoFocus required />
+            {/* A checkout's name may stay blank: it defaults to the branch,
+                shown here as the placeholder, as `termic new --checkout`
+                does. */}
+            <Input
+              data-testid="new-task-name"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder={checkoutMode && checkoutName ? checkoutName : "fix login bug"}
+              autoFocus
+              required={!checkoutMode}
+            />
           </Field>
 
           {!importMode && mode === "worktree" && (<>
-          {/* Always editable. Auto-fills as “feature/<name>” while you type
+          {checkoutMode ? (
+          // The branch to check out: typed, or picked from the repo's own
+          // refs. The typed text is the value (the rows only fill it in), so
+          // a branch this repo has never fetched is still one keystroke away.
+          <Field label="Branch" hint="A local branch, or one on a remote. A remote branch gets a local branch that tracks it.">
+            <div className="flex flex-col gap-1.5">
+              <Input
+                data-testid="checkout-branch-input"
+                value={checkoutBranch}
+                onChange={e => setCheckoutBranch(e.target.value)}
+                placeholder="origin/alice/fix-login"
+                autoFocus
+              />
+              {checkoutLoading ? (
+                <div className="flex items-center gap-2 px-1 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
+                  <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> Reading branches…
+                </div>
+              ) : checkoutView && checkoutView.choices.length > 0 ? (
+                <div data-testid="checkout-branch-list" className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
+                  {checkoutView.choices.map(c => {
+                    const picked = checkoutBranch.trim() === c.ref;
+                    return (
+                      <button
+                        key={c.ref}
+                        type="button"
+                        data-branch-ref={c.ref}
+                        onClick={() => setCheckoutBranch(c.ref)}
+                        title={c.ref}
+                        className={cn(
+                          "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-1.5 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
+                          picked && "bg-[var(--color-accent-deep)]/10",
+                        )}
+                      >
+                        <GitBranch className={cn("h-3.5 w-3.5 shrink-0", picked ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
+                        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-[var(--color-fg)]">{c.ref}</span>
+                        <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{c.source}</span>
+                        {picked && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
+                      </button>
+                    );
+                  })}
+                  {checkoutView.truncated && (
+                    <div className="px-3 py-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
+                      Showing the first {BRANCH_CHOICES_MAX}. Type to narrow.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+              {checkoutUnfetched && (
+                <p data-testid="checkout-branch-unfetched" className="text-[11.5px] text-[var(--color-fg-dim)]">
+                  Not fetched yet. Termic will look for it on the remote when you create the task.
+                </p>
+              )}
+            </div>
+          </Field>
+          ) : (
+          /* Always editable. Auto-fills as “feature/<name>” while you type
               the name, then stops the moment you touch it, so pasting a
               branch from Linear (“username/my-feature”) is a true one-shot:
-              select all, paste, done. No prefix control to fight (#15). */}
+              select all, paste, done. No prefix control to fight (#15). */
           <FieldInline label="Branch name" hint="Auto-fills from the name.">
             <div className="flex flex-col gap-1">
               <Input
@@ -1123,6 +1272,7 @@ export function NewTaskDialog() {
               )}
             </div>
           </FieldInline>
+          )}
 
           {/* The multi-repo host variant's hint is a full sentence (members
               fall back separately) — too long for FieldInline's one line,
@@ -1140,7 +1290,12 @@ export function NewTaskDialog() {
             </Field>
             )
           ) : (
-            <FieldInline label="Branch from" hint="Blank = repo default.">
+            // A checkout cuts nothing, so here the base only decides what the
+            // diff pane compares the branch against.
+            <FieldInline
+              label={checkoutMode ? "Compare against" : "Branch from"}
+              hint={checkoutMode ? "What the diff compares the branch to. Blank = repo default." : "Blank = repo default."}
+            >
               <div className="flex flex-col gap-1">
                 <Input
                   value={base}

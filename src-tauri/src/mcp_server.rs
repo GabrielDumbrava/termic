@@ -981,6 +981,7 @@ const TOOLS: &[ToolDef] = &[
             // CLI flag to assert against).
             ParamDef { name: "mode", json_type: "string", required: false, description: "\"worktree\" for a task on its own git worktree and branch, or \"main\" to work in the project's main checkout. Omitted means the app's last-used mode, so pass it when the answer matters.", cli_flag: None },
             ParamDef { name: "base", json_type: "string", required: false, description: "Base branch for a worktree task.", cli_flag: Some("--base") },
+            ParamDef { name: "checkout", json_type: "string", required: false, description: "Existing branch to check out instead of creating one (local, or on the remote: fetched and tracked). Implies worktree mode.", cli_flag: Some("--checkout") },
             P_WAIT,
             P_TIMEOUT,
         ],
@@ -997,6 +998,7 @@ const TOOLS: &[ToolDef] = &[
             agent_args: Vec::new(),
             mode: arg_str(a, "mode")?,
             base: arg_str(a, "base")?,
+            checkout: arg_str(a, "checkout")?,
             from: None,
             resume: None,
             sandbox: None,
@@ -2889,7 +2891,10 @@ mod tests {
         // an explicit `destructiveHint: false` on the safe mutating
         // tools, because the schema's default for an omitted one is
         // TRUE and clients may prompt on ordinary calls without it.
-        const RECORDED: usize = 11300;
+        // 11400: task_new's `checkout` (an existing branch into a new
+        // worktree), about 200 bytes with its description cut to the
+        // one sentence an agent needs to pick it over `base`.
+        const RECORDED: usize = 11400;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

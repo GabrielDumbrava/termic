@@ -1301,6 +1301,250 @@ describe("worktree task", () => {
   });
 });
 
+// Checking out an EXISTING branch (a colleague's, to review it) into its own
+// worktree, through the real New Task dialog. The branches live on the
+// fixture's origin and NOT locally, which is the case that used to go wrong:
+// typed into the ordinary Branch name field, a remote-only name missed
+// `rev-parse --verify` and came out as a fresh branch off main.
+describe("check out an existing branch", () => {
+  const origin = `${fixture}-origin.git`;
+  // Pushed, then fetched: a remote-tracking ref with no local branch.
+  const LISTED = "e2e-colleague/listed";
+  // Pushed AFTER the fixture's last fetch: this repo has never heard of it.
+  const UNFETCHED = "e2e-colleague/unfetched";
+  const UNKNOWN = "e2e-colleague/nobody-pushed-this";
+  const TYPED_NAME = "e2e-review-unfetched";
+  const TITLE = "Check out an existing branch";
+  let scratch: string | undefined;
+  const sha: Record<string, string> = {};
+
+  const git = (cwd: string, args: string) =>
+    execSync(`git -C "${cwd}" -c user.name=e2e -c user.email=e2e@termic.dev ${args}`, { stdio: "pipe" })
+      .toString()
+      .trim();
+
+  before(() => {
+    scratch = mkdtempSync(path.join(os.tmpdir(), "termic-e2e-colleague-"));
+    const colleague = path.join(scratch, "colleague");
+    execSync(`git clone -q "${origin}" "${colleague}"`);
+    for (const b of [LISTED, UNFETCHED]) {
+      git(colleague, `checkout -q -b ${b} origin/main`);
+      git(colleague, `commit -q --allow-empty -m "${b}"`);
+      sha[b] = git(colleague, "rev-parse HEAD");
+      git(colleague, `push -q origin ${b}`);
+      // Fetch after the first push only, so the second stays unfetched.
+      if (b === LISTED) git(fixture, "fetch -q origin");
+    }
+  });
+
+  // By NAME as well as by id: a case that throws between Create and reading
+  // the id back still leaves its task, and the branch it made, behind.
+  after(async () => {
+    await browser.execute(async (names) => {
+      const t = window.__termic!;
+      for (const task of t.useApp.getState().tasks) {
+        if (names.includes(task.name) && !task.archived) await t.ipc.taskArchive(task.id, true);
+      }
+      await t.useApp.getState().loadAll();
+    }, [LISTED, TYPED_NAME]);
+    const quiet = (cwd: string, args: string) => {
+      try {
+        git(cwd, args);
+      } catch {
+        /* already gone */
+      }
+    };
+    quiet(fixture, "worktree prune");
+    for (const b of [LISTED, UNFETCHED, UNKNOWN]) {
+      quiet(fixture, `branch -D ${b}`);
+      quiet(fixture, `update-ref -d refs/remotes/origin/${b}`);
+      quiet(origin, `branch -D ${b}`);
+    }
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  });
+
+  /** Open New Task for fixture-repo in worktree mode, then flip to the
+   *  existing-branch mode through its title-line switch. */
+  async function openCheckoutMode(): Promise<void> {
+    await waitForAppShell();
+    await requireTermicApi();
+    await browser.execute(() => {
+      const proj = window.__termic!.useApp
+        .getState()
+        .projects.find((p: any) => p.name === "fixture-repo");
+      window.__termic!.useUI.getState().openNewTask(proj.id);
+    });
+    await clickDialogButton("Worktree");
+    await clickWhenVisible('[data-testid="checkout-branch-toggle"]');
+    await waitForText(TITLE);
+  }
+
+  /** Click a button by exact text inside THIS dialog, found by its title. */
+  async function clickInCheckout(text: string): Promise<void> {
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (title, t) => {
+            const dlg = [...document.querySelectorAll('[role="dialog"]')].find(
+              (d) => d.getAttribute("data-state") !== "closed" && d.textContent?.includes(title),
+            );
+            const btn = [...(dlg?.querySelectorAll("button") ?? [])].find(
+              (b) => b.textContent?.trim() === t,
+            ) as HTMLButtonElement | undefined;
+            if (!btn || btn.disabled) return false;
+            btn.click();
+            return true;
+          },
+          TITLE,
+          text,
+        ),
+      { timeout: 8_000, timeoutMsg: `no enabled "${text}" in the checkout dialog` },
+    );
+  }
+
+  async function typeInto(selector: string, value: string): Promise<void> {
+    await waitVisible(selector);
+    await browser.execute(
+      (sel, v) => {
+        const input = document.querySelector(sel) as HTMLInputElement;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+        setter.call(input, v);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      },
+      selector,
+      value,
+    );
+  }
+
+  const liveTask = (name: string) =>
+    browser.execute(
+      (n) => window.__termic!.useApp.getState().tasks.find((t: any) => t.name === n && !t.archived) ?? null,
+      name,
+    ) as Promise<{ id: string; branch: string; path: string } | null>;
+
+  it("swaps the branch field for a picker, and New branch instead swaps it back", async () => {
+    await openCheckoutMode();
+    const shape = () =>
+      browser.execute(() => {
+        const dlg = document.querySelector('[data-testid="new-task-name"]')?.closest('[role="dialog"]');
+        const labels = [...(dlg?.querySelectorAll("label") ?? [])].map((l) => l.textContent?.trim());
+        return {
+          labels,
+          taskTypeToggle: [...(dlg?.querySelectorAll("button") ?? [])].some(
+            (b) => b.textContent?.trim() === "Main checkout",
+          ),
+        };
+      });
+
+    const inMode = await shape();
+    expect(inMode.labels).toContain("Branch");
+    expect(inMode.labels).toContain("Compare against");
+    expect(inMode.labels).not.toContain("Branch name");
+    // The answer is always a worktree, so the task-type toggle goes.
+    expect(inMode.taskTypeToggle).toBe(false);
+    await snap("checkout-branch-mode.png");
+
+    await clickWhenVisible('[data-testid="checkout-branch-exit"]');
+    await waitForText("New task in a worktree");
+    const back = await shape();
+    expect(back.labels).toContain("Branch name");
+    expect(back.labels).toContain("Branch from");
+    expect(back.labels).not.toContain("Compare against");
+    expect(back.taskTypeToggle).toBe(true);
+    await clickDialogButton("Cancel");
+    await waitGone('[data-testid="new-task-name"]', 5_000);
+  });
+
+  it("checks out a listed remote-only branch on a local branch that tracks it", async () => {
+    await openCheckoutMode();
+    const row = `[data-testid="checkout-branch-list"] [data-branch-ref="origin/${LISTED}"]`;
+    await clickWhenVisible(row);
+    // The pick fills the branch; Name stays blank and shows its default.
+    const picked = await browser.execute(() => ({
+      branch: (document.querySelector('[data-testid="checkout-branch-input"]') as HTMLInputElement).value,
+      namePlaceholder: (document.querySelector('[data-testid="new-task-name"]') as HTMLInputElement).placeholder,
+    }));
+    expect(picked).toEqual({ branch: `origin/${LISTED}`, namePlaceholder: LISTED });
+    await clickInCheckout("Terminal");
+    await clickInCheckout("Create");
+
+    await browser.waitUntil(async () => !!(await liveTask(LISTED)), {
+      timeout: 30_000,
+      timeoutMsg: "the checkout task never landed",
+    });
+    const task = (await liveTask(LISTED))!;
+    expect(task.branch).toBe(LISTED);
+    // On the COLLEAGUE's commit, not on main: the whole point.
+    expect(git(task.path, "rev-parse HEAD")).toBe(sha[LISTED]);
+    expect(git(task.path, "rev-parse --abbrev-ref HEAD")).toBe(LISTED);
+    expect(git(fixture, `rev-parse --abbrev-ref ${LISTED}@{upstream}`)).toBe(`origin/${LISTED}`);
+  });
+
+  it("restores that task on the colleague's branch after archive deleted it", async () => {
+    // Archive WITH delete-branch, the one setting that removes the local
+    // copy, then restore: the branch has to come back from the remote. Cut
+    // from the base it would be main under the colleague's branch name.
+    const before = (await liveTask(LISTED))!;
+    await browser.execute(async (id) => {
+      await window.__termic!.ipc.taskArchive(id, true); // deleteBranch
+      await window.__termic!.useApp.getState().loadAll();
+    }, before.id);
+    let localLeft = true;
+    try {
+      git(fixture, `rev-parse --verify -q refs/heads/${LISTED}`);
+    } catch {
+      localLeft = false;
+    }
+    expect(localLeft).toBe(false);
+
+    await browser.execute(async (id) => {
+      await window.__termic!.ipc.taskRestore(id);
+      await window.__termic!.useApp.getState().loadAll();
+    }, before.id);
+    const task = (await liveTask(LISTED))!;
+    expect(task.id).toBe(before.id);
+    expect(git(task.path, "rev-parse HEAD")).toBe(sha[LISTED]);
+    expect(git(fixture, `rev-parse --abbrev-ref ${LISTED}@{upstream}`)).toBe(`origin/${LISTED}`);
+  });
+
+  it("fetches a typed branch this repo has never fetched", async () => {
+    await openCheckoutMode();
+    await typeInto('[data-testid="checkout-branch-input"]', UNFETCHED);
+    // Said before Create, so a typo is not a surprise several seconds later.
+    await waitVisible('[data-testid="checkout-branch-unfetched"]');
+    await typeInto('[data-testid="new-task-name"]', TYPED_NAME);
+    await clickInCheckout("Terminal");
+    await clickInCheckout("Create");
+
+    await browser.waitUntil(async () => !!(await liveTask(TYPED_NAME)), {
+      timeout: 30_000,
+      timeoutMsg: "the typed checkout never landed",
+    });
+    const task = (await liveTask(TYPED_NAME))!;
+    expect(task.branch).toBe(UNFETCHED);
+    expect(git(task.path, "rev-parse HEAD")).toBe(sha[UNFETCHED]);
+  });
+
+  it("fails an unknown branch and leaves no branch behind", async () => {
+    await openCheckoutMode();
+    await typeInto('[data-testid="checkout-branch-input"]', UNKNOWN);
+    await clickInCheckout("Terminal");
+    await clickInCheckout("Create");
+
+    // The pending task turns into the error, in the main pane.
+    await waitForText(`no branch '${UNKNOWN}'`, 30_000);
+    let created = true;
+    try {
+      git(fixture, `rev-parse --verify -q refs/heads/${UNKNOWN}`);
+    } catch {
+      created = false;
+    }
+    expect(created).toBe(false);
+    await clickByText("Dismiss");
+    await waitForTextGone(`no branch '${UNKNOWN}'`);
+  });
+});
+
 // GH #242: while a task is mid-creation it's represented as a "pending" entry
 // (no real Task exists yet — see src/store/pendingTasks.ts), which the
 // sidebar and main pane render specially (PendingTaskRow / CreatingTaskPane).

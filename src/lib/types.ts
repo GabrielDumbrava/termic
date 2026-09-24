@@ -295,6 +295,11 @@ export interface Task {
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
   is_main_checkout?: boolean;
+  /** True when the task checked out an EXISTING branch (New Task's
+   *  "Existing branch" mode, `termic new --checkout`) instead of cutting
+   *  one. Restore brings a branch deleted at archive back from the remote
+   *  instead of cutting it from `base_branch`. */
+  checkout_existing?: boolean;
   /** Total agent spawns ever recorded for this worktree. Historical
    *  metric only — resume gating uses `has_resumable_history` now. */
   spawn_count?: number;
@@ -474,6 +479,12 @@ export interface CreateTaskArgs {
   agent_args?: string[];
   base_branch?: string | null;
   branch?: string | null;
+  /** Check out `branch` as it EXISTS (locally, or on the remote, fetched
+   *  and tracked) instead of cutting a new branch from `base_branch`, which
+   *  then only sets what the diff compares against. An unknown branch is an
+   *  error, never a fresh branch. The dialog's "Existing branch" mode and
+   *  `termic new --checkout`. */
+  checkout_existing?: boolean;
   /** Pre-generated task UUID. Pass this if you want to subscribe to
    *  `setup-output://<id>` / `setup-done://<id>` events BEFORE invoking — the
    *  alternative (using server-generated ID returned from the call) has a
