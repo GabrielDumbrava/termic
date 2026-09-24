@@ -1379,6 +1379,15 @@ export interface TerminalTab extends BaseTab {
    *  detached-work grace can be measured without a timer per tab. Cleared with
    *  it. */
   delegatedSince?: number;
+  /** The agent's OWN loop has stopped with delegated work outstanding (the
+   *  delegated / partially-done states), so it can take input: another
+   *  agent's message (`termic send`, MCP task_send) is delivered at once
+   *  instead of queueing until all of that work finishes. The user's message
+   *  queue ignores it. Set by the hook that reports the held work, cleared by
+   *  ANY sign the agent is working again (one being a subagent's report
+   *  making it resume). Not the same as `delegatedWork`, which stays on the
+   *  tab while the model works. Session-only. */
+  delegatedIdle?: boolean;
   /** Set while a library prompt (target "new-agent") is waiting for this
    *  freshly spawned agent to come up before its prompt is injected. Drives
    *  the "starting agent" loader overlay in TerminalPane; cleared once the

@@ -8620,6 +8620,20 @@ fn task_id_in_topic(topic: &str) -> Option<&str> {
 /// Named and split out so the FALLBACK is testable: "no owner means every
 /// window" is a deliberate choice, not an oversight, and a change that made an
 /// unresolvable event reach nobody would otherwise be silent.
+/// The window-state file for THIS build flavour. See the plugin setup in
+/// `run`: release keeps the plugin's default so no install loses its saved
+/// frames; the e2e and dev builds each get their own, because all three
+/// share one bundle identifier and so one Application Support folder.
+fn window_state_filename() -> &'static str {
+    if cfg!(feature = "e2e") {
+        ".window-state-e2e.json"
+    } else if cfg!(debug_assertions) {
+        ".window-state-dev.json"
+    } else {
+        tauri_plugin_window_state::DEFAULT_FILENAME
+    }
+}
+
 fn emit_target(topic: &str) -> Option<String> {
     task_id_in_topic(topic).and_then(window_for_task)
 }
@@ -22412,7 +22426,22 @@ pub fn run() {
         // deterministic order (restore → clamp-up → position → show)
         // instead of letting the plugin's on_window_ready hook race the
         // setup code. The plugin still SAVES bounds on move/resize/close.
-        .plugin(tauri_plugin_window_state::Builder::default().skip_initial_state("main").skip_initial_state(PROCMON_WINDOW).build())
+        //
+        // with_filename: the plugin keys its file by the bundle IDENTIFIER,
+        // and debug and e2e builds share the release one (they build from
+        // tauri.conf.json). So they shared ONE window-state file with the
+        // installed app: the e2e suite restored whatever size and position
+        // the user's real Termic last had (a main window on a monitor no
+        // longer connected broke 7 spec files at once), and wrote its own
+        // back (a 188x90 profile window). Release keeps the default name, so
+        // existing installs find their saved frames exactly where they were.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_filename(window_state_filename())
+                .skip_initial_state("main")
+                .skip_initial_state(PROCMON_WINDOW)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())

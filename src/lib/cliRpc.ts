@@ -542,7 +542,10 @@ async function deliverOrQueue(
 ): Promise<{ mode: string; capable: boolean }> {
   const ptyId = tab.ptyId;
   if (!ptyId) throw new Error("the agent tab lost its PTY before the prompt could be typed");
-  const busy = capable && (tab.workState === "working" || (tab.queue?.length ?? 0) > 0);
+  // An agent stalled on delegated work (its own loop stopped, subagents or
+  // shells still running) takes the prompt now rather than queueing it.
+  const busy = capable
+    && ((tab.workState === "working" && !tab.delegatedIdle) || (tab.queue?.length ?? 0) > 0);
   if (busy) {
     useApp.getState().enqueueAgentMessage(p.taskId, tab.id, p.prompt, 1, p.promptId);
     return { mode: "queued", capable };

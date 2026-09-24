@@ -97,6 +97,15 @@ spec pushes for itself, and that spec failed on every developer machine while
 CI, a fresh checkout each time, stayed green. This only happens through
 `make e2e` / the seed script: `npm run test:e2e` alone skips it.
 
+Window frames are isolated too. `tauri-plugin-window-state` files its saved
+sizes and positions under the bundle IDENTIFIER, and the e2e and dev builds
+share the release one, so all three used to share one file: a run restored
+whatever frame the installed app last had (a main window on an unplugged
+monitor failed seven spec files at once) and wrote its own back into it (a
+188x90 profile window). `window_state_filename()` in lib.rs gives the e2e and
+dev builds their own files, and the seed deletes the e2e one so every run
+starts at the default size.
+
 The task RECORDS are swept separately, by `wdio.conf.ts`'s `onPrepare` — that
 runs on every `test:e2e`, including runs that skip the seed script.
 

@@ -1085,7 +1085,7 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_send",
         cli_verb: "send",
-        description: "Prompt the task's running agent (queued if busy). With no agent running, resume restores the last session and fresh spawns a new one. Agent to agent: sign the prompt as the server instructions say ([message from agent:<you> task:<your task name> id:<your task id>] first, the same after -- last).",
+        description: "Prompt the task's running agent (queued if busy, not while it waits on its subagents). With no agent running, resume restores the last session and fresh spawns a new one. Agent to agent: sign the prompt as the server instructions say ([message from agent:<you> task:<your task name> id:<your task id>] first, the same after -- last).",
         params: &[
             ParamDef { name: "task", json_type: "string", required: false, description: "Task name or id. Required unless here.", cli_flag: Some("task") },
             P_PROJECT,

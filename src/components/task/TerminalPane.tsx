@@ -1436,7 +1436,7 @@ const captureArmedRef = useRef(false);
     {
       const held = (useApp.getState().tabs[task.id]
         ?.find(t => t.id === tab.id) as TerminalTab | undefined)?.delegatedWork;
-      if (held) patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
+      if (held) patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0, delegatedIdle: false });
     }
     native133LoggedRef.current = false;
     agentReadyPatchedRef.current = false;
@@ -1477,6 +1477,14 @@ const captureArmedRef = useRef(false);
     const goWorking = (reason: string) => {
       if (!workDoneEnabled) return;
       cancelSettle(reason);
+      // Any sign of work means the agent is no longer stalled waiting on its
+      // delegated work, so another agent's message queues again. Guarded:
+      // this runs on every working heartbeat (bear trap 8).
+      {
+        const live = useApp.getState().tabs[task.id]
+          ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+        if (live?.delegatedIdle) patchTab(task.id, tab.id, { delegatedIdle: false });
+      }
       // The agent is working again well after we called this turn done, so the
       // done was premature (a stage boundary read as the end). Hand the turn's
       // done token back — otherwise the completion that actually ends the turn
@@ -2208,6 +2216,7 @@ const captureArmedRef = useRef(false);
           delegatedSince: Date.now(),
         });
         goWorking(`delegated ${work.label} (partial)`);
+        markDelegatedIdle("partial");
         return;
       }
       if (verdict === "carried") {
@@ -2245,6 +2254,18 @@ const captureArmedRef = useRef(false);
       // record WHEN so the detached-work grace has something to measure from.
       patchTab(task.id, tab.id, { delegatedWork: work, delegatedSince: Date.now() });
       goWorking(`delegated ${work.label}`);
+      markDelegatedIdle("delegated");
+    };
+    // The done hook just fired with work outstanding, so the agent's own
+    // loop has stopped: another agent's message (`termic send`, MCP
+    // task_send) can go in now instead of queueing behind every subagent /
+    // shell it started (cliRpc's busy test reads this). The user's own
+    // message queue is deliberately NOT affected: it still waits for the
+    // turn to end. Marked AFTER goWorking, which clears the mark; the next
+    // working signal clears it again.
+    const markDelegatedIdle = (why: string) => {
+      patchTab(task.id, tab.id, { delegatedIdle: true });
+      logWorkState("delegated-idle", `cli=${tab.cli} ${why}: agent messages deliver now`);
     };
     hookDelegatedRef.current = hookDelegated;
     term.parser.registerOscHandler(133, (data) => {

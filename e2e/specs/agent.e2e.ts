@@ -2988,6 +2988,59 @@ describe("delegated work", () => {
     await snap("agent-delegated-three.png");
   });
 
+  // Another agent's message (`termic send`, MCP task_send: the report-back
+  // path) reaches an orchestrator stalled on delegated work at once, instead
+  // of queueing until every subagent is back. The user's own message queue is
+  // NOT changed by this: it still waits for the turn to end.
+  it("delivers another agent's message while delegated or partially done, and leaves the queue alone", async function () {
+    this.timeout(90_000);
+    const echoed = async (text: string) => {
+      const logs = await cliRpc({ cmd: "logs", task: "e2e-delegated" });
+      return String(logs.data?.data ?? "").includes(`FAKE-AGENT echo: ${text}`);
+    };
+    const report = async (text: string) => {
+      const r = await cliRpc({ cmd: "send", task: "e2e-delegated", prompt: text });
+      expect(r.ok).toBe(true);
+      expect(r.data.mode).toBe("delivered");
+      await browser.waitUntil(() => echoed(text), {
+        timeout: 20_000, timeoutMsg: `the delivered report "${text}" never reached the agent`,
+      });
+    };
+
+    // Delegated: the report goes straight in, ring and all.
+    await submitToAgent(taskId, "#delegated 2 subagent e1,e2");
+    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", {
+      timeout: 20_000, timeoutMsg: "the turn never reported its subagents",
+    });
+    expect(await taskViewBadge(taskId)).toBe("working");
+    await report("report-while-delegated");
+
+    // Partially done: same.
+    await submitToAgent(taskId, "#delegated 2 subagent f1,f2");
+    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", { timeout: 20_000 });
+    await submitToAgent(taskId, "#delegated 1 subagent f2");
+    await browser.waitUntil(async () => (await taskViewBadge(taskId)) === "partial", {
+      timeout: 20_000, timeoutMsg: `never read as partial (saw ${await taskViewBadge(taskId)})`,
+    });
+    await report("report-while-partial");
+
+    // The user's queue is unchanged: a message queued now is HELD while the
+    // turn is open, and goes once it ends.
+    await submitToAgent(taskId, "#delegated 2 subagent g1,g2");
+    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", { timeout: 20_000 });
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      s.enqueueAgentMessage(id, s.tabs[id][0].id, "user-queued-while-delegated");
+    }, taskId);
+    await browser.pause(2_000);
+    expect(await queuedCount(taskId)).toBe(1);
+    expect(await echoed("user-queued-while-delegated")).toBe(false);
+    await submitToAgent(taskId, "#hookdone");
+    await browser.waitUntil(async () => (await queuedCount(taskId)) === 0 && (await echoed("user-queued-while-delegated")), {
+      timeout: 20_000, timeoutMsg: "the queued message never went once the turn ended",
+    });
+  });
+
   // Detached work, and the one case in the state machine that no signal can
   // decide: a `Stop` only fires once the model loop has stopped, so a shell in
   // its payload is always detached, but detached is not abandoned. Two

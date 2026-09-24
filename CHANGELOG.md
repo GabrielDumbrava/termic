@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.8.0] - 2026-09-24
+## [1.8.1] - 2026-09-24
 
 Tasks your agents start now group together in the sidebar.
 
@@ -56,6 +56,10 @@ Tasks your agents start now group together in the sidebar.
 - When resuming a main-checkout task fell back to the session picker, one
   Enter could pick a sibling task's conversation and swap the two tasks'
   sessions. ([#311](https://github.com/simion/termic/issues/311))
+- A report from another agent (`termic send`, MCP `task_send`) waited in
+  the receiving agent's queue while that agent was only waiting on
+  subagents or shells it had started, so an orchestrator did not hear from
+  its workers until all of its work was done. It is now delivered at once.
 
 ## [1.7.0] - 2026-09-22
 

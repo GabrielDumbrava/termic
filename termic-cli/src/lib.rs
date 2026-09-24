@@ -443,8 +443,11 @@ running, 5 CLI disabled, 6 refused, 7 --timeout expired, 8 connection lost."
 tab id, a 1-based index into status's tab list, or a title, agent tabs \
 only). If it is mid-turn and \
 supports work-done detection, the prompt QUEUES and delivers when the turn \
-finishes; an agent with detection disabled gets it typed immediately (with a \
-warning: completion cannot be observed, and --wait refuses such agents). \
+finishes, EXCEPT while the agent is stalled on work it delegated (subagents \
+or shells still running, its own loop stopped): then it is typed at once, so \
+a report back reaches an orchestrator that is waiting on it. An agent with \
+detection disabled gets it typed immediately (with a warning: completion \
+cannot be observed, and --wait refuses such agents). \
 With no agent running, --resume restores the last session and --fresh starts \
 a new agent without context; without either flag that case is an error \
 naming both. If a stored session no longer resolves, --resume falls back to \

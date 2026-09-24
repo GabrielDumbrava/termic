@@ -231,6 +231,14 @@ export function seed(o = {}) {
   // somebody deleted the file by hand.
   rmSync(path.join(dataDir, "profiles.json"), { force: true });
   rmSync(path.join(dataDir, "profiles"), { recursive: true, force: true });
+  // The e2e build's saved window frames (lib.rs window_state_filename). They
+  // live in the bundle's Application Support folder, not the data dir, and a
+  // frame one run left behind (a tiny profile window, a main window on a
+  // monitor since unplugged) resizes every later run. Every run starts from
+  // the app's default size instead.
+  if (process.platform === "darwin") {
+    rmSync(path.join(os.homedir(), "Library", "Application Support", "com.simion.termic", ".window-state-e2e.json"), { force: true });
+  }
   // Every worktree under `tasksPath` belongs to a previous run: task records
   // are recreated by the specs themselves, so anything still on disk here is
   // debris from a run that was interrupted before its `after` hook. Drop it,
