@@ -43,6 +43,7 @@ describe("isConsoleHostTitle", () => {
     expect(isConsoleHostTitle("C:\\Program Files\\nodejs\\node.exe")).toBe(true);
     expect(isConsoleHostTitle("C:\\Windows\\system32\\cmd.exe")).toBe(true);
     expect(isConsoleHostTitle("D:\\a\\termic\\scripts\\fake-agent.cmd")).toBe(true);
+    expect(isConsoleHostTitle("Administrator: C:\\Program Files\\PowerShell\\7\\pwsh.exe")).toBe(true);
   });
 
   it("leaves a program's own title alone", () => {

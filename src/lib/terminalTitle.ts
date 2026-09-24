@@ -30,5 +30,7 @@ export function formatTerminalTitle(
  * sets looks like this.
  */
 export function isConsoleHostTitle(title: string): boolean {
-  return /^[A-Za-z]:\\[^\n]*\.(exe|com|cmd|bat)$/i.test(title.trim());
+  // An elevated console prefixes it with "Administrator: " (measured on the
+  // Windows CI runner, which runs elevated).
+  return /^(Administrator: )?[A-Za-z]:\\[^\n]*\.(exe|com|cmd|bat)$/i.test(title.trim());
 }
