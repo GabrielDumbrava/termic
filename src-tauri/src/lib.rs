@@ -2443,8 +2443,20 @@ fn migrate_workspaces_to_tasks() {
 
 /// Raw stdout, for callers that read blobs (`git show HEAD:some.png`) where
 /// a lossy UTF-8 decode would destroy the bytes.
-fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
+/// `git`, for the app's own background work. `GIT_OPTIONAL_LOCKS=0`: a
+/// `git status` refreshes the index's stat cache opportunistically, and
+/// takes `index.lock` to write it back. The app polls status all day, so the
+/// user's own `git commit` in a terminal kept meeting "Unable to create
+/// index.lock: File exists" (the Windows e2e runner hit exactly that). The
+/// commands that need the lock (add, commit, checkout) still take it.
+fn git_command() -> std::process::Command {
     let mut cmd = crate::proc_ctl::command("git");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
+fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
+    let mut cmd = git_command();
     // Windows: worktrees live under `%USERPROFILE%\termic\tasks\<project>\<task>`
     // and routinely hold `node_modules` / `target`, past the 260-character
     // MAX_PATH that Git for Windows honours unless told otherwise. Set per
@@ -2499,7 +2511,7 @@ fn fetch_ref(repo: &Path, remote_ref: &str) -> std::result::Result<(), String> {
         return Ok(());
     }
 
-    let mut cmd = crate::proc_ctl::command("git");
+    let mut cmd = git_command();
     // Single-ref, no-tags fetch: updates refs/remotes/<remote>/<ref> via the
     // remote's configured fetch refspec and nothing else — fast, no need to
     // pull every ref.
@@ -10250,7 +10262,7 @@ pub(crate) fn task_diff_inner(id: String) -> Result<TaskDiffSummary, String> {
         // `git diff --no-index /dev/null <file>` renders the whole file as
         // added; it exits 1 whenever the files differ (always, here), so run it
         // directly and accept the non-zero status the git() helper would reject.
-        let out = crate::proc_ctl::command("git")
+        let out = git_command()
             .args(["--no-pager", "diff", "--no-index", "--", "/dev/null", rel])
             .current_dir(&wt)
             .env("PATH", shell_env::resolved_path())
@@ -10370,7 +10382,7 @@ pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, S
         // between base and the working tree — exactly the union of
         // commits + staged + unstaged. --binary preserves binary blobs.
         let base = w.base_branch.clone();
-        let patch_out = crate::proc_ctl::command("git")
+        let patch_out = git_command()
             .args(["--no-pager", "diff", "--binary", &base])
             .current_dir(&worktree)
             .output()
@@ -10396,7 +10408,7 @@ pub(crate) fn task_send_diff_to_main_inner(id: &str) -> Result<SendDiffResult, S
             // LC_ALL=C: git's messages are gettext-translated and the
             // conflict detection below string-matches stderr; without
             // the pin a de_DE user gets exit 1 instead of the pinned 10.
-            let mut child = crate::proc_ctl::command("git")
+            let mut child = git_command()
                 .args(["apply", "--3way", "--whitespace=nowarn", "-"])
                 .env("LC_ALL", "C")
                 .current_dir(&main)
@@ -14198,7 +14210,7 @@ async fn task_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
         // globs (same ones the file tree uses) so a hidden path doesn't leak
         // back in via ⌘P. A repo that won't list just contributes nothing.
         let ls = |dir: &str, prefix: &str, patterns: &[glob::Pattern]| -> Vec<String> {
-            match crate::proc_ctl::command("git")
+            match git_command()
                 .args(["ls-files", "--cached", "--others", "--exclude-standard"])
                 .current_dir(dir)
                 .output()
@@ -14255,7 +14267,7 @@ async fn task_match_ignored_files(id: String, clicked: String) -> Result<Vec<Str
         }
         let mut matches: Vec<String> = Vec::new();
         let mut scan = |dir: &str, prefix: &str, patterns: &[glob::Pattern]| {
-            if let Ok(o) = crate::proc_ctl::command("git")
+            if let Ok(o) = git_command()
                 .args(["ls-files", "--cached", "--others"])
                 .current_dir(dir)
                 .output()
@@ -17033,13 +17045,13 @@ fn spotlight_update_untracked(project_id: &str, untracked: Vec<String>) {
 /// changes (committed or uncommitted). Used by the polling thread to
 /// detect when a re-sync is needed.
 fn spotlight_state_hash(worktree: &Path) -> String {
-    let head = crate::proc_ctl::command("git")
+    let head = git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(worktree)
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
-    let status = crate::proc_ctl::command("git")
+    let status = git_command()
         .args(["status", "--porcelain"])
         .current_dir(worktree)
         .output()
@@ -17080,7 +17092,7 @@ fn spotlight_apply(
 
     // Names of files that differ vs the base branch (for the log only).
     let name_list = |args: &[&str], cwd: &Path| -> Vec<String> {
-        crate::proc_ctl::command("git").args(args).current_dir(cwd).output().ok()
+        git_command().args(args).current_dir(cwd).output().ok()
             .map(|o| String::from_utf8_lossy(&o.stdout)
                 .lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
             .unwrap_or_default()
@@ -17089,7 +17101,7 @@ fn spotlight_apply(
         &["--no-pager", "diff", "--name-only", &format!("{base}..HEAD")], worktree);
 
     // Uncommitted diff (staged + unstaged on top of HEAD) — binary-safe patch.
-    let uncommitted = crate::proc_ctl::command("git")
+    let uncommitted = git_command()
         .args(["--no-pager", "diff", "--binary", "HEAD"])
         .current_dir(worktree)
         .output()
@@ -17108,7 +17120,7 @@ fn spotlight_apply(
     // 1. Detached checkout of the worktree's commit. --force is safe: the
     //    caller guarantees the repo root is clean before the first apply,
     //    and re-syncs always revert to the original ref first.
-    let out = crate::proc_ctl::command("git")
+    let out = git_command()
         .args(["checkout", "--detach", "--force", &wt_head])
         .current_dir(main)
         .output()
@@ -17121,7 +17133,7 @@ fn spotlight_apply(
     // 2. Apply uncommitted diff as working-tree changes (not staged, no --3way:
     //    HEAD now matches the worktree's committed state so it applies cleanly).
     if has_uncommitted {
-        let mut child = crate::proc_ctl::command("git")
+        let mut child = git_command()
             .args(["apply", "--whitespace=nowarn", "-"])
             .current_dir(main)
             .stdin(std::process::Stdio::piped())
@@ -17169,7 +17181,7 @@ fn spotlight_apply(
 /// and remove any untracked files we copied in. Because spotlight never
 /// moved a branch, this just moves HEAD back — no history is rewritten.
 fn spotlight_revert(main: &Path, original_ref: &str, applied_untracked: &[String]) -> Result<(), String> {
-    let out = crate::proc_ctl::command("git")
+    let out = git_command()
         .args(["checkout", "--force", original_ref])
         .current_dir(main)
         .output()
@@ -18001,7 +18013,7 @@ fn task_grep_start(
             // --untracked --exclude-standard include new files but
             // respect .gitignore.
             FindBackend::GitGrep => {
-                let mut c = crate::proc_ctl::command("git");
+                let mut c = git_command();
                 c.args([
                     "grep",
                     "-n", "--column", "-I",
@@ -29559,6 +29571,17 @@ mod tests {
         let wt = wt_dir.path().join("wt");
         git_worktree_add(&main, &wt, "task");
         (main_dir, wt_dir, main, wt)
+    }
+
+    #[test]
+    fn app_git_never_takes_an_optional_lock() {
+        // A background `git status` that writes the index back holds
+        // index.lock, and the user's own commit then fails on it.
+        let cmd = git_command();
+        let set = cmd.get_envs().any(|(k, v)| {
+            k == "GIT_OPTIONAL_LOCKS" && v == Some(std::ffi::OsStr::new("0"))
+        });
+        assert!(set);
     }
 
     #[test]
