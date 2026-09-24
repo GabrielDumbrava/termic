@@ -60,6 +60,15 @@ export function baseName(p: string, windows: boolean = IS_WINDOWS): string {
   return parts[parts.length - 1] || p;
 }
 
+/** `name` inside directory `dir`, in the platform's own spelling: a
+ *  backslash on Windows, where a folder picked in the dialog or a canonical
+ *  path from Rust already uses them. Trailing separators on `dir` are
+ *  dropped, so a root (`/`, `C:\\`) joins to `/x`, `C:\\x`. */
+export function joinPath(dir: string, name: string, windows: boolean = IS_WINDOWS): string {
+  const sep = windows ? "\\" : "/";
+  return `${dir.replace(windows ? /[\\/]+$/ : /\/+$/, "")}${sep}${name}`;
+}
+
 /** A `file://` URI for an absolute path, percent-encoding everything outside
  *  the unreserved set, the same bytes as the Rust side (lsp_path_to_uri).
  *  Windows paths take the standard form `file:///C:/Users/u/x`: a leading

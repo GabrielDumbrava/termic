@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toContainerPath, quoteWindowsPath, terminalPathText, relUnder, baseName, pathToFileUri, fileUriToPath } from "./osPath";
+import { toContainerPath, quoteWindowsPath, terminalPathText, relUnder, baseName, joinPath, pathToFileUri, fileUriToPath } from "./osPath";
 
 describe("toContainerPath", () => {
   it("is the identity off Windows", () => {
@@ -56,5 +56,15 @@ describe("file URIs", () => {
   it("takes the last segment on either separator on Windows", () => {
     expect(baseName("C:\\a\\b.ts", true)).toBe("b.ts");
     expect(baseName("/a/b.ts", false)).toBe("b.ts");
+  });
+});
+
+describe("joinPath", () => {
+  it("joins with the platform's separator, dropping a trailing one", () => {
+    expect(joinPath("/Users/u/src/", "repo", false)).toBe("/Users/u/src/repo");
+    expect(joinPath("/", "repo", false)).toBe("/repo");
+    expect(joinPath("C:\\Users\\u\\src\\", "repo", true)).toBe("C:\\Users\\u\\src\\repo");
+    expect(joinPath("C:\\", "repo", true)).toBe("C:\\repo");
+    expect(joinPath("C:/Users/u/src/", "repo", true)).toBe("C:/Users/u/src\\repo");
   });
 });

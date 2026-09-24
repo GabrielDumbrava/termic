@@ -2485,7 +2485,7 @@ describe("new project from a git URL", () => {
     await waitVisible('[data-testid="clone-dest"]');
     const dest = await browser.execute(() =>
       document.querySelector('[data-testid="clone-dest"]')!.textContent);
-    expect(dest).toBe(`${parent}/repo`);
+    expect(dest).toBe(path.join(parent, "repo"));
   });
 
   // Both of these shipped broken and neither was caught, because the spec fed
@@ -2499,7 +2499,7 @@ describe("new project from a git URL", () => {
     // a cwd that does not exist, the shell fell back to home, and the clone
     // landed somewhere the user never picked.
     expect(shown.startsWith("~")).toBe(false);
-    expect(shown.endsWith("/repo")).toBe(true);
+    expect(shown.endsWith(`${path.sep}repo`)).toBe(true);
   });
 
   it("refuses a folder that does not exist rather than cloning somewhere else", async () => {
@@ -2544,7 +2544,7 @@ describe("new project from a git URL", () => {
         const p = (await browser.execute(
           (d) => window.__termic!.useApp.getState()
             .projects.find((x: any) => x.root_path === d) ?? null,
-          `${parent}/repo`,
+          path.join(parent, "repo"),
         )) as any;
         if (!p) return false;
         addedId = p.id;
