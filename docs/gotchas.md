@@ -604,6 +604,15 @@ bounded rather than cheap, because a refresh is a `gh`/`glab` subprocess: a
 3-minute per-task staleness floor, at most 8 tasks per 60s pass, stalest
 first, awaited one at a time.
 
+That layer only MAINTAINS a known PR; it never discovers one, since it walks
+tasks that already carry an identity. A PR the agent opened itself (`gh pr
+create` in its terminal) therefore stayed badge-less until someone opened
+the task's Git tab. Third layer: `initPrRefreshOnFocus` refreshes the active
+task when it becomes active and when the window regains focus with it in
+front, unforced, so the store's 30s per-task floor caps it however often you
+switch. The first lookup that finds the PR records its identity, and layer 2
+owns it from there.
+
 The general shape: **when a fact is rendered somewhere that is always
 mounted, it cannot be maintained by something that usually is not.** A
 sidebar row, the tray, a window title and a desktop notification all outlive
