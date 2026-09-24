@@ -67,7 +67,7 @@ const modClickWord = (taskId: string, word: string) =>
     const coords = view.coordsAtPos(at + 1);
     const content = dom.querySelector(".cm-content") as HTMLElement;
     content.dispatchEvent(new MouseEvent("mousedown", {
-      bubbles: true, cancelable: true, button: 0, [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true,
+      bubbles: true, cancelable: true, button: 0, [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true,
       clientX: Math.round(coords.left + 1), clientY: Math.round((coords.top + coords.bottom) / 2),
     }));
   }, taskId, word);
@@ -669,7 +669,7 @@ describe("code intelligence", () => {
         const view = dom!.__cmView;
         const rect = view.coordsAtPos(at);
         view.contentDOM.dispatchEvent(new MouseEvent("mousedown", {
-          bubbles: true, cancelable: true, [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, button: 0,
+          bubbles: true, cancelable: true, [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, button: 0,
           clientX: rect.left + 1, clientY: (rect.top + rect.bottom) / 2,
         }));
       }, taskId, offset);
@@ -779,14 +779,14 @@ describe("code intelligence", () => {
     // Back returns to the CALL SITE, not to the previous definition. ⌘[ is
     // IntelliJ's key; it is Previous Task app-wide and claimed CONDITIONALLY
     // here, the same way a folder listing already claims it (issue #151).
-    await pressInEditor("[", { [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
+    await pressInEditor("[", { [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
     await browser.waitUntil(async () => Math.abs((await head()) - startedAt) <= 1, {
       timeout: 10_000,
       timeoutMsg: "Back did not return to where the jump started",
     });
 
     // And Forward retraces it.
-    await pressInEditor("]", { [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
+    await pressInEditor("]", { [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
     await browser.waitUntil(async () => (await head()) === 13, {
       timeout: 10_000, timeoutMsg: "Forward did not retrace the jump",
     });
@@ -804,7 +804,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
+        key: "F12", [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 10_000);
@@ -1184,7 +1184,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
+        key: "F12", [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 15_000);
@@ -1199,7 +1199,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
+        key: "F12", [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 10_000);

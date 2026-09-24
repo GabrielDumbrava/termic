@@ -80,7 +80,7 @@ describe("find in terminal", () => {
     }, { timeout: 40_000, interval: 100, timeoutMsg: `${scope} never printed the fixture` });
   };
 
-  const openFind = (scope: string) => key(scope, { key: "f", code: "KeyF", [/^Win/.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
+  const openFind = (scope: string) => key(scope, { key: "f", code: "KeyF", [/^win/i.test(navigator.platform) ? "ctrlKey" : "metaKey"]: true });
 
   /** Set the find input the way typing does (React tracks the native setter). */
   const setQuery = (scope: string, q: string) =>
