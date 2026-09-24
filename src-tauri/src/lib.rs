@@ -9492,14 +9492,31 @@ fn graceful_then_kill(victims: &[(Option<u32>, PtyWriter)]) {
 /// undefined state the agent kill exists to prevent. Kept separate from the
 /// task-tagged sweep because `task_set_sandbox` reuses that one, and a
 /// sandbox edit has no business killing the user's scratch shell.
+/// A PTY of `task_id` that `stop_task_ptys` does not reach: no `task_id`
+/// of its own (that doubles as the sandbox trigger, so only agents carry
+/// it), but a CLI role or an Activity `owner` naming the task. The owner
+/// matters: a main-panel shell or a run tab has no CLI role (only agents
+/// are addressable), and the provenance tag is the one thing every tab
+/// sets. Matching the role alone left a terminal tab's shell alive in an
+/// archived worktree.
+fn is_untagged_task_pty(
+    slot_task: Option<&str>,
+    role: Option<&PtyRole>,
+    owner: Option<&PtyOwner>,
+    task_id: &str,
+) -> bool {
+    slot_task.is_none()
+        && (role.is_some_and(|r| r.task_id == task_id)
+            || owner.and_then(|o| o.task_id.as_deref()) == Some(task_id))
+}
+
 pub(crate) fn stop_task_role_ptys(manager: &PtyManager, task_id: &str) -> usize {
     let victims: Vec<(Option<u32>, PtyWriter)> = {
         let map = manager.inner.lock();
         map.values()
-            .filter(|slot| {
-                slot.task_id.is_none()
-                    && slot.role.as_ref().is_some_and(|r| r.task_id == task_id)
-            })
+            .filter(|slot| is_untagged_task_pty(
+                slot.task_id.as_deref(), slot.role.as_ref(), slot.owner.as_ref(), task_id,
+            ))
             .map(|slot| (slot.child_pid, slot.writer.clone()))
             .collect()
     };
@@ -9639,8 +9656,9 @@ async fn task_archive(state: State<'_, PtyManager>, id: String, delete_branch: O
 }
 
 /// Stop everything running for a task before its worktree goes: the agent
-/// PTYs (`task_id`) AND the shell and command tabs, which carry the task
-/// only in their CLI role because `task_id` doubles as the sandbox trigger.
+/// PTYs (`task_id`) AND the shell, run and command tabs, which carry the
+/// task only in their CLI role or their Activity `owner`, because `task_id`
+/// doubles as the sandbox trigger.
 /// Stopping only the first kind left a terminal tab's shell sitting in the
 /// worktree, which Windows then refused to delete. Graceful, then forced
 /// (see `stop_task_ptys`), so an agent gets to flush its transcript. Blocks
@@ -29600,6 +29618,18 @@ mod tests {
         let wt = wt_dir.path().join("wt");
         git_worktree_add(&main, &wt, "task");
         (main_dir, wt_dir, main, wt)
+    }
+
+    #[test]
+    fn archive_reaches_a_shell_that_only_its_owner_ties_to_the_task() {
+        let owner = |t: &str| PtyOwner { task_id: Some(t.into()), tab_id: None, kind: "shell".into() };
+        // A main-panel shell: no task_id, no role, only the owner.
+        assert!(is_untagged_task_pty(None, None, Some(&owner("t1")), "t1"));
+        assert!(!is_untagged_task_pty(None, None, Some(&owner("t2")), "t1"));
+        // An agent carries task_id and is stop_task_ptys's, not this one's.
+        assert!(!is_untagged_task_pty(Some("t1"), None, Some(&owner("t1")), "t1"));
+        // Nothing naming the task.
+        assert!(!is_untagged_task_pty(None, None, None, "t1"));
     }
 
     #[test]
