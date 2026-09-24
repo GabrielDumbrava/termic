@@ -9750,7 +9750,7 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
             if !meta.file_type().is_symlink() { continue; }
             let target = fs::read_link(&link).ok().map(|p| p.to_string_lossy().into_owned());
             if target.as_deref() != Some(m.path.as_str()) { continue; }
-            if let Err(e) = fs::remove_file(&link) {
+            if let Err(e) = fs_link::remove_link(&link) {
                 errs.push(format!("rm symlink {}: {e}", m.dir_name));
             }
         }
@@ -9777,7 +9777,7 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
                     // symlinks on Unix.
                     let link = Path::new(&w.path).join(&m.dir_name);
                     if link.symlink_metadata().is_ok() {
-                        if let Err(e) = fs::remove_file(&link) {
+                        if let Err(e) = fs_link::remove_link(&link) {
                             errs.push(format!("rm symlink {}: {e}", m.dir_name));
                         }
                     }

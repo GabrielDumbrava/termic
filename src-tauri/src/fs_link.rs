@@ -87,6 +87,31 @@ mod tests {
         symlink_any(&f, &fl).unwrap();
         assert_eq!(std::fs::read_to_string(&fl).unwrap(), "yo");
     }
+
+    #[test]
+    fn removes_a_link_and_leaves_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().join("d");
+        std::fs::create_dir(&d).unwrap();
+        std::fs::write(d.join("x.txt"), "hi").unwrap();
+        let dl = dir.path().join("dl");
+        symlink_any(&d, &dl).unwrap();
+
+        remove_link(&dl).unwrap();
+        assert!(std::fs::symlink_metadata(&dl).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("x.txt")).unwrap(), "hi");
+    }
+}
+
+/// Remove a link made by `symlink_any` without touching its target. On
+/// Windows a directory link (a junction, or a directory symlink) is a
+/// directory entry that `remove_file` refuses with "Access is denied", and
+/// `remove_dir` removes the link alone; everywhere else it is `remove_file`.
+pub fn remove_link(link: &Path) -> io::Result<()> {
+    match std::fs::remove_file(link) {
+        Err(e) if cfg!(windows) && link.is_dir() => std::fs::remove_dir(link).map_err(|_| e),
+        other => other,
+    }
 }
 
 /// `fs::remove_dir_all`, patient on Windows.

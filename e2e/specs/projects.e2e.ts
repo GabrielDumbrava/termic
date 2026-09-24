@@ -54,7 +54,7 @@ describe("project add/remove", () => {
   it("adds the typed repository root when Enter is pressed", async () => {
     // realpath: the app stores the canonical root, and macOS tmpdir is a
     // symlink (/var -> /private/var), so the raw mkdtemp path never matches.
-    const dir2 = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-proj-enter-")));
+    const dir2 = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-proj-enter-")));
     execSync(
       `git -C "${dir2}" init -q && git -C "${dir2}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
     );
@@ -2045,7 +2045,7 @@ describe("multi files to copy (GH #264)", () => {
   }, PROJECT_NAME);
 
   before(() => {
-    tmp = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-multi-copy-")));
+    tmp = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-multi-copy-")));
     // Host: gitignored secrets only the project's own list names.
     seedRepo(path.join(tmp, "host"), {
       ".env": "HOST=1",
@@ -2415,8 +2415,8 @@ describe("new project from a git URL", () => {
   let addedId: string | null = null;
 
   before(() => {
-    origin = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-origin-")));
-    const work = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-work-")));
+    origin = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-origin-")));
+    const work = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-work-")));
     // A bare repo with one real commit: an EMPTY remote clones into something
     // indistinguishable from a clone still running, which is the exact case
     // the Add gate cannot resolve on its own.
@@ -2426,7 +2426,7 @@ describe("new project from a git URL", () => {
       + `&& git -C "${work}" clone -q --bare . "${origin}/repo.git"`,
     );
     rmSync(work, { recursive: true, force: true });
-    parent = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-into-")));
+    parent = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-into-")));
   });
 
   after(async () => {

@@ -512,7 +512,7 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
     adoptedId = r.data.task.id;
     expect(r.data.task.name).toBe("adopt-me");
     expect(r.data.task.branch).toBe("adopt-me");
-    expect(fs.realpathSync(r.data.task.path)).toBe(fs.realpathSync(wtPath));
+    expect(fs.realpathSync.native(r.data.task.path)).toBe(fs.realpathSync.native(wtPath));
     // The seed landed on the task and on the mounted default tab: this is
     // what the first spawn's `--resume {UUID}` expands from.
     const seeded = await browser.execute(id => {
