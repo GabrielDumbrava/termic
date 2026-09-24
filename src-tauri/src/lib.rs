@@ -9618,6 +9618,14 @@ async fn task_archive(state: State<'_, PtyManager>, id: String, delete_branch: O
         .map_err(|e| e.to_string())?
 }
 
+/// Whether `branch` is a local branch of `repo`. Archive deletes the task's
+/// branch only if it is still there: the goal is "that branch is gone", and
+/// one that already is (deleted by hand, or never created because the
+/// worktree add failed) must not turn a finished archive into an error.
+fn local_branch_exists(repo: &Path, branch: &str) -> bool {
+    git(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], repo).is_ok()
+}
+
 /// Remove `dir` only when it holds no VISIBLE entries. This is a NON-recursive
 /// `rmdir` (`fs::remove_dir`), never `remove_dir_all` — a stray visible file
 /// or subdirectory aborts it, so we can never nuke real content. Hidden files
@@ -9796,7 +9804,7 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
                         if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&repo_path)) {
                             member_git_err = Some(format!("worktree remove {}: {e}", m.dir_name));
                         }
-                        if delete_branch && !m.branch.is_empty() {
+                        if delete_branch && !m.branch.is_empty() && local_branch_exists(Path::new(&repo_path), &m.branch) {
                             if let Err(e) = git(&["branch", "-D", &m.branch], Path::new(&repo_path)) {
                                 errs.push(format!("branch delete {}: {e}", m.dir_name));
                             }
@@ -9829,7 +9837,7 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
             if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
                 git_remove_err = Some(format!("worktree remove: {e}"));
             }
-            if delete_branch && !w.branch.is_empty() {
+            if delete_branch && !w.branch.is_empty() && local_branch_exists(Path::new(&p.root_path), &w.branch) {
                 if let Err(e) = git(&["branch", "-D", &w.branch], Path::new(&p.root_path)) {
                     errs.push(format!("branch delete failed: {e}"));
                 }
@@ -29551,6 +29559,19 @@ mod tests {
         let wt = wt_dir.path().join("wt");
         git_worktree_add(&main, &wt, "task");
         (main_dir, wt_dir, main, wt)
+    }
+
+    #[test]
+    fn a_local_branch_is_found_only_while_it_exists() {
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        git_run(dir.path(), &["branch", "feature/x"]);
+        assert!(local_branch_exists(dir.path(), "feature/x"));
+        git_run(dir.path(), &["branch", "-D", "feature/x"]);
+        assert!(!local_branch_exists(dir.path(), "feature/x"));
+        // A tag or a remote ref by that name is not a local branch.
+        git_run(dir.path(), &["tag", "feature/y"]);
+        assert!(!local_branch_exists(dir.path(), "feature/y"));
     }
 
     // ── git history / graph (issue #199) ──
