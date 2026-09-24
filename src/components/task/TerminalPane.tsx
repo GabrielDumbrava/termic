@@ -1249,6 +1249,16 @@ const captureArmedRef = useRef(false);
       if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
         return false;
       }
+      // Open find in terminal (TerminalFindBar). See isTerminalFindCombo.
+      // BEFORE the pass-through below: off macOS the combo is Ctrl+Shift+F,
+      // which is also find-in-files (⇧⌘F with Ctrl for Cmd), and inside a
+      // terminal it means this terminal's find, as in Windows Terminal.
+      if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {
+        setSearchOpen(true);
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
       if (e.type === "keydown") {
         const binds = usePrefs.getState().shortcuts;
         // Off macOS the app's Cmd is Ctrl, and plain Ctrl+letter belongs to
@@ -1260,13 +1270,6 @@ const captureArmedRef = useRef(false);
         })) {
           return false; // let the global handler take it (file finder, find-in-files, …)
         }
-      }
-      // Open find in terminal (TerminalFindBar). See isTerminalFindCombo.
-      if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {
-        setSearchOpen(true);
-        e.preventDefault();
-        e.stopPropagation();
-        return false;
       }
       // ctrl+V inside a DOCKER task: attach the clipboard image, the way the
       // agent would if it could reach the pasteboard.

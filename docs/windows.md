@@ -121,6 +121,8 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
 - **Keys.** Ctrl stands in for Cmd, and shortcut hints read `Ctrl+Alt+P`.
   In a terminal, plain Ctrl+letter goes to the shell (Ctrl+P is readline's,
   not the file finder), and Ctrl+V pastes, as in every Windows terminal.
+  Ctrl+Shift+F in a terminal opens that terminal's find, as in Windows
+  Terminal, rather than find-in-files, which has the same keys there.
 - **Agent hooks.** There is no PTY slave to write to, so each PTY gets a
   named pipe the app serves (`hook_pipe.rs`), exported as `TERMIC_PTY`;
   whatever a hook writes there joins that PTY's output. Git Bash cannot open
