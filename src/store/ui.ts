@@ -223,6 +223,10 @@ interface UIState {
    *  is responsible for expanding the row's project first (a collapsed
    *  project doesn't render the row, so the signal would be missed). */
   renameRequest: { taskId: string; nonce: number } | null;
+  /** The task group whose caption is being renamed, and the draft. Held
+   *  here rather than in TaskGroupBlock because Move to group > New group
+   *  starts it from a task's menu, before the block it targets has mounted. */
+  groupRenaming: { groupId: string; value: string } | null;
   /** ⇧⌘F find-in-files dialog — task id, null = closed. */
   findInFilesTaskId: string | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
@@ -484,6 +488,7 @@ export const useUI = create<UIState>(set => ({
   syntaxPaletteFor: null,
   promptFire: null,
   renameRequest: null,
+  groupRenaming: null,
   busyMessage: null,
   fileTreeNonce: 0,
   confirm: null,

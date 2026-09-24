@@ -222,9 +222,12 @@ export function TerminalPane({ task, tab, active }: Props) {
   const [pathMenu, setPathMenu] = useState<
     { x: number; y: number; candidates: string[]; line?: number; col?: number; external?: ExternalTarget } | null
   >(null);
+  // Cmd+click on a path is a deliberate "open THIS file": it opens as a
+  // permanent tab, never the preview slot the next click would recycle.
   const openPathFile = useCallback((path: string, line?: number, col?: number) => {
     useApp.getState().openPreviewTab(task.id, {
       type: "edit",
+      permanent: true,
       path,
       title: path.split("/").pop() || path,
       revealAt: line ? { line, col } : undefined,
@@ -1023,6 +1026,7 @@ const captureArmedRef = useRef(false);
       if (readable) {
         useApp.getState().openPreviewTab(task.id, {
           type: "external",
+          permanent: true,
           path: abs,
           title: abs.split("/").pop() || abs,
           revealAt: target.line ? { line: target.line, col: target.col } : undefined,

@@ -19,7 +19,8 @@
 // `wait` works even while this webview is busy).
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useApp } from "@/store/app";
 import { waitForAgentReady } from "@/lib/agentReady";
 import { usePrefs } from "@/store/prefs";
@@ -38,7 +39,11 @@ import {
   taskRename,
   taskSetYolo,
   tasksList,
+  taskGroupJoin,
+  taskGroupNew,
+  taskGroupUpdate,
 } from "@/lib/ipc";
+import { nextGroupColor } from "@/lib/taskGroups";
 import { startArchive } from "@/lib/archiveTask";
 import { withCreateLock } from "@/lib/createLock";
 import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
@@ -138,6 +143,9 @@ interface NewTaskParams {
   open?: boolean;
   prompt?: string;
   promptId?: string;
+  /** The task whose agent ran `termic new` / MCP `task_new`, already checked
+   *  live by the server. The new task joins its sidebar group. */
+  parentTaskId?: string;
 }
 
 /** The main checkout stays uncaged unless explicitly opted in, and
@@ -450,6 +458,12 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   // (The import path carried yolo in the create payload itself.)
   if (!importing && p.yolo) await taskSetYolo(task.id, true).catch(() => {});
   if (typeof p.prompt === "string" && p.prompt) markUnattendedSpawn(task.id);
+  // Before loadAll, so the row appears already inside its group rather than
+  // popping into it a beat later. Cosmetic, so a failure (the parent was
+  // archived in between, another profile) never fails the create.
+  if (typeof p.parentTaskId === "string" && p.parentTaskId) {
+    await taskGroupJoin(task.id, p.parentTaskId, nextGroupColor(useApp.getState().tasks)).catch(() => {});
+  }
 
   await useApp.getState().loadAll();
   useApp.getState().mountTasks([task.id]);
@@ -785,6 +799,40 @@ async function renameTaskHandler(params: unknown): Promise<null> {
   if (typeof name !== "string" || !name.trim()) throw new Error("rename_task requires a name");
   await withCreateLock(async () => {
     await taskRename(taskId, name);
+    await useApp.getState().loadAll();
+  });
+  return null;
+}
+
+/** `termic group --name/--color` (and MCP `task_group`). A key that is ABSENT
+ *  leaves that property as it is; `name: ""` returns the group to following
+ *  its lead's name. A task in no group founds a group of one around itself
+ *  first, coloured like any founding, so an orchestrator can name its group
+ *  before it spawns anyone. The server validated the colour key. */
+export async function setTaskGroupHandler(params: unknown): Promise<null> {
+  const p = params as { taskId?: unknown; name?: unknown; color?: unknown };
+  const taskId = p?.taskId;
+  if (typeof taskId !== "string" || !taskId) throw new Error("set_task_group requires a taskId");
+  const name = typeof p.name === "string" ? p.name.trim() : undefined;
+  const color = typeof p.color === "string" && p.color ? p.color : undefined;
+  if (name === undefined && color === undefined) return null;
+  await withCreateLock(async () => {
+    const app = useApp.getState();
+    if (!app.tasks.some(t => t.id === taskId)) await app.loadAll();
+    const all = useApp.getState().tasks;
+    const task = all.find(t => t.id === taskId);
+    if (!task) throw new Error("no such task");
+    if (!task.group) {
+      await taskGroupNew(taskId, color ?? nextGroupColor(all));
+      await useApp.getState().loadAll();
+    }
+    const g = useApp.getState().tasks.find(t => t.id === taskId)?.group;
+    if (!g) throw new Error("the task's group could not be read back");
+    await taskGroupUpdate(
+      g.id,
+      name !== undefined ? name || null : g.name ?? null,
+      color ?? g.color ?? null,
+    );
     await useApp.getState().loadAll();
   });
   return null;
@@ -1156,6 +1204,7 @@ const handlers: Record<string, Handler> = {
   send_prompt: sendPromptHandler,
   archive_task: archiveTaskHandler,
   rename_task: renameTaskHandler,
+  set_task_group: setTaskGroupHandler,
   pad: padHandler,
   project_add: projectAddHandler,
   project_remove: projectRemoveHandler,
@@ -1190,7 +1239,15 @@ let started = false;
 export function initCliRpc(): Promise<UnlistenFn> {
   if (started) return Promise.resolve(() => {});
   started = true;
-  return listen<RpcRequest>("cli-rpc://request", ev => {
+  // THIS window's listener, never the global `listen`: Tauri 2's global
+  // listen defaults to target Any, which also receives what Rust `emit_to`s
+  // at ANOTHER window. With a second profile window open, every request ran
+  // in both webviews: one `new` created the task in the right window while
+  // the other re-ran git against the same repo and failed on the branch the
+  // first had just made, and that fast failure was the reply the caller got.
+  // Measured: profiles.e2e.ts "serves a CLI/MCP request in exactly one
+  // window", which reproduces the report without this scoping.
+  return getCurrentWebviewWindow().listen<RpcRequest>("cli-rpc://request", ev => {
     void dispatch(ev.payload);
   })
     .then(unlisten => {

@@ -161,6 +161,77 @@ deferred by a `setTimeout`, not a `requestAnimationFrame`: a just-mounted
 listener has to be attached first, and rAF is frozen on an occluded window (see
 [gotchas.md](gotchas.md)).
 
+## Task groups in the sidebar
+
+When an agent inside task A creates task B (`termic new`, or MCP `task_new`),
+both land in one group led by A. The agent can name and colour the group itself: `termic group --name
+... --color ...` (MCP `task_group`); the `new` reply prints the group it
+joined and `TERMIC_CLI_HELP` teaches the verb, so an agent finds it
+without being told. The CLI reads
+`$TERMIC_TASK_ID` itself, so an agent gets grouping without being told
+about it; `--no-group` opts out. MCP gets the same id from the
+`X-Termic-Task` header the installed headers helper sends from the
+agent's environment, so its `task_new` groups the same way (an explicit
+`parentTask` overrides it). A worker that orchestrates in turn adds to
+the ROOT group: groups are flat on purpose, since a tree in a 260px
+sidebar is unreadable and "these belong to one job" is the question.
+
+Drawing (`src/lib/taskGroups.ts`, `TaskGroupBlock.tsx`): a group is one
+contiguous block at its FIRST member's position, a caption row in the
+group's accent (name, member count) above a 2px rail of the same colour.
+The caption copies a task row's box model, so its icon sits in the loose
+rows' chevron column and its label in their name column; the rail is the
+members wrapper's left border, under the icon's centre, and members sit
+18px in, the step a project folder gives its members. All four are
+asserted by measurement in the e2e spec, since "a few px off" is exactly
+what a screenshot cannot settle. The rename input inherits the caption's
+font and has no padding or border (its outline is outside the box), so
+entering rename moves no text.
+A group exists while any live task carries it, one member included, the
+same rule as a project folder; a group spanning two projects draws its
+share in each. The label is the group's own name or,
+unnamed, the lead's live name, so renaming the orchestrator renames the
+group until someone names it. Founding colours skip red first (`blue`,
+`teal`, ... `red` last): a red caption on a fresh group reads as an error.
+
+Editing: right-click the caption for the swatch row, Rename group and
+Ungroup tasks (the project-folder menu body, `GroupActionsMenuItems`).
+A task row's menu has Move to group, the project row's submenu for tasks:
+the project's groups (a check on the current one), New group (a group of
+just this task, whose caption opens its rename straight away) and Remove
+from group. Its group list is read from the store while the menu is open,
+not subscribed, so no row re-renders for a menu nobody has open. Dragging a row INTO a block
+joins it and OUT leaves it: during the drag the row wears whichever
+block the cursor is inside (header included), so the block grows and
+shrinks under it before anything is written, and the drop applies the
+change to the store in the same update the drag state clears in, so the
+row does not snap back to its old group for the IPC round-trip. No drag
+gesture creates a group (dropping on a row already means reorder); New
+group does.
+
+A group COLLAPSES from the chevron in its caption's icon slot (the only
+toggle: double-clicking the caption is rename, so a body click toggling too
+would flash collapse and expand on every rename). Collapsed, the caption
+shows one of each mark any member's row would draw, in a fixed order
+(attention, done, partial, working, delegated), in place of the count:
+never just the most urgent, since "two finished and one needs you" is the
+point. Each member contributes exactly its row's own mark (`taskWorkBadge`
+plus the partial override), via `groupBadgeKinds`, so the caption cannot
+claim what the hidden rows would not. `setActiveTask` expands the group of
+the task it activates (every "go to task" route: click, cmd+1..9, the
+next-waiting jump, a notification), and a collapsed group still renders
+the ACTIVE task's row, which covers the routes that only preview a place
+(`previewPlace`, the ctrl+tab walk) without writing anything. Joining a
+collapsed group by drag or Move to group opens it, so the task you placed
+stays in view. The icon rail ignores collapse: it has no caption to expand
+from. State is `collapsedTaskGroups` in localStorage, keyed by group id,
+pruned in `loadAll`.
+
+Dragging the CAPTION moves the whole block within its project, the task
+twin of the project-folder drag: it hit-tests only top-level items (loose
+rows and other blocks), moves the members through the store as one run,
+and writes the display order through `task_reorder` on drop.
+
 ## What a task is called (name vs branch)
 
 A task's label is decided in ONE place, `taskLabel()` in
@@ -512,6 +583,17 @@ reading that survives the fact that the tabs before it are already gone.
 `confirmBulkClose` therefore counts dirty FILES and live agents only, and a set
 of nothing but pads skips it entirely rather than stacking two dialogs on one
 decision.
+
+A pad an AGENT creates or writes (`termic scratchpad`, MCP `scratchpad_*`)
+while it is not on screen in a focused window gets `ScratchTab.unseen`: a
+hollow ring in the done colour on its tab, in place of the grey dirty dot a
+pad always carries (a pad is dirty for its whole life, so that dot says
+nothing). Showing the tab clears it, by click or by `useSeenWhenWatched` when
+you come back to a window where it is already in front. It is its own field,
+not `unread`, because `unread` is agent news: the OS notifier and the
+sidebar's work badges read it, and a pad edit must reach neither. The user's
+own typing goes through the editor, never through `padHandler`, so it never
+marks. A pad with no open tab has nowhere to show the mark.
 
 ## Close vs Quit (windowless mode)
 

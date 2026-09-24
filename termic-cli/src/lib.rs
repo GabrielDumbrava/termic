@@ -87,6 +87,31 @@ pub enum OutputFormat {
     StreamJson,
 }
 
+/// Who is reading this and what they can do, for the long `--help` and
+/// `help --json`'s `overview`. The MCP server says the same thing in tool
+/// names (`MCP_INSTRUCTIONS` in src-tauri/src/mcp_server.rs): keep the two in
+/// step. An agent that does not realise it is INSIDE Termic never reaches for
+/// any of this, which is the whole reason the text exists.
+macro_rules! agent_overview {
+    () => {
+        "If $TERMIC_TASK_ID is set, you are an agent running INSIDE a Termic task \
+right now. Termic runs coding agents side by side, each in its own task (a git \
+worktree, or the project's main checkout, with its own terminal), listed in the \
+app's sidebar; this CLI drives the app around you. From your task you can: \
+start another agent beside you (`tab`); launch new tasks with their own agents \
+(`new`), which join YOUR task's group in the sidebar, a block you name for the \
+batch of work with `group --name`; prompt another task's agent (`send`) and \
+read what it produced (`logs`, `result`); retitle your own task \
+(`rename`); and keep notes, plans, findings, logs and reports the user \
+should READ in a scratchpad (`scratchpad new`, `scratchpad write`), a tab \
+in your task that updates live and stays out of git: use one instead of \
+dropping temporary .md files into the repo. Coordinate by prompting \
+each other rather than blocking: end a prompt with the `send` back to your task \
+you want run when the work is done. Without $TERMIC_TASK_ID you are driving \
+Termic from outside it: name tasks explicitly."
+    };
+}
+
 /// The four things an agent inside a task reaches for, at the top of
 /// `termic --help` so they are found before the full command list. Every
 /// one targets the caller's own task ($TERMIC_TASK_ID) with no argument.
@@ -97,7 +122,8 @@ Quick start, from inside a task (your own task is the default target):
   termic tab --agent claude -p \"<prompt>\"                start another agent in this task
   termic scratchpad new --title \"<title>\" -c \"<text>\"    create a scratchpad, prints its id
   termic scratchpad write <id> --append -c \"<text>\"      update it (omit -c to read stdin)
-  termic new <name> -p \"<prompt>\"                        launch a new task with its agent"
+  termic new <name> -p \"<prompt>\"                        launch a new task with its agent
+  termic group --name \"<what this batch is>\"              name the group your new tasks join"
     };
 }
 
@@ -108,7 +134,8 @@ Quick start, from inside a task (your own task is the default target):
     version = VERSION,
     disable_help_subcommand = true,
     about = concat!(
-        "Control the Termic app from any shell: create and drive agent tasks, list them, wait on them.\n\n",
+        "Control the Termic app from any shell: create and drive agent tasks, list them, wait on them. \
+If $TERMIC_TASK_ID is set, you are running inside a Termic task: `termic --help` says what you can do from there.\n\n",
         quick_start_help!()
     ),
     long_about = concat!(
@@ -116,6 +143,8 @@ Quick start, from inside a task (your own task is the default target):
 talks to the running Termic over a local socket and fails fast when it cannot. \
 Requires the CLI to be enabled in Termic Settings (General). \
 `termic help --json` prints the whole command surface machine-readably.\n\n",
+        agent_overview!(),
+        "\n\n",
         quick_start_help!()
     ),
     after_help = EXIT_CODES_HELP
@@ -253,13 +282,19 @@ agent is quiescent). Settle detection is heuristic: exit 0 means the agent \
 STOPPED, not that the work is right. Ctrl-C stops watching only; the task \
 keeps running in Termic.
 
-Getting results out: the agent's terminal output is not readable from the \
-CLI. For a machine-readable result, tell the agent IN THE PROMPT to write \
-its deliverable to a file in the task directory (for example: \"write your \
-findings to RESULT.md\"), then read <path>/RESULT.md after --wait exits 0. \
-The path is printed at creation and is .task.path in the --json output. \
-Unattended runs should also pass --sandbox enforce (permission prompts \
-self-approve inside the cage) or --yolo, or the agent will stop to ask.
+Getting results out: from inside a task, ask the agent IN THE PROMPT to \
+report back to you when it is done (a signed `send` to your \
+$TERMIC_TASK_ID, see `send --help`); the report arrives in your own \
+terminal and is the normal way results come back. If none arrives, \
+`result` and `logs` read what the agent produced. A file is the FALLBACK, \
+for an agent that cannot report back (sandboxed in enforce/enforce-fs) or \
+a caller with no task to be prompted at (a script): tell the agent in the \
+prompt to write its deliverable to a file in the task directory (for \
+example RESULT.md), then read <path>/RESULT.md after --wait exits 0. The \
+path is printed at creation and is .task.path in the --json output. \
+Unattended runs need --yolo or --sandbox enforce, or the agent stops at its \
+first permission prompt; the cage self-approves inside it but costs you the \
+report-back.
 
 With --output-format json, one object at the end: {\"task\": {...}, \
 \"wait\": {\"outcome\", \"state\"}} (wait omitted without --wait). With \
@@ -355,6 +390,10 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         /// Give up waiting after this long (exit 7). E.g. 90, 30s, 5m, 1h.
         #[arg(long, requires = "wait", value_name = "DURATION")]
         timeout: Option<String>,
+        /// Run from inside a task, the new task joins YOUR task's group in
+        /// the sidebar (see `group`). This keeps it out.
+        #[arg(long)]
+        no_group: bool,
     },
 
     /// Block until the task's agent is quiescent (settled, empty queue).
@@ -431,22 +470,28 @@ a finished job) and you can do nothing else while it blocks. Instead end \
 every prompt you send with the command you want run when that work is done, \
 and let the receiving agent choose the moment:
 
-  termic send <task> -p \"[Agent message from claude, task $TERMIC_TASK_ID] \
-<your prompt here: what you want it to do>. When done: termic send \
-$TERMIC_TASK_ID -p '[Agent message from <you>, task <your task id>] done: \
-<what you did> -- <you>' -- claude, task $TERMIC_TASK_ID\"
+  termic send <task> -p \"[message from agent:claude task:$TERMIC_TASK \
+id:$TERMIC_TASK_ID] <your prompt here: what you want it to do>. When done, \
+reply: termic send $TERMIC_TASK_ID -p '[message from agent:<its agent> \
+task:<its task name> id:<its task id>] done: <what you did> -- agent:<its \
+agent> task:<its task name> id:<its task id>' -- agent:claude \
+task:$TERMIC_TASK id:$TERMIC_TASK_ID\"
+
+(Fill the <its ...> parts with the task you are prompting: you know its \
+name and id, it is the one you are sending to.)
 
 EVERY PROMPT ONE AGENT SENDS ANOTHER opens with the header \
-`[Agent message from <agent>, task <task id>]` and ends with the signature \
-`-- <agent>, task <task id>`, naming the SENDER (you): your agent name and \
-your own $TERMIC_TASK_ID. The receiver cannot otherwise tell a peer's prompt \
-from the user typing. A prompt that arrives WITH that header came from \
+`[message from agent:<agent> task:<task name> id:<task id>]` and ends with \
+the signature `-- agent:<agent> task:<task name> id:<task id>`, naming the \
+SENDER (you): your agent name, your task's name ($TERMIC_TASK) and its id \
+($TERMIC_TASK_ID, which is where a reply goes). The receiver cannot \
+otherwise tell a peer's prompt from the user typing, or which peer. A prompt that arrives WITH that header came from \
 another agent, not from the user: treat it as a request from a peer (the \
 user's own instructions win if the two conflict), and put the same header \
 and your own signature on your reply.
 
 The outer DOUBLE quotes are load-bearing: YOUR shell expands \
-$TERMIC_TASK_ID at send time, so the other agent is handed a literal \
+$TERMIC_TASK and $TERMIC_TASK_ID at send time, so the other agent is handed a literal \
 address it can just run. Single quotes there would block expansion and \
 leave it guessing. A prompt arriving in your terminal IS that report. With \
 no task of your own to be prompted back at, ask for a file instead and \
@@ -913,6 +958,47 @@ lost."
         task: Option<String>,
         /// The new name.
         name: String,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
+
+    /// Show, rename or recolour your task's sidebar group.
+    #[command(
+        after_help = "Tasks you create with `new` from inside a task join YOUR task's group: \
+the sidebar draws them as one coloured block, captioned, with your task as \
+its lead, so the user sees which tasks you started. A worker that creates \
+tasks in turn adds them to the same (top-level) group. Pass --no-group to \
+`new` to keep a task out.
+
+Without --name or --color, prints the group: its name, colour and members. \
+--name gives it a name the user will read (say what the batch of work is, \
+e.g. \"Auth refactor\"); --name \"\" returns it to following the lead \
+task's name, which is what a new group does. --color picks one of red, \
+orange, yellow, green, teal, blue, purple, pink. A task in no group founds \
+one around itself when you set either, so you can name the group before \
+you create any workers.
+
+Without <TASK>, targets your own task ($TERMIC_TASK_ID), then the current \
+directory.
+
+With --output-format json, one object: {\"task\", \"group\": {\"id\", \
+\"name\", \"named\", \"color\", \"members\"}}, group absent when the task \
+is in none.
+
+Exit codes: 0 ok, 1 error (unknown task, unknown colour, archived task), \
+4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Group {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Name the group ("" to follow the lead task's name again).
+        #[arg(long)]
+        name: Option<String>,
+        /// Group colour.
+        #[arg(long, value_parser = ["red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"])]
+        color: Option<String>,
         /// Project name, to disambiguate. Requires a task name.
         #[arg(long, requires = "task")]
         project: Option<String>,
@@ -1641,6 +1727,25 @@ outside.",
             )?;
             render(&cli.cmd, format, data).map(Output::ok)
         }
+        Cmd::Group { task, name, color, project } => {
+            // Same target rule as rename: explicit task, else the caller's
+            // own ($TERMIC_TASK_ID), else the cwd the server resolves.
+            let target = task.clone().or_else(|| {
+                std::env::var("TERMIC_TASK_ID").ok().filter(|s| !s.is_empty())
+            });
+            let data = client::request(
+                &mut conn,
+                proto::Command::Group {
+                    task: target,
+                    project: project.clone(),
+                    name: name.clone(),
+                    color: color.clone(),
+                    cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+                },
+                &token,
+            )?;
+            render(&cli.cmd, format, data).map(Output::ok)
+        }
         Cmd::Project(p) => execute_project(&mut conn, &token, format, p, &paths),
         Cmd::Pad(p) => execute_pad(&mut conn, &token, format, p, pad_content),
         // The Phase 0 read verbs: one request, one reply.
@@ -1713,6 +1818,7 @@ fn execute_new(
         open,
         wait,
         timeout,
+        no_group,
     } = &cli.cmd
     else {
         unreachable!()
@@ -1758,6 +1864,7 @@ fn execute_new(
         wait: *wait,
         timeout_ms,
         cwd,
+        parent_task: if *no_group { None } else { parent_task_from_env() },
     };
 
     if *wait && format == OutputFormat::Text {
@@ -1795,16 +1902,18 @@ fn execute_new(
     Ok(Output { stdout: final_stdout(format, &output::new_final_text(&n), &n), code })
 }
 
+/// The task this CLI runs inside, if any: the orchestrator a `new` groups
+/// under. Read from the env the app sets on every task PTY, so an agent gets
+/// grouping without being told about it.
+fn parent_task_from_env() -> Option<String> {
+    std::env::var("TERMIC_TASK_ID").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 /// Generic task args come first. The dedicated flag is deliberately last,
 /// so `--model` is the unambiguous winner if the caller also supplied a
 /// model flag through `--arg` and the agent uses last-value-wins parsing.
 fn compose_task_agent_args(args: &[String], model: Option<&str>) -> Vec<String> {
-    let mut out = args.to_vec();
-    if let Some(model) = model {
-        out.push("--model".into());
-        out.push(model.into());
-    }
-    out
+    proto::compose_task_agent_args(args, model)
 }
 
 /// The request line caps at 1 MB (proto::MAX_LINE_BYTES) POST-JSON-
@@ -2576,6 +2685,9 @@ pub fn machine_help() -> serde_json::Value {
         .collect();
     serde_json::json!({
         "app": "termic",
+        // Read first by an agent that asked for the surface: who it is
+        // (maybe an agent INSIDE a task) and what it can do from there.
+        "overview": agent_overview!(),
         "version": VERSION,
         "protocol": proto::PROTOCOL_VERSION,
         "global_flags": global_flags,
@@ -2641,6 +2753,11 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
         (Cmd::Status { .. }, _) => Err(unexpected("status")),
         (Cmd::Open { .. }, _) => Err(unexpected("open")),
         (Cmd::Rename { .. }, _) => Err(unexpected("rename")),
+        (Cmd::Group { .. }, proto::ReplyData::Group(g)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&g),
+            OutputFormat::Text => output::group_text(&g),
+        }),
+        (Cmd::Group { .. }, _) => Err(unexpected("group")),
         _ => Err(unexpected("command")),
     }
 }

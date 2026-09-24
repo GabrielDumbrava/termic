@@ -294,6 +294,21 @@ Genuinely global topics (`docker-build://`, `termic://windowless`,
 `termic://profiles-changed`) stay broadcasts. Ask "is this true of the machine
 or of one profile" before adding an emit.
 
+**`emit_to` is only half of it: the LISTENER has to be scoped too.** Tauri 2's
+global `listen()` from `@tauri-apps/api/event` registers for target `Any`,
+which receives events `emit_to`'d at ANY window's label, not just broadcasts.
+So `cli-rpc://request` was `emit_to` the right window and still ran in every
+profile's webview: one MCP/CLI `new` created the task in the right window
+while the other re-checked ITS profile's task list, found no clash, ran git
+against the same repo and failed on the branch the first had just made, and
+that fast failure was the reply (reported from a live MCP session; reproduced
+by profiles.e2e.ts "serves a CLI/MCP request in exactly one window" on the
+unfixed build, green after). A listener for an event Rust targets at one
+window uses `getCurrentWebviewWindow().listen(...)`: `cli-rpc://request`
+(src/lib/cliRpc.ts) and `termic://close-requested` (windowlessMode.ts) do.
+Per-task topics (`setup-output://<id>`) are safe with the global listen only
+because a window subscribes to its own tasks' ids alone.
+
 ## `std::mem::take` on a shared queue swallows another window's work (GH #280)
 
 `deep_link_take_pending` drained the whole pending-URL queue for whichever

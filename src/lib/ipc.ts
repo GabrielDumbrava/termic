@@ -120,6 +120,18 @@ export const tasksList    = () => invoke<Task[]>("tasks_list");
  *  `projectReorder` (whose array order IS the order) tasks in other projects
  *  and archived rows are left untouched. */
 export const taskReorder  = (ids: string[]) => invoke<void>("task_reorder", { ids });
+/** Task groups. `targetId` is any task already in the group to join, or an
+ *  ungrouped task that becomes the lead of a new one coloured `color`. */
+export const taskGroupJoin = (taskId: string, targetId: string, color?: string | null) =>
+  invoke<void>("task_group_join", { taskId, targetId, color: color ?? null });
+/** A new group holding just this task (Move to group > New group). */
+export const taskGroupNew = (taskId: string, color?: string | null) =>
+  invoke<void>("task_group_new", { taskId, color: color ?? null });
+export const taskGroupLeave = (taskId: string) => invoke<void>("task_group_leave", { taskId });
+/** A blank `name` returns the group to following its lead's name. */
+export const taskGroupUpdate = (groupId: string, name: string | null, color: string | null) =>
+  invoke<void>("task_group_update", { groupId, name, color });
+export const taskGroupDissolve = (groupId: string) => invoke<void>("task_group_dissolve", { groupId });
 export const taskCreate   = (args: CreateTaskArgs) => invoke<Task>("task_create", { args });
 export const taskCreateMulti = (args: CreateMultiArgs) => invoke<Task>("task_create_multi", { args });
 /** Open a task in the repo's main checkout. Sandbox args mirror task_create /

@@ -276,6 +276,16 @@ export interface NamedPort {
   port: number;
 }
 
+/** A sidebar task group. Founded when an agent in one task creates another
+ *  through the CLI or MCP, so `id` is the orchestrator's (the lead's) task id.
+ *  Every member carries the same copy. `name` absent = follow the lead's
+ *  current name; `color` is an accent KEY (src/lib/accents.ts). */
+export interface TaskGroup {
+  id: string;
+  name?: string;
+  color?: string;
+}
+
 export interface Task {
   id: string;
   project_id: string;
@@ -296,6 +306,8 @@ export interface Task {
    *  sort AFTER any ordered sibling — so untouched projects stay in creation
    *  order and a newly created task appends at the bottom. */
   order?: number;
+  /** Sidebar task group (see `TaskGroup`). Absent on ungrouped tasks. */
+  group?: TaskGroup;
   /** True when this task points at the project's main repo checkout
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
@@ -1575,6 +1587,13 @@ export interface ScratchTab extends BaseTab {
   /** Per-document remote-image unblock for the rendered preview, as on
    *  EditTab (issue #69). Session-only. */
   remoteImagesUnblocked?: boolean;
+  /** Someone else (an agent, over the CLI or MCP) created or wrote this pad
+   *  while it was not on screen in a focused window, and the user has not
+   *  looked since. Draws a ring on the tab in place of the dirty dot; cleared
+   *  by showing the tab. Deliberately NOT `unread`: that field is agent news,
+   *  read by the OS notifier and the sidebar's work badges, and a pad edit is
+   *  neither. Session-only. */
+  unseen?: boolean;
 }
 
 /** A file OUTSIDE the task, opened READ-ONLY from a cmd+clicked absolute

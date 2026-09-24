@@ -417,6 +417,19 @@ pub enum DockerRebuildFrequency {
     Weekly,
 }
 
+/// A sidebar task group (see `Task::group`). `name: None` means "follow the
+/// lead task's current name", so renaming the orchestrator renames its group
+/// until someone gives the group a name of its own. `color` is an accent KEY
+/// from src/lib/accents.ts, never a literal colour.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub struct TaskGroup {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
 /// One frozen extra named port (GH #196): the env var name the user
 /// configured plus the port allocated from this task's block at
 /// creation. Frozen pairs, so editing the repo config later never
@@ -640,6 +653,20 @@ pub struct Task {
     /// appends at the bottom instead of jumping to the top.
     #[serde(default)]
     pub order: Option<u32>,
+    /// Task group this task belongs to in the sidebar, or `None`. A group is
+    /// born when an agent running in task A creates task B through the CLI
+    /// or MCP: both join a group whose `id` is A's task id, so the
+    /// orchestrator that started it is always identifiable as the lead. The
+    /// user can drag other tasks in and out afterwards.
+    ///
+    /// Denormalized on purpose: every member carries the same copy, so a
+    /// group needs no registry file, rides the task's own profile for free,
+    /// and disappears with its last member. `task_group_update` rewrites
+    /// every member, which is a handful of files at most. Purely cosmetic:
+    /// nothing may key a permission or a lookup off it, because the caller
+    /// identity that creates one (`$TERMIC_TASK_ID`) is claimed, not proven.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<TaskGroup>,
     /// Per-agent account override for THIS task (GH #278), agent id -> account
     /// name. Written when a running task is switched to another account, and
     /// read at every spawn so the choice survives a relaunch. Absent means
@@ -3915,7 +3942,7 @@ fn pty_spawn(
             // agent to prompt them back (src/lib/agentBriefing.ts).
             cmd.env(
                 "TERMIC_CLI_HELP",
-                "TERMIC_CLI is the Termic control CLI. Run `\"$TERMIC_CLI\" help --json` for the full command surface. Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\"`; create one with `\"$TERMIC_CLI\" new <name> --sandbox enforce -p \"<task>; write your findings to RESULT.md\"` and read RESULT.md from the task path (`result` and `logs` can peek at a running agent, the file drop is the reliable floor). Coordinate by prompting each other, not by blocking: end every prompt you send with the command you want run when that work is done, in DOUBLE quotes so your own shell fills in your address: `\"$TERMIC_CLI\" send <task> -p \"[Agent message from <you>, task $TERMIC_TASK_ID] <work>. When done: \\\"$TERMIC_CLI\\\" send $TERMIC_TASK_ID -p '[Agent message from <agent>, task <your task id>] done: <what you did> -- <agent>' -- <you>, task $TERMIC_TASK_ID\"`. Every prompt you send another agent opens with that header, `[Agent message from <agent>, task <task id>]`, and ends with that signature, `-- <agent>, task <task id>`, naming YOU, so the receiver knows it did not come from the user. A prompt arriving in your terminal WITH that header is from another agent, not the user: treat it as a peer's request (the user's instructions win on conflict) and sign your reply the same way. Prefer that over `--wait`: work-done detection is a heuristic, and a waiting agent can do nothing else meanwhile. If you do wait, branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. A task sandboxed in enforce/enforce-fs is denied the control plane by design and can never report back: ask it for a file in its worktree instead. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused). Once you know the real subject of your work (issue filed, PR opened), retitle your task so the sidebar reads well: `\"$TERMIC_CLI\" rename \"<new name>\"` renames your own task's label (branch and directory keep their names). Start another agent beside you in your own task with `\"$TERMIC_CLI\" tab --agent <id> -p \"...\"` (no task argument needed). For notes, findings or a report the user should READ rather than commit, use a scratchpad, a tab in your task that stays out of git and updates live as you write: `\"$TERMIC_CLI\" scratchpad new --title \"<title>\" -c \"<text>\"` prints its id; `scratchpad write <id> --append -c -` adds stdin to it, `scratchpad read <id>` prints it, `scratchpad list` lists them.",
+                "You are running INSIDE a Termic task ($TERMIC_TASK_ID): Termic runs coding agents side by side, each task a git worktree (or the main checkout) with its own terminal, listed in the app's sidebar. TERMIC_CLI is the Termic control CLI, which drives the app around you. Run `\"$TERMIC_CLI\" help --json` for the full command surface. Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\"`; create one with `\"$TERMIC_CLI\" new <name> -p \"...\"` and, in that prompt, ask it to report back to you when done (the signed reply below): that is how results come back, and it arrives in your own terminal. If no report arrives, `result` and `logs` read what it produced. Ask for a file (e.g. RESULT.md in its worktree) only when it cannot report back: a task sandboxed in enforce/enforce-fs is denied this CLI, and so is anything run outside Termic. Unattended tasks need `--yolo` or `--sandbox enforce` or they stop at the first permission prompt; the cage self-approves inside it but costs you the report-back. Coordinate by prompting each other, not by blocking: end every prompt you send with the command you want run when that work is done, in DOUBLE quotes so your own shell fills in your task name and address: `\"$TERMIC_CLI\" send <task> -p \"[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID] <work>. When done, reply: \\\"$TERMIC_CLI\\\" send $TERMIC_TASK_ID -p '[message from agent:<its agent> task:<its task name> id:<its task id>] done: <what you did> -- agent:<its agent> task:<its task name> id:<its task id>' -- agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID\"` (fill the <its ...> parts with the task you are prompting, which you know). Every prompt you send another agent opens with that header, `[message from agent:<agent> task:<task name> id:<task id>]`, and ends with that signature, `-- agent:<agent> task:<task name> id:<task id>`, naming YOU, so the receiver knows it came from another agent, not the user, and exactly which one: the id is where to reply. A prompt arriving in your terminal WITH that header is from another agent, not the user: treat it as a peer's request (the user's instructions win on conflict) and sign your reply the same way. Prefer that over `--wait`: work-done detection is a heuristic, and a waiting agent can do nothing else meanwhile. If you do wait, branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. A task sandboxed in enforce/enforce-fs is denied the control plane by design and can never report back: ask it for a file in its worktree instead. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused). Once you know the real subject of your work (issue filed, PR opened), retitle your task so the sidebar reads well: `\"$TERMIC_CLI\" rename \"<new name>\"` renames your own task's label (branch and directory keep their names). Tasks you create with `new` join YOUR task's group in the sidebar, one coloured block led by your task: name it for the batch of work with `\"$TERMIC_CLI\" group --name \"<what this batch is>\"` (optionally `--color teal`); `group` alone shows it. Start another agent beside you in your own task with `\"$TERMIC_CLI\" tab --agent <id> -p \"...\"` (no task argument needed). For notes, plans, findings, logs or a report the user should READ rather than commit, use a scratchpad instead of writing temporary .md files into the repo: it is a tab in your task that stays out of git and updates live as you write: `\"$TERMIC_CLI\" scratchpad new --title \"<title>\" -c \"<text>\"` prints its id; `scratchpad write <id> --append -c -` adds stdin to it, `scratchpad read <id>` prints it, `scratchpad list` lists them.",
             );
         }
     }
@@ -5929,6 +5956,7 @@ fn task_open_repo(
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        group: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
@@ -6190,6 +6218,7 @@ fn task_import_worktree(
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        group: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
@@ -6636,6 +6665,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        group: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
@@ -7132,6 +7162,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         // New tasks are unordered: they append below any manually
         // ordered sibling (see sort_tasks).
         order: None,
+        group: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
@@ -7328,6 +7359,163 @@ fn task_reorder(ids: Vec<String>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// ── Task groups ──
+// Pure functions over the loaded list, returning the indices they changed,
+// so the rules are unit-testable without a data dir and the commands below
+// only load, apply and save what moved.
+
+/// Put `task_id` into `target_id`'s group. An ungrouped target founds a new
+/// group with itself as lead (group id = its task id) and `color`; a grouped
+/// one lends its group, so a sub-orchestrator's children land in the ROOT
+/// group and groups stay flat. Both tasks must be in one profile: a window
+/// renders one profile, and a group straddling two would be half-invisible.
+fn apply_group_join(list: &mut [Task], task_id: &str, target_id: &str, color: Option<String>) -> Result<Vec<usize>, String> {
+    if task_id == target_id {
+        return Err("a task cannot join its own group".into());
+    }
+    let ti = list.iter().position(|t| t.id == target_id).ok_or("no such target task")?;
+    let si = list.iter().position(|t| t.id == task_id).ok_or("no such task")?;
+    if list[ti].profile != list[si].profile {
+        return Err("tasks in different profiles cannot share a group".into());
+    }
+    let mut changed = Vec::new();
+    let group = match list[ti].group.clone() {
+        Some(g) => g,
+        None => {
+            let g = TaskGroup { id: list[ti].id.clone(), name: None, color };
+            list[ti].group = Some(g.clone());
+            changed.push(ti);
+            g
+        }
+    };
+    if list[si].group.as_ref() != Some(&group) {
+        list[si].group = Some(group);
+        changed.push(si);
+    }
+    Ok(changed)
+}
+
+/// A new group holding just `task_id` (the sidebar's "Move to group > New
+/// group"). Like a project folder, a group of one is a real group: it exists
+/// while any live task carries it. The id is the task's own when free, so an
+/// unnamed group can follow its lead's name; a task already LEADING another
+/// group (whose members still carry its id) gets a fresh id and is named
+/// after itself instead.
+fn apply_group_new(list: &mut [Task], task_id: &str, color: Option<String>) -> Result<Vec<usize>, String> {
+    let si = list.iter().position(|t| t.id == task_id).ok_or("no such task")?;
+    let taken = list.iter().enumerate().any(|(i, t)| i != si && t.group.as_ref().is_some_and(|g| g.id == task_id));
+    let group = if taken {
+        TaskGroup { id: uuid::Uuid::new_v4().to_string(), name: Some(list[si].name.clone()), color }
+    } else {
+        TaskGroup { id: task_id.to_string(), name: None, color }
+    };
+    list[si].group = Some(group);
+    Ok(vec![si])
+}
+
+/// Leaving never touches the rest of the group: like a project folder, the
+/// group lives on while anyone carries it, including a lone orchestrator
+/// whose workers have all left (Ungroup is the way to clear that).
+fn apply_group_leave(list: &mut [Task], task_id: &str) -> Result<Vec<usize>, String> {
+    let si = list.iter().position(|t| t.id == task_id).ok_or("no such task")?;
+    Ok(if list[si].group.take().is_some() { vec![si] } else { Vec::new() })
+}
+
+/// Rename / recolour a group on every member, archived ones included (they
+/// come back wearing it). An empty or whitespace name means "follow the lead".
+fn apply_group_update(list: &mut [Task], group_id: &str, name: Option<String>, color: Option<String>) -> Vec<usize> {
+    let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let mut changed = Vec::new();
+    for (i, t) in list.iter_mut().enumerate() {
+        if let Some(g) = t.group.as_mut().filter(|g| g.id == group_id) {
+            if g.name != name || g.color != color {
+                g.name = name.clone();
+                g.color = color.clone();
+                changed.push(i);
+            }
+        }
+    }
+    changed
+}
+
+fn apply_group_dissolve(list: &mut [Task], group_id: &str) -> Vec<usize> {
+    let mut changed = Vec::new();
+    for (i, t) in list.iter_mut().enumerate() {
+        if t.group.as_ref().is_some_and(|g| g.id == group_id) {
+            t.group = None;
+            changed.push(i);
+        }
+    }
+    changed
+}
+
+fn save_changed(list: &[Task], mut changed: Vec<usize>) -> Result<(), String> {
+    changed.sort_unstable();
+    changed.dedup();
+    for i in changed {
+        save_task(&list[i]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Join `task_id` to `target_id`'s group, founding one led by the target if
+/// it has none. The CLI / MCP `new` path calls this with the orchestrator as
+/// target; the sidebar drag calls it with any member of the group dropped on.
+#[tauri::command]
+async fn task_group_join(task_id: String, target_id: String, color: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut list = load_tasks_all();
+        let changed = apply_group_join(&mut list, &task_id, &target_id, color)?;
+        save_changed(&list, changed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn task_group_new(task_id: String, color: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut list = load_tasks_all();
+        let changed = apply_group_new(&mut list, &task_id, color)?;
+        save_changed(&list, changed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn task_group_leave(task_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut list = load_tasks_all();
+        let changed = apply_group_leave(&mut list, &task_id)?;
+        save_changed(&list, changed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn task_group_update(group_id: String, name: Option<String>, color: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut list = load_tasks_all();
+        let changed = apply_group_update(&mut list, &group_id, name, color);
+        save_changed(&list, changed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn task_group_dissolve(group_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut list = load_tasks_all();
+        let changed = apply_group_dissolve(&mut list, &group_id);
+        save_changed(&list, changed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -22542,6 +22730,11 @@ pub fn run() {
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
 
             task_reorder,
+            task_group_join,
+            task_group_new,
+            task_group_leave,
+            task_group_update,
+            task_group_dissolve,
             task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id,
             task_set_tabs, task_set_tab_session_id, task_set_tab_scheduled,
             task_set_split_layout,
@@ -30206,6 +30399,109 @@ filename f.rs
     }
 
     // ── Sidebar task order (drag-to-reorder) ────────────────────────────
+
+    fn gt(id: &str) -> Task {
+        Task { id: id.into(), name: id.into(), project_id: "p".into(), ..Default::default() }
+    }
+    fn gid(list: &[Task], id: &str) -> Option<String> {
+        list.iter().find(|t| t.id == id).unwrap().group.as_ref().map(|g| g.id.clone())
+    }
+
+    #[test]
+    fn group_join_founds_a_group_led_by_the_orchestrator() {
+        let mut l = vec![gt("orch"), gt("child")];
+        let changed = apply_group_join(&mut l, "child", "orch", Some("teal".into())).unwrap();
+        assert_eq!(changed.len(), 2, "the lead is written too");
+        assert_eq!(gid(&l, "orch").as_deref(), Some("orch"));
+        assert_eq!(gid(&l, "child").as_deref(), Some("orch"));
+        let g = l[0].group.as_ref().unwrap();
+        assert_eq!(g.name, None, "an unnamed group follows the lead's name");
+        assert_eq!(g.color.as_deref(), Some("teal"));
+        // A second child reuses it and does not rewrite the lead.
+        l.push(gt("child2"));
+        let changed = apply_group_join(&mut l, "child2", "orch", Some("red".into())).unwrap();
+        assert_eq!(changed, vec![2]);
+        assert_eq!(l[2].group.as_ref().unwrap().color.as_deref(), Some("teal"), "the founding colour wins");
+    }
+
+    #[test]
+    fn group_join_from_a_member_stays_flat() {
+        // A sub-orchestrator's children land in the ROOT group.
+        let mut l = vec![gt("orch"), gt("sub"), gt("leaf")];
+        apply_group_join(&mut l, "sub", "orch", None).unwrap();
+        apply_group_join(&mut l, "leaf", "sub", None).unwrap();
+        assert_eq!(gid(&l, "leaf").as_deref(), Some("orch"));
+    }
+
+    #[test]
+    fn group_join_refuses_self_unknown_and_cross_profile() {
+        let mut l = vec![gt("a"), gt("b")];
+        assert!(apply_group_join(&mut l, "a", "a", None).is_err());
+        assert!(apply_group_join(&mut l, "a", "nope", None).is_err());
+        assert!(apply_group_join(&mut l, "nope", "a", None).is_err());
+        l[1].profile = ProfileId::Slug("other".into());
+        assert!(apply_group_join(&mut l, "a", "b", None).is_err());
+        assert!(l.iter().all(|t| t.group.is_none()), "a refusal writes nothing");
+    }
+
+    #[test]
+    fn group_leave_keeps_the_rest_even_a_group_of_one() {
+        let mut l = vec![gt("orch"), gt("c1"), gt("c2")];
+        apply_group_join(&mut l, "c1", "orch", None).unwrap();
+        apply_group_join(&mut l, "c2", "orch", None).unwrap();
+        assert_eq!(apply_group_leave(&mut l, "c1").unwrap(), vec![1]);
+        assert_eq!(apply_group_leave(&mut l, "c2").unwrap(), vec![2]);
+        assert_eq!(gid(&l, "orch").as_deref(), Some("orch"), "a lone lead is still a group, like a project folder");
+        assert!(apply_group_leave(&mut l, "c2").unwrap().is_empty(), "leaving no group is a no-op");
+    }
+
+    #[test]
+    fn group_join_elsewhere_moves_just_that_task() {
+        let mut l = vec![gt("a"), gt("a1"), gt("b"), gt("b1")];
+        apply_group_join(&mut l, "a1", "a", None).unwrap();
+        apply_group_join(&mut l, "b1", "b", None).unwrap();
+        apply_group_join(&mut l, "a1", "b", None).unwrap();
+        assert_eq!(gid(&l, "a1").as_deref(), Some("b"));
+        assert_eq!(gid(&l, "a").as_deref(), Some("a"), "a keeps its group of one");
+    }
+
+    #[test]
+    fn group_new_uses_the_task_id_unless_it_already_leads_one() {
+        let mut l = vec![gt("a"), gt("b")];
+        apply_group_new(&mut l, "a", Some("teal".into())).unwrap();
+        assert_eq!(l[0].group, Some(TaskGroup { id: "a".into(), name: None, color: Some("teal".into()) }));
+        // "a" leads a group b is in; a NEW group from a must not collide with it.
+        apply_group_join(&mut l, "b", "a", None).unwrap();
+        apply_group_new(&mut l, "a", None).unwrap();
+        let g = l[0].group.clone().unwrap();
+        assert_ne!(g.id, "a");
+        assert_eq!(g.name.as_deref(), Some("a"), "named after its lead, which it cannot follow by id");
+        assert_eq!(gid(&l, "b").as_deref(), Some("a"), "b stays in the old group");
+        assert!(apply_group_new(&mut l, "nope", None).is_err());
+    }
+
+    #[test]
+    fn group_update_rewrites_every_member_and_blank_name_follows_the_lead() {
+        let mut l = vec![gt("orch"), gt("c1"), gt("x")];
+        apply_group_join(&mut l, "c1", "orch", None).unwrap();
+        l[1].archived = true;
+        let changed = apply_group_update(&mut l, "orch", Some("  Auth refactor ".into()), Some("pink".into()));
+        assert_eq!(changed, vec![0, 1], "archived members included, outsiders untouched");
+        assert_eq!(l[1].group.as_ref().unwrap().name.as_deref(), Some("Auth refactor"));
+        assert!(apply_group_update(&mut l, "orch", Some("Auth refactor".into()), Some("pink".into())).is_empty(), "unchanged writes nothing");
+        apply_group_update(&mut l, "orch", Some("   ".into()), Some("pink".into()));
+        assert_eq!(l[0].group.as_ref().unwrap().name, None);
+        assert_eq!(apply_group_dissolve(&mut l, "orch").len(), 2);
+        assert!(l.iter().all(|t| t.group.is_none()));
+    }
+
+    #[test]
+    fn group_is_absent_from_json_when_unset() {
+        let t = gt("a");
+        assert!(!serde_json::to_string(&t).unwrap().contains("\"group\""));
+        let back: Task = serde_json::from_str(r#"{"id":"a","group":{"id":"o","color":"teal"}}"#).unwrap();
+        assert_eq!(back.group, Some(TaskGroup { id: "o".into(), name: None, color: Some("teal".into()) }));
+    }
 
     fn ordered(id: &str, created: &str, order: Option<u32>) -> Task {
         Task { id: id.into(), created: created.into(), order, ..Default::default() }
