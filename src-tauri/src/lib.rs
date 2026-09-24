@@ -8748,9 +8748,8 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     // monitor: its inner_size never trips the minimum, and nudging it
     // to the cursor's monitor would un-zoom it. So the clamp-up and
     // cursor-monitor reposition below apply only to normally-sized
-    // windows. position_on_cursor_monitor itself no-ops when the
-    // restored position is already on the cursor's monitor, so it
-    // cooperates with this restore.
+    // windows. position_on_cursor_monitor preserves a restored position
+    // only when the whole window fits on that monitor.
     if !win.is_maximized().unwrap_or(false) {
         // tauri-plugin-window-state restores prior bounds verbatim — it
         // does NOT enforce minWidth / minHeight. If a previous session
@@ -8771,7 +8770,9 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
                 let _ = win.set_size(tauri::LogicalSize::new(1400.0_f64, 900.0));
             }
         }
-        let _ = position_on_cursor_monitor(&win);
+        if let Err(e) = position_on_cursor_monitor(&win) {
+            dlog(&format!("[window] could not fit {label} on a monitor: {e}"));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -14119,9 +14120,17 @@ fn copy_matching(repo: &Path, dst: &Path, pat: &str) {
     // and `repo.join("")` is the repo itself, which exists, which would
     // recursively copy the whole checkout (`.git` included) into the
     // worktree. Drop it here rather than in each of the callers.
-    let pat = pat.trim();
+    let pat = pat.trim().trim_start_matches("./");
     if pat.is_empty() { return; }
-    // Very simple glob: '*' wildcard in the basename only.
+    let rel_pattern = Path::new(pat);
+    if rel_pattern.is_absolute()
+        || rel_pattern.components().any(|c| matches!(c, std::path::Component::ParentDir))
+        || rel_pattern.components().all(|c| matches!(c, std::path::Component::CurDir))
+    {
+        eprintln!("copy glob must stay inside the repo: {pat}");
+        return;
+    }
+    // Keep literal paths fast, especially large directories such as node_modules.
     let pat_path = repo.join(pat);
     if pat_path.exists() {
         let rel_dst = dst.join(pat);
@@ -14131,33 +14140,53 @@ fn copy_matching(repo: &Path, dst: &Path, pat: &str) {
         let _ = copy_file_or_dir(&pat_path, &rel_dst);
         return;
     }
-    if pat.contains('*') {
-        // Expand basename glob in pattern's parent dir
-        let pp = PathBuf::from(pat);
-        let parent_rel = pp.parent().unwrap_or_else(|| Path::new(""));
-        let glob = pp.file_name().and_then(|s| s.to_str()).unwrap_or("*");
-        let parent_abs = repo.join(parent_rel);
-        if let Ok(rd) = fs::read_dir(&parent_abs) {
-            for e in rd.flatten() {
-                let name = e.file_name();
-                let n = name.to_string_lossy();
-                if simple_glob_match(glob, &n) {
-                    let dst_path = dst.join(parent_rel).join(&*n);
-                    let _ = copy_file_or_dir(&e.path(), &dst_path);
-                }
+    let pattern = match glob::Pattern::new(pat) {
+        Ok(pattern) => pattern,
+        Err(e) => { eprintln!("invalid copy glob {pat}: {e}"); return; }
+    };
+    let options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false, // `.env` must match `*.env*`.
+    };
+
+    // Start at the literal prefix and stop at the pattern's depth unless it
+    // contains `**`. This keeps a root-only `.env*` from walking the repo.
+    let mut prefix = PathBuf::new();
+    for component in rel_pattern.components() {
+        let name = component.as_os_str().to_string_lossy();
+        if name.contains('*') || name.contains('?') || name.contains('[') { break; }
+        prefix.push(component);
+    }
+    let max_depth = if rel_pattern.components().any(|c| c.as_os_str() == "**") {
+        None
+    } else {
+        Some(rel_pattern.components().count())
+    };
+    let mut dirs = vec![repo.join(&prefix)];
+    while let Some(dir) = dirs.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let src = entry.path();
+            let Ok(rel) = src.strip_prefix(repo) else { continue };
+            if src.starts_with(dst) { continue; }
+            if entry.file_name() == ".git" { continue; }
+            let meta = match fs::symlink_metadata(&src) {
+                Ok(meta) => meta,
+                Err(e) => { eprintln!("copy glob {}: {e}", src.display()); continue; }
+            };
+            if pattern.matches_path_with(rel, options) {
+                let _ = copy_file_or_dir(&src, &dst.join(rel));
+            } else if meta.file_type().is_dir()
+                && max_depth.is_none_or(|depth| rel.components().count() < depth)
+            {
+                // symlink_metadata keeps directory links out of the walk.
+                dirs.push(src);
             }
         }
-    }
-}
-
-fn simple_glob_match(pat: &str, s: &str) -> bool {
-    // Supports leading/trailing '*' and one '*' in the middle.
-    if pat == "*" { return true; }
-    let parts: Vec<&str> = pat.split('*').collect();
-    match parts.len() {
-        1 => s == pat,
-        2 => s.starts_with(parts[0]) && s.ends_with(parts[1]),
-        _ => false,
     }
 }
 
@@ -23071,34 +23100,53 @@ fn round_window_corners_for_tahoe(win: &tauri::WebviewWindow) {
     }
 }
 
-/// Center the window on whichever monitor the OS cursor is currently on.
-/// Skips the nudge when the window is already on the cursor's monitor (so we
-/// don't fight the window-state plugin's restore on subsequent launches).
+/// Whether every edge of a restored window stays inside one monitor.
+fn window_fits_monitor(
+    win_pos: tauri::PhysicalPosition<i32>,
+    win_size: tauri::PhysicalSize<u32>,
+    monitor_pos: tauri::PhysicalPosition<i32>,
+    monitor_size: tauri::PhysicalSize<u32>,
+) -> bool {
+    let left = i64::from(win_pos.x);
+    let top = i64::from(win_pos.y);
+    let mon_left = i64::from(monitor_pos.x);
+    let mon_top = i64::from(monitor_pos.y);
+    left >= mon_left
+        && top >= mon_top
+        && left + i64::from(win_size.width) <= mon_left + i64::from(monitor_size.width)
+        && top + i64::from(win_size.height) <= mon_top + i64::from(monitor_size.height)
+}
+
+fn point_on_monitor(x: i64, y: i64, monitor: &tauri::Monitor) -> bool {
+    let pos = monitor.position();
+    let size = monitor.size();
+    x >= i64::from(pos.x)
+        && x < i64::from(pos.x) + i64::from(size.width)
+        && y >= i64::from(pos.y)
+        && y < i64::from(pos.y) + i64::from(size.height)
+}
+
+/// Center on the cursor's monitor, falling back to the saved window's monitor.
+/// Keep the restored position only if the whole window fits there.
 fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
-    let cursor = win.cursor_position()?;
     let monitors = win.available_monitors()?;
-    let on_monitor = monitors.iter().find(|m| {
-        let pos = m.position();
-        let size = m.size();
-        let in_x = (cursor.x as i32) >= pos.x && (cursor.x as i32) < pos.x + size.width as i32;
-        let in_y = (cursor.y as i32) >= pos.y && (cursor.y as i32) < pos.y + size.height as i32;
-        in_x && in_y
-    });
-    let target = match on_monitor { Some(m) => m, None => return Ok(()) };
+    let cursor = win.cursor_position().ok();
+    let saved_pos = win.outer_position().ok();
+    // Cursor lookup can fail at launch (or land outside the monitor list
+    // while Spaces are changing). Never let that skip the size clamp: use
+    // the monitor containing the restored top-left, then the first display.
+    let target = cursor.as_ref()
+        .and_then(|pos| monitors.iter().find(|m| point_on_monitor(pos.x as i64, pos.y as i64, m)))
+        .or_else(|| saved_pos.as_ref().and_then(|pos| {
+            monitors.iter().find(|m| point_on_monitor(i64::from(pos.x), i64::from(pos.y), m))
+        }))
+        .or_else(|| monitors.first());
+    let target = match target { Some(m) => m, None => return Ok(()) };
 
-    // Skip if the window is already on the right monitor — don't override a
-    // saved position that the user explicitly chose.
-    if let Ok(cur_pos) = win.outer_position() {
-        let p = target.position();
-        let s = target.size();
-        if cur_pos.x >= p.x && cur_pos.x < p.x + s.width as i32
-            && cur_pos.y >= p.y && cur_pos.y < p.y + s.height as i32
-        {
-            return Ok(());
-        }
-    }
-
-    // Clamp the window to the target monitor before positioning.
+    // Clamp the window to the target monitor before deciding whether its
+    // saved position can be kept. A saved top-left corner may be on-screen
+    // while the window is many screens wide (including the beta's old saved
+    // bounds), leaving the centered Settings content outside the viewport.
     // tauri-plugin-window-state may have restored a size that's
     // larger than the CURRENT monitor (saved on a 4K, now on a
     // laptop screen; saved fullscreen on a different display;
@@ -23115,8 +23163,21 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
     if win_size.width > max_w || win_size.height > max_h {
         let new_w = win_size.width.min(max_w);
         let new_h = win_size.height.min(max_h);
-        let _ = win.set_size(tauri::PhysicalSize::new(new_w, new_h));
+        win.set_size(tauri::PhysicalSize::new(new_w, new_h))?;
+        dlog(&format!(
+            "[window] clamped restored size {}x{} to {}x{}",
+            win_size.width, win_size.height, new_w, new_h,
+        ));
         win_size = win.outer_size()?;
+    }
+
+    // Keep an explicitly chosen position when the entire restored window is
+    // visible. A corner alone is insufficient: the window may still extend
+    // past the edge even after its size has been clamped.
+    if let Ok(cur_pos) = win.outer_position() {
+        if window_fits_monitor(cur_pos, win_size, *p, *s) {
+            return Ok(());
+        }
     }
 
     let x = p.x + (s.width as i32 - win_size.width as i32) / 2;
@@ -23127,6 +23188,23 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn restored_window_must_fit_entirely_on_monitor() {
+        use tauri::{PhysicalPosition as Pos, PhysicalSize as Size};
+
+        let monitor = Pos::new(0, 0);
+        let display = Size::new(3440, 2160);
+        assert!(!super::window_fits_monitor(
+            Pos::new(0, 66), Size::new(13824, 2168), monitor, display,
+        ));
+        assert!(!super::window_fits_monitor(
+            Pos::new(3300, 100), Size::new(500, 600), monitor, display,
+        ));
+        assert!(super::window_fits_monitor(
+            Pos::new(100, 100), Size::new(1920, 1000), monitor, display,
+        ));
+    }
 
     // ───────── profiles: the data layer (docs/plans/profiles.md) ─────────
     //
@@ -31394,6 +31472,63 @@ filename f.rs
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(landed.is_empty(), "a blank glob copied {landed:?}");
+    }
+
+    #[test]
+    fn copy_matching_supports_multiple_stars_and_recursive_env_files() {
+        let repo = tempdir().unwrap();
+        fs::write(repo.path().join(".env"), "ROOT=1").unwrap();
+        fs::write(repo.path().join(".env.local"), "ROOT=2").unwrap();
+        fs::create_dir_all(repo.path().join("evals/deep")).unwrap();
+        fs::write(repo.path().join("evals/.env"), "EVALS=1").unwrap();
+        fs::write(repo.path().join("evals/deep/.env.test"), "DEEP=1").unwrap();
+        fs::write(repo.path().join("evals/other.txt"), "skip").unwrap();
+
+        let wt = tempdir().unwrap();
+        copy_matching(repo.path(), wt.path(), "**/.env*");
+        for (rel, content) in [
+            (".env", "ROOT=1"),
+            (".env.local", "ROOT=2"),
+            ("evals/.env", "EVALS=1"),
+            ("evals/deep/.env.test", "DEEP=1"),
+        ] {
+            assert_eq!(fs::read_to_string(wt.path().join(rel)).unwrap(), content, "{rel}");
+        }
+        assert!(!wt.path().join("evals/other.txt").exists());
+
+        let wt = tempdir().unwrap();
+        copy_matching(repo.path(), wt.path(), "*.env*");
+        assert_eq!(fs::read_to_string(wt.path().join(".env")).unwrap(), "ROOT=1");
+        assert_eq!(fs::read_to_string(wt.path().join(".env.local")).unwrap(), "ROOT=2");
+        assert!(!wt.path().join("evals/.env").exists(), "a root glob must not recurse");
+    }
+
+    #[test]
+    fn copy_matching_preserves_literal_paths_and_directory_copies() {
+        let repo = tempdir().unwrap();
+        fs::create_dir_all(repo.path().join("secrets/nested")).unwrap();
+        fs::write(repo.path().join("secrets/nested/key.pem"), "KEY").unwrap();
+        fs::write(repo.path().join("exact.env"), "EXACT").unwrap();
+
+        let wt = tempdir().unwrap();
+        copy_matching(repo.path(), wt.path(), "exact.env");
+        copy_matching(repo.path(), wt.path(), "secrets");
+        assert_eq!(fs::read_to_string(wt.path().join("exact.env")).unwrap(), "EXACT");
+        assert_eq!(fs::read_to_string(wt.path().join("secrets/nested/key.pem")).unwrap(), "KEY");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_copy_glob_does_not_follow_directory_symlinks() {
+        let repo = tempdir().unwrap();
+        fs::create_dir(repo.path().join("evals")).unwrap();
+        fs::write(repo.path().join("evals/.env"), "EVALS=1").unwrap();
+        std::os::unix::fs::symlink("..", repo.path().join("evals/loop")).unwrap();
+
+        let wt = tempdir().unwrap();
+        copy_matching(repo.path(), wt.path(), "**/.env*");
+        assert_eq!(fs::read_to_string(wt.path().join("evals/.env")).unwrap(), "EVALS=1");
+        assert!(!wt.path().join("evals/loop").exists());
     }
 
     #[test]

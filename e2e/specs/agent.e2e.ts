@@ -3006,18 +3006,26 @@ describe("delegated work", () => {
         timeout: 20_000, timeoutMsg: `the delivered report "${text}" never reached the agent`,
       });
     };
+    // The previous report leaves the same visible "subagent" label behind.
+    // Wait for this turn's IDs and idle hook before testing queue behavior.
+    const waitForReport = async (ids: string) => browser.waitUntil(
+      async () => browser.execute((id, expected) => {
+        const tab = window.__termic!.useApp.getState().tabs[id]?.[0];
+        return tab?.delegatedWork?.ids.join(",") === expected
+          && tab?.workState === "working" && tab?.delegatedIdle === true;
+      }, taskId, ids),
+      { timeout: 20_000, timeoutMsg: `delegated report ${ids} never reached the tab` },
+    );
 
     // Delegated: the report goes straight in, ring and all.
     await submitToAgent(taskId, "#delegated 2 subagent e1,e2");
-    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", {
-      timeout: 20_000, timeoutMsg: "the turn never reported its subagents",
-    });
+    await waitForReport("e1,e2");
     expect(await taskViewBadge(taskId)).toBe("working");
     await report("report-while-delegated");
 
     // Partially done: same.
     await submitToAgent(taskId, "#delegated 2 subagent f1,f2");
-    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", { timeout: 20_000 });
+    await waitForReport("f1,f2");
     await submitToAgent(taskId, "#delegated 1 subagent f2");
     await browser.waitUntil(async () => (await taskViewBadge(taskId)) === "partial", {
       timeout: 20_000, timeoutMsg: `never read as partial (saw ${await taskViewBadge(taskId)})`,
@@ -3027,7 +3035,7 @@ describe("delegated work", () => {
     // The user's queue is unchanged: a message queued now is HELD while the
     // turn is open, and goes once it ends.
     await submitToAgent(taskId, "#delegated 2 subagent g1,g2");
-    await browser.waitUntil(async () => (await delegatedLabel(taskId)) === "subagent", { timeout: 20_000 });
+    await waitForReport("g1,g2");
     await browser.execute((id) => {
       const s = window.__termic!.useApp.getState();
       s.enqueueAgentMessage(id, s.tabs[id][0].id, "user-queued-while-delegated");

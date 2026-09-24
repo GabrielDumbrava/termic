@@ -1943,6 +1943,78 @@ describe("new task menu puts the project default first", () => {
 // dir because Rust canonicalizes every member path on add, and
 // `task_create_multi` matches the per-task member specs against those
 // canonical strings — a raw `/var/...` would come back "member not found".
+describe("recursive files to copy (GH #320)", () => {
+  let repo = "";
+  let projectId = "";
+
+  before(() => {
+    repo = realpathSync(mkdtempSync(path.join(os.tmpdir(), "e2e-recursive-copy-")));
+    execSync(`git init -b main -q "${repo}"`);
+    execSync(`git -C "${repo}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`);
+    mkdirSync(path.join(repo, "evals/deep"), { recursive: true });
+    writeFileSync(path.join(repo, ".env"), "ROOT=1");
+    writeFileSync(path.join(repo, "evals/.env"), "EVALS=1");
+    writeFileSync(path.join(repo, "evals/deep/.env.local"), "DEEP=1");
+  });
+
+  after(async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await browser.execute(async (root) => {
+      const t = window.__termic!;
+      for (const task of t.useApp.getState().tasks.filter(
+        (task: any) => task.name === "e2e-recursive-copy-task" && !task.archived,
+      )) {
+        await t.ipc.taskArchive(task.id);
+      }
+      for (const project of t.useApp.getState().projects.filter(
+        (project: any) => project.root_path === root,
+      )) {
+        await t.ipc.projectRemove(project.id);
+      }
+      await t.useApp.getState().loadAll();
+    }, repo);
+    if (repo) rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("copies root and nested env files into a single-repo worktree", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const result = await browser.execute(async (root) => {
+      const t = window.__termic!;
+      const project = await t.ipc.projectAdd(root);
+      await t.ipc.projectUpdate({ ...project, files_to_copy: ["**/.env*"] });
+      const task = await t.ipc.taskCreate({
+        project_id: project.id,
+        name: "e2e-recursive-copy-task",
+        cli: "shell",
+        base_branch: "main",
+        branch: "e2e-recursive-copy-task",
+      });
+      await t.useApp.getState().loadAll();
+      return { projectId: project.id as string, path: task.path as string };
+    }, repo);
+    projectId = result.projectId;
+
+    expect(readFileSync(path.join(result.path, ".env"), "utf8")).toBe("ROOT=1");
+    expect(readFileSync(path.join(result.path, "evals/.env"), "utf8")).toBe("EVALS=1");
+    expect(readFileSync(path.join(result.path, "evals/deep/.env.local"), "utf8")).toBe("DEEP=1");
+
+    await browser.execute((id) =>
+      window.__termic!.useApp.getState().openSettings("repositories", id), projectId);
+    await waitVisible('textarea[placeholder*="src/config/local.py"]');
+    expect(await browser.execute(() => {
+      const heading = [...document.querySelectorAll("div")].find(
+        (el) => el.textContent?.trim() === "Files to copy",
+      );
+      return heading?.parentElement?.textContent?.includes("**/.env* at any depth") ?? false;
+    })).toBe(true);
+    await browser.execute(() => document.querySelector(
+      'textarea[placeholder*="src/config/local.py"]',
+    )?.scrollIntoView({ block: "center" }));
+    await snap("recursive-files-to-copy-settings.png");
+  });
+});
+
 describe("multi files to copy (GH #264)", () => {
   const PROJECT_NAME = "e2e-multi-copy";
   let tmp = "";
@@ -1977,14 +2049,16 @@ describe("multi files to copy (GH #264)", () => {
     // Host: gitignored secrets only the project's own list names.
     seedRepo(path.join(tmp, "host"), {
       ".env": "HOST=1",
+      "evals/.env": "HOST_EVALS=1",
       "host-only.txt": "host",
       "README.md": "not copied",
     });
     // alpha declares its own globs in `.termic.yaml` — no override needed.
     seedRepo(path.join(tmp, "alpha"), {
-      ".termic.yaml": "version: 1\nscripts:\n  files_to_copy:\n    - \".env*\"\n    - \"secrets\"\n",
+      ".termic.yaml": "version: 1\nscripts:\n  files_to_copy:\n    - \"**/.env*\"\n    - \"secrets\"\n",
       ".env": "ALPHA=1",
       ".env.local": "ALPHA=2",
+      "evals/.env": "ALPHA_EVALS=1",
       "secrets/key.pem": "PRIVATE",
       "README.md": "not copied",
     });
@@ -2023,7 +2097,7 @@ describe("multi files to copy (GH #264)", () => {
           member(beta, ["config/local.json"]),     // per-member override
         ], false) as any;
         // The multi-repo project's OWN list — the box that had no reader.
-        await t.ipc.projectUpdate({ ...proj, files_to_copy: [".env", "host-only.txt"] });
+        await t.ipc.projectUpdate({ ...proj, files_to_copy: ["**/.env*", "host-only.txt"] });
         // Members are matched by the CANONICAL path Rust stored, not the one
         // passed in above.
         const task = await t.ipc.taskCreateMulti({
@@ -2050,12 +2124,14 @@ describe("multi files to copy (GH #264)", () => {
 
     // Host list → the task root (which IS the host's worktree).
     expect(readFileSync(path.join(created.root, ".env"), "utf8")).toBe("HOST=1");
+    expect(readFileSync(path.join(created.root, "evals/.env"), "utf8")).toBe("HOST_EVALS=1");
     expect(readFileSync(path.join(created.root, "host-only.txt"), "utf8")).toBe("host");
 
     // alpha: resolved from its own committed .termic.yaml, directories included.
     const alphaWt = created.members.alpha;
     expect(readFileSync(path.join(alphaWt, ".env"), "utf8")).toBe("ALPHA=1");
     expect(readFileSync(path.join(alphaWt, ".env.local"), "utf8")).toBe("ALPHA=2");
+    expect(readFileSync(path.join(alphaWt, "evals/.env"), "utf8")).toBe("ALPHA_EVALS=1");
     expect(readFileSync(path.join(alphaWt, "secrets/key.pem"), "utf8")).toBe("PRIVATE");
 
     // beta: the per-member override on the multi-repo project.
@@ -2087,7 +2163,9 @@ describe("multi files to copy (GH #264)", () => {
     }, taskId);
 
     expect(readFileSync(path.join(restored.root, ".env"), "utf8")).toBe("HOST=1");
+    expect(readFileSync(path.join(restored.root, "evals/.env"), "utf8")).toBe("HOST_EVALS=1");
     expect(readFileSync(path.join(restored.members.alpha, ".env.local"), "utf8")).toBe("ALPHA=2");
+    expect(readFileSync(path.join(restored.members.alpha, "evals/.env"), "utf8")).toBe("ALPHA_EVALS=1");
     expect(readFileSync(path.join(restored.members.beta, "config/local.json"), "utf8")).toBe("{\"beta\":true}");
   });
 
@@ -2102,6 +2180,12 @@ describe("multi files to copy (GH #264)", () => {
     await browser.execute((id) =>
       window.__termic!.useApp.getState().openSettings("repositories", id), projectId);
     await waitVisible('[data-testid="member-files-to-copy-beta"]');
+    expect(await browser.execute(() => {
+      const heading = [...document.querySelectorAll("div")].find(
+        (el) => el.textContent?.trim() === "Files to copy",
+      );
+      return heading?.parentElement?.textContent?.includes("**/.env* at any depth") ?? false;
+    })).toBe(true);
 
     await browser.execute(() => {
       const box = document.querySelector(
