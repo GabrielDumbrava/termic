@@ -8906,6 +8906,11 @@ fn root_brought_back() {
 /// the shells inside it want. Tauri has no setter for this, so reach the
 /// WebView2 settings object directly. Clipboard and editing keys are not
 /// browser accelerators and keep working. WKWebView has no such keys.
+///
+/// Called from `on_page_load` (`without_browser_accelerators`), never right
+/// after `build()`: from an async command `build()` returns before the
+/// WebView2 controller exists, and reaching into it then froze the whole app
+/// on Windows (the first profile window, found by the e2e trace).
 fn disable_browser_accelerators(win: &tauri::WebviewWindow) {
     #[cfg(windows)]
     {
@@ -8927,6 +8932,18 @@ fn disable_browser_accelerators(win: &tauri::WebviewWindow) {
     }
     #[cfg(not(windows))]
     let _ = win;
+}
+
+/// Register `disable_browser_accelerators` for when the page has loaded, on
+/// the main thread, with the webview fully created.
+fn without_browser_accelerators<'a>(
+    builder: tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    builder.on_page_load(|win, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+            disable_browser_accelerators(&win);
+        }
+    })
 }
 
 fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri::WebviewWindow> {
@@ -8970,9 +8987,8 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     }
 
     dlog(&format!("[profile] build {label}: builder.build"));
-    let win = builder.build()?;
+    let win = without_browser_accelerators(builder).build()?;
     dlog(&format!("[profile] build {label}: built"));
-    disable_browser_accelerators(&win);
 
     // Restore saved bounds ourselves (the plugin skips "main" via
     // skip_initial_state) so the ordering is deterministic. SIZE +
@@ -9265,10 +9281,10 @@ fn procmon_open_window(app: AppHandle) -> Result<(), String> {
     )
     .title("Activity")
     .inner_size(880.0, 620.0)
-    .min_inner_size(560.0, 320.0)
+    .min_inner_size(560.0, 320.0);
+    let win = without_browser_accelerators(win)
     .build()
     .map_err(|e| e.to_string())?;
-    disable_browser_accelerators(&win);
     // Remember WHERE the monitor was, never how big. The window-state plugin
     // puts saved bounds back verbatim and does not honour min_inner_size, and
     // its saved 880x620 came back as 440x310 logical on a 2x display, under
