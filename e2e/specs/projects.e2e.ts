@@ -2275,7 +2275,33 @@ describe("quick-create sandbox note", () => {
     if (saved) await setDefault(saved);
   });
 
-  it("names the mode, with its icon, when the project defaults to one", async () => {
+  // Seatbelt is macOS only: elsewhere a Seatbelt default reads as Off, and
+  // the note says nothing (see the Windows case below).
+  const seatbeltIt = process.platform === "darwin" ? it : it.skip;
+
+  it("names Docker, with its icon, when the project defaults to it", async () => {
+    await setDefault({ default_sandbox: false, default_sandbox_mode: null, default_docker: true });
+    await openMenu();
+    await waitVisible(NOTE);
+    const [kind, text, hasIcon] = await browser.execute((sel) => {
+      const el = document.querySelector(sel)!;
+      return [el.getAttribute("data-sandbox-default"), el.textContent ?? "", !!el.querySelector("svg")];
+    }, NOTE) as [string, string, boolean];
+    expect(kind).toBe("docker");
+    expect(text).toContain("Docker");
+    expect(hasIcon).toBe(true);
+    await browser.keys("Escape");
+  });
+
+  (process.platform === "darwin" ? it.skip : it)("says nothing for a Seatbelt default, which this OS does not have", async () => {
+    await setDefault({ default_sandbox: true, default_sandbox_mode: "enforce", default_docker: false });
+    await openMenu();
+    const present = await browser.execute((sel) => !!document.querySelector(sel), NOTE);
+    expect(present).toBe(false);
+    await browser.keys("Escape");
+  });
+
+  seatbeltIt("names the mode, with its icon, when the project defaults to one", async () => {
     await setDefault({ default_sandbox: true, default_sandbox_mode: "monitor", default_docker: false });
     await openMenu();
     await waitVisible(NOTE);
@@ -2292,7 +2318,7 @@ describe("quick-create sandbox note", () => {
     await browser.keys("Escape");
   });
 
-  it("follows the project to a different mode", async () => {
+  seatbeltIt("follows the project to a different mode", async () => {
     await setDefault({ default_sandbox: true, default_sandbox_mode: "enforce", default_docker: false });
     await openMenu();
     await waitVisible(NOTE);
