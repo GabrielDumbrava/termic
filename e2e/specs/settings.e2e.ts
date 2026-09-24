@@ -3169,7 +3169,8 @@ describe("agent hooks", () => {
     // One script per signal, named for what it reports. claude registers only
     // attention, since its terminal already gets working and done right.
     expect(existsSync(`${scriptDir}/attention.sh`)).toBe(true);
-    expect(statSync(`${scriptDir}/attention.sh`).mode & 0o111).toBeGreaterThan(0);
+    // Windows has no mode bits: Git Bash runs the script by its path.
+    if (process.platform !== "win32") expect(statSync(`${scriptDir}/attention.sh`).mode & 0o111).toBeGreaterThan(0);
 
     await browser.execute(async () =>
       await window.__termic!.invoke("agent_hooks_remove", { agentId: "claude" }));
@@ -3182,7 +3183,8 @@ describe("agent hooks", () => {
     rmSync(`${dataDir}/.claude`, { recursive: true, force: true });
   });
 
-  it("installs into devin's config.json and restores it byte-for-byte", async () => {
+  // Only claude's hooks run on Windows so far (docs/windows.md).
+  (process.platform === "win32" ? it.skip : it)("installs into devin's config.json and restores it byte-for-byte", async () => {
     // devin is the one agent whose settings_rel is `config.json` rather than
     // `settings.json`: same claude-shaped `hooks` merge, different file. The
     // user's own keys (here `devin.org_id`) must survive the round trip.
@@ -3439,6 +3441,9 @@ describe("cloned agents inherit rather than copy", () => {
 // on what the runner has installed. Installs land in the throwaway profile
 // (`TERMIC_E2E_AGENT_HOME`), never a real config.
 describe("install hooks for every agent", () => {
+  // The agent the re-wire cases take apart. Only claude's hooks run on
+  // Windows so far (docs/windows.md), so there it is the claude clone.
+  const REWIRE = process.platform === "win32" ? "fakeclaude" : "fakegrok";
   const status = (id: string) => browser.execute(async (a) =>
     (await window.__termic!.invoke("agent_hooks_status", { agentId: a })).host.installed as boolean, id);
   const removeAll = () => browser.execute(async () => {
@@ -3462,7 +3467,7 @@ describe("install hooks for every agent", () => {
   });
 
   it("wires every supported agent from one switch, without expanding the block", async () => {
-    expect(await status("fakegrok")).toBe(false);
+    expect(await status(REWIRE)).toBe(false);
     expect(await status("fakeclaude")).toBe(false);
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
     await waitVisible('[data-testid="agent-hooks-auto"] [role="switch"]');
@@ -3470,7 +3475,7 @@ describe("install hooks for every agent", () => {
     expect(await browser.execute(() =>
       document.querySelector('[data-testid="agent-hooks-toggle"]')?.getAttribute("aria-expanded"))).toBe("false");
     await clickWhenVisible('[data-testid="agent-hooks-auto"] [role="switch"]');
-    await browser.waitUntil(async () => (await status("fakegrok")) && (await status("fakeclaude")),
+    await browser.waitUntil(async () => (await status(REWIRE)) && (await status("fakeclaude")),
       { timeout: 30_000, timeoutMsg: "turning the switch on did not install hooks for every agent" });
     // An agent that is not a hooks target (the plain fixture agent) is left alone.
     expect(await status("fakeagent")).toBe(false);
@@ -3509,16 +3514,16 @@ describe("install hooks for every agent", () => {
   it("re-wires an agent whose hooks went missing on the next sync", async () => {
     // The "new agent" case, driven the way it happens: an agent with no hooks
     // while the setting is on gets them on the next sync (boot, or the page).
-    await browser.execute(async () => {
-      await window.__termic!.invoke("agent_hooks_remove", { agentId: "fakegrok" });
-    });
-    expect(await status("fakegrok")).toBe(false);
+    await browser.execute(async (a) => {
+      await window.__termic!.invoke("agent_hooks_remove", { agentId: a });
+    }, REWIRE);
+    expect(await status(REWIRE)).toBe(false);
     const wired = await browser.execute(() => window.__termic!.invoke("agent_hooks_sync")) as string[];
     // Asserted on the agent's STATUS, not on which id the sync names: a clone
     // that relocates nothing shares its base's config dir, so the sync wires
     // it through whichever of the two it reaches first (`grok` here).
     expect(wired.length).toBeGreaterThan(0);
-    expect(await status("fakegrok")).toBe(true);
+    expect(await status(REWIRE)).toBe(true);
   });
 
   it("keeps what is installed when turned off", async () => {
@@ -3526,12 +3531,12 @@ describe("install hooks for every agent", () => {
     await browser.waitUntil(async () =>
       (await browser.execute(() => window.__termic!.invoke("agent_hooks_auto_get"))) === false,
       { timeout: 10_000, timeoutMsg: "the switch never turned off" });
-    expect(await status("fakegrok")).toBe(true);
+    expect(await status(REWIRE)).toBe(true);
     // And a sync with it off installs nothing new.
-    await browser.execute(async () => {
-      await window.__termic!.invoke("agent_hooks_remove", { agentId: "fakegrok" });
-    });
+    await browser.execute(async (a) => {
+      await window.__termic!.invoke("agent_hooks_remove", { agentId: a });
+    }, REWIRE);
     await browser.execute(() => window.__termic!.invoke("agent_hooks_sync"));
-    expect(await status("fakegrok")).toBe(false);
+    expect(await status(REWIRE)).toBe(false);
   });
 });
