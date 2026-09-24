@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { archiveTask, dismissOverlays, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell } from "../helpers";
 
@@ -772,7 +772,11 @@ describe("file tree", () => {
     const link = path.join(fixture, "e2e-escaped");
     mkdirSync(outside, { recursive: true });
     writeFileSync(path.join(outside, "secret.txt"), "s\n");
-    execSync(`ln -sfn "${outside}" "${link}"`);
+    // From Node rather than `ln -s`: Git Bash's ln copies the folder unless
+    // told otherwise, and a copy escapes nothing. A junction on Windows
+    // needs no privilege, unlike a directory symlink.
+    try { unlinkSync(link); } catch { try { rmdirSync(link); } catch { /* none */ } }
+    symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
     try {
       await browser.execute(
         (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
