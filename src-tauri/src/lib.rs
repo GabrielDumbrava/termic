@@ -15440,12 +15440,16 @@ fn lsp_resolve_server_preferring(
             let exe = parts.remove(0);
             // A bare name goes through PATH; a path (absolute or ./relative)
             // is taken as given, so a script inside the repo works.
-            let resolved = if exe.contains('/') {
+            let is_path = exe.contains('/') || (cfg!(windows) && exe.contains('\\'));
+            let resolved = if is_path {
                 // `./x` and `x` name the same file; keeping the dot would put
                 // it in the spawned process's argv[0] and in every error
                 // message about it.
-                let rel = exe.strip_prefix("./").unwrap_or(&exe);
-                let p = if Path::new(&exe).is_absolute() { PathBuf::from(&exe) } else { root.join(rel) };
+                let rel = exe.strip_prefix("./").or_else(|| exe.strip_prefix(".\\")).unwrap_or(&exe);
+                // `has_root`, not `is_absolute`: on Windows `/usr/bin/x` has
+                // no drive, so it is not absolute, and joining it onto the
+                // checkout silently swapped in the checkout's drive.
+                let p = if Path::new(&exe).has_root() { PathBuf::from(&exe) } else { root.join(rel) };
                 p.to_string_lossy().to_string()
             } else {
                 shell_env::which(&exe)
@@ -25856,6 +25860,24 @@ mod tests {
         let (exe, _) =
             lsp_resolve_server_preferring(dir.path(), "python", None, Some("   ")).unwrap();
         assert!(exe.ends_with("/zuban"), "{exe}");
+    }
+
+    #[test]
+    fn a_typed_rooted_path_is_taken_as_given() {
+        // On Windows `/usr/bin/x` has no drive, so it is not `is_absolute`;
+        // joining it onto the checkout swapped in the checkout's drive.
+        let dir = tempfile::tempdir().unwrap();
+        let (exe, _) = lsp_resolve_server_preferring(
+            dir.path(), "python", None, Some("/opt/lsp/serve --stdio"),
+        ).unwrap();
+        assert_eq!(exe, "/opt/lsp/serve");
+        #[cfg(windows)]
+        {
+            let (exe, _) = lsp_resolve_server_preferring(
+                dir.path(), "python", None, Some(r".\tools\serve.exe"),
+            ).unwrap();
+            assert_eq!(Path::new(&exe), dir.path().join(r"tools\serve.exe"));
+        }
     }
 
     #[test]
