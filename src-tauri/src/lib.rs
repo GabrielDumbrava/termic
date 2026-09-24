@@ -139,6 +139,14 @@ pub struct Project {
     /// Seatbelt fields resolve to off, exactly like an explicit pick.
     #[serde(default)]
     pub default_docker: bool,
+    /// Whether new tasks of this project start with YOLO on. `None` = no
+    /// opinion, inherit the app-wide default (a frontend pref, Settings →
+    /// Sandbox). Read by the FRONTEND only: Rust never falls back to it,
+    /// so a create that omits `yolo` (the CLI, MCP) always gets it off.
+    /// Deliberately not in `.termic.yaml`: a committed repo file must
+    /// never be able to switch approvals off for whoever clones it.
+    #[serde(default)]
+    pub default_yolo: Option<bool>,
     /// Project-level default Docker extra mounts (`host_path:container_path`),
     /// seeded into new tasks ahead of `Settings.docker_default_extra_mounts`.
     /// The global list is the fallback, so a project only states what is
@@ -883,6 +891,12 @@ pub struct CreateTaskArgs {
     /// launch. Empty / unset → default resume logic.
     #[serde(default)]
     pub resume_override: Option<String>,
+    /// Per-task YOLO flag, set at create so the FIRST spawn already
+    /// carries `yolo_args` (no restart to apply it). Unset → off: there
+    /// is deliberately no fallback to `Project.default_yolo` here, the
+    /// frontend resolves the default and sends it.
+    #[serde(default)]
+    pub yolo: Option<bool>,
 }
 
 // ───────────────────────────── paths ─────────────────────────────
@@ -5253,6 +5267,7 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
         default_sandbox: false,
         default_sandbox_mode: None,
         default_docker: false,
+        default_yolo: None,
         docker_extra_mounts: Vec::new(),
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
@@ -5448,6 +5463,7 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
         default_sandbox: false,
         default_sandbox_mode: None,
         default_docker: false,
+        default_yolo: None,
         docker_extra_mounts: Vec::new(),
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
@@ -5721,6 +5737,10 @@ fn task_open_repo(
     resume_session_id: Option<String>,
     resume_override: Option<String>,
     agent_args: Option<Vec<String>>,
+    // Per-task YOLO, applied from the first spawn. Unset → off, and no
+    // fallback to the project's default, for the same reason the sandbox
+    // args above have none: the CLI passes nothing and must get nothing.
+    yolo: Option<bool>,
 ) -> Result<Task, String> {
     let proj = load_projects_all().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
@@ -5886,7 +5906,7 @@ fn task_open_repo(
         // against the main checkout as against a worktree.
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
-        yolo: false,
+        yolo: yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         docker_sandbox_enabled,
@@ -6587,7 +6607,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         agent_session_ids,
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
-        yolo: false,
+        yolo: args.yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         docker_sandbox_enabled,
@@ -6673,6 +6693,9 @@ pub struct CreateMultiArgs {
     /// spawn already carries it. Same storage as `task_set_resume_override`.
     #[serde(default)]
     pub resume_override: Option<String>,
+    /// See `CreateTaskArgs::yolo`.
+    #[serde(default)]
+    pub yolo: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -7086,7 +7109,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         agent_session_ids: std::collections::HashMap::new(),
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
-        yolo: false,
+        yolo: args.yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         docker_sandbox_enabled,
@@ -30866,6 +30889,43 @@ filename f.rs
         let back: Project = serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
         assert!(back.default_docker);
         assert_eq!(back.docker_extra_mounts, vec!["$HOME/mcp:/data/mcp".to_string()]);
+    }
+
+    #[test]
+    fn project_yolo_default_keeps_no_opinion_apart_from_off() {
+        // Three answers, not two: `None` inherits the app-wide pref, and
+        // `Some(false)` is a project that keeps asking even when the app
+        // says YOLO. A record from before the field existed must read as
+        // `None`, or upgrading would pin every project to "off".
+        let legacy: Project = serde_json::from_str(
+            r#"{"id":"p1","name":"proj","root_path":"/r"}"#,
+        ).unwrap();
+        assert_eq!(legacy.default_yolo, None);
+
+        for v in [Some(true), Some(false), None] {
+            let p = Project { id: "p2".into(), default_yolo: v, ..Default::default() };
+            let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+            assert_eq!(back.default_yolo, v);
+        }
+    }
+
+    #[test]
+    fn create_args_without_yolo_leave_it_unset() {
+        // The CLI and MCP never send `yolo` unless asked (`--yolo`), and
+        // the create paths read unset as off. Pinned because a default
+        // here would reach every agent-driven create.
+        let args: CreateTaskArgs = serde_json::from_str(
+            r#"{"project_id":"p","name":"n"}"#,
+        ).unwrap();
+        assert_eq!(args.yolo, None);
+        let args: CreateTaskArgs = serde_json::from_str(
+            r#"{"project_id":"p","name":"n","yolo":true}"#,
+        ).unwrap();
+        assert_eq!(args.yolo, Some(true));
+        let multi: CreateMultiArgs = serde_json::from_str(
+            r#"{"project_id":"p","name":"n","members":[],"yolo":true}"#,
+        ).unwrap();
+        assert_eq!(multi.yolo, Some(true));
     }
 
     #[test]

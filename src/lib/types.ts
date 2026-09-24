@@ -107,6 +107,11 @@ export interface Project {
   /** New tasks default to Docker rather than Seatbelt. Mutually exclusive
    *  with the two Seatbelt defaults in effect. */
   default_docker?: boolean;
+  /** Whether new tasks of this project start with YOLO on. `null` /
+   *  undefined = no opinion, inherit the app-wide `defaultYolo` pref;
+   *  `false` keeps this project asking even when the app says YOLO.
+   *  Resolved by `projectYoloDefault`, never by Rust. */
+  default_yolo?: boolean | null;
   /** Project-level default Docker extra mounts, seeded into new tasks ahead
    *  of the global `Settings.docker_default_extra_mounts`. */
   docker_extra_mounts?: string[];
@@ -469,6 +474,8 @@ export interface CreateMultiArgs {
   /** Resume-args override for the host task, applied from the first spawn.
    *  Same field as the task menu's "Resume override". */
   resume_override?: string;
+  /** See `CreateTaskArgs.yolo`. */
+  yolo?: boolean;
 }
 
 export interface CreateTaskArgs {
@@ -525,6 +532,10 @@ export interface CreateTaskArgs {
    *  replaces termic's default resume block, placeholders expanded per
    *  launch. Empty / unset leaves the default logic in place. */
   resume_override?: string;
+  /** Per-task YOLO, set at create so the FIRST spawn already carries the
+   *  agent's `yolo_args`. Unset = off: Rust never applies a default, the
+   *  caller resolves it (`projectYoloDefault`) and sends the answer. */
+  yolo?: boolean;
 }
 
 export interface Agent {

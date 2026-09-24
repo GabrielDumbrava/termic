@@ -144,6 +144,8 @@ export const taskOpenRepo = (
   resumeOverride?: string,
   /** Additional argv pinned to this task's default agent. */
   agentArgs?: string[],
+  /** Per-task YOLO from the first spawn. Unset = off (no default in Rust). */
+  yolo?: boolean,
 ) =>
   invoke<Task>("task_open_repo", {
     projectId, cli, name, command,
@@ -153,7 +155,7 @@ export const taskOpenRepo = (
     sandboxAllowedHosts: sandbox?.allowedHosts,
     dockerSandboxEnabled: sandbox?.docker,
     dockerExtraMounts: sandbox?.dockerExtraMounts,
-    resumeSessionId, resumeOverride, agentArgs,
+    resumeSessionId, resumeOverride, agentArgs, yolo,
   });
 /** List a project's git worktrees not yet open as tasks (issue #5). */
 export const taskImportableWorktrees = (projectId: string) =>

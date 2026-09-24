@@ -2635,6 +2635,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   if (!!w.yolo && !isSandboxEnforced(wMode)) {
                     return (
                       <Zap
+                        data-testid="task-yolo-badge"
                         className={cn(
                           "absolute h-3.5 w-3.5 text-[var(--color-err)] transition-opacity group-hover/wsrow:opacity-0",
                           isLaunched ? "opacity-100" : "opacity-40",

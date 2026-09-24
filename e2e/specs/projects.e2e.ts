@@ -762,6 +762,44 @@ describe("branch new tasks from", () => {
     createdTaskIds.push((created as any).id);
   });
 
+  // The quick path has no dialog to show the YOLO default in, so it applies
+  // it the way it applies the project's cage, says so in the menu, and the
+  // created task carries it from its first spawn.
+  it("applies the YOLO default to a quick-created agent task", async () => {
+    const nameInput = 'input[placeholder="Task name"]';
+    const NOTE = '[data-testid="quick-create-yolo-note"]';
+    const prev = await browser.execute(() => !!window.__termic!.usePrefs.getState().defaultYolo);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setDefaultYolo(true));
+    try {
+      await openNewTaskMenu(projectId);
+      await settleMenuMode("main");
+      expect(await browser.execute((sel) => !!document.querySelector(sel), NOTE)).toBe(true);
+      await browser.keys("Escape");
+
+      await pickFromNewTaskMenu(projectId, "main", "FakeAgent", nameInput);
+      await waitVisible(nameInput);
+      const name = `e2e-quick-yolo-${Date.now()}`;
+      await browser.execute((sel, n) => {
+        const input = document.querySelector(sel) as HTMLInputElement;
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!
+          .set!.call(input, n);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, nameInput, name);
+      await keysIn(nameInput, "Enter");
+      await browser.waitUntil(
+        () => browser.execute((pid, n) => window.__termic!.useApp.getState().tasks
+          .some((t: any) => t.project_id === pid && t.name === n), projectId, name),
+        { timeout: 10_000, timeoutMsg: "quick-created agent task never appeared" },
+      );
+      const created = await browser.execute((pid, n) => window.__termic!.useApp.getState().tasks
+        .find((t: any) => t.project_id === pid && t.name === n), projectId, name) as any;
+      createdTaskIds.push(created.id);
+      expect(created.yolo).toBe(true);
+    } finally {
+      await browser.execute((v) => window.__termic!.usePrefs.getState().setDefaultYolo(v), prev);
+    }
+  });
+
   // GH #242: the sidebar's quick-create row is a SECOND worktree-creation
   // implementation, separate from NewTaskDialog, and used to block behind
   // its own overlay (QuickCreateProgressDialog) the same way the modal did.
@@ -2187,6 +2225,93 @@ describe("quick-create sandbox note", () => {
     const present = await browser.execute((sel) => !!document.querySelector(sel), NOTE);
     expect(present).toBe(false);
     await browser.keys("Escape");
+  });
+});
+
+// The quick-create menu says when a new agent task will start in YOLO.
+//
+// Same reason as the sandbox note above: the + menu applies the default with
+// no checkbox to show it in, so without this line it would switch approvals
+// off with nothing on screen having said so. Hidden when the answer is off
+// (the baseline) and when the project's cage already turns YOLO on.
+describe("quick-create YOLO note", () => {
+  const NOTE = '[data-testid="quick-create-yolo-note"]';
+  let projectId = "";
+  let saved: { pref: boolean; project: Record<string, unknown> } | null = null;
+
+  const setProject = (fields: Record<string, unknown>) => browser.execute(async (id, f) => {
+    const t = window.__termic!;
+    const p = t.useApp.getState().projects.find((p: any) => p.id === id);
+    await t.ipc.projectUpdate({ ...p, ...(f as object) });
+    await t.useApp.getState().loadAll();
+  }, projectId, fields);
+  const setAppDefault = (on: boolean) =>
+    browser.execute((v) => window.__termic!.usePrefs.getState().setDefaultYolo(v), on);
+
+  const noteShown = async () => {
+    const trigger = `[data-testid="project-new-task-${projectId}"]`;
+    await waitVisible(trigger);
+    await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+      el.click();
+    }, trigger);
+    await waitVisible('[role="menu"]');
+    const shown = await browser.execute((sel) => !!document.querySelector(sel), NOTE);
+    await browser.keys("Escape");
+    return shown;
+  };
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const info = await browser.execute(() => {
+      const t = window.__termic!;
+      const p = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo")!;
+      return { id: p.id as string, pref: !!t.usePrefs.getState().defaultYolo, project: {
+        default_yolo: p.default_yolo ?? null,
+        default_sandbox: p.default_sandbox ?? false,
+        default_sandbox_mode: p.default_sandbox_mode ?? null,
+        default_docker: p.default_docker ?? false,
+      } };
+    });
+    projectId = info.id;
+    saved = { pref: info.pref, project: info.project };
+    await setProject({ default_yolo: null, default_sandbox: false, default_sandbox_mode: null, default_docker: false });
+  });
+
+  after(async () => {
+    await browser.keys("Escape");
+    if (saved) {
+      await setAppDefault(saved.pref);
+      await setProject(saved.project);
+    }
+  });
+
+  it("says nothing when no default is on", async () => {
+    await setAppDefault(false);
+    expect(await noteShown()).toBe(false);
+  });
+
+  it("says so when the app-wide default is on", async () => {
+    await setAppDefault(true);
+    expect(await noteShown()).toBe(true);
+  });
+
+  it("follows a project that keeps asking", async () => {
+    await setAppDefault(true);
+    await setProject({ default_yolo: false });
+    expect(await noteShown()).toBe(false);
+    await setProject({ default_yolo: null });
+  });
+
+  it("stays quiet when the project's cage already turns YOLO on", async () => {
+    await setAppDefault(true);
+    await setProject({ default_sandbox: true, default_sandbox_mode: "enforce" });
+    expect(await noteShown()).toBe(false);
+    await setProject({ default_sandbox: false, default_sandbox_mode: null });
   });
 });
 
