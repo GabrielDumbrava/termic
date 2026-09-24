@@ -97,6 +97,46 @@ fn run_cmd(cmd: CommandBuilder) -> Vec<u8> {
     out
 }
 
+/// Spawn a child that exits at once, wait for it, optionally drop the
+/// master, and report whether the reader then hit EOF within 3 s.
+fn eof_after_exit(close_master: bool) -> (bool, Duration) {
+    let pty = NativePtySystem::default();
+    let pair = pty
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .expect("openpty");
+    let cmd = if cfg!(windows) {
+        let mut c = CommandBuilder::new("cmd.exe");
+        c.args(["/C", "exit 1"]);
+        c
+    } else {
+        let mut c = CommandBuilder::new("sh");
+        c.args(["-c", "exit 1"]);
+        c
+    };
+    let mut child = pair.slave.spawn_command(cmd).expect("spawn");
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().expect("reader");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+        }
+        let _ = tx.send(());
+    });
+    let _ = child.wait();
+    let mut master = Some(pair.master);
+    if close_master {
+        drop(master.take());
+    }
+    let started = Instant::now();
+    let eof = rx.recv_timeout(Duration::from_secs(3)).is_ok();
+    drop(master);
+    (eof, started.elapsed())
+}
+
 fn printable(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -257,6 +297,23 @@ fn main() {
             let tail = &out[out.len().saturating_sub(300)..];
             println!("    got: {}", printable(tail));
         }
+    }
+
+    // Does the reader see EOF when the child exits by itself, with the
+    // master still open? termic's waiter fires pty-exit only after the
+    // reader's EOF, so a platform that never gives one never reports an exit.
+    println!("Reader EOF after the child exits, master still open:");
+    for close_master in [false, true] {
+        let (eof, after) = eof_after_exit(close_master);
+        println!(
+            "{} {}",
+            if eof { "EOF         " } else { "NO EOF      " },
+            if close_master {
+                format!("after the pseudoconsole is closed ({after:?})")
+            } else {
+                format!("with it open, waited {after:?}")
+            },
+        );
     }
 
     // The hook path: agent (node) -> hook (piped stdio) -> CONOUT$.

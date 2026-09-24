@@ -65,6 +65,7 @@ import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 import { IS_WINDOWS } from "@/lib/platform";
+import { isConsoleHostTitle } from "@/lib/terminalTitle";
 
 interface Props { task: Task; tab: TerminalTab; active: boolean; }
 
@@ -1837,6 +1838,9 @@ const captureArmedRef = useRef(false);
     // codex). For claude (OSC 9;4 source) the title is a label only.
     let lastTitleState: "busy" | "idle" | "attention" | null = null;
     term.onTitleChange(t => {
+      // Windows' console host announces the program's path first; that is
+      // not the agent speaking (see isConsoleHostTitle).
+      if (isConsoleHostTitle(t)) return;
       // Display the title verbatim (no prefix strip). The spinner /
       // brand glyphs are SIGNAL: seeing "⠐ ⠂ Task" vs "✳ Task" in the
       // tab pill tells the user "agent is working" at a glance —

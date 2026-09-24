@@ -3319,7 +3319,7 @@ pub(crate) fn pty_resize_inner(
     Ok(())
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PtyManager {
     inner: Arc<Mutex<HashMap<String, PtySlot>>>,
 }
@@ -4256,6 +4256,34 @@ fn pty_spawn(
         let status = child.wait().ok();
         let code = status.and_then(|s| i32::try_from(s.exit_code()).ok());
         dlog(&format!("[pty/{id_w}] child exited code={code:?}"));
+        // ConPTY keeps its output pipe open until the pseudoconsole itself is
+        // closed, so on Windows the reader below never sees EOF for a child
+        // that exits on its own: pty-exit never fired, and a failed resume
+        // neither retried nor showed the exited banner. Give the reader a
+        // moment to drain what the child wrote, then close the pseudoconsole
+        // by dropping the slot (what pty_kill does), which ends the read.
+        #[cfg(windows)]
+        {
+            let drained = {
+                let mut b = buf_w.0.lock();
+                let deadline = Instant::now() + Duration::from_millis(200);
+                while !done_w.load(Ordering::Acquire) {
+                    let now = Instant::now();
+                    if now >= deadline { break; }
+                    buf_w.1.wait_for(&mut b, deadline - now);
+                }
+                done_w.load(Ordering::Acquire)
+            };
+            if !drained {
+                let slot = state_w.lock().remove(&id_w);
+                if let Some(slot) = slot {
+                    if let Some(name) = slot.docker_container.clone() {
+                        std::thread::spawn(move || docker::rm_container(&name));
+                    }
+                    drop(slot);
+                }
+            }
+        }
         // Wait for the reader to drain and emit all remaining PTY output
         // before firing pty-exit. Without this the frontend could process
         // exit before the last bytes arrive and tear down the listener.
@@ -5729,11 +5757,14 @@ fn project_update(mut p: Project) -> Result<(), String> {
 /// so the entry disappears from disk entirely; the user's actual git repo
 /// at `root_path` is NOT touched (we never own that directory).
 #[tauri::command]
-async fn project_remove(id: String) -> Result<(), String> {
+async fn project_remove(state: State<'_, PtyManager>, id: String) -> Result<(), String> {
+    let ptys = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let tasks: Vec<Task> = load_tasks_all()
             .into_iter().filter(|w| w.project_id == id).collect();
         for w in tasks {
+            // As task_archive: nothing may still run in the worktree.
+            kill_task_ptys(&ptys, &w.id);
             // task_archive_sync handles SIGTERMing scripts, running the
             // archive script, removing the worktree, and saving archived=true.
             // Errors per-task are logged but don't abort — we want a
@@ -9573,8 +9604,15 @@ fn task_set_agent_session_id(id: String, cli: String, uuid: String) -> Result<()
 /// the prior synchronous version, that froze the entire Mac through the
 /// blocked main webview event loop. `spawn_blocking` parks the work on a
 /// background thread so the UI keeps painting and the OS stays responsive.
+///
+/// The task's PTYs are killed first, as the CLI's `archive` does. The UI
+/// used to leave that to the panes unmounting after the refetch, which is
+/// harmless on unix (a process may sit in a deleted directory) and fatal on
+/// Windows: the agent's working directory is open, so the worktree cannot
+/// be deleted (os error 32) and the archive fails.
 #[tauri::command]
-async fn task_archive(id: String, delete_branch: Option<bool>) -> Result<(), String> {
+async fn task_archive(state: State<'_, PtyManager>, id: String, delete_branch: Option<bool>) -> Result<(), String> {
+    kill_task_ptys(&state, &id);
     tauri::async_runtime::spawn_blocking(move || task_archive_sync(id, delete_branch.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())?
@@ -9822,9 +9860,11 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn task_delete(id: String) -> Result<(), String> {
+async fn task_delete(state: State<'_, PtyManager>, id: String) -> Result<(), String> {
     // Hard delete: archive (off-thread) then wipe the json. Same async
-    // discipline as task_archive — see its doc comment for why.
+    // discipline as task_archive — see its doc comment for why, and for
+    // the PTY kill.
+    kill_task_ptys(&state, &id);
     let id2 = id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _ = task_archive_sync(id2.clone(), false);

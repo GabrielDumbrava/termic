@@ -35,6 +35,7 @@ import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTh
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 import { IS_WINDOWS } from "@/lib/platform";
+import { isConsoleHostTitle } from "@/lib/terminalTitle";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
 // `currentTerminalTheme()` picks the matching palette at mount; the
@@ -327,7 +328,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         // changes also feed the debounced fs bump: shells that set the
         // title from precmd fire it right when a command finishes, which
         // catches commands that outlive the Enter-keyed debounce.
-        term.onTitleChange(t => { onTitleRef.current?.(t); scheduleFsBump(); });
+        term.onTitleChange(t => { if (!isConsoleHostTitle(t)) onTitleRef.current?.(t); scheduleFsBump(); });
         setTimeout(() => { try { fit.fit(); } catch {} }, 200);
         // Reliable focus for user-created scratch shells (⇧⌘D / + / ⌘T).
         // We do it HERE, once the PTY is live and the grid has rendered,

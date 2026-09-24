@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { archiveTask, dismissOverlays, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell } from "../helpers";
 
@@ -801,7 +801,9 @@ describe("file tree", () => {
       expect(reason.title).toContain("path escapes task");
       expect(reason.title).toContain("e2e-outside-target");
     } finally {
-      rmSync(link, { force: true });
+      // A directory symlink is a directory to Windows: unlink refuses it
+      // (EISDIR / EPERM) and rmdir removes the link without its target.
+      try { unlinkSync(link); } catch { try { rmdirSync(link); } catch { /* gone */ } }
       rmSync(outside, { recursive: true, force: true });
     }
   });

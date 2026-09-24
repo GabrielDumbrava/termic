@@ -1060,7 +1060,7 @@ describe("code intelligence", () => {
       [...document.querySelectorAll(`${sel} .cm-lsp-usages-row`)].map(el => (el as HTMLElement).title), popup) as string[];
     expect(titles.length).toBe(3);
     for (const t of titles) expect(t).toMatch(/^(\/|[A-Za-z]:\\).*navme\.ts:\d+$/);
-    expect(titles[2]).toContain("/nested/navme.ts:");
+    expect(titles[2]).toMatch(/[\\/]nested[\\/]navme\.ts:/);
     const footerTitle = await browser.execute((sel) =>
       (document.querySelector(`${sel} .cm-lsp-usages-footer`) as HTMLElement).title, popup) as string;
     expect(footerTitle).toMatch(/^(\/|[A-Za-z]:\\).*navme\.ts$/);

@@ -410,7 +410,7 @@ describe("agent credentials", () => {
         const second = await browser.waitUntil(
           async () => {
             const v = await loginEnvFor(taskId, envVar);
-            return v && v.endsWith("/client") ? v : false;
+            return v && v.replace(/\\/g, "/").endsWith("/client") ? v : false;
           },
           { timeout: 30_000, timeoutMsg: `${agent}: the respawn did not pick up the switch` },
         );

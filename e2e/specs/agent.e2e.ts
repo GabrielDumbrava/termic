@@ -308,7 +308,9 @@ describe("image paste", () => {
     expect(err).toBeTruthy();
   });
 
-  it("reads an image straight off the Mac clipboard for ctrl+V", async () => {
+  // Driven through pbcopy / osascript, so macOS only. The read itself is the
+  // clipboard plugin's, the same call on every platform.
+  (process.platform === "darwin" ? it : it.skip)("reads an image straight off the Mac clipboard for ctrl+V", async () => {
     // ctrl+V is not a paste event (it is byte 0x16 down the PTY, and the
     // gesture claude binds its own image-attach to), so there are no bytes to
     // hand over and the pasteboard is read natively. That read is the part
@@ -2206,6 +2208,10 @@ describe("main-checkout resume for a capture-resume agent", () => {
     await waitForAgentReady(taskId);
 
     // Nothing to resume yet, so the first spawn carries no resume block.
+    // Waited for rather than read at once: "ready" means the PTY exists, and
+    // a Windows agent started through Git Bash has not run its first line yet.
+    await browser.waitUntil(() => Promise.resolve(spawnArgv(taskId!).length >= 1),
+      { timeout: 20_000, timeoutMsg: "the agent never recorded its spawn" });
     expect(spawnArgv(taskId)).toHaveLength(1);
     expect(spawnArgv(taskId)[0]).not.toContain("resume");
 

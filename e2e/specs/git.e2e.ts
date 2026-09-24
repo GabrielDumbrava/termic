@@ -1508,9 +1508,12 @@ describe("git commit & push", () => {
     }, taskId);
 
     // The bare remote received the commit.
-    const log = execSync(
-      `git -C "${bare}" log --oneline main 2>/dev/null || true`,
-    ).toString();
+    // No shell redirection: execSync runs cmd.exe on Windows, which has no
+    // /dev/null and no `true`.
+    let log = "";
+    try {
+      log = execSync(`git -C "${bare}" log --oneline main`, { stdio: ["ignore", "pipe", "ignore"] }).toString();
+    } catch { /* no main on the remote yet */ }
     expect(log).toContain("e2e push commit");
     await snap("commit-push.png");
   });
