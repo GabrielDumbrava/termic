@@ -1368,3 +1368,13 @@ export function rmTree(dir: string): void {
     throw new Error(`${(e as Error).message}\nprocesses at the time:\n${procs}`);
   }
 }
+
+/** The system clipboard's text: `pbpaste` on macOS, `Get-Clipboard` on
+ *  Windows (line endings back to `\n`, which is what the app wrote). */
+export function readClipboard(): string {
+  if (process.platform === "win32") {
+    return execFileSync("powershell.exe", ["-NoProfile", "-Command", "Get-Clipboard -Raw"], { encoding: "utf8" })
+      .replace(/\r\n/g, "\n");
+  }
+  return execFileSync("pbpaste", { encoding: "utf8" });
+}

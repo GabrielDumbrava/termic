@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { archiveTask, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -3741,7 +3741,7 @@ describe("copy agent briefing", () => {
     await waitForCopyToast("task menu");
     // What the user actually pastes: one block, tagged with THIS task, the
     // command addressing it by id and signed with its identity.
-    const pasted = execSync("pbpaste", { encoding: "utf8" });
+    const pasted = readClipboard();
     expect(pasted.startsWith(`<termic-task id="${taskId}" `)).toBe(true);
     expect(pasted.trimEnd().endsWith("</termic-task>")).toBe(true);
     expect(pasted).toContain(` send ${taskId} -p "[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID]`);
