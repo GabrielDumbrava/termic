@@ -79,6 +79,45 @@ than being pinned to the tail.
 Rows carry `data-launcher-cli="<id>"` so tests can assert the order by id
 instead of by display name.
 
+## The project row's task filter
+
+The project header's hover bar carries a filter icon, left of the
+settings cog (`sidebar/ProjectTaskFilter.tsx`, GH #324). It opens a bar
+on its OWN line under the header, full width: a text input and a bell.
+Inline in the header, the input left a long project name almost no room.
+The bell keeps only tasks with a notification and shows how many there
+are. Both AND, per project, in
+`useUI.taskFilters`, never persisted. The matching is a pure function of
+store state (`lib/taskFilter.ts`, unit-tested) evaluated at render, so a
+CLI rename or a notification arriving moves a row with no extra wiring.
+
+- **Text matches the task name and each terminal tab's STABLE title**
+  (the user's rename, else the default), never `liveTitle`. Agents
+  rewrite their OSC title every second, and matching on it made rows
+  flap in and out of the list. A task whose tabs are not loaded falls
+  back to `persisted_tabs`, titled the way a restore would title them.
+- **"Notification" is the tray's classification**, via the shared
+  `aggregateTabsState` (`lib/cliAgentState.ts`): waiting or done, with
+  working outranking both. The per-project counts therefore add up to
+  the tray numeral; a second definition would make the two disagree.
+- **The active task is always listed.** Opening a task clears its
+  notification, so under the bell the row just clicked would vanish
+  from under the cursor. It drops out once another task is selected.
+  "No matching tasks" appears only when the list is empty: printed
+  under the kept active row, it read as a contradiction.
+- **Turning a filter on expands the project once**, through the normal
+  collapse state: a filter whose results sit behind a chevron reads as
+  "nothing matched". Once, not for as long as it is on: forcing it open
+  at render made the chevron dead while a filter was up.
+- **The header holds one filter icon**, lit while any filter (text or
+  bell) is on. It opens a bar under the header: the input, then the bell
+  with its count. An active filter keeps its bar and pins the header's
+  controls; an empty, abandoned bar folds away. A filter whose results sit behind a chevron reads as
+  "nothing matched", and the stored collapse is left untouched so
+  clearing the filter folds it back.
+- Escape in the input and its clear button both empty it. The feature
+  is absent in compact mode.
+
 ## Run state in the sidebar
 
 A run tab's controls live in its tab pill (restart + a red Stop while the PTY

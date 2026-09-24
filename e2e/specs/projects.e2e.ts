@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, dashboardBadge, dismissOverlays, ensureActiveTask, pointerDrag, requireTermicApi, keysIn, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, setWindowPresence, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -2333,3 +2333,263 @@ async function setDialogInput(selector: string, value: string): Promise<void> {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }, selector, value);
 }
+
+// GH #324: the project row's task filter. A filter icon opens a bar under
+// the header: a text input (task name + stable agent tab titles), and a bell
+// that keeps only tasks with a notification. Both are live: a CLI rename or a
+// notification arriving moves a row in or out with nothing else happening.
+describe("sidebar task filter", () => {
+  let pid = "";
+  let home = "";
+  let alpha = "";
+  let beta = "";
+  let gamma = "";
+  const row = (id: string) => `[data-sidebar-task-id="${id}"]`;
+  const INPUT = () => `[data-testid="project-filter-input-${pid}"]`;
+  const TOGGLE = () => `[data-testid="project-filter-toggle-${pid}"]`;
+  const CLEAR = () => `[data-testid="project-filter-clear-${pid}"]`;
+  const BELL = () => `[data-testid="project-filter-bell-${pid}"]`;
+  const COUNT = () => `[data-testid="project-filter-bell-count-${pid}"]`;
+  const EMPTY = () => `[data-testid="project-filter-empty-${pid}"]`;
+
+  const present = (id: string) =>
+    browser.execute((sel) => !!document.querySelector(sel), row(id));
+  const expectRows = async (want: Record<string, boolean>, msg: string) => {
+    let last: Record<string, boolean> = {};
+    await browser.waitUntil(async () => {
+      // Built aside and swapped in whole, so a timeout mid-iteration still
+      // reports the last complete reading instead of an empty one.
+      const seen: Record<string, boolean> = {};
+      for (const id of Object.keys(want)) seen[id] = await present(id);
+      last = seen;
+      return Object.keys(want).every(id => seen[id] === want[id]);
+    }, { timeout: 8_000, timeoutMsg: `${msg}: rows ${JSON.stringify(last)}` });
+  };
+  // Raw click: the controls sit at opacity 0 until the row is hovered, and
+  // whether a synthetic pointer counts as hover is not what these cases test.
+  const click = (sel: string) =>
+    browser.execute((s) => (document.querySelector(s) as HTMLElement).click(), sel);
+  /** Type into the filter through React's own input event, opening it first. */
+  const typeFilter = async (value: string) => {
+    if (!(await browser.execute((s) => !!document.querySelector(s), INPUT()))) {
+      await click(TOGGLE());
+      await waitVisible(INPUT());
+    }
+    await browser.execute((sel, v) => {
+      const input = document.querySelector(sel) as HTMLInputElement;
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, INPUT(), value);
+  };
+  /** Park the real pointer off the sidebar, so hover cannot reveal the bar. */
+  const pointerAway = () => $("header[data-active-task]").moveTo();
+  const pinned = () =>
+    browser.execute((s) => document.querySelector(s)?.getAttribute("data-pinned") ?? null, TOGGLE());
+  const opacity = (sel: string) =>
+    browser.execute((s) => {
+      const el = document.querySelector(s);
+      return el ? getComputedStyle(el).opacity : null;
+    }, sel);
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    pid = await browser.execute(() =>
+      window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo")!.id as string);
+    alpha = await openTask("e2e-filter-alpha");
+    await waitForAgentReady(alpha);
+    beta = await openTask("e2e-filter-beta");
+    await waitForAgentReady(beta);
+    gamma = await openTask("e2e-filter-gamma", false);
+    // The active task is always shown, so keep one that no case filters for.
+    home = await openTask("e2e-filter-home", true, "shell");
+    await browser.execute((id) => {
+      window.__termic!.useApp.getState().setProjectCollapsed(id, false);
+      window.__termic!.useUI.setState({ taskFilters: {} });
+    }, pid);
+    await expectRows({ [alpha]: true, [beta]: true, [gamma]: true }, "setup rows");
+  });
+
+  after(async () => {
+    await browser.execute(() => window.__termic!.useUI.setState({ taskFilters: {} }));
+    await setWindowPresence(true);
+    for (const id of [alpha, beta, gamma, home]) if (id) await archiveTask(id);
+  });
+
+  it("opens the filter bar from the filter icon, and closes it again", async () => {
+    const lit = () => browser.execute((s) => document.querySelector(s)!.getAttribute("aria-pressed"), TOGGLE());
+    await click(TOGGLE());
+    await waitVisible(INPUT());
+    // The bell sits in the same bar, to the input's right.
+    await waitVisible(BELL());
+    const focused = await browser.execute((s) => document.activeElement === document.querySelector(s), INPUT());
+    expect(focused).toBe(true);
+    // Open is not active: nothing filters yet, so the icon stays unlit.
+    expect(await lit()).toBe("false");
+    await click(TOGGLE());
+    await waitGone(INPUT());
+  });
+
+  it("lights the filter icon for text and for the bell", async () => {
+    const lit = () => browser.execute((s) => document.querySelector(s)!.getAttribute("aria-pressed"), TOGGLE());
+    await typeFilter("alpha");
+    await browser.waitUntil(async () => (await lit()) === "true", { timeoutMsg: "text did not light the icon" });
+    await keysIn(INPUT(), "Escape");
+    await waitGone(INPUT());
+    expect(await lit()).toBe("false");
+    await click(TOGGLE());
+    await waitVisible(BELL());
+    await click(BELL());
+    await browser.waitUntil(async () => (await lit()) === "true", { timeoutMsg: "the bell did not light the icon" });
+    // An active filter keeps its bar: the icon only focuses it now.
+    await click(TOGGLE());
+    await waitVisible(INPUT());
+    await click(BELL());
+    await waitGone(INPUT());
+    expect(await lit()).toBe("false");
+  });
+
+  it("keeps only tasks whose name matches, and pins the bar", async () => {
+    await typeFilter("ALPHA ");
+    await expectRows({ [alpha]: true, [beta]: false, [gamma]: false }, "name filter");
+    // The bar stays up with the pointer elsewhere, so the user can see why
+    // rows are missing.
+    await browser.waitUntil(async () => (await pinned()) === "true",
+      { timeout: 5_000, timeoutMsg: "an active filter did not pin the bar" });
+    await pointerAway();
+    expect(await opacity(TOGGLE())).toBe("1");
+    await snap("task-filter-name.png");
+  });
+
+  it("matches an agent tab's title", async () => {
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      const tab = s.tabs[id].find((t: any) => t.type === "terminal");
+      s.renameTab(id, tab.id, "Reviewer");
+    }, beta);
+    await typeFilter("review");
+    await expectRows({ [alpha]: false, [beta]: true, [gamma]: false }, "tab title filter");
+  });
+
+  it("follows a CLI rename live", async () => {
+    await typeFilter("alpha");
+    await expectRows({ [alpha]: true, [gamma]: false }, "before rename");
+    const r = await cliRpc({ cmd: "rename", task: gamma, name: "e2e-filter-alpha-too" });
+    expect(r.ok).toBe(true);
+    await expectRows({ [gamma]: true }, "a rename into the filter did not show the task");
+    await cliRpc({ cmd: "rename", task: gamma, name: "e2e-filter-gamma" });
+    await expectRows({ [gamma]: false }, "a rename out of the filter did not hide the task");
+  });
+
+  it("clears from the button and turns the filter off", async () => {
+    await typeFilter("alpha");
+    await waitVisible(CLEAR());
+    await click(CLEAR());
+    await waitGone(INPUT());
+    await expectRows({ [alpha]: true, [beta]: true, [gamma]: true }, "clear");
+    const filters = await browser.execute(() => window.__termic!.useUI.getState().taskFilters);
+    expect(filters).toEqual({});
+    // Hover may still reveal it, so assert the pin itself, not the opacity.
+    await browser.waitUntil(async () => (await pinned()) === "false",
+      { timeout: 5_000, timeoutMsg: "the bar stayed pinned after the filter was cleared" });
+  });
+
+  it("says nothing under the active task it keeps on screen", async () => {
+    // home is active and in this project, so the list is not empty: it holds
+    // home by exemption. A "no matching tasks" line under a visible row reads
+    // as a contradiction, so the hint waits for a genuinely empty list.
+    await typeFilter("zzz-no-such-task");
+    await expectRows({ [home]: true, [alpha]: false }, "active task exemption");
+    expect(await browser.execute((s) => !!document.querySelector(s), EMPTY())).toBe(false);
+    await keysIn(INPUT(), "Escape");
+    await waitGone(INPUT());
+    // No active task from here to the bell cases, so the list can be empty.
+    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+  });
+
+  it("says so when nothing matches, and Escape clears", async () => {
+    await typeFilter("zzz-no-such-task");
+    await waitVisible(EMPTY());
+    await expectRows({ [alpha]: false, [beta]: false, [gamma]: false }, "no match");
+    await keysIn(INPUT(), "Escape");
+    await waitGone(INPUT());
+    await waitGone(EMPTY());
+    await expectRows({ [alpha]: true, [beta]: true, [gamma]: true }, "escape");
+  });
+
+  it("clears from the empty row's action", async () => {
+    await typeFilter("zzz-no-such-task");
+    await waitVisible(EMPTY());
+    await click(`${EMPTY()} button`);
+    await waitGone(EMPTY());
+    await expectRows({ [alpha]: true, [beta]: true, [gamma]: true }, "empty-row clear");
+    await ensureActiveTask(home);
+  });
+
+  it("expands a collapsed project when a filter goes on, and still lets it collapse", async () => {
+    // The header toggles on pointerdown + a document pointerup (it is also
+    // the drag handle), so drive exactly that. A native WebDriver click
+    // stalls on Tauri window-state calls.
+    const clickHeader = () => browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      const r = el.getBoundingClientRect();
+      const init = { bubbles: true, button: 0, clientX: r.left + 4, clientY: r.top + r.height / 2, pointerId: 1, isPrimary: true };
+      el.dispatchEvent(new PointerEvent("pointerdown", init));
+      el.dispatchEvent(new PointerEvent("pointerup", init));
+    }, `[data-project-id="${pid}"] span.truncate`);
+    await browser.execute((id) => window.__termic!.useApp.getState().setProjectCollapsed(id, true), pid);
+    await expectRows({ [alpha]: false }, "collapse");
+    await typeFilter("alpha");
+    await expectRows({ [alpha]: true, [beta]: false }, "filter under a collapsed project");
+    // A real click on the header, with the filter still on: the chevron has
+    // to keep working, not be overridden for as long as a filter is up.
+    await clickHeader();
+    await expectRows({ [alpha]: false }, "collapsing with a filter on");
+    await clickHeader();
+    await expectRows({ [alpha]: true }, "expanding with a filter on");
+    await keysIn(INPUT(), "Escape");
+    await expectRows({ [alpha]: true, [beta]: true }, "clear");
+  });
+
+  it("keeps only tasks with a notification behind the bell", async () => {
+    await requireWorkBadges();
+    // Away: the only state in which a badge persists at all.
+    await setWindowPresence(false);
+    await ensureActiveTask(alpha);
+    await submitToAgent(alpha, "#osc9 FakeAgent needs your permission");
+    await waitForWorkBadge(alpha, "attention", { timeout: 15_000, message: "no attention to filter on" });
+    await ensureActiveTask(home);
+
+    await click(TOGGLE());
+    await waitVisible(COUNT());
+    await click(BELL());
+    const pressed = await browser.execute((s) => document.querySelector(s)!.getAttribute("aria-pressed"), BELL());
+    expect(pressed).toBe("true");
+    await expectRows({ [alpha]: true, [beta]: false, [gamma]: false }, "bell filter");
+    // The lit icon is what says rows are hidden, so it must actually show.
+    await pointerAway();
+    const probe = await browser.execute((s) => {
+      const el = document.querySelector(s) as HTMLElement;
+      const st = getComputedStyle(el);
+      return { opacity: st.opacity, pressed: el.getAttribute("aria-pressed") };
+    }, TOGGLE());
+    expect(probe.opacity).toBe("1");
+    expect(probe.pressed).toBe("true");
+    await snap("task-filter-bell.png");
+  });
+
+  it("keeps the active task visible after opening it clears its notification", async () => {
+    const before = Number(await browser.execute((s) => document.querySelector(s)?.textContent ?? "0", COUNT()));
+    await ensureActiveTask(alpha);
+    await browser.waitUntil(
+      async () => Number(await browser.execute((s) => document.querySelector(s)?.textContent ?? "0", COUNT())) === before - 1,
+      { timeout: 8_000, timeoutMsg: "opening the task did not clear its notification" },
+    );
+    // Its notification is gone, but it is the row the user just clicked.
+    await expectRows({ [alpha]: true }, "active task exemption");
+    await ensureActiveTask(home);
+    await expectRows({ [alpha]: false }, "leaving the task drops it from the filtered list");
+    await click(BELL());
+    await expectRows({ [alpha]: true, [beta]: true, [gamma]: true }, "bell off");
+  });
+});

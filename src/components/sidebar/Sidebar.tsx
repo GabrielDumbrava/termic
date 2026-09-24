@@ -44,6 +44,8 @@ import { accentCss } from "@/lib/accents";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
+import { ProjectFilterBar, ProjectFilterToggle } from "./ProjectTaskFilter";
+import { filterTasks, isFilterActive, taskHasNotification } from "@/lib/taskFilter";
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
 import { delegatedTitle } from "@/lib/delegatedWork";
 
@@ -120,6 +122,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const setView = useApp(s => s.setView);
   const currentView = useApp(s => s.view.page);
   const tabs = useApp(s => s.tabs);
+  const agents = useApp(s => s.agents);
+  const taskFilters = useUI(s => s.taskFilters);
+  const setTaskFilterText = useUI(s => s.setTaskFilterText);
+  const toggleTaskFilterBell = useUI(s => s.toggleTaskFilterBell);
   const mountedTasks = useApp(s => s.mountedTasks);
   const loadAll = useApp(s => s.loadAll);
   const openNewProject = useUI(s => s.openNewProject);
@@ -231,6 +237,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // visually "hovered" (bg + Cog visible) while the menu is open;
   // otherwise the menu trigger looks like it un-selected its parent.
   const [menuOpenProjectId, setMenuOpenProjectId] = useState<string | null>(null);
+  // Projects whose filter bar the user opened (GH #324), valued by a counter
+  // that bumps on every open so the bar's input re-takes focus.
+  const [filterInputs, setFilterInputs] = useState<Record<string, number>>({});
   // Inline name-prompt state for repo-root task creation. When the
   // user picks an agent from the project's `+` menu, we stash the choice
   // here and render a focused input row under the project — Enter creates
@@ -1021,6 +1030,27 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // expanded row). User overrides stick: explicit true / false
             // wins; undefined falls back to emptiness-based default.
             const explicit = collapsedProjects[p.id];
+            // Task filter (GH #324). Turning one on expands the project once
+            // (ProjectFilterBar's onActivate): results behind a chevron read
+            // as "nothing matched". Once, not for as long as it is on, or the
+            // chevron would stop working while a filter is up.
+            const filter = taskFilters[p.id];
+            const filterOn = !compact && isFilterActive(filter);
+            const visibleTasks = filterOn ? filterTasks(taskList, filter, tabs, agents, activeTask) : taskList;
+            // "No matching tasks" only when the filter left the list EMPTY. The
+            // active task is kept on screen even when it does not match, and a
+            // hint saying nothing matched under a visible row contradicts it.
+            const noMatches = filterOn && taskList.length > 0 && visibleTasks.length === 0;
+            const notifCount = compact ? 0 : taskList.filter(w => taskHasNotification(tabs[w.id])).length;
+            // An active filter keeps its bar on screen on its own; otherwise
+            // the bar is open only while the user put it there.
+            const filterBarOpen = !compact && (filterOn || filterInputs[p.id] !== undefined);
+            const closeFilterBar = () => setFilterInputs(prev => {
+              if (prev[p.id] === undefined) return prev;
+              const next = { ...prev };
+              delete next[p.id];
+              return next;
+            });
             // Render-only fold while THIS project is being dragged: the
             // translateY rides on the header alone, so expanded task rows
             // would sit frozen in place while their header floats away.
@@ -1181,14 +1211,29 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             so the row stays clean; New-task stays
                             visible because it's the headline action. */}
                         <div className="flex items-center gap-0.5">
+                          {/* Filter controls (GH #324), left of the cog. An
+                              active filter pins the whole bar so the user
+                              can see why rows are missing. */}
+                          <ProjectFilterToggle
+                            projectId={p.id}
+                            active={filterOn}
+                            revealed={menuOpenProjectId === p.id || filterBarOpen}
+                            // Open (or re-focus) the bar; an open bar with
+                            // nothing filtering closes instead.
+                            onToggle={() => {
+                              if (filterBarOpen && !filterOn) closeFilterBar();
+                              else setFilterInputs(prev => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
+                            }}
+                          />
                           <Tip content="Project settings">
                             <button
                               className={cn(
                                 "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] transition-opacity",
                                 // Stay visible while the `+` dropdown is
                                 // open (otherwise the gear vanishes the
-                                // moment the user opens the menu).
-                                menuOpenProjectId === p.id
+                                // moment the user opens the menu), and
+                                // while the filter bar is open.
+                                menuOpenProjectId === p.id || filterBarOpen
                                   ? "opacity-100"
                                   : "opacity-0 group-hover:opacity-100",
                               )}
@@ -1379,6 +1424,18 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   </ContextMenuItem>
                 </ContextMenuContent>
                 </ContextMenuRoot>
+                {/* The filter bar's own line (GH #324), under the header and
+                    above the rows it filters. Shown collapsed or not: the
+                    first filter to go on expands the project. */}
+                {filterBarOpen && (
+                  <ProjectFilterBar
+                    projectId={p.id}
+                    notifCount={notifCount}
+                    focusKey={filterInputs[p.id] ?? 0}
+                    onClose={closeFilterBar}
+                    onActivate={() => { if (collapsed) setProjectCollapsed(p.id, false); }}
+                  />
+                )}
 
                 {/* Empty expanded project — single placeholder CTA that
                     opens the SAME dropdown as the row's `+` icon (one
@@ -1432,7 +1489,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     dragged still reads oldest-first, and new tasks append at
                     the bottom), and a live drag splices the same array — an
                     extra sort here would fight the drag. */}
-                {!collapsed && taskList.map(w => (
+                {!collapsed && visibleTasks.map(w => (
                   <TaskRowSlot
                     key={w.id}
                     w={w}
@@ -1443,6 +1500,22 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     clickSuppressed={taskClickSuppressed}
                   />
                 ))}
+                {!collapsed && noMatches && (
+                  <div
+                    data-testid={`project-filter-empty-${p.id}`}
+                    className="ml-3 mr-1 mb-px flex h-[var(--task-row-h)] items-center justify-center gap-1.5 px-2 text-[13px] text-[var(--color-fg-faint)]"
+                  >
+                    <span className="truncate">No matching tasks</span>
+                    <button
+                      className="shrink-0 rounded px-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                      onClick={() => {
+                        setTaskFilterText(p.id, "");
+                        if (filter?.bell) toggleTaskFilterBell(p.id);
+                        closeFilterBar();
+                      }}
+                    >Clear filter</button>
+                  </div>
+                )}
                 {/* Tasks mid-creation (GH #242) — a real Task doesn't exist
                     yet, so these come from pendingTaskList, not taskList.
                     Rendered after the real rows, compact mode excluded (same
