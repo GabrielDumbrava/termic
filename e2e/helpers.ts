@@ -1353,7 +1353,7 @@ export function flushEditorMeasure(): Promise<number> {
  * line mentions termic or git, with its parent, which is usually enough to
  * name the one that outlived its task.
  */
-export function rmTree(dir: string): void {
+export function rmTree(dir: string, opts: { bestEffort?: boolean } = {}): void {
   try {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 });
   } catch (e) {
@@ -1365,7 +1365,11 @@ export function rmTree(dir: string): void {
         + "ForEach-Object { \"$($_.ProcessId) <- $($_.ParentProcessId) $($_.Name): $($_.CommandLine)\" }"],
       { encoding: "utf8", timeout: 20_000 });
     } catch (le) { procs = `(could not list processes: ${String(le)})`; }
-    throw new Error(`${(e as Error).message}\nprocesses at the time:\n${procs}`);
+    const msg = `${(e as Error).message}\nprocesses at the time:\n${procs}`;
+    // A temp dir in the OS temp folder that outlives its test is harmless;
+    // `bestEffort` is for a case whose subject is not the cleanup.
+    if (opts.bestEffort) { console.warn(`rmTree left ${dir} behind: ${msg}`); return; }
+    throw new Error(msg);
   }
 }
 

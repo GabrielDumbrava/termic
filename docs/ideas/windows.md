@@ -145,19 +145,19 @@ that pin the unix layouts are `#[cfg(unix)]`
 ## 7. Tests and CI
 
 - **e2e on Windows** runs in CI (`windows.yml`, reporting, not gating), with
-  a screenshot and the window text captured at every failure
-  (`TERMIC_E2E_FAIL_CAPTURE`). Third run: 399 passed, 41 failed, and it
-  reaches about two thirds of the suite inside its 75-minute budget (the
-  suite is slower on the runner than on a Mac). Open:
-  - the fake agent's session capture and resume cases (#311, the capture
-    agent): its first spawn exits with code 1 in ~170 ms under Git Bash and
-    the respawn prints nothing; not reproduced outside CI yet.
-  - a second agent in one task never gets its footer chip (#277 case).
-  - the credentials respawn-after-switch case.
-  - an external markdown document's relative link.
-  - git commit & push to the fixture remote.
-  - the suite's length: it needs splitting across two jobs, or the slow
-    specs profiled (`TERMIC_E2E_TIMING`), before it can cover everything.
+  a screenshot, the window text and the profile's `e2e-*.log` files captured
+  at every failure (`TERMIC_E2E_FAIL_CAPTURE`). The whole suite runs in about
+  18 minutes, and it has passed 19 of 19 spec files. Intermittent on the
+  runner, each passing on the run before or after:
+  - the #311 picker cases: the typed pick sometimes never reaches the fake
+    picker's `read`. The fixture logs what it skips and reads
+    (`e2e-picker.log`); the focus report is one cause, not all of them.
+  - the IME key-rollover case and the delegated-message case in
+    `agent.e2e.ts`.
+  - a temp repo that stays busy after its project is removed, with no
+    termic child process in it (`rmTree` lists the processes). Either
+    Defender or the indexer on a fresh `.git`, or a handle termic itself
+    keeps; `handle.exe` on a Windows machine would tell which.
 - **Release.** A `build-windows` job in `release.yml` (NSIS, updater
   signature, a `windows-x86_64` entry in `latest.json`), kept out of the
   release job's `needs` until Windows is supported. Authenticode signing

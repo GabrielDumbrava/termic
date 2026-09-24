@@ -347,7 +347,11 @@ describe("import worktree", () => {
           await window.__termic!.useApp.getState().loadAll();
         }, projectId);
       }
-      rmTree(bare);
+      // Best effort: on the Windows runner this repo is sometimes still held
+      // by a process outside termic's tree (none of its children is in it;
+      // Defender or the indexer on a fresh .git is the likely owner), and
+      // the case is about the import row, not the cleanup.
+      rmTree(bare, { bestEffort: true });
     }
   });
 });
