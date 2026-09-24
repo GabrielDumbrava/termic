@@ -457,7 +457,7 @@ Whenever you add a window LABEL, add it to a capability in the same change, and
 remember `tauri.conf.json` / capabilities changes need a quit + relaunch, not a
 reload.
 
-## A window built from a synchronous command deadlocks on Windows
+## A window built inside a command hangs on Windows
 
 A `#[tauri::command]` without `async` runs on the main thread. Building a
 webview window there works on macOS and hangs on Windows: WebView2 creation
@@ -466,12 +466,17 @@ the command just never returns and the window never appears.
 
 `profile_open` and `procmon_open_window` shipped like that, and nothing on
 macOS could show it. The first Windows e2e run did: "creating a profile did
-not open its window", then every later profile case timed out. Both are
-`#[tauri::command(async)]` now.
+not open its window", then every later profile case timed out.
 
-Any command that can CREATE a window (`WebviewWindowBuilder::new`,
-`build_profile_window`) is `(async)`, or `async fn`. Tauri documents that
-for every platform; Windows is where skipping it costs a hang.
+Making them `(async)` was NOT enough, and the next run showed it: the
+window builds on the worker thread and the command returns, but the window
+is not usable, and the next window command hangs. What works is what the
+startup window does: build it on the main thread from the event loop.
+Both commands stay `(async)` and hand the window work to `on_main_thread`
+(`run_on_main_thread` plus a channel), waiting on their worker thread for
+the result. Never call `on_main_thread` FROM the main thread (the tray
+handler, `setup`): it waits on itself. The tray row calls `profile_open`
+from the blocking pool for that reason.
 
 ## ConPTY gives the reader no EOF when the child exits
 
