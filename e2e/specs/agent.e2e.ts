@@ -2700,7 +2700,9 @@ describe("a secondary capture-resume tab in the main checkout", () => {
     // A NEW tab is a new session: no resume block, and in the repo root no cwd
     // fallback either, so this agent genuinely starts from nothing. That is
     // the × contract for a secondary tab and it is not the bug.
-    expect(argvFor(id)[argvFor(id).length - 1]).not.toContain("resume");
+    // Every spawn since, not the last line: on a slow runner two fixture
+    // starts can record out of order.
+    expect(argvFor(id).slice(before).some(l => l.includes("resume"))).toBe(false);
 
     // The way back is the + menu's Resume list, which still holds the session.
     const entry = await browser.execute(
@@ -2711,10 +2713,9 @@ describe("a secondary capture-resume tab in the main checkout", () => {
       window.__termic!.useApp.getState().resumeClosedTab(t, e);
     }, id, (entry as { id: string }).id);
     await browser.waitUntil(
-      () => Promise.resolve(argvFor(id).length > at),
-      { timeout: 30_000, timeoutMsg: "the resumed tab never spawned" },
+      () => Promise.resolve(argvFor(id).slice(at).some(l => l.includes(`resume ${SESSION}`))),
+      { timeout: 30_000, timeoutMsg: `the resumed tab never spawned with resume ${SESSION}` },
     );
-    expect(argvFor(id)[argvFor(id).length - 1]).toContain(`resume ${SESSION}`);
   });
 });
 
