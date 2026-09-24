@@ -9934,7 +9934,19 @@ async fn task_delete(state: State<'_, PtyManager>, id: String) -> Result<(), Str
     let id2 = id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         stop_every_task_pty(&ptys, &id2);
-        let _ = task_archive_sync(id2.clone(), false);
+        // An archived task whose worktree is already gone (every row the
+        // History page empties) has nothing left to tear down. Archiving it
+        // again ran its archive script a second time and walked git's
+        // teardown for a worktree that no longer exists, per task, one after
+        // another: emptying a long History took longer than the page waits.
+        let torn_down = load_tasks_all().iter()
+            .find(|w| w.id == id2)
+            // A main checkout's path is the repo itself and stays; archiving
+            // it only unlinked members, which are gone already.
+            .is_some_and(|w| w.archived && (w.is_main_checkout || !Path::new(&w.path).exists()));
+        if !torn_down {
+            let _ = task_archive_sync(id2.clone(), false);
+        }
         delete_task_file(&id2).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())?
 }
