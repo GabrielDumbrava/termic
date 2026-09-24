@@ -144,12 +144,20 @@ that pin the unix layouts are `#[cfg(unix)]`
 
 ## 7. Tests and CI
 
-- **e2e on Windows.** The WebDriver is embedded
-  (`tauri-plugin-wdio-webdriver`, which supports WebView2) and the binary
-  path is fixed. Missing: a Node sibling of `scripts/fake-agent.sh` (the
-  seed settings point every agent at it), `e2e/helpers.ts` reading the
-  loopback endpoint from `termic.sock`, and `activity.e2e.ts`'s
-  `/bin/sh -c "sleep 30"`. Then a `windows-latest` e2e job.
+- **e2e on Windows** runs in CI (`windows.yml`, reporting, not gating), with
+  a screenshot and the window text captured at every failure
+  (`TERMIC_E2E_FAIL_CAPTURE`). Third run: 399 passed, 41 failed, and it
+  reaches about two thirds of the suite inside its 75-minute budget (the
+  suite is slower on the runner than on a Mac). Open:
+  - the fake agent's session capture and resume cases (#311, the capture
+    agent): its first spawn exits with code 1 in ~170 ms under Git Bash and
+    the respawn prints nothing; not reproduced outside CI yet.
+  - a second agent in one task never gets its footer chip (#277 case).
+  - the credentials respawn-after-switch case.
+  - an external markdown document's relative link.
+  - git commit & push to the fixture remote.
+  - the suite's length: it needs splitting across two jobs, or the slow
+    specs profiled (`TERMIC_E2E_TIMING`), before it can cover everything.
 - **Release.** A `build-windows` job in `release.yml` (NSIS, updater
   signature, a `windows-x86_64` entry in `latest.json`), kept out of the
   release job's `needs` until Windows is supported. Authenticode signing

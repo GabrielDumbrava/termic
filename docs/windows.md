@@ -49,7 +49,8 @@ Daily use is the same as on macOS:
 | `make uninstall` | Runs both apps' uninstallers silently. |
 | `make reset`, `make reset_dev` | The Windows data locations (`%LOCALAPPDATA%\termic`, the WebView2 profile, window state). |
 | `make cli-dev` | Copies (not links) the debug CLI to `~/.local/bin/termic-dev.exe`. Re-run after rebuilding it. |
-| `make e2e`, `make perf` | Not run on Windows yet: the specs' fake agent is a bash script and several specs assume unix paths (see below). `make perf`'s local section is macOS-only and says so. |
+| `make e2e` | Runs; CI runs it on every push (reporting, not gating). Most specs pass; the open ones are in ideas/windows.md. The fake agent is a bash script started through `scripts/fake-agent.cmd`. |
+| `make perf` | The CI section runs; the local section (idle CPU / GPU) is macOS-only and says so. |
 
 `make release` and `make icons` are maintainer tooling and stay macOS.
 
@@ -135,5 +136,5 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   Windows is unmeasured, so theirs are not offered yet.
 - **Installing `termic` onto PATH** from Settings. Agents inside Termic
   still get it.
-- **Activity monitor**, **PDF preview** (needs a CSP change), **code
-  signing and updates**, and the **e2e suite** on Windows.
+- **Activity monitor**, **PDF preview** (needs a CSP change), and **code
+  signing and updates**.
