@@ -3831,8 +3831,7 @@ impl CliHost for TauriHost {
         // and what `result` reads back. Termination is still guaranteed, so
         // the worktree removal downstream is as safe as it was.
         let manager = self.app.state::<crate::PtyManager>();
-        (crate::stop_task_ptys(&manager, task_id) + crate::stop_task_role_ptys(&manager, task_id))
-            as u32
+        crate::stop_every_task_pty(&manager, task_id) as u32
     }
     fn git_toplevel(&self, cwd: &str) -> Option<String> {
         let out = crate::git(&["rev-parse", "--show-toplevel"], Path::new(cwd)).ok()?;

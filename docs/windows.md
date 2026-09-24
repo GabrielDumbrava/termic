@@ -100,9 +100,10 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   pseudoconsole is closed, so the PTY waiter closes it (drops the slot)
   after a short drain, or `pty-exit` would never fire. And ConPTY
   announces the program's path as the window title before the program
-  runs (`isConsoleHostTitle` drops it). Archiving kills the task's PTYs
-  before deleting its worktree, because Windows will not delete a
-  directory that is a live process's working directory.
+  runs (`isConsoleHostTitle` drops it). Archiving stops every PTY of the task,
+  its shell and command tabs included, before deleting its worktree,
+  because Windows will not delete a directory that is a live process's
+  working directory.
 - **CLI control plane.** Loopback TCP on an ephemeral port, whose address
   is written into the `termic.sock` path (`termic_proto::local`). The
   per-boot token in the per-user data dir remains the credential. This is

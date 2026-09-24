@@ -5776,7 +5776,7 @@ async fn project_remove(state: State<'_, PtyManager>, id: String) -> Result<(), 
             .into_iter().filter(|w| w.project_id == id).collect();
         for w in tasks {
             // As task_archive: nothing may still run in the worktree.
-            kill_task_ptys(&ptys, &w.id);
+            stop_every_task_pty(&ptys, &w.id);
             // task_archive_sync handles SIGTERMing scripts, running the
             // archive script, removing the worktree, and saving archived=true.
             // Errors per-task are logged but don't abort — we want a
@@ -9622,17 +9622,31 @@ fn task_set_agent_session_id(id: String, cli: String, uuid: String) -> Result<()
 /// blocked main webview event loop. `spawn_blocking` parks the work on a
 /// background thread so the UI keeps painting and the OS stays responsive.
 ///
-/// The task's PTYs are killed first, as the CLI's `archive` does. The UI
-/// used to leave that to the panes unmounting after the refetch, which is
-/// harmless on unix (a process may sit in a deleted directory) and fatal on
-/// Windows: the agent's working directory is open, so the worktree cannot
-/// be deleted (os error 32) and the archive fails.
+/// The task's PTYs are stopped first, as the CLI's `archive` does
+/// (`stop_every_task_pty`). The UI used to leave that to the panes
+/// unmounting after the refetch, which is harmless on unix (a process may
+/// sit in a deleted directory) and fatal on Windows: a working directory
+/// that is open cannot be deleted (os error 32), and the archive failed.
 #[tauri::command]
 async fn task_archive(state: State<'_, PtyManager>, id: String, delete_branch: Option<bool>) -> Result<(), String> {
-    kill_task_ptys(&state, &id);
-    tauri::async_runtime::spawn_blocking(move || task_archive_sync(id, delete_branch.unwrap_or(false)))
+    let ptys = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        stop_every_task_pty(&ptys, &id);
+        task_archive_sync(id, delete_branch.unwrap_or(false))
+    })
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Stop everything running for a task before its worktree goes: the agent
+/// PTYs (`task_id`) AND the shell and command tabs, which carry the task
+/// only in their CLI role because `task_id` doubles as the sandbox trigger.
+/// Stopping only the first kind left a terminal tab's shell sitting in the
+/// worktree, which Windows then refused to delete. Graceful, then forced
+/// (see `stop_task_ptys`), so an agent gets to flush its transcript. Blocks
+/// for the grace period: call it off the async runtime.
+pub(crate) fn stop_every_task_pty(manager: &PtyManager, task_id: &str) -> usize {
+    stop_task_ptys(manager, task_id) + stop_task_role_ptys(manager, task_id)
 }
 
 /// Whether `branch` is a local branch of `repo`. Archive deletes the task's
@@ -9897,10 +9911,11 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
 async fn task_delete(state: State<'_, PtyManager>, id: String) -> Result<(), String> {
     // Hard delete: archive (off-thread) then wipe the json. Same async
     // discipline as task_archive — see its doc comment for why, and for
-    // the PTY kill.
-    kill_task_ptys(&state, &id);
+    // the PTY stop.
+    let ptys = state.inner().clone();
     let id2 = id.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        stop_every_task_pty(&ptys, &id2);
         let _ = task_archive_sync(id2.clone(), false);
         delete_task_file(&id2).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())?
