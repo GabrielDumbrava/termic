@@ -2467,6 +2467,17 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
   };
   const waitSpawns = (id: string, n: number, msg: string) => browser.waitUntil(
     () => Promise.resolve(spawnArgv(id).length >= n), { timeout: 30_000, timeoutMsg: msg });
+  /** How many times the fixture's picker has started listening in `id`.
+   *  Typing before it does can lose the keys (see scripts/fake-agent.sh). */
+  const pickersReady = (id: string): number => {
+    try {
+      return readFileSync(join(dataDir, "e2e-picker.log"), "utf8").split("\n")
+        .filter(l => l === `${id}\t<ready>`).length;
+    } catch { return 0; }
+  };
+  const waitPickerReady = (id: string, n: number) => browser.waitUntil(
+    () => Promise.resolve(pickersReady(id) >= n),
+    { timeout: 30_000, timeoutMsg: "the agent's picker never started listening" });
   const toasts = () => browser.execute(() =>
     (window.__termic!.useUI.getState().toasts as any[]).map(t => t.msg as string));
 
@@ -2510,6 +2521,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
   it("stores the session picked in the agent's picker, and resumes it next time", async () => {
     const id = taskId!;
     await waitForAgentReady(id);
+    await waitPickerReady(id, 1);
     await submitToAgent(id, `pick ${PICKED}`);
     await browser.waitUntil(async () => (await stored(id)) === PICKED,
       { timeout: 10_000, timeoutMsg: "the session picked in the agent's picker was not stored" });
@@ -2528,6 +2540,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     await relaunch(id);
     await waitSpawns(id, before + 2, "no picker spawn followed the failed resume");
     await waitForAgentReady(id);
+    await waitPickerReady(id, 2);
     // Leaving claude's picker is Esc alone, no Enter, which exits 1 with
     // nothing picked. Written to the pty directly: typing through xterm would
     // add the Enter that picking takes.

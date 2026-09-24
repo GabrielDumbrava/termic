@@ -185,6 +185,10 @@ if [ -n "$picker" ]; then
       >> "${TERMIC_DATA_DIR}/e2e-picker.log" 2>/dev/null
     return 0
   }
+  # Listening from here on. A spec waits for this line before typing: a
+  # key sent while Git Bash is still starting can be dropped when read
+  # puts the console into raw mode.
+  picker_log "<ready>"
   while :; do
     IFS= read -r -n1 first || { picker_log "<eof>"; exit 1; }
     [ "$first" != "$esc" ] && break
