@@ -412,8 +412,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         // Dropped into a collapsed group: open it, or the task you just
         // placed disappears from view the moment you let go.
         if (target) useApp.getState().setTaskGroupCollapsed(target.id, false);
-        const write = via ? taskGroupJoin(armed.id, via) : taskGroupLeave(armed.id);
-        void Promise.allSettled([reorder, write]).then(() => useApp.getState().loadAll());
+        // AFTER the reorder, not beside it: task_reorder re-saves every task
+        // whose order moved, the dropped one included, from a list it loaded
+        // before the join landed, so a concurrent join could be written and
+        // then overwritten with the old group. Lost on the Windows runner.
+        const armedId = armed.id;
+        void reorder.catch(() => {})
+          .then(() => (via ? taskGroupJoin(armedId, via) : taskGroupLeave(armedId)))
+          .catch(() => {})
+          .then(() => useApp.getState().loadAll());
       } else {
         reorder.catch(() => { void useApp.getState().loadAll(); });
       }
