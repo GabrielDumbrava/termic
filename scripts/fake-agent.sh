@@ -198,8 +198,10 @@ if [ -n "$picker" ]; then
       # before the keys typed after focusing the terminal, and draining by
       # timing swallowed the whole typed line with it. CSI runs to a final
       # byte in @..~; OSC to BEL or ESC \; anything else is ESC plus one.
+      _seq="$_next"
       case "$_next" in
         "[") while IFS= read -r -n1 -t 0.15 _more; do
+               _seq="$_seq$_more"
                case "$_more" in [@-~]) break ;; esac
              done ;;
         "]") while IFS= read -r -n1 -t 0.15 _more; do
@@ -207,11 +209,13 @@ if [ -n "$picker" ]; then
              done
              [ "${_more:-}" = "$esc" ] && IFS= read -r -n1 -t 0.15 _more ;;
       esac
+      picker_log "<skipped ESC$(printf '%q' "$_seq")>"
       continue
     fi
     picker_log "<esc>"
     exit 1
   done
+  picker_log "<first $(printf '%q' "$first")>"
   IFS= read -r rest || true
   choice="${first}${rest}"
   # What the picker read, escaped, for a spec that fails on one platform
