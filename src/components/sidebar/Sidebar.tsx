@@ -491,6 +491,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     { groupId: string; projectId: string; x: number; y: number; started: boolean; grabOffsetY: number; appliedTy: number; pointerY: number } | null
   >(null);
   const blockDragListenersRef = useRef<{ move: (e: PointerEvent) => void; up: (e: PointerEvent) => void } | null>(null);
+  const blockClickSuppressed = useRef(false);
   const blockSel = (a: { groupId: string; projectId: string }) =>
     `[data-task-group-id="${CSS.escape(a.groupId)}"][data-task-group-project-id="${CSS.escape(a.projectId)}"]`;
 
@@ -517,6 +518,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     setDragBlockId(null);
     setDragBlockTy(0);
     if (commit && armed?.started) {
+      // The drop's trailing click lands on the caption, which toggles now:
+      // swallow it, and clear on the next tick for the drops whose click
+      // never arrives (same pattern as the task row drag).
+      blockClickSuppressed.current = true;
+      setTimeout(() => { blockClickSuppressed.current = false; }, 0);
       // Display order, as the task drop does: what is stored is what was seen.
       const projectRows = useApp.getState().tasks.filter(t => t.project_id === armed.projectId && !t.archived);
       taskReorder(flattenSegments(layoutTaskList(projectRows)).map(t => t.id))
@@ -1712,7 +1718,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       memberIds={seg.tasks.map(t => t.id)}
                       collapsed={groupCollapsed}
                       summarized={rowsHidden}
-                      onToggleCollapsed={() => setTaskGroupCollapsed(seg.group.id, !groupCollapsed)}
+                      onToggleCollapsed={() => {
+                        if (blockClickSuppressed.current) { blockClickSuppressed.current = false; return; }
+                        setTaskGroupCollapsed(seg.group.id, !useApp.getState().collapsedTaskGroups[seg.group.id]);
+                      }}
                       dragging={dragBlockId === seg.group.id && blockDragArmed.current?.projectId === p.id}
                       dragTy={dragBlockTy}
                       onDragPointerDown={onBlockDragPointerDown}

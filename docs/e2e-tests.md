@@ -88,6 +88,15 @@ lives at …` (or, once the directory was gone but the registration was not,
 `branch … is already checked out elsewhere`). `seed()` now wipes that directory
 and prunes the fixture repo's worktrees on every run.
 
+It also deletes every branch but `main` in the fixture and its bare origin
+(then `fetch --prune`), keeping any branch a worktree still has checked out.
+Archiving a worktree task keeps its branch, so each local run added a few
+dozen and nothing removed them; at ~1000 the New Task branch picker (capped at
+100 choices) no longer listed the branch the "check out an existing branch"
+spec pushes for itself, and that spec failed on every developer machine while
+CI, a fresh checkout each time, stayed green. This only happens through
+`make e2e` / the seed script: `npm run test:e2e` alone skips it.
+
 The task RECORDS are swept separately, by `wdio.conf.ts`'s `onPrepare` — that
 runs on every `test:e2e`, including runs that skip the seed script.
 

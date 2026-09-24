@@ -110,15 +110,28 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
               by tuned pixels. */}
           <div
             data-testid={`task-group-header-${group.id}`}
-            className="ml-3 flex h-[var(--task-row-h)] cursor-grab select-none items-center gap-1 rounded-md px-1 text-[13px] font-medium active:cursor-grabbing"
+            // Hover like a task row: the caption is a clickable row, not a label.
+            className="ml-3 flex h-[var(--task-row-h)] cursor-pointer select-none items-center gap-1 rounded-md px-1 text-[13px] font-medium transition-colors hover:bg-[var(--color-hover)]"
             style={{ color }}
             onPointerDown={onDragPointerDown ? (e) => onDragPointerDown(e, group.id, projectId) : undefined}
-            onDoubleClick={() => setRenaming(label)}
+            // A click toggles, at once. A double-click still renames, and it
+            // arrives as click(1), click(2), dblclick: the second click is
+            // ignored and the dblclick undoes the first one's toggle, so a
+            // rename leaves the group as it was. Delaying every click by the
+            // double-click window instead would make every expand feel slow.
+            onClick={(e) => {
+              if (renaming !== null || e.detail > 1) return;
+              onToggleCollapsed?.();
+            }}
+            onDoubleClick={() => {
+              if (renaming !== null) return;
+              onToggleCollapsed?.();
+              setRenaming(label);
+            }}
           >
-            {/* The chevron sits where a task row's does, and is the only
-                toggle: the caption's double-click is rename, so a click on
-                the body toggling too would flash collapse-expand on every
-                rename. */}
+            {/* The chevron sits where a task row's does. It is a button of
+                its own for the keyboard; a click on it is the caption's
+                toggle, and it takes no part in the rename gesture. */}
             <button
               type="button"
               data-no-drag
@@ -126,7 +139,7 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
               aria-label={collapsed ? "Expand group" : "Collapse group"}
               title={collapsed ? "Expand group" : "Collapse group"}
               aria-expanded={!collapsed}
-              onClick={(e) => { e.stopPropagation(); onToggleCollapsed?.(); }}
+              onClick={(e) => { e.stopPropagation(); if (e.detail <= 1) onToggleCollapsed?.(); }}
               onDoubleClick={(e) => e.stopPropagation()}
               className="shrink-0 rounded p-0.5 hover:bg-[var(--color-bg-3)]"
             >
@@ -151,6 +164,8 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
                     e.stopPropagation();
                   }}
                   onPointerDown={e => e.stopPropagation()}
+                  onClick={e => e.stopPropagation()}
+                  onDoubleClick={e => e.stopPropagation()}
                   autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
                   className="m-0 w-full min-w-0 flex-1 rounded-sm border-0 bg-[var(--color-bg)] p-0 [font:inherit] text-inherit outline outline-1 outline-offset-2 outline-[var(--color-accent)]"
                 />

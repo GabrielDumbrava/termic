@@ -21,6 +21,29 @@ const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "ignore" });
 const shOut = (cmd, cwd) =>
   execSync(cmd, { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString();
 
+/** Delete every branch but `main` in `repo`, batched (a thousand `git`
+ *  spawns would add seconds to every run). `branch -D` removes what it can
+ *  and refuses, without stopping, a branch checked out in a worktree. */
+function deleteBranchesExceptMain(repo) {
+  let names = [];
+  try {
+    names = shOut("git for-each-ref '--format=%(refname:short)' refs/heads", repo)
+      .split("\n").map(s => s.trim()).filter(b => b && b !== "main");
+  } catch {
+    return;
+  }
+  for (let i = 0; i < names.length; i += 200) {
+    const batch = names.slice(i, i + 200).map(b => JSON.stringify(b)).join(" ");
+    try { sh(`git branch -D ${batch}`, repo); } catch { /* checked-out ones stay */ }
+  }
+}
+
+function pruneBranches(fixture, originGit) {
+  deleteBranchesExceptMain(fixture);
+  if (existsSync(originGit)) deleteBranchesExceptMain(originGit);
+  try { sh("git fetch -q --prune origin", fixture); } catch { /* no origin yet */ }
+}
+
 /**
  * @param {object} [o]
  * @param {string} [o.dataDir]  TERMIC_DATA_DIR (profile) to write.
@@ -152,6 +175,17 @@ export function seed(o = {}) {
   } catch {
     /* ignore */
   }
+  // 2b. Branches every earlier run left behind. Archiving a worktree task
+  // keeps its branch (by design, the branch may be pushed), so each local
+  // `make e2e` adds a few dozen and nothing ever removes them. They are not
+  // harmless: the New Task "check out an existing branch" picker lists at
+  // most BRANCH_CHOICES_MAX (100), and past ~1000 leftovers the branch that
+  // spec pushes for itself was cut from the list. CI never sees this (fresh
+  // checkout per run); a developer's machine does. Everything but `main` goes,
+  // in the fixture and in its bare origin, then the remote-tracking refs
+  // follow. `branch -D` skips (and reports) any branch a worktree has checked
+  // out, so `sbcheck` and a live worktree survive; the errors are ignored.
+  pruneBranches(fixture, originGit);
   let worktrees = "";
   try {
     worktrees = shOut("git worktree list", fixture);

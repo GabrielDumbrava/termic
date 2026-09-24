@@ -2913,6 +2913,42 @@ describe("task groups", () => {
     }
   });
 
+  it("a click on the caption toggles it, and a double-click renames without toggling", async () => {
+    const header = `[data-testid="task-group-header-${orch}"]`;
+    const collapsed = () => browser.execute(
+      (g) => !!window.__termic!.useApp.getState().collapsedTaskGroups[g], orch,
+    ) as Promise<boolean>;
+    // What the browser really sends: a single click, then for a double-click
+    // click(detail 1), click(detail 2), dblclick. WebDriver's own double-click
+    // does not reach React here (files.e2e.ts), so the sequence is dispatched.
+    const fire = (types: [string, number][]) => browser.execute((sel, seq) => {
+      const el = document.querySelector(`${sel} [data-testid^="task-group-label-"]`) as HTMLElement;
+      const r = el.getBoundingClientRect();
+      for (const [type, detail] of seq) {
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, detail, clientX: r.left + 4, clientY: r.top + 4 }));
+      }
+    }, header, types);
+    await browser.execute(() => window.__termic!.useApp.setState({ activeTaskId: null }));
+    expect(await collapsed()).toBe(false);
+
+    await fire([["click", 1]]);
+    await browser.waitUntil(async () => (await blockRows(orch)).length === 0, {
+      timeout: 5_000, timeoutMsg: "a click on the caption did not collapse the group",
+    });
+    await fire([["click", 1]]);
+    await browser.waitUntil(async () => (await blockRows(orch)).length === 4, {
+      timeout: 5_000, timeoutMsg: "a second click on the caption did not expand it again",
+    });
+
+    await fire([["click", 1], ["click", 2], ["dblclick", 2]]);
+    const input = `[data-testid="task-group-rename-${orch}"]`;
+    await waitVisible(input);
+    expect(await collapsed()).toBe(false); // the rename left it as it was
+    await browser.keys("Escape");
+    await waitGone(input);
+    expect((await blockRows(orch)).length).toBe(4);
+  });
+
   it("a filter shows its matches inside a collapsed group, and hides groups with none", async () => {
     const input = `[data-testid="project-filter-input-${fixtureProjectId}"]`;
     const typeFilter = async (v: string) => {

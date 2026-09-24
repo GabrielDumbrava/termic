@@ -209,19 +209,29 @@ row does not snap back to its old group for the IPC round-trip. No drag
 gesture creates a group (dropping on a row already means reorder); New
 group does.
 
-A group COLLAPSES from the chevron in its caption's icon slot (the only
-toggle: double-clicking the caption is rename, so a body click toggling too
-would flash collapse and expand on every rename). Collapsed, the caption
+A click anywhere on the caption COLLAPSES / expands the group (it hovers like
+a task row), and a double-click renames. A double-click arrives as click(1),
+click(2), dblclick: the second click is ignored and the dblclick undoes the
+first one's toggle, so a rename leaves the group as it was, at the cost of a
+brief collapse flash during the gesture. The alternative, delaying every
+single click by the double-click window, makes every expand feel slow. The
+chevron in the icon slot is a button for the keyboard and shows the STORED
+collapse state, including while a filter is overriding it (see below); a
+drop after a block drag swallows its trailing click. Collapsed, the caption
 shows one of each mark any member's row would draw, in a fixed order
-(attention, done, partial, working, delegated), in place of the count:
+(attention, done, partial, working, delegated), beside the member count:
 never just the most urgent, since "two finished and one needs you" is the
-point. Each member contributes exactly its row's own mark (`taskWorkBadge`
+point, and the count is what says tasks are tucked away rather than gone. Each member contributes exactly its row's own mark (`taskWorkBadge`
 plus the partial override), via `groupBadgeKinds`, so the caption cannot
 claim what the hidden rows would not. `setActiveTask` expands the group of
 the task it activates (every "go to task" route: click, cmd+1..9, the
 next-waiting jump, a notification), and a collapsed group still renders
 the ACTIVE task's row, which covers the routes that only preview a place
-(`previewPlace`, the ctrl+tab walk) without writing anything. Joining a
+(`previewPlace`, the ctrl+tab walk) without writing anything. A project's task FILTER
+shows its matches even inside a collapsed group, and a group with no match is
+not drawn; the chevron keeps showing the stored state meanwhile, so a click
+while filtering visibly collapses instead of storing a collapse nobody sees
+(which then snapped the group shut when the filter cleared). Joining a
 collapsed group by drag or Move to group opens it, so the task you placed
 stays in view. The icon rail ignores collapse: it has no caption to expand
 from. State is `collapsedTaskGroups` in localStorage, keyed by group id,
