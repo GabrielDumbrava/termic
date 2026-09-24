@@ -1344,3 +1344,27 @@ export function flushEditorMeasure(): Promise<number> {
     return flushed;
   }) as Promise<number>;
 }
+
+/**
+ * `rmSync(dir, { recursive, force })`, retried, that says who is in the way
+ * when it still fails. On Windows a directory some process is inside (its
+ * working directory, or an open handle) cannot be removed, and EBUSY names
+ * no process. The failure message then lists every process whose command
+ * line mentions termic or git, with its parent, which is usually enough to
+ * name the one that outlived its task.
+ */
+export function rmTree(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 });
+  } catch (e) {
+    if (process.platform !== "win32") throw e;
+    let procs = "";
+    try {
+      procs = execFileSync("powershell.exe", ["-NoProfile", "-Command",
+        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'termic|git|pwsh|bash|node' } | "
+        + "ForEach-Object { \"$($_.ProcessId) <- $($_.ParentProcessId) $($_.Name): $($_.CommandLine)\" }"],
+      { encoding: "utf8", timeout: 20_000 });
+    } catch (le) { procs = `(could not list processes: ${String(le)})`; }
+    throw new Error(`${(e as Error).message}\nprocesses at the time:\n${procs}`);
+  }
+}

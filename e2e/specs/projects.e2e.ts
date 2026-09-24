@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, setWindowPresence, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setWindowPresence, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -347,7 +347,7 @@ describe("import worktree", () => {
           await window.__termic!.useApp.getState().loadAll();
         }, projectId);
       }
-      rmSync(bare, { recursive: true, force: true, maxRetries: 10 });
+      rmTree(bare);
     }
   });
 });
@@ -1746,7 +1746,7 @@ describe("multi main checkout (New Task dialog)", () => {
     }, projectId, savedMode);
     // Longer than the others: on Windows a member repo stays busy for a few
     // seconds after its task and project are gone.
-    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 });
+    if (tmp) rmTree(tmp);
   });
 
   it("shows the host-level toggle; Main checkout replaces the member rows with a run-live note", async () => {
