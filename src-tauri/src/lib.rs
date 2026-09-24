@@ -6609,6 +6609,11 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
             Err(e) => Err(e),
         }
     };
+    dlog(&format!(
+        "[worktree] add {} for '{branch}' in {}: {}",
+        wt_path.display(), repo.display(),
+        match &add_result { Ok(_) => "ok".to_string(), Err(e) => e.to_string() },
+    ));
     if let Err(e) = add_result {
         if e.to_string().contains("already used by worktree") {
             // The branch was the whole point of a checkout, so renaming the
@@ -9847,6 +9852,15 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
     if let Some(p) = &proj {
         if !p.non_git {
             if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
+                // What git believes versus what is on disk: a remove that
+                // says "is not a working tree" is otherwise undiagnosable.
+                dlog(&format!(
+                    "[archive] worktree remove {} failed: {e}\n  git worktree list: {}\n  .git pointer: {:?}",
+                    w.path,
+                    git(&["worktree", "list", "--porcelain"], Path::new(&p.root_path))
+                        .unwrap_or_default().replace('\n', " | "),
+                    fs::read_to_string(Path::new(&w.path).join(".git")).ok(),
+                ));
                 git_remove_err = Some(format!("worktree remove: {e}"));
             }
             if delete_branch && !w.branch.is_empty() && local_branch_exists(Path::new(&p.root_path), &w.branch) {

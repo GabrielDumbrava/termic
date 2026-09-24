@@ -1744,7 +1744,9 @@ describe("multi main checkout (New Task dialog)", () => {
         await window.__termic!.useApp.getState().loadAll();
       }
     }, projectId, savedMode);
-    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
+    // Longer than the others: on Windows a member repo stays busy for a few
+    // seconds after its task and project are gone.
+    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 });
   });
 
   it("shows the host-level toggle; Main checkout replaces the member rows with a run-live note", async () => {
