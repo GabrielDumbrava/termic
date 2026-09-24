@@ -450,6 +450,14 @@ pub struct Task {
     /// backstops anything the migration missed.
     #[serde(default, alias = "is_repo_root")]
     pub is_main_checkout: bool,
+    /// True when the task CHECKED OUT an existing branch (New Task's
+    /// "Existing branch" mode, `termic new --checkout`) instead of cutting
+    /// one from `base_branch`. Restore reads it: a branch deleted at archive
+    /// comes back from the remote through `checkout_existing_branch`, not cut
+    /// fresh from the base, which would put main under a colleague's branch
+    /// name. False on every record written before the mode existed.
+    #[serde(default)]
+    pub checkout_existing: bool,
     /// Total number of times an agent has been spawned for this task
     /// across all sessions (persisted via `task_record_spawn`).
     /// Historical signal — kept for analytics / debug. Resume gating
@@ -2717,6 +2725,40 @@ fn checkout_existing_branch(
     Err(format!(
         "no branch '{requested}' in this repo or on {remote}. Check the name, or push the branch first."
     ))
+}
+
+/// Make sure the branch a restored single-repo worktree task goes back on
+/// exists, recreating it when archive deleted it ("Delete the branch when
+/// archiving").
+///
+/// A task's OWN branch is cut from its base again, as it always was. A task
+/// that checked out an existing branch gets it back from the remote through
+/// `checkout_existing_branch`, the way create found it: cutting it from the
+/// base would put main under a colleague's branch name, which is the create
+/// bug that mode exists to remove, reached through restore instead. When the
+/// remote no longer has it either, restore fails rather than doing that.
+///
+/// Split out of `task_restore_sync` (which takes an `AppHandle`) so it can be
+/// tested.
+fn ensure_restore_branch(repo: &Path, task: &Task, fetch: bool) -> std::result::Result<(), String> {
+    let branch = &task.branch;
+    if git(&["rev-parse", "--verify", branch], repo).is_ok() {
+        return Ok(());
+    }
+    if task.checkout_existing {
+        // Qualified with the default remote, so the resolver cannot read the
+        // stored name's first segment as a remote (`alice/fix` with a remote
+        // named `alice`) and hand back a different local branch.
+        let requested = format!("{}/{branch}", detect_default_remote(repo));
+        return checkout_existing_branch(repo, &requested, fetch, &mut |_| {})
+            .map(|_| ())
+            .map_err(|e| format!("restore branch '{branch}': {e}"));
+    }
+    // Resolved to a ref that exists: local-only repos have no origin/main.
+    let base_ref = resolve_base_ref(repo, &task.base_branch);
+    git(&["branch", "--no-track", branch, &base_ref], repo)
+        .map(|_| ())
+        .map_err(|e| format!("recreate branch '{branch}' from '{base_ref}': {e}"))
 }
 
 /// The ref a task's diff is taken against, or None when the worktree has no
@@ -5834,6 +5876,7 @@ fn task_open_repo(
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
         is_main_checkout: true,
+        checkout_existing: false,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids,
@@ -6098,6 +6141,7 @@ fn task_import_worktree(
         archived: false,
         // A real worktree — NOT repo-root, so archive removes it properly.
         is_main_checkout: false,
+        checkout_existing: false,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids,
@@ -6535,6 +6579,9 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
         is_main_checkout: false,
+        // Remembered so restore can bring a deleted branch back from the
+        // remote instead of cutting it from the base.
+        checkout_existing: checkout,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids,
@@ -7033,6 +7080,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
         is_main_checkout: false,
+        checkout_existing: false,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
@@ -9304,7 +9352,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
             }
 
             let branch = list[idx].branch.clone();
-            let base_branch = list[idx].base_branch.clone();
+            ensure_restore_branch(&repo, &list[idx], fetch_before_create_enabled())?;
 
             // git-crypt detection (mirrors task_create_sync).
             let common_gitdir = git(&["rev-parse", "--git-common-dir"], &repo)
@@ -9327,19 +9375,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
             let mut add_args: Vec<&str> = add_flags.to_vec();
             add_args.push(wt_arg);
             add_args.push(&branch);
-
-            let branch_exists = git(&["rev-parse", "--verify", &branch], &repo).is_ok();
-            if branch_exists {
-                git(&add_args, &repo).map_err(|e| e.to_string())?;
-            } else {
-                // Branch was deleted at archive time — recreate from base
-                // (resolved to a ref that exists; local-only repos have no
-                // origin/main).
-                let base_ref = resolve_base_ref(&repo, &base_branch);
-                git(&["branch", "--no-track", &branch, &base_ref], &repo)
-                    .map_err(|e| format!("recreate branch '{branch}' from '{base_ref}': {e}"))?;
-                git(&add_args, &repo).map_err(|e| e.to_string())?;
-            }
+            git(&add_args, &repo).map_err(|e| e.to_string())?;
 
             // git-crypt: bridge the key dir into the new worktree's gitdir.
             if has_git_crypt {
@@ -28409,6 +28445,73 @@ mod tests {
         assert_eq!(got, "alice/fix");
         assert_eq!(git_rev(&work, "refs/heads/alice/fix"), mine);
         assert_ne!(git_rev(&work, "refs/remotes/origin/alice/fix"), mine, "the fetch did move the remote ref");
+    }
+
+    // ensure_restore_branch: "Delete the branch when archiving" removed the
+    // local branch, and restore has to put the worktree back on the RIGHT one.
+
+    fn archived_task(branch: &str, checkout_existing: bool) -> Task {
+        Task {
+            branch: branch.into(),
+            base_branch: "origin/main".into(),
+            checkout_existing,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn restore_brings_a_deleted_checkout_branch_back_from_the_remote() {
+        let (_dir, work, colleague) = checkout_fixture();
+        // Create checked it out, archive deleted the local copy.
+        checkout_existing_branch(&work, "alice/fix", false, &mut |_| {}).unwrap();
+        git_run(&work, &["branch", "-D", "alice/fix"]);
+
+        ensure_restore_branch(&work, &archived_task("alice/fix", true), true).unwrap();
+        assert_eq!(
+            git_rev(&work, "refs/heads/alice/fix"),
+            git_rev(&colleague, "alice/fix"),
+            "the colleague's commit, not main under their branch's name",
+        );
+        assert_ne!(git_rev(&work, "refs/heads/alice/fix"), git_rev(&work, "main"));
+        assert_eq!(
+            git(&["rev-parse", "--abbrev-ref", "alice/fix@{upstream}"], &work).unwrap().trim(),
+            "origin/alice/fix",
+        );
+    }
+
+    #[test]
+    fn restore_still_cuts_a_tasks_own_deleted_branch_from_its_base() {
+        // The flag is what separates the two: an ordinary task's branch was
+        // cut from the base in the first place, so that is where it goes back.
+        let (_dir, work, _colleague) = checkout_fixture();
+        ensure_restore_branch(&work, &archived_task("feature/mine", false), true).unwrap();
+        assert_eq!(git_rev(&work, "refs/heads/feature/mine"), git_rev(&work, "origin/main"));
+        // Even when the name also exists on the remote: without the flag it
+        // is not someone else's branch.
+        ensure_restore_branch(&work, &archived_task("alice/fix", false), true).unwrap();
+        assert_eq!(git_rev(&work, "refs/heads/alice/fix"), git_rev(&work, "origin/main"));
+    }
+
+    #[test]
+    fn restore_fails_a_checkout_whose_branch_is_gone_everywhere() {
+        // Gone locally AND on the remote: an error, never main in its place.
+        let (_dir, work, colleague) = checkout_fixture();
+        git_run(&colleague, &["push", "origin", "--delete", "alice/fix"]);
+        git_run(&work, &["fetch", "-q", "--prune", "origin"]);
+        let before = local_branches(&work);
+        let err = ensure_restore_branch(&work, &archived_task("alice/fix", true), true).unwrap_err();
+        assert!(err.contains("restore branch 'alice/fix'") && err.contains("no branch"), "{err}");
+        assert_eq!(local_branches(&work), before);
+    }
+
+    #[test]
+    fn restore_leaves_a_branch_that_still_exists_alone() {
+        let (_dir, work, _colleague) = checkout_fixture();
+        git_run(&work, &["branch", "kept"]);
+        let before = local_branches(&work);
+        ensure_restore_branch(&work, &archived_task("kept", true), true).unwrap();
+        ensure_restore_branch(&work, &archived_task("kept", false), true).unwrap();
+        assert_eq!(local_branches(&work), before);
     }
 
     #[test]

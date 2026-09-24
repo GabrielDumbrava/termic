@@ -188,7 +188,7 @@ The gate is a MARKER (`cli_user_link_installed`), not "install whenever it is mi
 
 ### Checking out an existing branch
 
-`task_create` with `checkout_existing: true` checks `branch` out as it exists instead of cutting it from `base_branch`, which then only sets the diff baseline. `checkout_existing_branch` (lib.rs) runs first and turns the request into a local branch (local as is; `origin/x` or a bare remote-only `x` fetched and tracked) or an error; it never falls through to the new-branch path. The New Task dialog's "Existing branch" mode and `termic new --checkout` (proto v14, `Command::New.checkout`) are the two callers. See [ui.md](ui.md) "Checking out an existing branch".
+`task_create` with `checkout_existing: true` checks `branch` out as it exists instead of cutting it from `base_branch`, which then only sets the diff baseline. `checkout_existing_branch` (lib.rs) runs first and turns the request into a local branch (local as is; `origin/x` or a bare remote-only `x` fetched and tracked) or an error; it never falls through to the new-branch path. The New Task dialog's "Existing branch" mode and `termic new --checkout` (proto v14, `Command::New.checkout`) are the two callers. The flag is saved on the task (`Task.checkout_existing`), so `task_restore` brings a branch archive deleted back the same way (`ensure_restore_branch`) instead of cutting it from the base. See [ui.md](ui.md) "Checking out an existing branch".
 
 ### Non-blocking task creation (GH #242)
 

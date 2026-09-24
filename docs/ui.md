@@ -279,11 +279,14 @@ value and the rows only fill it in, so a branch nobody has fetched yet is still
 one keystroke away, and the field says it will be fetched. Name may stay
 blank: it defaults to the branch minus its remote, shown as the placeholder.
 
-**Restore does not know a task was a checkout.** `task_restore_sync` recreates
-a missing branch by cutting it from the base. That only matters with
-Settings > Tasks > "Delete the branch when archiving" on (off by default),
-which deletes the local tracking branch, so restoring such a task gives a
-fresh branch off main. Check the branch out again instead.
+**Restore remembers it was a checkout.** The task records
+`checkout_existing`, and `ensure_restore_branch` reads it when archive deleted
+the local branch (Settings > Tasks > "Delete the branch when archiving", off
+by default): a checkout's branch comes back from the remote, fetched and
+tracked like the first time, while a task's own branch is still cut from its
+base. Without the flag, restoring such a task used to give a fresh branch off
+main under the colleague's name. If the remote no longer has the branch
+either, restore fails with an error instead of doing that.
 
 ## Title bar contents, and what moved out of it
 

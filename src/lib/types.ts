@@ -295,6 +295,11 @@ export interface Task {
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
   is_main_checkout?: boolean;
+  /** True when the task checked out an EXISTING branch (New Task's
+   *  "Existing branch" mode, `termic new --checkout`) instead of cutting
+   *  one. Restore brings a branch deleted at archive back from the remote
+   *  instead of cutting it from `base_branch`. */
+  checkout_existing?: boolean;
   /** Total agent spawns ever recorded for this worktree. Historical
    *  metric only — resume gating uses `has_resumable_history` now. */
   spawn_count?: number;

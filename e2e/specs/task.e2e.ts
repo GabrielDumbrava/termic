@@ -1480,6 +1480,33 @@ describe("check out an existing branch", () => {
     expect(git(fixture, `rev-parse --abbrev-ref ${LISTED}@{upstream}`)).toBe(`origin/${LISTED}`);
   });
 
+  it("restores that task on the colleague's branch after archive deleted it", async () => {
+    // Archive WITH delete-branch, the one setting that removes the local
+    // copy, then restore: the branch has to come back from the remote. Cut
+    // from the base it would be main under the colleague's branch name.
+    const before = (await liveTask(LISTED))!;
+    await browser.execute(async (id) => {
+      await window.__termic!.ipc.taskArchive(id, true); // deleteBranch
+      await window.__termic!.useApp.getState().loadAll();
+    }, before.id);
+    let localLeft = true;
+    try {
+      git(fixture, `rev-parse --verify -q refs/heads/${LISTED}`);
+    } catch {
+      localLeft = false;
+    }
+    expect(localLeft).toBe(false);
+
+    await browser.execute(async (id) => {
+      await window.__termic!.ipc.taskRestore(id);
+      await window.__termic!.useApp.getState().loadAll();
+    }, before.id);
+    const task = (await liveTask(LISTED))!;
+    expect(task.id).toBe(before.id);
+    expect(git(task.path, "rev-parse HEAD")).toBe(sha[LISTED]);
+    expect(git(fixture, `rev-parse --abbrev-ref ${LISTED}@{upstream}`)).toBe(`origin/${LISTED}`);
+  });
+
   it("fetches a typed branch this repo has never fetched", async () => {
     await openCheckoutMode();
     await typeInto('[data-testid="checkout-branch-input"]', UNFETCHED);
