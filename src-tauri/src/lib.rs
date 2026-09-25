@@ -1709,6 +1709,33 @@ fn normalize_member(mut m: ProjectMember) -> Result<ProjectMember, String> {
 /// Within ONE profile it stays a duplicate, because two entries for one path
 /// in the same sidebar are indistinguishable to the user and every lookup that
 /// resolves a path to a project would then have to pick one arbitrarily.
+/// Why git would not open a folder that IS a repo, when that is the reason
+/// `rev-parse` failed, instead of calling it "not a git repo". `None` means
+/// there is no repo there, and the caller's own message stands.
+///
+/// Discovery lists any folder with a `.git`, so a repo git refuses to open
+/// was offered and then rejected as not a repo, with the real reason gone.
+/// The usual one, on Windows especially, is git's ownership check: a repo
+/// owned by another account (a folder made from an admin shell, a clone by
+/// another user) fails every command with "detected dubious ownership".
+/// Trusting it is the user's call, so this names the command rather than
+/// running it.
+fn git_open_error(path: &Path, shown: &str, err: &str) -> Option<String> {
+    if err.contains("dubious ownership") {
+        let slashed = path.to_string_lossy().replace('\\', "/");
+        return Some(format!(
+            "Git refuses to open {shown}: it is owned by another user account (git's safe.directory check). \
+             If you trust this repo, run: git config --global --add safe.directory {slashed}"
+        ));
+    }
+    if !path.join(".git").exists() {
+        return None;
+    }
+    // The last line of git's stderr is its own summary ("fatal: ...").
+    let why = err.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or(err);
+    Some(format!("Git could not open {shown}: {why}"))
+}
+
 fn project_path_taken(list: &[Project], profile: &ProfileId, canon: &str) -> bool {
     list.iter().any(|p| &p.profile == profile && p.root_path == canon)
 }
@@ -5378,10 +5405,11 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
         if !pb.is_dir() {
             return Err(format!("{} is not a directory", expanded));
         }
-    } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
+    } else if let Err(e) = git(&["rev-parse", "--git-dir"], &pb) {
         // NOTE: the "not a git repo" substring is load-bearing for
         // cli_server::handle_project_add's --non-git hint.
-        return Err(format!("{} is not a git repo. Confirm adding it as a plain folder.", expanded));
+        return Err(git_open_error(&pb, &expanded, &e.to_string())
+            .unwrap_or_else(|| format!("{} is not a git repo. Confirm adding it as a plain folder.", expanded)));
     }
     let mut list = load_projects_all();
     let canon = dunce::canonicalize(&pb).map_err(|e| e.to_string())?;
@@ -5579,8 +5607,9 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
                 if !pb.is_dir() {
                     return Err(format!("{} is not a directory", expanded));
                 }
-            } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
-                return Err(format!("{} is not a git repo. Confirm using it as a plain folder host.", expanded));
+            } else if let Err(e) = git(&["rev-parse", "--git-dir"], &pb) {
+                return Err(git_open_error(&pb, &expanded, &e.to_string())
+                    .unwrap_or_else(|| format!("{} is not a git repo. Confirm using it as a plain folder host.", expanded)));
             }
             pb
         }
@@ -29660,6 +29689,23 @@ mod tests {
         assert!(!is_untagged_task_pty(Some("t1"), None, Some(&owner("t1")), "t1"));
         // Nothing naming the task.
         assert!(!is_untagged_task_pty(None, None, None, "t1"));
+    }
+
+    #[test]
+    fn a_repo_git_will_not_open_says_why_instead_of_not_a_repo() {
+        let dir = tempdir().unwrap();
+        // No .git: not a repo, the caller's own message stands.
+        assert_eq!(git_open_error(dir.path(), "x", "fatal: not a git repository"), None);
+        // Git's ownership check names the command that trusts it.
+        let dubious = "git [\"rev-parse\"] failed: fatal: detected dubious ownership in repository at 'C:/Projects/seat-be'";
+        let msg = git_open_error(Path::new(r"C:\Projects\seat-be"), r"C:\Projects\seat-be", dubious).unwrap();
+        assert!(msg.contains("owned by another user account"), "{msg}");
+        assert!(msg.contains("git config --global --add safe.directory C:/Projects/seat-be"), "{msg}");
+        assert!(!msg.contains("not a git repo"), "{msg}");
+        // A .git that git still refuses: git's own last line, not "not a repo".
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        let msg = git_open_error(dir.path(), "repo", "git failed: warning: x\nfatal: bad config line 1").unwrap();
+        assert_eq!(msg, "Git could not open repo: fatal: bad config line 1");
     }
 
     #[test]
