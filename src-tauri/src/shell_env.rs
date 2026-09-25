@@ -460,11 +460,40 @@ fn windows_live_path() -> String {
     let inherited = std::env::var("PATH").unwrap_or_default();
     #[cfg(not(windows))]
     fn windows_registry_path(_machine: bool) -> Option<String> { None }
+    let known = windows_known_tool_dirs(&|k| std::env::var(k).ok())
+        .into_iter()
+        .filter(|d| std::path::Path::new(d).is_dir())
+        .collect::<Vec<_>>()
+        .join(";");
     merge_path_lists(&[
         &windows_registry_path(true).unwrap_or_default(),
         &windows_registry_path(false).unwrap_or_default(),
         &inherited,
+        &known,
     ])
+}
+
+/// Where Windows installers put agent CLIs without always adding the folder
+/// to PATH, searched after PATH itself. Claude Code's PowerShell installer
+/// puts `claude.exe` in `%USERPROFILE%\.local\bin`; with that folder missing
+/// from the PATH Termic sees, every claude spawn failed with "cannot find
+/// the file" (seen by a Windows tester). The rest are npm, bun, cargo,
+/// winget and scoop's own bins. The Windows counterpart of
+/// `fallback_extras`.
+fn windows_known_tool_dirs(env: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(home) = env("USERPROFILE").filter(|v| !v.is_empty()) {
+        for rel in [r".local\bin", r".bun\bin", r".cargo\bin", r"scoop\shims"] {
+            out.push(format!("{home}\\{rel}"));
+        }
+    }
+    if let Some(appdata) = env("APPDATA").filter(|v| !v.is_empty()) {
+        out.push(format!("{appdata}\\npm"));
+    }
+    if let Some(local) = env("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+        out.push(format!(r"{local}\Microsoft\WinGet\Links"));
+    }
+    out
 }
 
 /// The `Path` value of the machine (`HKLM`) or user (`HKCU`) environment,
@@ -928,8 +957,9 @@ fn passwd_name() -> Option<String> {
 /// The dir list itself, split out from the account lookups so it stays
 /// testable for an account with no resolvable home or user name.
 fn fallback_extras(home: &str, user: &str) -> Vec<String> {
-    // Windows: nothing to add. The inherited PATH already comes from the
-    // registry (see `probe_once`), and every dir below is a unix layout.
+    // Windows: nothing here. Its PATH comes from the registry on every use
+    // (`windows_live_path`), with its own well-known tool dirs
+    // (`windows_known_tool_dirs`); every dir below is a unix layout.
     if cfg!(windows) {
         let _ = (home, user);
         return Vec::new();
@@ -1007,6 +1037,21 @@ mod tests {
         assert_eq!(resolve_program("pi.exe", &path), "pi.exe");
         // Nothing on PATH: unchanged, so the spawn error names what was asked.
         assert_eq!(resolve_program("nope-not-here", &path), "nope-not-here");
+    }
+
+    #[test]
+    fn windows_known_tool_dirs_cover_the_agent_installers() {
+        let env = |k: &str| match k {
+            "USERPROFILE" => Some(r"C:\Users\u".to_string()),
+            "APPDATA" => Some(r"C:\Users\u\AppData\Roaming".to_string()),
+            "LOCALAPPDATA" => Some(r"C:\Users\u\AppData\Local".to_string()),
+            _ => None,
+        };
+        let dirs = windows_known_tool_dirs(&env);
+        assert!(dirs.contains(&r"C:\Users\u\.local\bin".to_string()), "{dirs:?}");
+        assert!(dirs.contains(&r"C:\Users\u\AppData\Roaming\npm".to_string()), "{dirs:?}");
+        assert!(dirs.contains(&r"C:\Users\u\AppData\Local\Microsoft\WinGet\Links".to_string()), "{dirs:?}");
+        assert!(windows_known_tool_dirs(&|_| None).is_empty());
     }
 
     #[test]
