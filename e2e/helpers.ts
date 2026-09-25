@@ -1374,11 +1374,20 @@ export function rmTree(dir: string, opts: { bestEffort?: boolean } = {}): void {
 }
 
 /** The system clipboard's text: `pbpaste` on macOS, `Get-Clipboard` on
- *  Windows (line endings back to `\n`, which is what the app wrote). */
+ *  Windows (line endings back to `\n`, which is what the app wrote), `xclip`
+ *  on Linux. */
 export function readClipboard(): string {
+  if (process.platform === "linux") {
+    return execFileSync("xclip", ["-o", "-selection", "clipboard"], { encoding: "utf8" });
+  }
   if (process.platform === "win32") {
     return execFileSync("powershell.exe", ["-NoProfile", "-Command", "Get-Clipboard -Raw"], { encoding: "utf8" })
       .replace(/\r\n/g, "\n");
   }
   return execFileSync("pbpaste", { encoding: "utf8" });
 }
+
+/** What the app calls the OS file manager (`FILE_MANAGER` in
+ *  src/lib/openExternal.ts), for specs asserting on menu and notice copy. */
+export const FILE_MANAGER_NAME =
+  process.platform === "darwin" ? "Finder" : process.platform === "win32" ? "File Explorer" : "File Manager";

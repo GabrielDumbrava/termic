@@ -4,13 +4,13 @@ name: Windows
 # check: it exists so the port cannot silently rot, and so a Windows tester
 # gets an installer from every push without owning a Rust toolchain.
 #
-# Runs on pushes to main and to the port's branch, on PRs, and by hand.
+# Runs on pushes to main, on PRs, and by hand.
 
 on:
   # A docs-only push changes nothing this builds or tests, and because of the
   # concurrency group below it would also cancel the run that does.
   push:
-    branches: [main, feature/windows]
+    branches: [main]
     paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
     branches: [main]

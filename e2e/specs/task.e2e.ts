@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -3927,7 +3927,7 @@ describe("branch as the task name (GH #260)", () => {
 // button instead of staying dead; and Escape launches nothing.
 describe("open the task folder in another app", () => {
   const openLog = path.join(process.cwd(), ".e2e", "profile", "e2e-open-with.log");
-  const FILE_MANAGER = process.platform === "win32" ? "File Explorer" : "Finder";
+  const FILE_MANAGER = FILE_MANAGER_NAME;
   const FILE_MANAGER_PICK = { key: "file-manager", label: FILE_MANAGER, kind: "file-manager" };
   let taskId = "";
 
