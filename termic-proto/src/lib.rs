@@ -75,7 +75,7 @@ use std::io::{self, BufRead, Read, Write};
 ///
 /// v15: `new` carries `parent_task`, so a task an agent creates joins the
 /// agent's sidebar task group; the `group` verb shows or renames/recolours
-/// it; task summaries carry `group`.
+/// it; task summaries carry `group` (and, additively, `spawned_by`).
 pub const PROTOCOL_VERSION: u32 = 15;
 
 /// The argv `new` pins to a task's agent: the generic `--arg` values, then
@@ -1123,6 +1123,12 @@ pub struct TaskSummary {
     /// a task reports here the group the new task joined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<TaskGroupInfo>,
+    /// The task whose agent created this one, as `project/name`. Set whether
+    /// or not they share a group: a task spawned into ANOTHER project joins
+    /// no group, and this is its only link back. Additive (an older peer
+    /// ignores it or reads none), so no protocol bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1953,6 +1959,7 @@ mod tests {
             open_tabs: Some(2),
             diff: Some(DiffStat { files_changed: 3, insertions: 10, deletions: 2, untracked: 1 }),
             group: None,
+            spawned_by: None,
         };
         for data in [
             ReplyData::Hello(HelloData {

@@ -99,7 +99,8 @@ right now. Termic runs coding agents side by side, each in its own task (a git \
 worktree, or the project's main checkout, with its own terminal), listed in the \
 app's sidebar; this CLI drives the app around you. From your task you can: \
 start another agent beside you (`tab`); launch new tasks with their own agents \
-(`new`), which join YOUR task's group in the sidebar, a block you name for the \
+(`new`), which join YOUR task's group in the sidebar (in your project; one in \
+another project is linked to yours instead), a block you name for the \
 batch of work with `group --name`; prompt another task's agent (`send`) and \
 read what it produced (`logs`, `result`); retitle your own task \
 (`rename`); and keep notes, plans, findings, logs and reports the user \
@@ -973,8 +974,10 @@ lost."
         after_help = "Tasks you create with `new` from inside a task join YOUR task's group: \
 the sidebar draws them as one coloured block, captioned, with your task as \
 its lead, so the user sees which tasks you started. A worker that creates \
-tasks in turn adds them to the same (top-level) group. Pass --no-group to \
-`new` to keep a task out.
+tasks in turn adds them to the same (top-level) group. A task created in \
+ANOTHER project joins no group (a group lives in one project's list): the \
+sidebar links it to your task instead. Pass --no-group to `new` to keep a \
+task out.
 
 Without --name or --color, prints the group: its name, colour and members. \
 --name gives it a name the user will read (say what the batch of work is, \

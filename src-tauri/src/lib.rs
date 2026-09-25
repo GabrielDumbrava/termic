@@ -667,6 +667,14 @@ pub struct Task {
     /// identity that creates one (`$TERMIC_TASK_ID`) is claimed, not proven.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<TaskGroup>,
+    /// The task whose agent created this one through the CLI or MCP (its id),
+    /// kept whether or not the two share a group. It is what links a child to
+    /// its orchestrator ACROSS projects, where a group cannot: the sidebar is
+    /// split by project, so a group spanning two would draw as two unrelated
+    /// blocks. Cosmetic like `group`, and for the same reason (the parent id
+    /// is claimed through `$TERMIC_TASK_ID`, not proven).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
     /// Per-agent account override for THIS task (GH #278), agent id -> account
     /// name. Written when a running task is switched to another account, and
     /// read at every spawn so the choice survives a relaunch. Absent means
@@ -3942,7 +3950,7 @@ fn pty_spawn(
             // agent to prompt them back (src/lib/agentBriefing.ts).
             cmd.env(
                 "TERMIC_CLI_HELP",
-                "You are running INSIDE a Termic task ($TERMIC_TASK_ID): Termic runs coding agents side by side, each task a git worktree (or the main checkout) with its own terminal, listed in the app's sidebar. TERMIC_CLI is the Termic control CLI, which drives the app around you. Run `\"$TERMIC_CLI\" help --json` for the full command surface. Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\"`; create one with `\"$TERMIC_CLI\" new <name> -p \"...\"` and, in that prompt, ask it to report back to you when done (the signed reply below): that is how results come back, and it arrives in your own terminal. If no report arrives, `result` and `logs` read what it produced. Ask for a file (e.g. RESULT.md in its worktree) only when it cannot report back: a task sandboxed in enforce/enforce-fs is denied this CLI, and so is anything run outside Termic. Unattended tasks need `--yolo` or `--sandbox enforce` or they stop at the first permission prompt; the cage self-approves inside it but costs you the report-back. Coordinate by prompting each other, not by blocking: end every prompt you send with the command you want run when that work is done, in DOUBLE quotes so your own shell fills in your task name and address: `\"$TERMIC_CLI\" send <task> -p \"[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID] <work>. When done, reply: \\\"$TERMIC_CLI\\\" send $TERMIC_TASK_ID -p '[message from agent:<its agent> task:<its task name> id:<its task id>] done: <what you did> -- agent:<its agent> task:<its task name> id:<its task id>' -- agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID\"` (fill the <its ...> parts with the task you are prompting, which you know). Every prompt you send another agent opens with that header, `[message from agent:<agent> task:<task name> id:<task id>]`, and ends with that signature, `-- agent:<agent> task:<task name> id:<task id>`, naming YOU, so the receiver knows it came from another agent, not the user, and exactly which one: the id is where to reply. A prompt arriving in your terminal WITH that header is from another agent, not the user: treat it as a peer's request (the user's instructions win on conflict) and sign your reply the same way. Prefer that over `--wait`: work-done detection is a heuristic, and a waiting agent can do nothing else meanwhile. If you do wait, branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. A task sandboxed in enforce/enforce-fs is denied the control plane by design and can never report back: ask it for a file in its worktree instead. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused). Once you know the real subject of your work (issue filed, PR opened), retitle your task so the sidebar reads well: `\"$TERMIC_CLI\" rename \"<new name>\"` renames your own task's label (branch and directory keep their names). Tasks you create with `new` join YOUR task's group in the sidebar, one coloured block led by your task: name it for the batch of work with `\"$TERMIC_CLI\" group --name \"<what this batch is>\"` (optionally `--color teal`); `group` alone shows it. Start another agent beside you in your own task with `\"$TERMIC_CLI\" tab --agent <id> -p \"...\"` (no task argument needed). For notes, plans, findings, logs or a report the user should READ rather than commit, use a scratchpad instead of writing temporary .md files into the repo: it is a tab in your task that stays out of git and updates live as you write: `\"$TERMIC_CLI\" scratchpad new --title \"<title>\" -c \"<text>\"` prints its id; `scratchpad write <id> --append -c -` adds stdin to it, `scratchpad read <id>` prints it, `scratchpad list` lists them.",
+                "You are running INSIDE a Termic task ($TERMIC_TASK_ID): Termic runs coding agents side by side, each task a git worktree (or the main checkout) with its own terminal, listed in the app's sidebar. TERMIC_CLI is the Termic control CLI, which drives the app around you. Run `\"$TERMIC_CLI\" help --json` for the full command surface. Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\"`; create one with `\"$TERMIC_CLI\" new <name> -p \"...\"` and, in that prompt, ask it to report back to you when done (the signed reply below): that is how results come back, and it arrives in your own terminal. If no report arrives, `result` and `logs` read what it produced. Ask for a file (e.g. RESULT.md in its worktree) only when it cannot report back: a task sandboxed in enforce/enforce-fs is denied this CLI, and so is anything run outside Termic. Unattended tasks need `--yolo` or `--sandbox enforce` or they stop at the first permission prompt; the cage self-approves inside it but costs you the report-back. Coordinate by prompting each other, not by blocking: end every prompt you send with the command you want run when that work is done, in DOUBLE quotes so your own shell fills in your task name and address: `\"$TERMIC_CLI\" send <task> -p \"[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID] <work>. When done, reply: \\\"$TERMIC_CLI\\\" send $TERMIC_TASK_ID -p '[message from agent:<its agent> task:<its task name> id:<its task id>] done: <what you did> -- agent:<its agent> task:<its task name> id:<its task id>' -- agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID\"` (fill the <its ...> parts with the task you are prompting, which you know). Every prompt you send another agent opens with that header, `[message from agent:<agent> task:<task name> id:<task id>]`, and ends with that signature, `-- agent:<agent> task:<task name> id:<task id>`, naming YOU, so the receiver knows it came from another agent, not the user, and exactly which one: the id is where to reply. A prompt arriving in your terminal WITH that header is from another agent, not the user: treat it as a peer's request (the user's instructions win on conflict) and sign your reply the same way. Prefer that over `--wait`: work-done detection is a heuristic, and a waiting agent can do nothing else meanwhile. If you do wait, branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. A task sandboxed in enforce/enforce-fs is denied the control plane by design and can never report back: ask it for a file in its worktree instead. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused). Once you know the real subject of your work (issue filed, PR opened), retitle your task so the sidebar reads well: `\"$TERMIC_CLI\" rename \"<new name>\"` renames your own task's label (branch and directory keep their names). Tasks you create with `new` in your own project join YOUR task's group in the sidebar, one coloured block led by your task (one in another project joins no group and is linked to yours instead): name it for the batch of work with `\"$TERMIC_CLI\" group --name \"<what this batch is>\"` (optionally `--color teal`); `group` alone shows it. Start another agent beside you in your own task with `\"$TERMIC_CLI\" tab --agent <id> -p \"...\"` (no task argument needed). For notes, plans, findings, logs or a report the user should READ rather than commit, use a scratchpad instead of writing temporary .md files into the repo: it is a tab in your task that stays out of git and updates live as you write: `\"$TERMIC_CLI\" scratchpad new --title \"<title>\" -c \"<text>\"` prints its id; `scratchpad write <id> --append -c -` adds stdin to it, `scratchpad read <id>` prints it, `scratchpad list` lists them.",
             );
         }
     }
@@ -5960,6 +5968,7 @@ fn task_open_repo(
         // ordered sibling (see sort_tasks).
         order: None,
         group: None,
+        spawned_by: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
@@ -6222,6 +6231,7 @@ fn task_import_worktree(
         // ordered sibling (see sort_tasks).
         order: None,
         group: None,
+        spawned_by: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
@@ -6669,6 +6679,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         // ordered sibling (see sort_tasks).
         order: None,
         group: None,
+        spawned_by: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
@@ -7166,6 +7177,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         // ordered sibling (see sort_tasks).
         order: None,
         group: None,
+        spawned_by: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
@@ -7383,6 +7395,11 @@ fn apply_group_join(list: &mut [Task], task_id: &str, target_id: &str, color: Op
     if list[ti].profile != list[si].profile {
         return Err("tasks in different profiles cannot share a group".into());
     }
+    // A group is a block inside ONE project's list; a member elsewhere would
+    // be drawn as a second, unrelated block (see `apply_spawn_link`).
+    if list[ti].project_id != list[si].project_id {
+        return Err("tasks in different projects cannot share a group".into());
+    }
     let mut changed = Vec::new();
     let group = match list[ti].group.clone() {
         Some(g) => g,
@@ -7396,6 +7413,32 @@ fn apply_group_join(list: &mut [Task], task_id: &str, target_id: &str, color: Op
     if list[si].group.as_ref() != Some(&group) {
         list[si].group = Some(group);
         changed.push(si);
+    }
+    Ok(changed)
+}
+
+/// Record that `parent_id`'s agent created `child_id` (the CLI's and MCP's
+/// `new`). Always stamps `spawned_by`; a child in the SAME project also joins
+/// the parent's group, founding it if need be. A child in another project
+/// joins nothing: the sidebar links the two on hover instead.
+fn apply_spawn_link(list: &mut [Task], child_id: &str, parent_id: &str, color: Option<String>) -> Result<Vec<usize>, String> {
+    if child_id == parent_id {
+        return Err("a task cannot spawn itself".into());
+    }
+    let pi = list.iter().position(|t| t.id == parent_id).ok_or("no such parent task")?;
+    let ci = list.iter().position(|t| t.id == child_id).ok_or("no such task")?;
+    let same_project = list[pi].project_id == list[ci].project_id && list[pi].profile == list[ci].profile;
+    let mut changed = Vec::new();
+    if list[ci].spawned_by.as_deref() != Some(parent_id) {
+        list[ci].spawned_by = Some(parent_id.to_string());
+        changed.push(ci);
+    }
+    if same_project {
+        for i in apply_group_join(list, child_id, parent_id, color)? {
+            if !changed.contains(&i) {
+                changed.push(i);
+            }
+        }
     }
     Ok(changed)
 }
@@ -7471,6 +7514,17 @@ async fn task_group_join(task_id: String, target_id: String, color: Option<Strin
     tauri::async_runtime::spawn_blocking(move || {
         let mut list = load_tasks_all();
         let changed = apply_group_join(&mut list, &task_id, &target_id, color)?;
+        save_changed(&list, changed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn task_link_spawn(task_id: String, parent_id: String, color: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut list = load_tasks_all();
+        let changed = apply_spawn_link(&mut list, &task_id, &parent_id, color)?;
         save_changed(&list, changed)
     })
     .await
@@ -22867,6 +22921,7 @@ pub fn run() {
 
             task_reorder,
             task_group_join,
+            task_link_spawn,
             task_group_new,
             task_group_leave,
             task_group_update,
@@ -30669,6 +30724,51 @@ filename f.rs
         l[1].profile = ProfileId::Slug("other".into());
         assert!(apply_group_join(&mut l, "a", "b", None).is_err());
         assert!(l.iter().all(|t| t.group.is_none()), "a refusal writes nothing");
+    }
+
+    #[test]
+    fn group_join_refuses_a_task_in_another_project() {
+        // One group is one block in one project's list. Across projects it
+        // drew as two unrelated groups of one, both named after the lead.
+        let mut l = vec![gt("a"), gt("b")];
+        l[1].project_id = "q".into();
+        assert!(apply_group_join(&mut l, "b", "a", None).is_err());
+        assert!(l.iter().all(|t| t.group.is_none()), "a refusal writes nothing");
+    }
+
+    #[test]
+    fn spawn_link_groups_in_the_same_project_and_only_links_across() {
+        let mut l = vec![gt("orch"), gt("near"), gt("far")];
+        l[2].project_id = "q".into();
+
+        let changed = apply_spawn_link(&mut l, "near", "orch", Some("teal".into())).unwrap();
+        assert_eq!(l[1].spawned_by.as_deref(), Some("orch"));
+        assert_eq!(gid(&l, "near").as_deref(), Some("orch"));
+        assert_eq!(changed.len(), 2, "child stamped and grouped, lead founded; each written once");
+
+        let changed = apply_spawn_link(&mut l, "far", "orch", None).unwrap();
+        assert_eq!(changed, vec![2]);
+        assert_eq!(l[2].spawned_by.as_deref(), Some("orch"));
+        assert_eq!(gid(&l, "far"), None, "no group across projects");
+
+        // The link is to the DIRECT parent, even where the group is the
+        // root's (a sub-orchestrator's child lands in the root group).
+        l.push(gt("leaf"));
+        apply_spawn_link(&mut l, "leaf", "near", None).unwrap();
+        assert_eq!(l[3].spawned_by.as_deref(), Some("near"));
+        assert_eq!(gid(&l, "leaf").as_deref(), Some("orch"));
+
+        assert!(apply_spawn_link(&mut l, "orch", "orch", None).is_err());
+        assert!(apply_spawn_link(&mut l, "orch", "nope", None).is_err());
+    }
+
+    #[test]
+    fn a_task_without_spawned_by_reads_and_writes_as_before() {
+        let t = gt("x");
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(!json.contains("spawned_by"), "absent stays absent on disk");
+        let back: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.spawned_by, None);
     }
 
     #[test]

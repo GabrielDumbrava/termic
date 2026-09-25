@@ -3347,6 +3347,11 @@ fn summarize(
         open_tabs: info.filter(|i| i.hydrated).map(|i| i.tabs),
         diff,
         group: group_info(task, projects, tasks, false),
+        spawned_by: task
+            .spawned_by
+            .as_deref()
+            .and_then(|pid| tasks.iter().find(|t| t.id == pid))
+            .map(|t| qualified(projects, t)),
     }
 }
 

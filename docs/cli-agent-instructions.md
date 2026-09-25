@@ -169,6 +169,11 @@ caption, led by your task, so the user can see which tasks you started.
 A worker that creates tasks adds them to the same group (groups do not
 nest). `new --no-group` keeps a task out.
 
+A group lives in one project's list, so a task you create in ANOTHER
+project joins no group. It is still linked to yours: its summary carries
+`spawned_by` (your task, as `project/name`), and the sidebar draws the
+link when the user hovers either task.
+
 Name the group for the batch of work, the way you would title a PR:
 
     "$TERMIC_CLI" group --name "Auth refactor" --color teal

@@ -220,6 +220,10 @@ pub fn new_created_text(t: &TaskSummary) -> String {
     // never names the group, and the user reads "grp-orchestrator" forever.
     if let Some(g) = &t.group {
         push("group:", format!("{} (name it: termic group --name \"...\")", g.name));
+    } else if let Some(p) = &t.spawned_by {
+        // Spawned into another project: groups stay within one project, so
+        // say where the link went rather than let the agent look for a group.
+        push("from:", format!("{p} (another project, so no shared group)"));
     }
     lines.join("\n")
 }
@@ -770,6 +774,7 @@ mod tests {
             open_tabs: Some(2),
             diff: Some(DiffStat { files_changed: 3, insertions: 10, deletions: 2, untracked: 1 }),
             group: None,
+            spawned_by: None,
         }
     }
 
@@ -970,6 +975,18 @@ created web/fix-auth
         let out = new_created_text(&s);
         assert!(out.contains("main checkout"), "{out}");
         assert!(!out.contains("branch:"), "{out}");
+    }
+
+    #[test]
+    fn new_created_text_names_a_cross_project_parent_instead_of_a_group() {
+        let mut s = summary();
+        s.spawned_by = Some("api/orchestrate".into());
+        let out = new_created_text(&s);
+        assert!(out.contains("from:   api/orchestrate (another project"), "{out}");
+        // With a group, the group line is the one worth reading.
+        s.group = Some(termic_proto::TaskGroupInfo { id: "o".into(), name: "auth".into(), named: true, color: None, members: vec![] });
+        let out = new_created_text(&s);
+        assert!(out.contains("group:") && !out.contains("from:"), "{out}");
     }
 
     #[test]

@@ -39,7 +39,7 @@ import {
   taskRename,
   taskSetYolo,
   tasksList,
-  taskGroupJoin,
+  taskLinkSpawn,
   taskGroupNew,
   taskGroupUpdate,
 } from "@/lib/ipc";
@@ -460,9 +460,10 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   if (typeof p.prompt === "string" && p.prompt) markUnattendedSpawn(task.id);
   // Before loadAll, so the row appears already inside its group rather than
   // popping into it a beat later. Cosmetic, so a failure (the parent was
-  // archived in between, another profile) never fails the create.
+  // archived in between, another profile) never fails the create. A parent
+  // in another project is linked, not grouped.
   if (typeof p.parentTaskId === "string" && p.parentTaskId) {
-    await taskGroupJoin(task.id, p.parentTaskId, nextGroupColor(useApp.getState().tasks)).catch(() => {});
+    await taskLinkSpawn(task.id, p.parentTaskId, nextGroupColor(useApp.getState().tasks)).catch(() => {});
   }
 
   await useApp.getState().loadAll();

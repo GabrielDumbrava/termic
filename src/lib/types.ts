@@ -308,6 +308,11 @@ export interface Task {
   order?: number;
   /** Sidebar task group (see `TaskGroup`). Absent on ungrouped tasks. */
   group?: TaskGroup;
+  /** Id of the task whose agent created this one through the CLI or MCP.
+   *  Set with or without a shared group: a task spawned into another project
+   *  joins none, and this is its only link back (the sidebar draws it on
+   *  hover, src/components/sidebar/SpawnLinks.tsx). */
+  spawned_by?: string;
   /** True when this task points at the project's main repo checkout
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */

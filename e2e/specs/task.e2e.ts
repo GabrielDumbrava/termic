@@ -3318,6 +3318,194 @@ describe("task groups", () => {
   });
 });
 
+// A task an agent creates carries `spawned_by`. In the agent's own project it
+// also joins the agent's group; in ANOTHER project it joins none (the sidebar
+// is split by project, so a group spanning two drew as two unrelated groups
+// of one), and the link shows as a mark on the child and as lines on hover.
+describe("spawn links across projects", () => {
+  let fixtureProjectId: string;
+  let orch: string;
+  let loose: string;
+  let otherDir: string | undefined;
+  let otherProjectId: string | undefined;
+  let otherProjectName: string;
+  const created: string[] = [];
+
+  const row = (id: string) => `[data-sidebar-task-id="${id}"]`;
+  const mark = (id: string) => `[data-testid="task-spawned-from-${id}"]`;
+  const disk = () =>
+    browser.execute(async () => {
+      const all: any[] = await window.__termic!.ipc.tasksList();
+      return Object.fromEntries(all.map(t => [t.id, { group: t.group?.id ?? null, spawnedBy: t.spawned_by ?? null }]));
+    }) as unknown as Promise<Record<string, { group: string | null; spawnedBy: string | null }>>;
+  /** `termic new` as an agent inside `parent` runs it, into `project`. */
+  const cliNew = (name: string, parent: string, project: string) => {
+    const out = JSON.parse(runCli([
+      "--no-launch", "--json", "new", name,
+      "--agent", "fakeagent", "--project", project, "--main",
+    ], { TERMIC_DATA_DIR: dataDir, TERMIC_TASK_ID: parent }));
+    created.push(out.task.id);
+    return out.task as { id: string; spawned_by?: string; group?: unknown };
+  };
+  /** Hover a row the way the overlay hears it: a bubbling pointerover from
+   *  inside the row, no button held. (A WebDriver move does not reliably
+   *  deliver pointer events to the list in this WKWebView.) */
+  const hover = (id: string | null) =>
+    browser.execute((sel) => {
+      const list = document.querySelector("[data-sidebar-task-id]")!.closest(".overflow-y-auto")!;
+      if (!sel) { list.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false })); return; }
+      document.querySelector(sel)!.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, buttons: 0 }));
+    }, id ? row(id) : null);
+  const drawnLinks = () =>
+    browser.execute(() =>
+      [...document.querySelectorAll<SVGGElement>("[data-spawn-link]")].map(g => g.dataset.spawnLink!).sort(),
+    ) as Promise<string[]>;
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    orch = await openTask("spawn-orchestrator", false);
+    loose = await openTask("spawn-loose", false);
+    created.push(orch, loose);
+    fixtureProjectId = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)!.project_id as string,
+      orch,
+    );
+    otherDir = mkdtempSync(path.join(os.tmpdir(), "e2e-spawnlink-"));
+    execSync(
+      `git -C "${otherDir}" init -q && git -C "${otherDir}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
+    );
+    const proj = await browser.execute(async (dir) => {
+      const p: any = await window.__termic!.ipc.projectAdd(dir);
+      await window.__termic!.useApp.getState().loadAll();
+      return { id: p.id as string, name: p.name as string };
+    }, otherDir) as unknown as { id: string; name: string };
+    otherProjectId = proj.id;
+    otherProjectName = proj.name;
+    await browser.execute((a, b) => {
+      const s = window.__termic!.useApp.getState();
+      s.setProjectCollapsed(a, false);
+      s.setProjectCollapsed(b, false);
+    }, fixtureProjectId, otherProjectId);
+    await dismissOverlays();
+  });
+
+  after(async () => {
+    await hover(null).catch(() => {});
+    for (const id of created) await archiveTask(id);
+    if (otherProjectId) {
+      await browser.execute(async (id) => {
+        await window.__termic!.ipc.projectRemove(id);
+        await window.__termic!.useApp.getState().loadAll();
+      }, otherProjectId);
+    }
+    if (otherDir) rmSync(otherDir, { recursive: true, force: true });
+  });
+
+  let far: string;
+  let near: string;
+
+  it("a task spawned into another project is linked, not grouped", async () => {
+    const t = cliNew("spawn-far-worker", orch, otherProjectName);
+    far = t.id;
+    // The CLI reports the link (as project/name), and no group.
+    expect(t.spawned_by).toBe("fixture-repo/spawn-orchestrator");
+    expect(t.group).toBeUndefined();
+    await waitVisible(row(far));
+    const d = await disk();
+    expect(d[far]).toEqual({ group: null, spawnedBy: orch });
+    expect(d[orch].group).toBeNull(); // the lead did not found a group of one either
+    const blocks = await browser.execute(
+      (a, b) => document.querySelectorAll(`[data-task-group-id="${a}"], [data-task-group-id="${b}"]`).length,
+      orch, far,
+    );
+    expect(blocks).toBe(0);
+    await snap("spawn-links-01-cross-project.png");
+  });
+
+  it("marks the child with its parent, and the mark goes there", async () => {
+    await waitVisible(mark(far));
+    const title = await browser.execute((s) => document.querySelector(s)!.getAttribute("title"), mark(far));
+    expect(title).toContain("spawn-orchestrator (fixture-repo)");
+    // The parent row carries no mark: it was not spawned.
+    expect(await browser.execute((s) => !!document.querySelector(s), mark(orch))).toBe(false);
+    await browser.execute((s) => (document.querySelector(s) as HTMLElement).click(), mark(far));
+    await browser.waitUntil(
+      () => browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, orch),
+      { timeout: 5_000, timeoutMsg: "clicking the mark did not go to the parent" },
+    );
+  });
+
+  it("a task spawned in the same project joins the group and draws no mark", async () => {
+    near = cliNew("spawn-near-worker", orch, "fixture-repo").id;
+    await waitVisible(`[data-task-group-id="${orch}"] ${row(near)}`);
+    const d = await disk();
+    expect(d[near]).toEqual({ group: orch, spawnedBy: orch });
+    // The rail already says it.
+    expect(await browser.execute((s) => !!document.querySelector(s), mark(near))).toBe(false);
+  });
+
+  it("hovering a task draws lines to its parent and the tasks it spawned, and only then", async () => {
+    expect(await drawnLinks()).toEqual([]);
+    await hover(orch);
+    await browser.waitUntil(async () => (await drawnLinks()).length > 0, {
+      timeout: 5_000, timeoutMsg: "hovering the orchestrator drew no line to its worker elsewhere",
+    });
+    // Only the cross-project worker: `near` shares the orchestrator's group,
+    // whose rail already links them.
+    expect(await drawnLinks()).toEqual([`${orch}>${far}`]);
+    await snap("spawn-links-02-hover-parent.png");
+    // From the child, one line up.
+    await hover(far);
+    await browser.waitUntil(async () => (await drawnLinks()).join() === `${orch}>${far}`, {
+      timeout: 5_000, timeoutMsg: "hovering the child did not draw the line to its parent",
+    });
+    // Each line ends on the child's row: measure, do not trust the path.
+    const ends = await browser.execute((childSel) => {
+      const svg = document.querySelector("[data-testid='spawn-links']")!;
+      const dot = svg.querySelector("circle")!.getBoundingClientRect();
+      const r = document.querySelector(childSel)!.getBoundingClientRect();
+      return { dy: Math.abs((dot.top + dot.height / 2) - (r.top + r.height / 2)), dx: Math.abs((dot.left + dot.width / 2) - r.left) };
+    }, row(far));
+    expect(ends.dy).toBeLessThan(1.5);
+    expect(ends.dx).toBeLessThan(1.5);
+    // An unlinked task draws nothing, and leaving the list clears it.
+    await hover(loose);
+    await browser.waitUntil(async () => (await drawnLinks()).length === 0, { timeout: 5_000 });
+    await hover(near);
+    await browser.pause(300);
+    expect(await drawnLinks()).toEqual([]);
+    await hover(far);
+    await browser.waitUntil(async () => (await drawnLinks()).length === 1, { timeout: 5_000 });
+    await hover(null);
+    await browser.waitUntil(async () => (await drawnLinks()).length === 0, {
+      timeout: 5_000, timeoutMsg: "the lines outlived the hover",
+    });
+  });
+
+  it("a group left spanning projects by an older build draws as plain rows", async () => {
+    // Store-driven on purpose: Rust now refuses to write such a group, and
+    // this is how the sidebar draws the ones already on disk.
+    await browser.execute((a, b) => {
+      const s = window.__termic!.useApp;
+      s.setState({
+        tasks: s.getState().tasks.map((t: any) =>
+          t.id === a || t.id === b ? { ...t, group: { id: "legacy-span" } } : t),
+      });
+    }, loose, far);
+    try {
+      await browser.waitUntil(
+        () => browser.execute(() => !document.querySelector('[data-task-group-id="legacy-span"]')),
+        { timeout: 5_000, timeoutMsg: "a cross-project group of one was still drawn as a block" },
+      );
+      await waitVisible(row(loose));
+      await waitVisible(mark(far));
+    } finally {
+      await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+    }
+  });
+});
+
 // Focusing a task looks up its PR (store/pr.ts initPrRefreshOnFocus), which
 // is what discovers a PR its agent opened from the terminal. The fixture's
 // remote is a local bare repo, so the lookup answers "not a forge" rather
