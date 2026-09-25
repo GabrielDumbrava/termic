@@ -83,8 +83,9 @@ describe("top-bar tooltips name their shortcut", () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-bar-tips");
-    // The keys as each platform writes them (lib/shortcuts.ts bindingText).
-    const win = process.platform === "win32";
+    // The keys as each platform writes them (lib/shortcuts.ts bindingText):
+    // glyphs on macOS, Ctrl+... on Windows and Linux alike.
+    const win = process.platform !== "darwin";
     await expectTip('[data-testid="command-palette-button"]', `Command palette (${win ? "Ctrl+Shift+P" : "\u21e7\u2318P"})`);
     await expectTip('[data-testid="prompts-menu"]', `Prompts (${win ? "Ctrl+Alt+P" : "\u2325\u2318P"})`);
     await expectTip('[data-testid="toggle-right-panel"]', `Toggle right panel (${win ? "Ctrl+Alt+B" : "\u2325\u2318B"})`);
@@ -326,7 +327,7 @@ describe("command palette", () => {
         .querySelector('[data-testid="command-palette-button"]')
         ?.getAttribute("aria-label"),
     );
-    expect(ariaLabel).toBe(`Command palette (${process.platform === "win32" ? "Ctrl+Shift+P" : "\u21e7\u2318P"})`);
+    expect(ariaLabel).toBe(`Command palette (${process.platform !== "darwin" ? "Ctrl+Shift+P" : "\u21e7\u2318P"})`);
     await clickWhenVisible('[data-testid="command-palette-button"]');
     await browser.waitUntil(async () => (await paletteOpen()) === false, {
       timeout: 5_000,
@@ -629,9 +630,10 @@ describe("more dialogs open", () => {
 // geometry while windowless; agent output still flows while windowless
 // (the whole point of a daemon); raise restores window + panes.
 // macOS only: closing the window keeps the app running in the menu bar
-// there. On Windows closing the window quits, by design (docs/windows.md),
-// so this suite would close the app under every later case.
-(process.platform === "win32" ? describe.skip : describe)("windowless mode", () => {
+// there. On Windows and Linux closing the window quits, by design (the close
+// handler is macOS-only, docs/windows.md), so this suite would close the app
+// under every later case.
+(process.platform !== "darwin" ? describe.skip : describe)("windowless mode", () => {
   let taskId!: string;
 
   // Same constant wdio launches the app with, rather than a second hard-coded

@@ -3447,8 +3447,13 @@ describe("spawn links across projects", () => {
     await waitVisible(`[data-task-group-id="${orch}"] ${row(near)}`);
     const d = await disk();
     expect(d[near]).toEqual({ group: orch, spawnedBy: orch });
-    // The rail already says it.
-    expect(await browser.execute((s) => !!document.querySelector(s), mark(near))).toBe(false);
+    // The rail already says it. Waited for, not read once: the parent only
+    // gets its group when this first child joins, and until the store has
+    // that, the two do not share a block yet and the mark is (briefly) right.
+    await browser.waitUntil(
+      () => browser.execute((s) => !document.querySelector(s), mark(near)),
+      { timeout: 5_000, timeoutMsg: "a same-group child kept its started-by mark" },
+    );
   });
 
   it("hovering a task draws lines to its parent and the tasks it spawned, and only then", async () => {
