@@ -5,6 +5,7 @@ import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { copyToClipboard } from "@/lib/clipboard";
 import { revealPath, openFileExternal } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
+import { FILE_MANAGER } from "@/lib/openExternal";
 
 /** An absolute path the click resolved to something OUTSIDE the task (GH
  *  #240). It has no task-relative form, so there is nothing to hand the
@@ -51,7 +52,7 @@ export function TerminalPathMenu({ x, y, candidates, external, onPick, onClose, 
               revealPath(external.abs).catch(() => useUI.getState().pushToast("Couldn't reveal that path", "error"));
             }}>
               <FolderOpen className="h-4 w-4 shrink-0" />
-              <span>Reveal in Finder</span>
+              <span>Reveal in {FILE_MANAGER}</span>
             </DropdownItem>
             <DropdownItem onSelect={() => {
               picked.current = true;

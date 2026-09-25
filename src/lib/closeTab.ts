@@ -13,6 +13,7 @@ import type { ScratchTab, Tab } from "@/lib/types";
 import { agentDisplayName, isTerminalCli } from "@/lib/agents";
 import { discardScratchPad } from "@/lib/scratchTabs";
 import { isScheduled } from "@/lib/scheduledQueue";
+import { kbd } from "@/lib/platform";
 
 /** Scheduled queue messages (GH #300) this close would delete. They live on
  *  the tab's durable record, so a close that keeps the record (the MAIN strip
@@ -68,7 +69,7 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
     // === true keeps TS happy across its overloads.
     const ok = await useUI.getState().askConfirm({
       title: "Close without saving?",
-      message: `"${name}" has unsaved changes. Closing the tab will discard them. ⌘S to save first.`,
+      message: `"${name}" has unsaved changes. Closing the tab will discard them. ${kbd("⌘S")} to save first.`,
       confirmLabel: "Discard & close",
       destructive: true,
     });

@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, runCli, snap, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -234,6 +234,11 @@ describe("create task wizard", () => {
           .getState()
           .tasks.find((t: any) => t.name === "e2e-wizard-wt" && !t.archived)?.id,
     );
+    // The dialog closes before the worktree exists (that is the point of
+    // the case), so wait for it before tearing it down: archiving a
+    // checkout git is still writing fails on Windows, and deletes a branch
+    // that does not exist yet.
+    await waitForAgentPty(wtTaskId, 30_000);
     await browser.execute(async (id) => {
       await window.__termic!.ipc.taskArchive(id, true); // deleteBranch
       await window.__termic!.useApp.getState().loadAll();
@@ -426,7 +431,8 @@ describe("YOLO default for new tasks", () => {
     await setProjectDefault(null);
   });
 
-  it("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
+  // The Seatbelt cards are macOS only.
+  (process.platform === "darwin" ? it : it.skip)("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
     await setAppDefault(false);
     await openDialog();
     await pickSandbox("ENFORCING (filesystem + network)");
@@ -1594,7 +1600,7 @@ describe("check out an existing branch", () => {
       quiet(fixture, `update-ref -d refs/remotes/origin/${b}`);
       quiet(origin, `branch -D ${b}`);
     }
-    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 10 });
   });
 
   /** Open New Task for fixture-repo in worktree mode, then flip to the
@@ -2015,7 +2021,7 @@ describe("agent race", () => {
       ]) {
         try {
           for (const entry of readdirSync(dir)) {
-            if (entry.startsWith(stale)) rmSync(path.join(dir, entry), { recursive: true, force: true });
+            if (entry.startsWith(stale)) rmSync(path.join(dir, entry), { recursive: true, force: true, maxRetries: 10 });
           }
         } catch { /* the directory may not exist on this machine */ }
       }
@@ -2531,7 +2537,7 @@ describe("sidebar task drag", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, otherProjectId);
     }
-    if (otherDir) rmSync(otherDir, { recursive: true, force: true });
+    if (otherDir) rmSync(otherDir, { recursive: true, force: true, maxRetries: 10 });
   });
 
   // Sidebar rows, NOT `[data-task-id]` — that one is MainArea's mounted
@@ -3441,8 +3447,13 @@ describe("spawn links across projects", () => {
     await waitVisible(`[data-task-group-id="${orch}"] ${row(near)}`);
     const d = await disk();
     expect(d[near]).toEqual({ group: orch, spawnedBy: orch });
-    // The rail already says it.
-    expect(await browser.execute((s) => !!document.querySelector(s), mark(near))).toBe(false);
+    // The rail already says it. Waited for, not read once: the parent only
+    // gets its group when this first child joins, and until the store has
+    // that, the two do not share a block yet and the mark is (briefly) right.
+    await browser.waitUntil(
+      () => browser.execute((s) => !document.querySelector(s), mark(near)),
+      { timeout: 5_000, timeoutMsg: "a same-group child kept its started-by mark" },
+    );
   });
 
   it("hovering a task draws lines to its parent and the tasks it spawned, and only then", async () => {
@@ -3735,7 +3746,7 @@ describe("copy agent briefing", () => {
     await waitForCopyToast("task menu");
     // What the user actually pastes: one block, tagged with THIS task, the
     // command addressing it by id and signed with its identity.
-    const pasted = execSync("pbpaste", { encoding: "utf8" });
+    const pasted = readClipboard();
     expect(pasted.startsWith(`<termic-task id="${taskId}" `)).toBe(true);
     expect(pasted.trimEnd().endsWith("</termic-task>")).toBe(true);
     expect(pasted).toContain(` send ${taskId} -p "[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID]`);
@@ -3921,7 +3932,8 @@ describe("branch as the task name (GH #260)", () => {
 // button instead of staying dead; and Escape launches nothing.
 describe("open the task folder in another app", () => {
   const openLog = path.join(process.cwd(), ".e2e", "profile", "e2e-open-with.log");
-  const FILE_MANAGER_PICK = { key: "file-manager", label: "Finder", kind: "file-manager" };
+  const FILE_MANAGER = FILE_MANAGER_NAME;
+  const FILE_MANAGER_PICK = { key: "file-manager", label: FILE_MANAGER, kind: "file-manager" };
   let taskId = "";
 
   /** `<app key>\t<absolute dir>` per launch, newest last. */
@@ -4045,7 +4057,7 @@ describe("open the task folder in another app", () => {
     // load-bearing: a terminal sorted among the editors would put a separator
     // in the middle of them.
     await openMenu();
-    expect(await menuLabels()).toEqual(["Finder", "E2E Editor", "E2E Terminal"]);
+    expect(await menuLabels()).toEqual([FILE_MANAGER, "E2E Editor", "E2E Terminal"]);
     await snap("open-with-menu.png");
     await browser.keys(["Escape"]);
     await waitGone('[data-testid="open-with-file-manager"]');
@@ -4068,7 +4080,7 @@ describe("open the task folder in another app", () => {
     expect(key).toBe("e2e-editor");
     // Absolute, and resolved in Rust from the task id: the frontend never
     // sends a path at all.
-    expect(dir.startsWith("/")).toBe(true);
+    expect(path.isAbsolute(dir)).toBe(true);
     const want = await browser.execute(
       (i) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.path,
       taskId,

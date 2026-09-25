@@ -24,6 +24,7 @@ import { usePr } from "@/store/pr";
 import { CircleCheck, CircleX, RefreshCw } from "lucide-react";
 import { IS_MAC } from "@/lib/shortcuts";
 import { Tip } from "@/components/ui/Tooltip";
+import { installCommand } from "@/lib/platform";
 
 export function GeneralSection() {
   const { settings, store, patch } = useBackendSettings();
@@ -269,7 +270,7 @@ export function GeneralSection() {
 
       <Block id="setting-tray-enabled">
         <Toggle
-          label="Show Termic in the menu bar"
+          label={IS_MAC ? "Show Termic in the menu bar" : "Show Termic in the system tray"}
           hint={
             "A small icon that's always there while Termic is running: a badge and dropdown for tasks that need your input or just finished, and Show/Quit."
             + (IS_MAC
@@ -352,7 +353,7 @@ function ForgeStatusBlock() {
               <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
                 <CircleX className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
                 Not installed.
-                <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px]">brew install {f.id}</code>
+                <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px]">{installCommand(f.id)}</code>
               </span>
             ) : !f.authed ? (
               <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-warn)]">

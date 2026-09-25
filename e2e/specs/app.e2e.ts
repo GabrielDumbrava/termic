@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, clickByText, clickWhenVisible, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickWhenVisible, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible, controlConnect } from "../helpers";
 
 const artifacts = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -83,9 +83,12 @@ describe("top-bar tooltips name their shortcut", () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-bar-tips");
-    await expectTip('[data-testid="command-palette-button"]', "Command palette (\u21e7\u2318P)");
-    await expectTip('[data-testid="prompts-menu"]', "Prompts (\u2325\u2318P)");
-    await expectTip('[data-testid="toggle-right-panel"]', "Toggle right panel (\u2325\u2318B)");
+    // The keys as each platform writes them (lib/shortcuts.ts bindingText):
+    // glyphs on macOS, Ctrl+... on Windows and Linux alike.
+    const win = process.platform !== "darwin";
+    await expectTip('[data-testid="command-palette-button"]', `Command palette (${win ? "Ctrl+Shift+P" : "\u21e7\u2318P"})`);
+    await expectTip('[data-testid="prompts-menu"]', `Prompts (${win ? "Ctrl+Alt+P" : "\u2325\u2318P"})`);
+    await expectTip('[data-testid="toggle-right-panel"]', `Toggle right panel (${win ? "Ctrl+Alt+B" : "\u2325\u2318B"})`);
   });
 });
 
@@ -324,7 +327,7 @@ describe("command palette", () => {
         .querySelector('[data-testid="command-palette-button"]')
         ?.getAttribute("aria-label"),
     );
-    expect(ariaLabel).toBe("Command palette (\u21e7\u2318P)");
+    expect(ariaLabel).toBe(`Command palette (${process.platform !== "darwin" ? "Ctrl+Shift+P" : "\u21e7\u2318P"})`);
     await clickWhenVisible('[data-testid="command-palette-button"]');
     await browser.waitUntil(async () => (await paletteOpen()) === false, {
       timeout: 5_000,
@@ -626,7 +629,11 @@ describe("more dialogs open", () => {
 // Cases: close goes windowless without killing the task; panes sit at zero
 // geometry while windowless; agent output still flows while windowless
 // (the whole point of a daemon); raise restores window + panes.
-describe("windowless mode", () => {
+// macOS only: closing the window keeps the app running in the menu bar
+// there. On Windows and Linux closing the window quits, by design (the close
+// handler is macOS-only, docs/windows.md), so this suite would close the app
+// under every later case.
+(process.platform !== "darwin" ? describe.skip : describe)("windowless mode", () => {
   let taskId!: string;
 
   // Same constant wdio launches the app with, rather than a second hard-coded
@@ -636,9 +643,8 @@ describe("windowless mode", () => {
   /** Unauthenticated `raise` over the control socket (cli_server.rs handles it
    *  before the auth gate, so it works with the CLI setting off). */
   async function raiseOverSocket(): Promise<void> {
-    const net = await import("node:net");
     await new Promise<void>((resolve, reject) => {
-      const c = net.createConnection(socketPath);
+      const c = controlConnect(socketPath);
       c.on("error", reject);
       c.on("connect", () => c.write(JSON.stringify({ id: "e2e", cmd: "raise" }) + "\n"));
       const t = setTimeout(() => { c.destroy(); reject(new Error("raise timed out")); }, 10_000);

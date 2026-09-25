@@ -1713,11 +1713,16 @@ fn url_for(port: u16) -> String {
 /// which would let a credential outlive the port that vouched for it
 /// (see the mint-per-bind note in apply_enabled).
 fn token_from_file(dir: &Path) -> Option<String> {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.join(MCP_TOKEN_FILE);
-    let meta = std::fs::metadata(&path).ok()?;
-    if meta.permissions().mode() & 0o077 != 0 {
-        return None;
+    // Unix: refuse a token file anyone else could read. Windows has no
+    // mode bits; the file inherits the per-user data dir's ACL.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&path).ok()?;
+        if meta.permissions().mode() & 0o077 != 0 {
+            return None;
+        }
     }
     let token = std::fs::read_to_string(&path).ok()?;
     let token = token.trim().to_string();
@@ -2094,7 +2099,7 @@ fn install_client_inner(client: &str) -> Result<String, String> {
             .to_string();
             // Passed as one argv entry, so no shell quoting is involved
             // here; claude_command() renders the copy-paste form.
-            let out = std::process::Command::new("claude")
+            let out = crate::proc_ctl::command("claude")
                 .args(["mcp", "add-json", "termic", &json, "-s", "user"])
                 .env("PATH", crate::shell_env::resolved_path())
                 .output()
@@ -3855,6 +3860,7 @@ command = \"/bin/true\"\n";
     /// A restart must not invalidate configs holding the last token, so
     /// the copy affordance only reads a file this server would have
     /// written, so a hand-made or loosened one is not handed out.
+    #[cfg(unix)]
     #[test]
     fn token_from_file_accepts_only_a_file_this_server_wrote() {
         use std::os::unix::fs::PermissionsExt;

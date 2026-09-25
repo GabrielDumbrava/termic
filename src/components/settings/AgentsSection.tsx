@@ -1079,7 +1079,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         {dockerSandboxOn && (
           <Field
             label="Environment (Docker)"
-            hint="A SEPARATE list, used instead of the one above when this agent runs in a container. Empty = the list above is used as-is. Worth filling in when a value names a path on your Mac, since that path does not exist inside the container."
+            hint="A SEPARATE list, used instead of the one above when this agent runs in a container. Empty = the list above is used as-is. Worth filling in when a value names a path on this computer, since that path does not exist inside the container."
           >
             <EnvTextarea
               value={agent.docker_env ?? {}}

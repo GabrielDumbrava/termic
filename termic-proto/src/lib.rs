@@ -127,6 +127,8 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// RESERVED because clap already exits 2 on usage errors; domain codes
 /// start at 3 in the spec's order. Phase 1 produces everything except 10,
 /// which stays pinned for `apply` (Phase 2).
+pub mod local;
+
 pub mod exit_code {
     /// Success (for `--wait` verbs: the agent settled done).
     pub const OK: i32 = 0;

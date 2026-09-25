@@ -10,7 +10,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-d97757)](https://github.com/simion/termic/releases/latest)
 [![Linux AppImage](https://img.shields.io/badge/Linux-AppImage-d97757)](#linux-appimage)
-[![Windows: build from source](https://img.shields.io/badge/Windows-build%20from%20source-d97757)](#windows-self-build-no-sandbox)
+[![Windows: build from source](https://img.shields.io/badge/Windows-build%20from%20source-d97757)](#windows-self-build-experimental)
 [![termic.dev](https://img.shields.io/badge/website-termic.dev-d97757)](https://termic.dev)
 
 [**Install**](#install) · [What it does](#what-it-does) · [Sandbox](#sandbox) · [vs. Conductor](#why-use-termic-over-conductor) · [Contributing](./CONTRIBUTING.md)
@@ -175,26 +175,25 @@ lands.
 Wayland note: if fonts render thin, force X11 with
 `GDK_BACKEND=x11 termic` (or set it in the `.desktop` file's `Exec=`).
 
-#### Windows (self-build, no sandbox)
+#### Windows (self-build, experimental)
 
-Same story: no prebuilt binaries, build works, sandbox is a no-op.
-On Windows 11 (or Windows 10 with WebView2 Evergreen installed):
+No prebuilt binaries. The app builds, installs and runs on Windows 11 x64,
+built and installed by CI on every push, but it is new and not yet used day
+to day. Docker mode is the sandbox on Windows; the macOS Seatbelt sandbox
+does not exist there.
 
-1. Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (the "Desktop development with C++" workload).
-2. Install [Rust stable](https://www.rust-lang.org/tools/install) (rustup).
-3. Install [Node 20+](https://nodejs.org/) and [Git for Windows](https://git-scm.com/download/win).
+From Git Bash (it comes with [Git for Windows](https://git-scm.com/download/win)):
 
-Then in PowerShell:
-
-```powershell
+```sh
 git clone https://github.com/simion/termic
 cd termic
-npm install
-npm run tauri build              # → src-tauri\target\release\bundle\msi\
+bash scripts/setup-windows.sh   # installs build tools, Rust, Node, make via winget; npm install; cargo check
+make install                    # builds the NSIS installer, installs it per user, launches it
 ```
 
-The `.msi` is unsigned — Windows SmartScreen will warn on first run.
-Click *More info → Run anyway* (or sign it yourself for distribution).
+The installer is unsigned, so SmartScreen warns on first run. Setup details,
+what differs from macOS, and what is not on Windows yet:
+[docs/windows.md](docs/windows.md).
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full dev guide.
 
@@ -343,8 +342,8 @@ and the auto-restart-on-edit flow — see [CLAUDE.md](./CLAUDE.md)
 - **Linux:** x86_64 AppImage shipped per release, signed by the same
   ed25519 key as the macOS build so the in-app updater works. ARM
   Linux + a Flathub submission are on the roadmap.
-- **Windows:** build-from-source works today (Tauri 2 + WebView2). No
-  prebuilt binaries yet — CI matrix entry is on the roadmap.
+- **Windows:** experimental, build from source (Tauri 2 + WebView2). No
+  prebuilt binaries yet. See [docs/windows.md](docs/windows.md).
 - **Sandbox:** the Seatbelt cage is macOS-only (`sandbox-exec` is
   Apple's frontend to it), so the Shield toggle is disabled on Linux
   and Windows. **Docker mode** is not macOS-gated, so a container cage

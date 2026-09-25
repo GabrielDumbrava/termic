@@ -120,7 +120,13 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
     // THE tab_id assertion: find_tab_pty resolves the returned id via
     // PtyRole.tab_id, with no default-tab fallback to hide a broken
     // thread behind.
-    const r = await rpc({ cmd: "logs", task: "cli-tabs", tab: secondTabId });
+    // Polled: a live PTY is not yet a printed banner, and the fake agent
+    // takes longer to start under Git Bash on Windows than bash on macOS.
+    let r: any;
+    await browser.waitUntil(async () => {
+      r = await rpc({ cmd: "logs", task: "cli-tabs", tab: secondTabId });
+      return r.ok && String(r.data?.data ?? "").includes("FAKE-AGENT ready");
+    }, { timeout: 15_000, timeoutMsg: "the tab's own PTY never showed the agent's banner" });
     expect(r.ok).toBe(true);
     expect(r.data.source).toBe("agent");
     expect(r.data.data).toContain("FAKE-AGENT ready");
@@ -506,7 +512,7 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
     adoptedId = r.data.task.id;
     expect(r.data.task.name).toBe("adopt-me");
     expect(r.data.task.branch).toBe("adopt-me");
-    expect(fs.realpathSync(r.data.task.path)).toBe(fs.realpathSync(wtPath));
+    expect(fs.realpathSync.native(r.data.task.path)).toBe(fs.realpathSync.native(wtPath));
     // The seed landed on the task and on the mounted default tab: this is
     // what the first spawn's `--resume {UUID}` expands from.
     const seeded = await browser.execute(id => {
@@ -590,7 +596,7 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
       expect(r.error.code).toBe("bad_request");
       expect(r.error.message).toContain("not a git worktree");
     } finally {
-      fs.rmSync(plain, { recursive: true, force: true });
+      fs.rmSync(plain, { recursive: true, force: true, maxRetries: 10 });
     }
   });
 
@@ -835,7 +841,7 @@ describe("termic new --base resolves or refuses (GH report, 1.3.2)", () => {
       // Give the branch its own commit, push it, then delete it locally so
       // the name survives only as refs/remotes/origin/e2e-remote-only.
       gitIn(fixture, "checkout -q e2e-remote-only");
-      gitIn(fixture, "-c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m 'remote-only tip'");
+      gitIn(fixture, "-c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m \"remote-only tip\"");
       tip = gitIn(fixture, "rev-parse HEAD");
       gitIn(fixture, "push -q origin e2e-remote-only");
       gitIn(fixture, "checkout -q main");

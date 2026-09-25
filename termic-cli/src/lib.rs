@@ -16,6 +16,49 @@ use std::io::Read as _;
 use termic_proto as proto;
 use termic_proto::exit_code;
 
+/// `termic hook-emit <target>`: copy stdin (an agent hook's OSC report) to
+/// `target`, the terminal the hook reports to.
+///
+/// Exists for Windows, where `target` is the named pipe the app serves in
+/// place of a PTY slave (src-tauri/src/hook_pipe.rs): Git Bash's `>` cannot
+/// open a named pipe, and this opens it for writing the ordinary way. Also
+/// correct for a plain file or a tty on unix, though the scripts only use it
+/// on Windows. Exit 0 when written, 1 otherwise; never prints (a hook's
+/// output is the agent's to render).
+pub fn hook_emit(target: Option<&std::path::Path>) -> i32 {
+    use std::io::Read;
+    /// A report is a few OSC sequences; anything larger is not one.
+    const MAX: u64 = 64 * 1024;
+    let Some(target) = target else { return 1 };
+    let mut body = Vec::new();
+    if std::io::stdin().lock().take(MAX).read_to_end(&mut body).is_err() || body.is_empty() {
+        return 1;
+    }
+    i32::from(write_report(target, &body).is_err())
+}
+
+/// Write one hook report to `target`. A named pipe reports "all instances
+/// busy" (ERROR_PIPE_BUSY, 231) for the moment between the server accepting
+/// one hook and listening for the next, so two hooks firing together would
+/// otherwise lose one report: retry that, briefly, and nothing else.
+pub fn write_report(target: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    const PIPE_BUSY: i32 = 231;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match std::fs::OpenOptions::new().write(true).open(target) {
+            Ok(mut f) => {
+                f.write_all(body)?;
+                return f.flush();
+            }
+            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 pub mod attach;
 pub mod client;
 pub mod output;

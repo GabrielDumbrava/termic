@@ -37,6 +37,7 @@ import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2, Flower2, GitPullRe
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import type { DelegatedWork } from "@/lib/delegatedWork";
+import { dragRegion, appRegionStyle, installCommand, IS_MAC } from "@/lib/platform";
 
 type Step = 0 | 1 | 2 | 3 | 4;
 
@@ -153,8 +154,7 @@ export function WelcomeDialog() {
           macOS app title bars. The pip buttons opt out via
           data-tauri-drag-region="false" so they stay clickable. */}
       <div
-        data-tauri-drag-region
-        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+        {...dragRegion()}
         className="mb-4 flex items-center gap-3 -mt-1 cursor-grab active:cursor-grabbing select-none"
       >
         <TermicMark size={40} />
@@ -178,7 +178,7 @@ export function WelcomeDialog() {
         <div
           className="flex gap-1.5"
           data-tauri-drag-region="false"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          style={appRegionStyle("no-drag")}
         >
           {Array.from({ length: lastStep + 1 }, (_, i) => i).map(i => (
             <button key={i} onClick={() => setStep(i as Step)}
@@ -379,7 +379,7 @@ function ForgeRows() {
           {!f.found ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
               <span className="font-mono">{f.id}</span> not installed ·{" "}
-              <span className="font-mono">brew install {f.id}</span>
+              <span className="font-mono">{installCommand(f.id)}</span>
             </span>
           ) : !f.authed ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
@@ -860,7 +860,7 @@ function StepTheme() {
                   {t.label}
                 </span>
                 <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                  {t.id === "auto" && "follows macOS"}
+                  {t.id === "auto" && (IS_MAC ? "follows macOS" : "follows the system")}
                   {t.id === "light" && "cream + terracotta"}
                   {t.id === "claude" && "warm charcoal + clay"}
                   {t.id === "dark" && "deeper near-black"}

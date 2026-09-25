@@ -1054,6 +1054,9 @@ export const procmonOpenWindow = () => invoke<void>("procmon_open_window");
 // The user's login shell ($SHELL, falling back to zsh/bash/fish/sh).
 // See lib/loginShell.ts for the cached wrapper used by the terminals.
 export const defaultShell = () => invoke<string>("default_shell");
+// The bash that runs POSIX command tabs and `.termic.yaml` scripts: plain
+// `bash` off Windows, Git for Windows' own bash on Windows.
+export const scriptShell = () => invoke<string>("script_shell");
 
 /**
  * Listen for PTY output chunks. Rust emits a `PtyChunk { data: Vec<u8> }`
