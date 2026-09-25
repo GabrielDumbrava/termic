@@ -736,6 +736,25 @@ pub fn which_in(bin: &str, path: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// The program a PTY should start for `cmd`, on Windows: a bare name
+/// (no directory, no extension) resolved against `path` with PATHEXT, so
+/// `pi` becomes `...\npm\pi.cmd`. portable-pty's own lookup tries the exact
+/// name first in every directory, and npm installs an extensionless shell
+/// shim next to each `.cmd`; it found that shim, and CreateProcess refused
+/// it ("%1 is not a valid Win32 application"). Anything else, and every
+/// name off Windows, is returned unchanged.
+pub fn resolve_program(cmd: &str, path: &str) -> String {
+    if !cfg!(windows)
+        || cmd.contains(['/', '\\'])
+        || std::path::Path::new(cmd).extension().is_some()
+    {
+        return cmd.to_string();
+    }
+    which_in(cmd, path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cmd.to_string())
+}
+
 /// The bash that runs `.termic.yaml` setup / run / archive scripts and
 /// agent session-capture commands (`bash -lc <script>`).
 ///
@@ -895,6 +914,30 @@ mod tests {
         // An empty PATHEXT still finds npm's .cmd shims.
         assert!(exe_candidates_with("claude", "").contains(&"claude.cmd".to_string()));
         assert!(!exe_candidates_with("claude", "").contains(&"claude".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_bare_name_resolves_past_npms_extensionless_shim() {
+        // npm's global bin holds `pi` (a POSIX shell shim, not an exe) next
+        // to `pi.cmd`; the spawn has to get the .cmd.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pi"), "#!/bin/sh\n").unwrap();
+        std::fs::write(dir.path().join("pi.cmd"), "@echo off\r\n").unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let got = resolve_program("pi", &path);
+        assert!(got.to_ascii_lowercase().ends_with("pi.cmd"), "{got}");
+        // A path, or a name with an extension, is taken as given.
+        assert_eq!(resolve_program(r"C:\tools\pi", &path), r"C:\tools\pi");
+        assert_eq!(resolve_program("pi.exe", &path), "pi.exe");
+        // Nothing on PATH: unchanged, so the spawn error names what was asked.
+        assert_eq!(resolve_program("nope-not-here", &path), "nope-not-here");
+    }
+
+    #[test]
+    fn resolve_program_is_the_identity_off_windows() {
+        if cfg!(windows) { return; }
+        assert_eq!(resolve_program("pi", "/usr/bin"), "pi");
     }
 
     #[test]

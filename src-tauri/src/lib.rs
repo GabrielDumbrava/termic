@@ -3835,6 +3835,9 @@ fn pty_spawn(
         },
     }};
 
+    // Windows: resolve a bare name ourselves (see shell_env::resolve_program),
+    // against the PATH the child gets below.
+    let effective_cmd = shell_env::resolve_program(&effective_cmd, &shell_env::spawn_env().0);
     let mut cmd = CommandBuilder::new(&effective_cmd);
     for a in &effective_args {
         cmd.arg(a);
