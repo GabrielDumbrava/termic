@@ -10,7 +10,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-d97757)](https://github.com/simion/termic/releases/latest)
 [![Linux AppImage](https://img.shields.io/badge/Linux-AppImage-d97757)](#linux-appimage)
-[![Windows: build from source](https://img.shields.io/badge/Windows-build%20from%20source-d97757)](#windows-self-build-experimental)
+[![Windows (experimental)](https://img.shields.io/badge/Windows-experimental-d97757)](#windows-experimental)
 [![termic.dev](https://img.shields.io/badge/website-termic.dev-d97757)](https://termic.dev)
 
 [**Install**](#install) · [What it does](#what-it-does) · [Sandbox](#sandbox) · [vs. Conductor](#why-use-termic-over-conductor) · [Contributing](./CONTRIBUTING.md)
@@ -175,14 +175,17 @@ lands.
 Wayland note: if fonts render thin, force X11 with
 `GDK_BACKEND=x11 termic` (or set it in the `.desktop` file's `Exec=`).
 
-#### Windows (self-build, experimental)
+#### Windows (experimental)
 
-No prebuilt binaries. The app builds, installs and runs on Windows 11 x64,
-built and installed by CI on every push, but it is new and not yet used day
-to day. Docker mode is the sandbox on Windows; the macOS Seatbelt sandbox
-does not exist there.
+Each release carries a Windows 11 x64 installer, `Termic_<version>_x64-setup.exe`,
+on the [Releases](https://github.com/simion/termic/releases/latest) page. It
+installs per user (no admin rights) and updates itself like the macOS and Linux
+builds. It is not code-signed yet, so SmartScreen asks first: More info, then
+Run anyway. Windows support is new and not yet used day to day. Docker mode is
+the sandbox on Windows; the macOS Seatbelt sandbox does not exist there.
 
-From Git Bash (it comes with [Git for Windows](https://git-scm.com/download/win)):
+To build it yourself, from Git Bash (it comes with
+[Git for Windows](https://git-scm.com/download/win)):
 
 ```sh
 git clone https://github.com/simion/termic
@@ -191,8 +194,7 @@ bash scripts/setup-windows.sh   # installs build tools, Rust, Node, make via win
 make install                    # builds the NSIS installer, installs it per user, launches it
 ```
 
-The installer is unsigned, so SmartScreen warns on first run. Setup details,
-what differs from macOS, and what is not on Windows yet:
+Setup details, what differs from macOS, and what is not on Windows yet:
 [docs/windows.md](docs/windows.md).
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full dev guide.
@@ -342,8 +344,9 @@ and the auto-restart-on-edit flow — see [CLAUDE.md](./CLAUDE.md)
 - **Linux:** x86_64 AppImage shipped per release, signed by the same
   ed25519 key as the macOS build so the in-app updater works. ARM
   Linux + a Flathub submission are on the roadmap.
-- **Windows:** experimental, build from source (Tauri 2 + WebView2). No
-  prebuilt binaries yet. See [docs/windows.md](docs/windows.md).
+- **Windows:** experimental. x64 installer shipped per release, signed by
+  the same ed25519 key so the in-app updater works; not code-signed yet.
+  See [docs/windows.md](docs/windows.md).
 - **Sandbox:** the Seatbelt cage is macOS-only (`sandbox-exec` is
   Apple's frontend to it), so the Shield toggle is disabled on Linux
   and Windows. **Docker mode** is not macOS-gated, so a container cage
@@ -373,7 +376,7 @@ The honest pitch — see [termic.dev/vs/conductor](https://termic.dev/vs/conduct
 | Per-task macOS sandbox (filesystem + network) | ✓ — Seatbelt + in-process network allowlist | ✗ |
 | Work-done indicator from real PTY signals | ✓ — OSC 9;4 + per-CLI title classifier, no idle guessing | ✗ |
 | Side-by-side ⇄ unified diff with syntax highlighting | ✓ | varies |
-| Platforms | macOS + Linux today (signed AppImage); Windows on the way | macOS |
+| Platforms | macOS, Linux (signed AppImage), Windows (experimental installer) | macOS |
 
 If you already pay for a Claude Pro / Max plan, Termic spawns the same
 `claude` binary that plan covers — no separate metered usage, no
@@ -432,11 +435,10 @@ specs and get an issue at the same time. That is the whole promotion path:
 
 ### Ideas
 
-- **Windows support, then Windows prebuilts.** Linux AppImage CI is live;
-  the Windows MSI is the matching matrix entry, and it depends on the app
-  compiling on Windows at all. The audit in
-  [docs/ideas/windows.md](docs/ideas/windows.md) is a prediction: nothing in
-  it has been built on Windows yet.
+- **Windows, beyond experimental.** An experimental Windows build ships in
+  1.9.0. What is left before it is supported: code signing, agent hooks for
+  agents other than claude, a named-pipe control plane, and measurements on
+  real machines. [docs/ideas/windows.md](docs/ideas/windows.md).
 - **MCP server endpoint, phases B1 and B2.** A scoped control plane an agent
   can call without being handed a terminal. Phase A (the stateless endpoint,
   the settings surface, one-click client setup) shipped in 1.0.0; the per-task
