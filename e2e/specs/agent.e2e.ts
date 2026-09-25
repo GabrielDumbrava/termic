@@ -2972,8 +2972,23 @@ describe("delegated work", () => {
     });
     await snap("agent-delegated-partial.png");
 
-    // The second lands. Still partial, still no bell.
+    // Looking at the tab reads the "some came back" news: the partial mark
+    // goes, the rest is still running, so it stays delegated (the ring).
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      s.setActiveTabId(id, s.tabs[id][0].id);
+    }, taskId);
+    await browser.waitUntil(async () => (await taskViewBadge(taskId)) !== "partial", {
+      timeout: 5_000, timeoutMsg: "visiting the tab did not clear the partial mark",
+    });
+    expect(await delegatedLabel(taskId)).toBe("subagent");
+
+    // The second lands: new news after the visit, so the partial mark comes
+    // BACK (the delegated ring in between was the read state). Still no bell.
     await submitToAgent(taskId, "#delegated 1 subagent q3");
+    await browser.waitUntil(async () => (await taskViewBadge(taskId)) === "partial", {
+      timeout: 20_000, timeoutMsg: `the next subagent back did not re-mark partial (saw ${await taskViewBadge(taskId)})`,
+    });
     await browser.pause(1_500);
     if ((await workBadges(taskId)).includes("done")) {
       throw new Error("rang done with one subagent still running, which is the bug");

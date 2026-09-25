@@ -119,6 +119,16 @@ and the landings in between show as state 4. A shell nobody ever collects
 `DELEGATED_DETACHED_GRACE_MS`, five minutes; agent-owned work has no clock on
 it at all, because it is measured to come back on its own.
 
+### Partial is news; looking at the tab reads it
+
+Partially done (`delegatedWork.partial`) says "some of what the agent
+delegated came back". Showing the tab (`setActiveTabId`, or
+`useSeenWhenWatched` when it is already in front of a focused window) reads
+that news: `partial` drops to false and the tab shows the plain delegated
+ring, because the rest is still running. The next piece of work to report
+back sets it again, and the last one ends the turn with the usual done.
+Nothing but the badges reads the flag, so clearing it changes the mark only.
+
 ### Agent messages while delegated
 
 In the delegated and partially-done states the agent's own loop has

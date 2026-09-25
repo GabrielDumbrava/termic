@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.8.2] - 2026-09-25
+## [1.8.3] - 2026-09-25
 
 Tasks your agents start now group together in the sidebar.
 
@@ -69,6 +69,9 @@ Tasks your agents start now group together in the sidebar.
   [@adamatan](https://github.com/adamatan).
   ([#320](https://github.com/simion/termic/issues/320))
 - A window restored at a size larger than the screen now fits on it.
+- The partially-done mark stayed on a tab after you had looked at it. Looking
+  now clears it, and the tab shows the delegated ring until the next piece
+  of background work reports back.
 
 ## [1.7.0] - 2026-09-22
 
