@@ -9726,13 +9726,19 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
     // polling thread will keep trying to sync a worktree that no longer exists.
     spotlight_stop_for_ws(&id);
 
+    let mut list = load_tasks_all();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("task not found")?;
+
     // Remove any Docker containers for this task (non-fatal). `--rm`
     // handles the clean-exit case; this covers crashes / kills where it
     // never fired, before we tear down the worktree the container mounts.
-    docker::cleanup_task(&id);
-
-    let mut list = load_tasks_all();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("task not found")?;
+    // Only for a task that is on Docker: turning Docker off already reaps
+    // its containers (task_set_docker), and asking the daemon about every
+    // other task stalled each archive for as long as a slow or paused Docker
+    // Desktop took to answer (minutes, on a machine where it was asleep).
+    if w.docker_sandbox_enabled {
+        docker::cleanup_task(&id);
+    }
     let proj = load_projects_all().into_iter().find(|p| p.id == w.project_id);
 
     // Kill any running setup/run scripts for this task BEFORE doing
