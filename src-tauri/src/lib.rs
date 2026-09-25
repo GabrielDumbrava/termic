@@ -4876,6 +4876,11 @@ fn profile_open(app: AppHandle, slug: String) -> Result<(), String> {
         Some(w) => w,
         None => build_profile_window(&app, &id).map_err(|e| e.to_string())?,
     };
+    if id.is_root() {
+        // The root is hidden, never destroyed, so reopening it is a show and
+        // not a build, and nothing else would clear the "user closed it" mark.
+        root_brought_back();
+    }
     let _ = win.unminimize();
     let _ = win.show();
     focus_window_unless_e2e(&win);
@@ -4947,7 +4952,7 @@ fn profiles_disable(app: AppHandle) -> Result<(), String> {
 /// failure.
 #[tauri::command]
 fn window_close_if_not_last(app: AppHandle, window: tauri::Window) -> Result<bool, String> {
-    if profile_windows(&app).len() <= 1 {
+    if shown_profile_windows(&app).len() <= 1 {
         return Ok(false);
     }
     // Through the ordinary close path, not `destroy`: `CloseRequested` is what
@@ -8677,6 +8682,68 @@ fn profile_windows(app: &AppHandle) -> Vec<tauri::WebviewWindow> {
         .collect()
 }
 
+/// The root window is up but the user CLOSED it, with another profile still
+/// on screen. The root is never destroyed (its webview is the app's), only
+/// hidden, so `profile_windows` still counts it; this is what says the hide
+/// was the user's and not windowless mode's.
+///
+/// Without it every "bring the UI back" path (dock click, the menu-bar item,
+/// `termic open`, a second launch, a deep link, switching profile) showed the
+/// closed root along with the window the user kept, and a launch that had
+/// correctly left main closed grew it back at the first of those.
+static ROOT_PUT_AWAY: AtomicBool = AtomicBool::new(false);
+
+/// Whether `leave_windowless` should leave the root hidden: only while the
+/// user put it away AND another profile window is there to show instead. With
+/// nothing else to show, the root comes back rather than leaving no window.
+fn root_stays_hidden(put_away: bool, other_windows: usize) -> bool {
+    put_away && other_windows > 0
+}
+
+/// The profile windows the user has up: every one, minus a root they closed
+/// (see ROOT_PUT_AWAY). What "is this the last window" and "which windows come
+/// back" count, so a hidden root is not mistaken for an open one.
+fn shown_profile_windows(app: &AppHandle) -> Vec<tauri::WebviewWindow> {
+    let wins = profile_windows(app);
+    let root = ProfileId::Root.window_label();
+    let others = wins.iter().filter(|w| w.label() != root).count();
+    if root_stays_hidden(ROOT_PUT_AWAY.load(Ordering::SeqCst), others) {
+        wins.into_iter().filter(|w| w.label() != root).collect()
+    } else {
+        wins
+    }
+}
+
+/// A caller is about to show the window labelled `label` on purpose (a task
+/// or link that lives in it): if that is a root the user had closed, it is
+/// open again.
+fn note_root_shown(label: &str) {
+    if label == ProfileId::Root.window_label() {
+        root_brought_back();
+    }
+}
+
+/// Launch left the root hidden because the user had closed it: keep it
+/// exactly as closed as when they shut it.
+///
+/// Two halves, each a bug on its own. `build_profile_window` had already
+/// stamped `open_at_quit = true` on the hidden root, so the NEXT launch (an
+/// update's relaunch, typically) read "main was open" and showed it; the flag
+/// is put back. And ROOT_PUT_AWAY, or the first dock click, `termic open` or
+/// profile switch shows it anyway.
+fn keep_root_closed_at_launch() {
+    set_open_at_quit(&ProfileId::Root, false);
+    ROOT_PUT_AWAY.store(true, Ordering::SeqCst);
+}
+
+/// Record that the root window is on screen again (reopened from the profile
+/// menu, or shown because nothing else was left).
+fn root_brought_back() {
+    if ROOT_PUT_AWAY.swap(false, Ordering::SeqCst) {
+        set_open_at_quit(&ProfileId::Root, true);
+    }
+}
+
 /// Build a profile's window: the SAME window for every profile, differing
 /// only in its label and title.
 ///
@@ -8794,12 +8861,16 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
                 // quit / ask) is about the LAST window going away. A
                 // non-root profile also destroys rather than hides, so the
                 // popover shows it closed and reopening rebuilds it.
-                if profile_windows(&handle).len() > 1 {
+                // Counts SHOWN windows: a root the user already closed is
+                // hidden, not gone, and counting it made closing the last
+                // visible window destroy it and leave no window at all.
+                if shown_profile_windows(&handle).len() > 1 {
                     // A DELIBERATE close is remembered, so relaunch does not
                     // resurrect a window the user put away. App quit does not
                     // come through here, which is what makes restore work.
                     set_open_at_quit(&close_id, false);
                     if is_root {
+                        ROOT_PUT_AWAY.store(true, Ordering::SeqCst);
                         let _ = window_for_close.hide();
                     } else {
                         let _ = window_for_close.destroy();
@@ -22069,10 +22140,14 @@ pub(crate) fn leave_windowless(app: &AppHandle) {
     // The zero→non-zero edge is also what repairs xterm's viewport scroller
     // (lib/xtermViewportSync).
     let _ = app.emit("termic://windowless", false);
-    // Restore every profile window that exists. They exist because the user
-    // opened them, so hiding all and restoring one would silently lose a
-    // profile the user had up.
-    let wins = profile_windows(app);
+    // Restore every profile window the user had up. They exist because the
+    // user opened them, so hiding all and restoring one would silently lose a
+    // profile. A root the user CLOSED stays closed (ROOT_PUT_AWAY), unless it
+    // is the only window there is.
+    let wins = shown_profile_windows(app);
+    if wins.iter().any(|w| w.label() == ProfileId::Root.window_label()) {
+        root_brought_back();
+    }
     for win in &wins {
         // Unminimize here, not at the call sites: the tray's "Show Termic" and
         // RunEvent::Reopen used to skip it while `raise` did it, so the three
@@ -22201,7 +22276,9 @@ fn percent_decode_loose(s: &str) -> String {
 /// The label of the most recently focused OPEN profile window.
 pub(crate) fn most_recent_profile_label(app: &AppHandle) -> String {
     let reg = profiles_registry();
-    let open = profile_windows(app);
+    // Shown ones: a root the user closed is still a window, and routing a
+    // link or a profile-less CLI call to it would reopen it uninvited.
+    let open = shown_profile_windows(app);
     let mut best: Option<(String, String)> = None;
     for p in &reg.profiles {
         let label = reg.id_for(&p.slug).window_label();
@@ -22228,6 +22305,7 @@ fn raise_task_window(app: &AppHandle, task_id: &str) {
         }
     }
     if let Some(win) = app.get_webview_window(&label) {
+        note_root_shown(&label);
         let _ = win.unminimize();
         let _ = win.show();
         focus_window_unless_e2e(&win);
@@ -22263,6 +22341,7 @@ pub(crate) fn queue_deep_link(app: &AppHandle, url: &str) {
             let _ = build_profile_window(app, &id);
         }
         if let Some(win) = app.get_webview_window(&target) {
+            note_root_shown(&target);
             let _ = win.unminimize();
             let _ = win.show();
             focus_window_unless_e2e(&win);
@@ -22689,6 +22768,7 @@ pub fn run() {
                 // says: the alternative is launching to no window at all.
                 if root_closed_at_quit {
                     dlog("[profiles] root was closed at quit; leaving it hidden");
+                    keep_root_closed_at_launch();
                 } else {
                     let _ = win.show();
                     SHOWN_ONCE.store(true, Ordering::SeqCst);
@@ -23776,6 +23856,48 @@ mod tests {
             crate::profiles::save_registry(data, &crate::profiles::Registry::default()).unwrap();
             assert!(!crate::root_window_stays_closed());
         });
+    }
+
+    #[test]
+    fn a_root_left_closed_at_launch_is_still_closed_at_the_next_launch() {
+        // `setup` builds the root window even when it keeps it hidden, and
+        // the build stamps `open_at_quit = true`. So a launch that correctly
+        // left main closed wrote "main was open", and the relaunch after an
+        // update brought it back next to the profile the user kept.
+        with_scratch_data_dir(|data| {
+            let mk = |slug: &str, open: bool| crate::profiles::Profile {
+                slug: slug.into(), name: slug.into(), accent: "blue".into(),
+                order: 0, last_focused_at: None, open_at_quit: open,
+            };
+            let reg = crate::profiles::Registry {
+                root_slug: Some("personal".into()),
+                profiles: vec![mk("personal", false), mk("work", true)],
+                ..Default::default()
+            };
+            crate::profiles::save_registry(data, &reg).unwrap();
+
+            // Launch 1, in setup's order: read, build (the stamp), settle.
+            assert!(crate::root_window_stays_closed());
+            crate::set_open_at_quit(&ProfileId::Root, true);
+            crate::keep_root_closed_at_launch();
+            crate::set_open_at_quit(&ProfileId::Slug("work".into()), true);
+
+            // Launch 2 (the update's relaunch) reads the same answer.
+            assert!(crate::root_window_stays_closed());
+            assert!(!crate::profiles_registry().get("personal").unwrap().open_at_quit);
+        });
+    }
+
+    #[test]
+    fn a_root_the_user_closed_stays_hidden_only_while_another_window_is_up() {
+        // Every "bring the UI back" path shows the profile windows; a closed
+        // root is one of them (hidden, never destroyed) and must not come
+        // back with the others. With nothing else to show it must, or the
+        // app is left with no window.
+        assert!(crate::root_stays_hidden(true, 1));
+        assert!(!crate::root_stays_hidden(true, 0));
+        assert!(!crate::root_stays_hidden(false, 1));
+        assert!(!crate::root_stays_hidden(false, 0));
     }
 
     #[test]
