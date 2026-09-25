@@ -4,8 +4,7 @@
 //
 //   node scripts/verify-updater-sig.mjs <artifact> [<artifact>.sig]
 //
-// The release pipeline runs this on every platform's updater artifact before
-// publishing it, and the Windows rehearsal job runs it on every push: a
+// release.yml runs this on the Windows installer before uploading it: a
 // signature made with the wrong key, or over the wrong bytes, would otherwise
 // only show up as installs that silently never update.
 //

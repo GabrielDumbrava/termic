@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { verifyUpdaterSignature } from "../../scripts/verify-updater-sig.mjs";
 
-// The release pipeline checks every platform's updater signature with
+// The release pipeline checks the Windows updater signature with
 // scripts/verify-updater-sig.mjs before publishing. These build minisign
 // files the way `tauri signer` writes them (base64 of the minisign text,
 // prehashed "ED" signatures) from a throwaway key.

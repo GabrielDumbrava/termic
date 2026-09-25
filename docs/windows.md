@@ -151,9 +151,9 @@ public key in `tauri.conf.json` (`scripts/verify-updater-sig.mjs`) before
 uploading. The job is not in the release job's `needs`: `release-windows`
 attaches the installer to the finished release, and `latest.json` gains a
 `windows-x86_64` entry only when that upload happened, so a Windows failure
-costs Windows that version and nothing else. `windows.yml`'s release rehearsal
-runs the same recipe on every push and also installs, launches and uninstalls
-the result. The updater installs in `passive` mode (progress bar, no
+costs Windows that version and nothing else. The recipe was rehearsed on the
+Windows runner before the first release (signed build, signature check,
+silent install, launch, uninstall). The updater installs in `passive` mode (progress bar, no
 prompts); Windows cannot replace a running exe, so the app closes for the
 install.
 

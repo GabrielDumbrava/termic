@@ -159,8 +159,8 @@ that pin the unix layouts are `#[cfg(unix)]`
     termic child process in it (`rmTree` lists the processes). Either
     Defender or the indexer on a fresh `.git`, or a handle termic itself
     keeps; `handle.exe` on a Windows machine would tell which.
-- **Release.** Done: `build-windows` and `release-windows` in `release.yml`,
-  rehearsed on every push by `windows.yml`. Left: Authenticode signing
+- **Release.** Done: `build-windows` and `release-windows` in `release.yml`.
+  Left: Authenticode signing
   (Azure Trusted Signing through `bundle.windows.signCommand`) or accept the
   SmartScreen warning, and a real update from one release to the next
   observed on a Windows machine (does the app come back after the passive

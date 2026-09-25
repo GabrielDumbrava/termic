@@ -568,10 +568,9 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
   # ─── Windows x64 (experimental) ────────────────────────────────────
-  # The same build the `windows.yml` rehearsal job runs on every push to the
-  # port, so a release is never the first time this recipe executes. The
-  # signature is checked against the app's own public key before anything is
-  # uploaded: a wrong key would otherwise ship installs that never update.
+  # The signature is checked against the app's own public key before
+  # anything is uploaded: a wrong key would otherwise ship installs that
+  # never update.
   build-windows:
     needs: validate
     runs-on: windows-latest
