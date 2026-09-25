@@ -40,7 +40,8 @@ import { useIsFullscreen } from "@/hooks/useIsFullscreen";
 import { RunControls } from "@/components/task/RunControls";
 import { CommandPaletteButton } from "@/components/CommandPaletteButton";
 import { cn } from "@/lib/utils";
-import { IS_MAC, appRegionStyle } from "@/lib/platform";
+import { IS_MAC, IS_WINDOWS, appRegionStyle } from "@/lib/platform";
+import { WindowControls } from "@/components/WindowControls";
 
 // Reserve enough room for the 3 traffic lights + breathing room before the
 // first interactive control. 16 (x offset) + ~58 (3 buttons + gaps) + 10 pad.
@@ -110,15 +111,22 @@ export function UnifiedBar() {
       // ignores both. onMouseDown → startDragging() is the bulletproof escape
       // hatch. Guarded so we only drag on a primary click that hits the bar
       // itself (or a non-interactive descendant like the breadcrumb text).
-      // macOS only: the window's title bar is hidden there, so this bar IS
-      // the title bar. Windows keeps its native one above this bar, which
-      // already drags and double-click-maximizes; doing it here too would
-      // race it (startDragging swallows the mouseup that double-click needs).
+      // This bar IS the title bar on macOS (hidden, overlay title bar) and on
+      // Windows (no native frame, WindowControls draws the buttons). Linux
+      // keeps its native title bar, which already drags.
+      //
+      // Windows reads a double click off the mousedown's click count, not
+      // from onDoubleClick: startDragging hands the mouse to the system's
+      // move loop, which swallows the mouseup a dblclick event needs.
       onMouseDown={(e) => {
-        if (!IS_MAC) return;
+        if (!IS_MAC && !IS_WINDOWS) return;
         if (e.button !== 0) return;
         const t = e.target as HTMLElement;
         if (t.closest("[data-no-drag]") || t.closest("button") || t.closest("input")) return;
+        if (IS_WINDOWS && e.detail === 2) {
+          getCurrentWindow().toggleMaximize().catch(() => {});
+          return;
+        }
         getCurrentWindow().startDragging().catch(() => {});
       }}
       onDoubleClick={(e) => {
@@ -388,6 +396,12 @@ export function UnifiedBar() {
             </Tip>
           </>
         )}
+      </div>
+      {/* Windows: minimize / maximize / close, flush with the window's
+          top-right corner (the bar's own right padding is undone), as on
+          every Windows title bar. Nothing elsewhere. */}
+      <div className="-mr-2 ml-1 flex self-stretch">
+        <WindowControls />
       </div>
     </header>
   );

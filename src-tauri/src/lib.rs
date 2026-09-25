@@ -9062,6 +9062,15 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
             .traffic_light_position(tauri::LogicalPosition::new(16.0, traffic_y));
     }
 
+    // Windows: no native frame. The app's own top bar is the title bar there
+    // (it drags, double-click maximizes, and WindowControls draws minimize /
+    // maximize / close), so the native one was a second, empty bar above it.
+    // A frameless window keeps its shadow and its resize edges on Windows.
+    #[cfg(windows)]
+    {
+        builder = builder.decorations(false);
+    }
+
     dlog(&format!("[profile] build {label}: builder.build"));
     let win = without_browser_accelerators(builder).build()?;
     dlog(&format!("[profile] build {label}: built"));

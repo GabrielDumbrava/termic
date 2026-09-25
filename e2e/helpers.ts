@@ -40,7 +40,10 @@ export function artifact(name: string): string {
  * no display / Screen-Recording permission.
  */
 export async function snap(name: string): Promise<void> {
-  if (process.env.CI) return;
+  // Skipped in CI, unless TERMIC_E2E_SNAP (a regex on the name) asks for it:
+  // a CI job sets it to look at a UI no one has on their own machine.
+  const want = process.env.TERMIC_E2E_SNAP;
+  if (process.env.CI && !(want && new RegExp(want).test(name))) return;
   try {
     await browser.saveScreenshot(artifact(name));
   } catch {

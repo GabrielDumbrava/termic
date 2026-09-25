@@ -138,6 +138,9 @@ jobs:
         timeout-minutes: 75
         env:
           TERMIC_E2E_FAIL_CAPTURE: "1"
+          # Screenshots of the window chrome, which only exists on Windows,
+          # for a person to look at in the uploaded artifacts.
+          TERMIC_E2E_SNAP: "^window-"
         run: npm run test:e2e
       # always(): a timed-out or cancelled run is exactly the one whose app
       # log is needed, and failure() is false for both.
