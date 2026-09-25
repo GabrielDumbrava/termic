@@ -2584,6 +2584,10 @@ describe("project default CLI vs the agent registry", () => {
     });
     await setDefault("rename-me");
 
+    // Closed first, so the Agents page mounts after the save: opened while it
+    // is already up, it keeps the list it read before "rename-me" existed.
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await waitForTextGone("Close settings");
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
     await waitVisible('[data-agent-id="rename-me"]');
     await clickWhenVisible('[data-agent-id="rename-me"]');
