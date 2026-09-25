@@ -2566,6 +2566,16 @@ describe("project default CLI vs the agent registry", () => {
   });
 
   it("carries the default along when its agent is renamed", async () => {
+    // Settings closed BEFORE the save: an Agents page still open from the
+    // case above holds its own copy of the list and writes it back on its
+    // debounced save, over an agent saved underneath it. Failed this way on
+    // all three CI runners in one run; reopened afterwards, the page mounts
+    // on the saved list.
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await waitForTextGone("Close settings");
+    // And past its pending save: the page writes its copy 500 ms after an
+    // edit (AgentsSection's `mutate`), and the timer outlives the page.
+    await browser.pause(1_000);
     // A custom agent, since built-ins can't be renamed (their id is fixed).
     await browser.execute(async () => {
       const app = window.__termic!.useApp.getState();
@@ -2584,10 +2594,6 @@ describe("project default CLI vs the agent registry", () => {
     });
     await setDefault("rename-me");
 
-    // Closed first, so the Agents page mounts after the save: opened while it
-    // is already up, it keeps the list it read before "rename-me" existed.
-    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
-    await waitForTextGone("Close settings");
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
     await waitVisible('[data-agent-id="rename-me"]');
     await clickWhenVisible('[data-agent-id="rename-me"]');
