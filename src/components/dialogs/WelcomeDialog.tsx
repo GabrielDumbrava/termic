@@ -606,9 +606,6 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
   // would be wrong the first time an event is added and nobody would notice,
   // because it is a sentence rather than a test.
   const [plans, setPlans] = useState<Record<string, HookPlan>>({});
-  useEffect(() => {
-    agentHooksAutoGet().then(setAutoState).catch(() => {});
-  }, []);
   const setAuto = async (on: boolean) => {
     setAutoState(on);
     try {
@@ -626,13 +623,27 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
   };
   const detected = clis.filter(c => c.found && c.name !== "shell").map(c => c.name);
 
-  // Auto-install once on arrival for everything we can wire. `ran` guards a
-  // re-entry (the pips let the user jump back) so Remove is not undone.
+  // On arrival: "Keep every agent hooked up" goes ON by default, which
+  // installs the hook for every supported agent now and for any added later
+  // (`agent_hooks_auto_set`). The box shows it checked and unticking it
+  // turns it off, so this is a default, not a decision taken for the user.
+  // Only when the switch could not be turned on does this fall back to
+  // installing each detected agent one by one: running both at once would
+  // write the same agent config files from two places.
+  //
+  // `ran` guards a re-entry (the pips let the user jump back) so a Remove or
+  // an untick is not undone.
   const [ran, setRan] = useState(false);
   useEffect(() => {
-    if (ran || !detected.length) return;
+    if (ran) return;
     setRan(true);
     void (async () => {
+      let on = false;
+      try { on = await agentHooksAutoGet(); } catch { /* treated as off */ }
+      if (!on) {
+        try { await agentHooksAutoSet(true); on = true; } catch { /* falls back below */ }
+      }
+      setAutoState(on);
       const plansOut: Record<string, HookPlan> = {};
       await Promise.all(detected.map(async id => {
         try { plansOut[id] = await agentHooksPlan(id); } catch { /* row works without it */ }
@@ -642,12 +653,13 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
       for (const id of detected) {
         try {
           const st = await agentHooksStatus(id);
-          out[id] = st.supported && !st.host.installed && !st.host.disabled_all
+          out[id] = !on && st.supported && !st.host.installed && !st.host.disabled_all
             ? await agentHooksInstall(id).catch(() => st)
             : st;
         } catch { /* a row we cannot read is a row we do not show a button for */ }
       }
       setRows(out);
+      await useApp.getState().refreshAgentHooks();
     })();
   }, [ran, detected]);
 
