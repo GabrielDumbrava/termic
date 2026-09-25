@@ -100,6 +100,80 @@ jobs:
           powershell -NoProfile -Command "Get-Process | Where-Object { \$_.Path -like \"\$env:LOCALAPPDATA\\Termic\\*\" } | Stop-Process -Force" || true
           make uninstall
 
+  release-rehearsal:
+    # The release's own Windows recipe (release.yml, build-windows), run on
+    # every push so a tag is never the first time it executes: build the
+    # NSIS installer signed with the real updater key, check that signature
+    # against the public key the app ships with, then install it silently,
+    # see it run, and uninstall. Without the signing secret (a fork's PR)
+    # the build is unsigned and the signature check is skipped, loudly.
+    name: Windows release rehearsal (signed installer)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build & sign (NSIS), exactly as release.yml does
+        env:
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning::no updater signing key here (a fork's PR?): building unsigned, the signature is not checked"
+            npm run tauri build -- --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          else
+            npm run tauri build -- --bundles nsis
+          fi
+      - name: Verify the updater signature against the app's key
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          SETUP=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -n1)
+          ls -la src-tauri/target/release/bundle/nsis
+          if [ "$HAS_KEY" = "true" ]; then
+            node scripts/verify-updater-sig.mjs "$SETUP"
+          else
+            echo "skipped: unsigned build"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termic-windows-x64-release-rehearsal
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+          if-no-files-found: error
+      - name: Install it the way a user does (silent, per user) and launch it
+        run: bash scripts/install-app-windows.sh Termic
+      - name: The installed app is running
+        run: |
+          sleep 15
+          powershell -NoProfile -Command "if (-not (Get-Process | Where-Object { \$_.Path -like \"\$env:LOCALAPPDATA\\Termic\\*\" })) { exit 1 }"
+      - name: Uninstall
+        if: always()
+        run: |
+          powershell -NoProfile -Command "Get-Process | Where-Object { \$_.Path -like \"\$env:LOCALAPPDATA\\Termic\\*\" } | Stop-Process -Force" || true
+          U="$(cygpath -u "$LOCALAPPDATA")/Termic/uninstall.exe"
+          if [ -f "$U" ]; then "$U" //S; fi
+          # NSIS's uninstaller re-launches itself from a temp copy and returns
+          # at once, so wait for the exe to actually go.
+          for _ in $(seq 1 30); do
+            [ -e "$(cygpath -u "$LOCALAPPDATA")/Termic/termic.exe" ] || exit 0
+            sleep 1
+          done
+          echo "the uninstaller left termic.exe behind"; exit 1
+
   e2e:
     # The WebdriverIO suite on WebView2 (the embedded WebDriver supports it).
     # Experimental like the rest of this workflow: it reports, it does not

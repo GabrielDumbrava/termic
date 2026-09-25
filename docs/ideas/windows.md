@@ -16,8 +16,9 @@ grep for the symbol next to it.
 - **The only sandbox is Docker.** Seatbelt is never offered, and a stored
   Seatbelt mode reads as Off (done).
 - Closing the window quits. Native title bar for now.
-- Experimental: no code signing, and no Windows job in the release workflow's
-  `needs`, until someone decides Windows is supported.
+- Experimental: no Authenticode signing, and the release's Windows job stays
+  out of the release job's `needs` (done: `build-windows` / `release-windows`
+  in `release.yml`), until someone decides Windows is supported.
 
 ## 1. Measure first
 
@@ -158,11 +159,12 @@ that pin the unix layouts are `#[cfg(unix)]`
     termic child process in it (`rmTree` lists the processes). Either
     Defender or the indexer on a fresh `.git`, or a handle termic itself
     keeps; `handle.exe` on a Windows machine would tell which.
-- **Release.** A `build-windows` job in `release.yml` (NSIS, updater
-  signature, a `windows-x86_64` entry in `latest.json`), kept out of the
-  release job's `needs` until Windows is supported. Authenticode signing
+- **Release.** Done: `build-windows` and `release-windows` in `release.yml`,
+  rehearsed on every push by `windows.yml`. Left: Authenticode signing
   (Azure Trusted Signing through `bundle.windows.signCommand`) or accept the
-  SmartScreen warning.
+  SmartScreen warning, and a real update from one release to the next
+  observed on a Windows machine (does the app come back after the passive
+  install).
 
 ## Open questions
 

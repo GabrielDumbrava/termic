@@ -26,11 +26,13 @@ export const config: WebdriverIO.Config = {
   tsConfigPath: path.join(repoRoot, "e2e", "tsconfig.json"),
 
   specs: [path.join(repoRoot, "e2e", "specs", "**", "*.e2e.ts")],
-  // Specs for features that do not exist on Windows (docs/windows.md):
-  // the Activity monitor (procmon is macOS / Linux) and Touch ID for sudo.
-  exclude: process.platform === "win32"
-    ? ["activity", "sudo-touchid"].map(n => path.join(repoRoot, "e2e", "specs", `${n}.e2e.ts`))
-    : [],
+  // Specs for features a platform does not have: Touch ID for sudo is
+  // macOS only, and the Activity monitor (procmon) is macOS / Linux, not
+  // Windows (docs/windows.md).
+  exclude: [
+    ...(process.platform === "darwin" ? [] : ["sudo-touchid"]),
+    ...(process.platform === "win32" ? ["activity"] : []),
+  ].map(n => path.join(repoRoot, "e2e", "specs", `${n}.e2e.ts`)),
   maxInstances: 1,
 
   // `tauri:options` is a VENDOR capability extension that the embedded

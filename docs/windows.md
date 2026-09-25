@@ -2,8 +2,10 @@
 
 Status: **experimental.** The app builds on Windows 11 x64, and CI builds,
 installs and launches it on every push (`.github/workflows/windows.yml`),
-but nobody has used it day to day yet. There are no signed or auto-updating Windows releases, and
-some features are not available yet (see "Not on Windows yet"). What is
+but nobody has used it day to day yet. Releases carry an NSIS installer
+signed for the in-app updater (`release.yml`, `build-windows`), which is not
+Authenticode-signed, so SmartScreen warns on the first install. Some features
+are not available yet (see "Not on Windows yet"). What is
 still to do, and the measurements that decide how, is in
 [ideas/windows.md](ideas/windows.md).
 
@@ -140,6 +142,20 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
 - **AltGr** never fires a Ctrl+Alt shortcut.
 - **Closing the window quits**, as Windows users expect. The macOS
   close-to-menu-bar behaviour is macOS-only.
+
+## Releases and updates
+
+`release.yml` builds the NSIS installer on `windows-latest` with the same
+updater key as the Mac and Linux builds, and checks the signature against the
+public key in `tauri.conf.json` (`scripts/verify-updater-sig.mjs`) before
+uploading. The job is not in the release job's `needs`: `release-windows`
+attaches the installer to the finished release, and `latest.json` gains a
+`windows-x86_64` entry only when that upload happened, so a Windows failure
+costs Windows that version and nothing else. `windows.yml`'s release rehearsal
+runs the same recipe on every push and also installs, launches and uninstalls
+the result. The updater installs in `passive` mode (progress bar, no
+prompts); Windows cannot replace a running exe, so the app closes for the
+install.
 
 ## Not on Windows yet
 
