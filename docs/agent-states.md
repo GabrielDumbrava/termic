@@ -131,6 +131,23 @@ the mark (a subagent's report making the agent resume, for one), so a
 message never lands mid-generation. The USER's message queue ignores the
 mark and still waits for the turn to end.
 
+### Never into a draft
+
+Every automatic send types into the same prompt the user types into, so a
+message arriving mid-sentence landed inside their text and the next Enter
+submitted both. `composing` on the tab tracks the user's own keystrokes
+(TerminalPane `trackDraft`: printable input and pastes start a draft, Up
+arrow's history recall counts as one, Enter or Ctrl-C / Ctrl-U or
+backspacing to nothing ends it; Shift+Enter is written straight to the PTY,
+so a multi-line draft stays one). While it is set, the message queue does
+not send (except "Send now", which is the user asking) and an agent's
+message queues even on an idle agent. The queue resumes when the draft
+ends: Enter starts the user's turn and its done drains the queue after, and
+a draft cleared on an idle agent wakes the queue at once. It is keystroke
+based and so agent-agnostic; a key that clears a draft in only one agent
+(claude's double Escape) leaves the message held until the next Enter,
+which is the safe failure.
+
 ## What each surface draws
 
 Priority, high to low, and it is the same chain everywhere:
