@@ -1731,6 +1731,15 @@ fn git_open_error(path: &Path, shown: &str, err: &str) -> Option<String> {
     if !path.join(".git").exists() {
         return None;
     }
+    // No git to ask at all: on Windows, Git installed with "Use Git from Git
+    // Bash only" is not on the PATH other apps see, and a Termic started
+    // before Git was installed still has the old PATH until it restarts.
+    if crate::shell_env::which("git").is_none() {
+        return Some(format!(
+            "Termic can't find git, so it can't open {shown}. Install Git (on Windows, with \
+             \"Git from the command line and also from 3rd-party software\"), then restart Termic."
+        ));
+    }
     // The last line of git's stderr is its own summary ("fatal: ...").
     let why = err.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or(err);
     Some(format!("Git could not open {shown}: {why}"))
@@ -5408,7 +5417,7 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
     } else if let Err(e) = git(&["rev-parse", "--git-dir"], &pb) {
         // NOTE: the "not a git repo" substring is load-bearing for
         // cli_server::handle_project_add's --non-git hint.
-        return Err(git_open_error(&pb, &expanded, &e.to_string())
+        return Err(git_open_error(&pb, &expanded, &format!("{e:#}"))
             .unwrap_or_else(|| format!("{} is not a git repo. Confirm adding it as a plain folder.", expanded)));
     }
     let mut list = load_projects_all();
@@ -5608,7 +5617,7 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
                     return Err(format!("{} is not a directory", expanded));
                 }
             } else if let Err(e) = git(&["rev-parse", "--git-dir"], &pb) {
-                return Err(git_open_error(&pb, &expanded, &e.to_string())
+                return Err(git_open_error(&pb, &expanded, &format!("{e:#}"))
                     .unwrap_or_else(|| format!("{} is not a git repo. Confirm using it as a plain folder host.", expanded)));
             }
             pb
