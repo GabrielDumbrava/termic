@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push supersedes the run still going for the same branch or PR:
+# its results would be stale on arrival, and the three e2e jobs hold a
+# macOS, a Linux and (in windows.yml) a Windows runner for ~20 minutes.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   typescript:
     name: TypeScript (Vitest)
