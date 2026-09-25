@@ -271,6 +271,15 @@ fn current_env() -> LoginEnv {
 }
 
 fn current_env_final() -> (LoginEnv, bool) {
+    // Windows: the PATH as the system has it NOW, not as it was when the app
+    // started. There is no login shell to probe there (probe_once), so the
+    // inherited PATH was the answer for the whole session, and a tool
+    // installed while Termic ran (Git, an agent CLI) stayed invisible until
+    // a restart: a Windows tester's repo was refused as "not a git repo"
+    // for exactly that reason. Two registry reads, microseconds each.
+    if cfg!(windows) {
+        return (LoginEnv { path: windows_live_path(), inject: Vec::new() }, true);
+    }
     ensure_probe_started();
     let st = state();
     let env = st.snapshot_final(FIRST_PROBE_WAIT);
@@ -442,6 +451,72 @@ fn run_probe_loop(
         sleep(backoff);
         backoff = backoff.saturating_mul(2);
     }
+}
+
+/// PATH from the registry as it is now (machine, then user, with
+/// `%VARS%` expanded), then whatever the inherited PATH adds on top (a
+/// launcher's own entries). Each directory once, compared without case.
+fn windows_live_path() -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    #[cfg(not(windows))]
+    fn windows_registry_path(_machine: bool) -> Option<String> { None }
+    merge_path_lists(&[
+        &windows_registry_path(true).unwrap_or_default(),
+        &windows_registry_path(false).unwrap_or_default(),
+        &inherited,
+    ])
+}
+
+/// The `Path` value of the machine (`HKLM`) or user (`HKCU`) environment,
+/// expanded. `None` when it is missing or unreadable.
+#[cfg(windows)]
+fn windows_registry_path(machine: bool) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    };
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (root, key) = if machine {
+        (HKEY_LOCAL_MACHINE, wide(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"))
+    } else {
+        (HKEY_CURRENT_USER, wide("Environment"))
+    };
+    let name = wide("Path");
+    let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+    let mut size: u32 = 0;
+    // SAFETY: a size query (null buffer) on NUL-terminated wide strings.
+    let rc = unsafe {
+        RegGetValueW(root, key.as_ptr(), name.as_ptr(), flags, std::ptr::null_mut(), std::ptr::null_mut(), &mut size)
+    };
+    if rc != 0 || size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
+    let mut len = (buf.len() * 2) as u32;
+    // SAFETY: `buf` holds `len` bytes; RegGetValueW writes at most that and
+    // expands REG_EXPAND_SZ (no RRF_NOEXPAND).
+    let rc = unsafe {
+        RegGetValueW(root, key.as_ptr(), name.as_ptr(), flags, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len)
+    };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..end]))
+}
+
+/// `;`-separated PATH lists joined in order, each directory kept once
+/// (Windows paths compare without case, and a trailing `\` is the same dir).
+fn merge_path_lists(lists: &[&str]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<&str> = Vec::new();
+    for list in lists {
+        for dir in list.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+            if seen.insert(dir.trim_end_matches(['\\', '/']).to_ascii_lowercase()) {
+                out.push(dir);
+            }
+        }
+    }
+    out.join(";")
 }
 
 /// One full probe attempt: run the shell, and on success turn its env
@@ -932,6 +1007,19 @@ mod tests {
         assert_eq!(resolve_program("pi.exe", &path), "pi.exe");
         // Nothing on PATH: unchanged, so the spawn error names what was asked.
         assert_eq!(resolve_program("nope-not-here", &path), "nope-not-here");
+    }
+
+    #[test]
+    fn path_lists_merge_in_order_each_dir_once() {
+        assert_eq!(
+            merge_path_lists(&[
+                r"C:\Windows;C:\Program Files\Git\cmd",
+                r"C:\Users\u\AppData\Local\bin;c:\windows\",
+                r"C:\Program Files\Git\cmd;;D:\tools",
+            ]),
+            r"C:\Windows;C:\Program Files\Git\cmd;C:\Users\u\AppData\Local\bin;D:\tools",
+        );
+        assert_eq!(merge_path_lists(&["", ""]), "");
     }
 
     #[test]

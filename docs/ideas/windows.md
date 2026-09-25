@@ -15,7 +15,8 @@ grep for the symbol next to it.
 - Windows 11 x64 first. ARM64 later.
 - **The only sandbox is Docker.** Seatbelt is never offered, and a stored
   Seatbelt mode reads as Off (done).
-- Closing the window quits. Native title bar for now.
+- Closing the window quits. The app draws its own title bar (done:
+  `WindowControls`, no native frame).
 - Experimental: no Authenticode signing, and the release's Windows job stays
   out of the release job's `needs` (done: `build-windows` / `release-windows`
   in `release.yml`), until someone decides Windows is supported.

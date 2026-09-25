@@ -84,11 +84,13 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   location (`shell_env::script_bash`). A bare `bash` on Windows is
   System32's WSL launcher. Plain terminal tabs open `pwsh`, then Windows
   PowerShell, then `cmd`.
-- **PATH.** The inherited environment is the resolved one: a GUI app on
-  Windows gets the registry PATH from Explorer, so there is no login-shell
-  probe. Every PATH walk splits with the platform separator and resolves
-  PATHEXT (`shell_env::which_in`), skipping npm's extensionless shell shim
-  that sits next to every `.cmd` one.
+- **PATH.** No login-shell probe: PATH is read from the registry (machine,
+  then user) on every use, plus what the process inherited, so a tool
+  installed while Termic runs (Git, an agent CLI) is found without a
+  restart (`shell_env::windows_live_path`). Every PATH walk splits with the
+  platform separator and resolves PATHEXT (`shell_env::which_in`), skipping
+  npm's extensionless shell shim that sits next to every `.cmd` one, and a
+  bare agent command is resolved that way before the spawn.
 - **Processes.** No process groups: stopping a script, a language server or
   an agent kills its process tree (`proc_ctl.rs`, a ToolHelp snapshot with
   a creation-time check so a reused pid is never mistaken for a child).
@@ -116,11 +118,20 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   segment-safe `relUnder`, `baseName`, standard `file:///C:/...` URIs for
   the language servers (mirrored by `lsp_path_to_uri`), and quoting rather
   than backslash-escaping a dropped path.
-- **Window.** Native title bar and caption buttons. The app's own bar is
-  not a drag region there, and `-webkit-app-region` is applied only on
-  macOS: WebView2 honours it (WKWebView ignores it), so a dialog's
-  full-screen backdrop would have become window caption on Windows. WebView2's browser keys (F5 and Ctrl+R reload, Ctrl+P prints) are
-  switched off (`disable_browser_accelerators`).
+- **Window.** No native frame (`decorations(false)` in
+  `build_profile_window`): the app's own top bar is the title bar, as on
+  macOS. It drags the window, a double click maximizes or restores it (read
+  off the mousedown's click count, since the system's move loop swallows a
+  dblclick), and `WindowControls` draws minimize, maximize / restore and
+  close in Windows' look. The window keeps its shadow and resize edges.
+  `-webkit-app-region` is still applied only on macOS: WebView2 honours it
+  (WKWebView ignores it), so a dialog's full-screen backdrop would become
+  window caption on Windows. While a modal dialog is open its backdrop
+  covers the caption buttons (Radix blocks and dismisses on outside
+  clicks), so the window is closed from the dialog first. No Windows 11
+  snap-layout flyout on the maximize button yet. WebView2's browser keys
+  (F5 and Ctrl+R reload, Ctrl+P prints) are switched off
+  (`disable_browser_accelerators`).
 - **Keys.** Ctrl stands in for Cmd, and shortcut hints read `Ctrl+Alt+P`.
   In a terminal, plain Ctrl+letter goes to the shell (Ctrl+P is readline's,
   not the file finder), and Ctrl+V pastes, as in every Windows terminal.
@@ -165,4 +176,5 @@ install.
 - **Installing `termic` onto PATH** from Settings. Agents inside Termic
   still get it.
 - **Activity monitor**, **PDF preview** (needs a CSP change), and **code
-  signing and updates**.
+  signing** (updates work; the installer is not Authenticode-signed, so
+  SmartScreen warns on the first install).
