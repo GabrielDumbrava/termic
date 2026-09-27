@@ -1567,3 +1567,23 @@ export async function clickPresent(selector: string, timeout = 15_000): Promise<
   );
   await browser.execute((sel) => { (document.querySelector(sel) as HTMLElement).click(); }, selector);
 }
+
+/** Put the UI language back to "no pick", the way a fresh machine has it.
+ *
+ *  NOT `setLanguage("system")`: that WRITES `uiLanguage=system`, and a written
+ *  pref beats the English default an e2e build applies when nothing is stored
+ *  (src/lib/i18n.ts, GH #338). On a zh-CN machine the stored value then puts
+ *  every later spec back into Chinese, and it follows the contributor home:
+ *  the WebView's localStorage is keyed by the app identifier, so an e2e binary
+ *  and an installed Termic share it. Removing the key restores both.
+ *
+ *  `applyLanguage` is still called so the live window re-renders, since only
+ *  the STORED pref is being cleared, not the running one.
+ */
+export async function clearLanguagePref(): Promise<void> {
+  await browser.execute(() => {
+    try { localStorage.removeItem("uiLanguage"); } catch { /* private mode */ }
+    window.__termic!.usePrefs.getState().setLanguage("system");
+    try { localStorage.removeItem("uiLanguage"); } catch { /* private mode */ }
+  });
+}

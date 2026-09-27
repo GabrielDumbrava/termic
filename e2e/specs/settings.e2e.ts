@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible } from "../helpers";
+import { archiveTask, clearLanguagePref, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible } from "../helpers";
 
 /** Click the [role="switch"] in the settings row whose label matches exactly.
  *  Toggle rows are label + switch inside one .justify-between wrapper
@@ -597,12 +597,13 @@ describe("settings rail", () => {
   // the pref blob alone.
   describe("language picker", () => {
     after(async () => {
-      // Leave the profile on "system" for every spec that follows in the
-      // run: their markers ("Repos directory", rail labels) are English
-      // copy, and the fixture box resolves system to English.
-      await browser.execute(() => {
-        window.__termic!.usePrefs.getState().setLanguage("system");
-      });
+      // Leave the profile with NO stored pick for every spec that follows in
+      // the run: their markers ("Repos directory", rail labels) are English
+      // copy. Writing "system" would look equivalent and is not: a stored
+      // pref beats the English default an e2e build applies when nothing is
+      // stored (GH #338), so on a zh-CN box the rest of the run renders in
+      // Chinese, and the pref follows the contributor into their own app.
+      await clearLanguagePref();
     });
 
     it("switches the UI to Simplified Chinese and back, live", async () => {
@@ -615,7 +616,7 @@ describe("settings rail", () => {
       // profile (it lives in the app container), so a previous run's pick
       // may still be there. "system" is the no-pick default and the state
       // the after() hook restores.
-      await browser.execute(() => window.__termic!.usePrefs.getState().setLanguage("system"));
+      await clearLanguagePref();
       const initial = await browser.execute(() =>
         (document.querySelector('[data-testid="language-select"]') as HTMLSelectElement).value);
       expect(initial).toBe("system");

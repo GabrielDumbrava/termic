@@ -1,6 +1,6 @@
 import {
-  archiveTask, clickWhenVisible, ensureActiveTask, openTask, rawI18nKeysOnScreen,
-  requireTermicApi, snap, waitForAppShell, waitForText, waitVisible,
+  archiveTask, clearLanguagePref, clickWhenVisible, ensureActiveTask, openTask,
+  rawI18nKeysOnScreen, requireTermicApi, snap, waitForAppShell, waitForText, waitVisible,
 } from "../helpers";
 
 // Translation keys must not reach the screen as text (GH #330).
@@ -50,11 +50,10 @@ describe("no untranslated keys on screen", () => {
 
   after(async () => {
     // Leave the language the way every other spec expects to find it: their
-    // markers are English copy (settings.e2e.ts makes the same promise).
-    await browser.execute(() => {
-      window.__termic!.usePrefs.getState().setLanguage("system");
-      window.__termic!.useApp.getState().closeSettings();
-    });
+    // markers are English copy. Cleared rather than set to "system", or the
+    // stored pref would beat the e2e build's English default (GH #338).
+    await clearLanguagePref();
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     // Self-clean like every other spec: the whole suite shares one data dir
     // (wdio.conf.ts), so this task outlives the window it was made in. Not
     // hygiene, load-bearing: without it `tabs-layout.e2e.ts` lost 8 cases,
