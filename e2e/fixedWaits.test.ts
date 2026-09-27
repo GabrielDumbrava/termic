@@ -71,6 +71,54 @@ function pauseCounts(): Record<string, number> {
   return out;
 }
 
+// The same rule for WebdriverIO's ELEMENT layer, which is the other way a
+// spec gets slow without anyone noticing. Measured on this stack: a
+// `browser.execute` round trip is 4ms, while `$(sel).click()` on the
+// offscreen window is ~29s (two of them were 58s of one 60s case). Every
+// interaction the suite needs has an in-page helper: clickWhenVisible,
+// clickPresent, setInputValue, textOf, waitForAttr, waitVisible.
+//
+// One exception is real and recorded below: moving the REAL pointer. CSS
+// `:hover` does not respond to a synthetic event, so a case about a control
+// that appears on hover has to drive the actual cursor.
+const ELEMENT_CMD_ALLOWED: Record<string, { count: number; why: string }> = {
+  "projects.e2e.ts": {
+    count: 1,
+    why: "`$(sel).moveTo()` parks the REAL pointer off the sidebar; the filter "
+      + "bar is revealed by CSS :hover, which a dispatched event cannot drive",
+  },
+};
+
+describe("element commands in the e2e suite", () => {
+  it("has none beyond the ones recorded here", () => {
+    const found: Record<string, number> = {};
+    const where: string[] = [];
+    for (const name of readdirSync(SPECS).filter(f => f.endsWith(".e2e.ts"))) {
+      readFileSync(path.join(SPECS, name), "utf8").split("\n").forEach((line, i) => {
+        const code = line.trim();
+        if (code.startsWith("*") || code.startsWith("//")) return;
+        // The CALL: `$("sel")` / `$(`sel`)` / `browser.$$(...)`, or an element
+        // method. A `$(FOO)` inside a string (a Makefile fixture) is not one,
+        // hence the required quote.
+        if (!/(?:^|[^\w.$])\$\$?\(\s*[`'"]|browser\.\$\$?\(|\.waitForExist\(|\.waitForDisplayed\(|\.waitForClickable\(/.test(line)) return;
+        found[name] = (found[name] ?? 0) + 1;
+        where.push(`${name}:${i + 1}: ${code.slice(0, 80)}`);
+      });
+    }
+    const expected = Object.fromEntries(
+      Object.entries(ELEMENT_CMD_ALLOWED).map(([f, { count }]) => [f, count]),
+    );
+    expect(found, [
+      "A WebdriverIO element command was added, removed or moved.",
+      `Found: ${where.join(" | ") || "none"}`,
+      "They cost ~29s each on this offscreen window; an execute costs 4ms.",
+      "Use clickWhenVisible / clickPresent / setInputValue / textOf / waitForAttr,",
+      "or record it here with the reason it must drive the real browser.",
+      "See docs/e2e-tests.md 'Where the time goes'.",
+    ].join("\n")).toEqual(expected);
+  });
+});
+
 describe("fixed waits in the e2e suite", () => {
   it("has none that nobody wrote down a reason for", () => {
     const found = pauseCounts();
