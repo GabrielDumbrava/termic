@@ -85,6 +85,12 @@ export interface TermicApi {
   useUsageUnknownDismissed: { getState: () => any; setState: (p: any) => void };
   /** `termic scratchpad`'s webview handler (src/lib/scratchCli.ts). */
   padHandler: (params: any) => Promise<any>;
+  /** The live i18next instance, for `rawI18nKeysOnScreen` (i18n.e2e.ts). */
+  i18n: {
+    exists: (key: string, opts?: any) => boolean;
+    language: string;
+    options: { ns?: string | string[] };
+  };
   ipc: any;
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any>;
   runTabs: any;
@@ -1394,3 +1400,36 @@ export function readClipboard(): string {
  *  src/lib/openExternal.ts), for specs asserting on menu and notice copy. */
 export const FILE_MANAGER_NAME =
   process.platform === "darwin" ? "Finder" : process.platform === "win32" ? "File Explorer" : "File Manager";
+
+/** Translation keys that reached the screen as text.
+ *
+ *  A `<Trans>` or `t()` that names a key the active namespace does not hold
+ *  renders the KEY, which is not a crash, not a type error and not something
+ *  a spec asserting on one specific string ever sees: the PR card shipped
+ *  "pr.cliMissingBody" to users, and the clone dialog lost its whole
+ *  destination line, because the element that carries it lives inside the
+ *  translation.
+ *
+ *  Precise rather than pattern-matched: every dotted token on screen is
+ *  handed to i18next's own `exists`, so "package.json" and "1.9.1" are not
+ *  keys and a real key cannot hide behind a regex nobody updated.
+ */
+export async function rawI18nKeysOnScreen(): Promise<string[]> {
+  return await browser.execute(() => {
+    const i18n = window.__termic!.i18n;
+    const text = (document.body as HTMLElement).innerText ?? "";
+    const seen = new Set<string>();
+    for (const token of text.split(/[\s(){}\[\],;"'`]+/)) {
+      // A key path: camelCase segments separated by dots, nothing else.
+      if (!/^[a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+$/.test(token)) continue;
+      if (seen.has(token)) continue;
+      // EVERY namespace, not the default one: a key that renders raw is
+      // precisely a key the element looked for in the wrong namespace, so
+      // asking only the default would miss the whole bug class.
+      const all = i18n.options.ns;
+      const namespaces = Array.isArray(all) ? all : all ? [all] : [];
+      if (namespaces.some(ns => i18n.exists(token, { ns }))) seen.add(token);
+    }
+    return [...seen];
+  }) as string[];
+}

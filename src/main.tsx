@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -75,6 +75,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/store/agentUsage"),
         import("@/store/usageUnknownDismissed"),
         import("@/lib/scratchCli"),
+        import("@/lib/i18n"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -101,6 +102,11 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // write in the SAME tick as an editor remount, which a round trip over
       // the control socket can only hit by luck (lib/scratchLive).
       padHandler: scratchCli.padHandler,
+      // The live i18next instance. Exposed so a spec can ask whether a string
+      // on screen IS a translation key (i18n.exists), which is the difference
+      // between a precise "no raw keys reached the UI" check and a regex
+      // guessing at what a key looks like. See i18n.e2e.ts.
+      i18n: i18nMod.i18n,
       ipc,
       invoke: core.invoke,
       runTabs,
