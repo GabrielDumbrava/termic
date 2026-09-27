@@ -62,8 +62,19 @@ export default defineConfig({
   server: {
     port: devPort,
     strictPort: true,
-    host: false,
-    hmr: { protocol: "ws", host: "localhost", port: devPort + 1 },
+    // Explicit IPv4: `host: false` (localhost) binds whichever address
+    // the resolver lists first, and on Windows that is often ::1 only -
+    // while the tauri CLI's readiness probe connects to 127.0.0.1, so
+    // `tauri dev` waits forever on a ready server (measured: netstat
+    // showed the probe parked in SYN_SENT against a ::1-only listener).
+    // The webview still loads via `localhost`: the browser falls back
+    // from ::1 to 127.0.0.1 when the first address refuses.
+    host: "127.0.0.1",
+    // Same story for HMR: `localhost` would bind ::1-only while the
+    // webview dials 127.0.0.1, and the vite client's reconnect storm
+    // takes the webview down (measured: "WebSocket closed without
+    // opened" until the window died).
+    hmr: { protocol: "ws", host: "127.0.0.1", port: devPort + 1 },
     watch: { ignored: ["**/src-tauri/**"] },
   },
 });
