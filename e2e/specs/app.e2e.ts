@@ -655,6 +655,15 @@ describe("more dialogs open", () => {
     });
     await waitVisible('[role="dialog"]', 8_000);
     await snap("dialogs2.png");
+    // Close it. The suite shares ONE app window on Windows (the whole run is
+    // a single launch there, unlike the per-file relaunch macOS gets), so a
+    // dialog left open outlives this file: it sat over `codenav.e2e.ts` and
+    // swallowed the chip click, which read as "Terraform diagnostics never
+    // arrived" four specs later with nothing in the log to connect them.
+    await browser.execute(() => window.__termic!.useUI.getState().closeRace());
+    // By its own text, not `[role="dialog"]`: earlier cases in this block
+    // leave their dialogs open on purpose, so "no dialog at all" is false.
+    await waitForTextGone("Start an agent race");
   });
 });
 
@@ -707,9 +716,10 @@ describe("more dialogs open", () => {
 
   before(async () => {
     await waitForAppShell();
-    // Earlier blocks in this file leave dialogs open (the race dialog is last).
-    // Start from a clean slate: a stacked close prompt is covered by its own
-    // styling, not by accident here.
+    // Belt and braces: the race case closes its own dialog now (it has to,
+    // this describe is macOS-only and Windows runs the whole suite in ONE app
+    // window), and a stacked close prompt should be covered by its own
+    // styling rather than by accident here.
     await browser.execute(() => {
       const u = window.__termic!.useUI.getState();
       u.closeRace?.(); u.closeWelcome?.(); u.closeChangelog?.();
