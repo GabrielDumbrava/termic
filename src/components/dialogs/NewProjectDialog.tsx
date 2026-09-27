@@ -1,6 +1,7 @@
 // Add Project dialog with discovered-repos shortcut.
 
 import { useEffect, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -23,22 +24,23 @@ import { cn } from "@/lib/utils";
 // longer ask the user to pre-declare "not a git repo" with a checkbox;
 // instead we detect it after they pick a directory and confirm intent.
 type ConfirmKind = "project" | "host" | "member";
-const CONFIRM_COPY: Record<ConfirmKind, { title: string; body: string }> = {
+const CONFIRM_COPY: Record<ConfirmKind, { titleKey: string; bodyKey: string }> = {
   project: {
-    title: "Add as a plain folder?",
-    body: "This folder isn't a git repository. You can still add it as a plain folder project: agents run at the folder root, but there are no worktrees or branches.",
+    titleKey: "newProject.confirmProjectTitle",
+    bodyKey: "newProject.confirmProjectBody",
   },
   host: {
-    title: "Add a non-git host?",
-    body: "This folder isn't a git repository. It will host the shared knowledge files as a plain folder. Member repos still get their own worktrees per task.",
+    titleKey: "newProject.confirmHostTitle",
+    bodyKey: "newProject.confirmHostBody",
   },
   member: {
-    title: "Add as a plain folder?",
-    body: "This folder isn't a git repository. It mounts the main checkout only (a live symlink), with no worktree or branch.",
+    titleKey: "newProject.confirmMemberTitle",
+    bodyKey: "newProject.confirmMemberBody",
   },
 };
 
 export function NewProjectDialog() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.newProjectOpen);
   const close = useUI(s => s.closeNewProject);
   const pushToast = useUI(s => s.pushToast);
@@ -199,7 +201,7 @@ export function NewProjectDialog() {
     // never chose while this dialog waits for a repo that will never appear
     // where it is looking. Refuse here, where it can still be said out loud.
     if (!(await pathExists(parent))) {
-      setErr(`${parent} does not exist. Pick a folder that does.`);
+      setErr(t("newProject.cloneParentMissing", { path: parent }));
       return;
     }
     // Single-quoted, because a URL can legally carry characters the shell
@@ -241,7 +243,7 @@ export function NewProjectDialog() {
       // to-collapsed fallback in Sidebar would otherwise hide it.
       setProjectCollapsed(proj.id, false);
       await loadAll();
-      pushToast(`Added project “${proj.name}”`, "success");
+      pushToast(t("newProject.toastAdded", { name: proj.name }), "success");
       // Refresh discovery in case the same repos_dir has more candidates.
       if (reposDir) {
         const repos = await discoverRepos(reposDir).catch(() => []);
@@ -355,7 +357,7 @@ export function NewProjectDialog() {
       const proj = await projectAddMulti(path.trim(), multiName.trim(), memberRows, asNonGit);
       setProjectCollapsed(proj.id, false);
       await loadAll();
-      pushToast(`Added multi-repo project “${proj.name}” (${memberRows.length} members)`, "success");
+      pushToast(t("newProject.toastAddedMulti", { name: proj.name, count: memberRows.length }), "success");
       close();
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   }
@@ -429,7 +431,7 @@ export function NewProjectDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title="Add project"
+      title={t("newProject.title")}
       // Fixed width across both modes so toggling between Repository
       // and Multi-repo doesn't resize the dialog mid-decision. Sized
       // for multi-repo: per-member rows each have three script
@@ -447,9 +449,9 @@ export function NewProjectDialog() {
           the difference obvious before committing. */}
       <div className="mb-5 grid grid-cols-3 gap-2 text-[13px]">
         {([
-          { id: "repo",  icon: Folder, label: "Repository",  hint: "One git repo. Worktrees branch off it." },
-          { id: "clone", icon: Download, label: "Clone from URL", hint: "Clone a remote repo, then add it." },
-          { id: "multi", icon: Layers, label: "Multi-repo project", hint: "Several repos in one task. Shared memory across them." },
+          { id: "repo",  icon: Folder, label: t("newProject.modeRepo"),  hint: t("newProject.modeRepoHint") },
+          { id: "clone", icon: Download, label: t("newProject.modeClone"), hint: t("newProject.modeCloneHint") },
+          { id: "multi", icon: Layers, label: t("newProject.modeMulti"), hint: t("newProject.modeMultiHint") },
         ] as const).map(opt => {
           const active = mode === opt.id;
           const Ic = opt.icon;
@@ -479,13 +481,11 @@ export function NewProjectDialog() {
       {mode === "clone" ? (
         <>
           <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-            Clones the repo in a real terminal, then adds it as a project. The
-            clone runs as you, so SSH keys, credential helpers and any
-            two-factor prompt work exactly as they do in your own shell.
+            {t("newProject.cloneIntro")}
           </p>
 
           <label className="block">
-            <span className="mb-1.5 block text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">Repository URL</span>
+            <span className="mb-1.5 block text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">{t("newProject.repoUrlLabel")}</span>
             <Input
               value={cloneUrl}
               onChange={e => setCloneUrl(e.target.value)}
@@ -497,7 +497,7 @@ export function NewProjectDialog() {
           </label>
 
           <label className="mt-4 block">
-            <span className="mb-1.5 block text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">Clone into</span>
+            <span className="mb-1.5 block text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">{t("newProject.cloneIntoLabel")}</span>
             <div className="flex gap-2">
               <Input
                 value={cloneParent}
@@ -508,20 +508,20 @@ export function NewProjectDialog() {
                 data-testid="clone-parent"
                 autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
               />
-              <Button variant="secondary" size="lg" onClick={browseCloneParent} disabled={!!cloneStarted}>Browse…</Button>
+              <Button variant="secondary" size="lg" onClick={browseCloneParent} disabled={!!cloneStarted}>{t("common:browse")}</Button>
             </div>
             <span className="mt-1 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
               {cloneDest
-                ? <>Clones into <code className="mono" data-testid="clone-dest">{cloneDest}</code>.</>
+                ? <Trans i18nKey="newProject.clonesInto" values={{ dest: cloneDest }} components={{ code: <code className="mono" data-testid="clone-dest" /> }} />
                 : reposDir
-                  ? <>The folder to clone into. Pre-filled from your repos folder.</>
-                  : <>The folder to clone into. You have no repos folder set, so pick one.</>}
+                  ? t("newProject.cloneIntoHintRepos")
+                  : t("newProject.cloneIntoHintNone")}
             </span>
           </label>
 
           {cloneStarted && (
             <div className="mt-4">
-              <div className="mb-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">Terminal</div>
+              <div className="mb-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">{t("newProject.terminalLabel")}</div>
               {/* The command is TYPED, not run: `initialInput` carries no
                   newline, so it sits at the prompt for the user to edit
                   (--depth, --branch, a different remote) and run themselves.
@@ -536,9 +536,7 @@ export function NewProjectDialog() {
                 />
               </div>
               <p className="mt-1.5 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-                Answer any credential prompt here. Ctrl-C stops it if you need
-                to change the command. Add becomes available once the repo
-                exists on disk.
+                {t("newProject.cloneNote")}
               </p>
             </div>
           )}
@@ -546,7 +544,7 @@ export function NewProjectDialog() {
           {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
 
           <div className="mt-3 flex justify-end gap-2">
-            <Button variant="ghost" onClick={close}>Cancel</Button>
+            <Button variant="ghost" onClick={close}>{t("common:cancel")}</Button>
             {!cloneStarted ? (
               <Button
                 variant="primary"
@@ -554,7 +552,7 @@ export function NewProjectDialog() {
                 onClick={() => void startClone()}
                 data-testid="clone-start"
               >
-                <Download className="h-4 w-4" /> Clone
+                <Download className="h-4 w-4" /> {t("newProject.clone")}
               </Button>
             ) : (
               <Button
@@ -563,7 +561,7 @@ export function NewProjectDialog() {
                 onClick={() => void add(cloneStarted.dest, false, true)}
                 data-testid="clone-add"
               >
-                <FolderPlus className="h-4 w-4" /> {busy ? "Adding…" : "Add project"}
+                <FolderPlus className="h-4 w-4" /> {busy ? t("newProject.adding") : t("newProject.addProject")}
               </Button>
             )}
           </div>
@@ -571,35 +569,27 @@ export function NewProjectDialog() {
       ) : mode === "multi" ? (
         <>
           <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-            A multi-repo project groups several repos under one task
-            so an agent can work across them in a single session. Each
-            task creates a folder with one worktree per member repo,
-            plus a shared
-            {" "}<code className="mono">CLAUDE.md</code> /{" "}
-            <code className="mono">AGENTS.md</code> /{" "}
-            <code className="mono">.claude/</code> the agent loads at startup,
-            persistent business knowledge that lives across every task.
+            <Trans i18nKey="newProject.multiIntro" components={{ code: <code className="mono" /> }} />
           </p>
 
           <label className="block text-[13.5px]">
-            Name
+            {t("newProject.nameLabel")}
             <Input
               value={multiName}
               onChange={e => setMultiName(e.target.value)}
               onKeyDown={submitOnEnter(canAddMulti, handleAddMulti)}
-              placeholder="team-knowledge"
+              placeholder={t("newProject.namePlaceholder")}
               className="mt-1.5"
               autoFocus
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
             <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
-              Shown in the sidebar. If no host repository is set below, this also
-              names the auto-created host directory.
+              {t("newProject.nameHint")}
             </span>
           </label>
 
           <label className="mt-4 block text-[13.5px]">
-            Host repository <span className="text-[var(--color-fg-faint)]">(optional)</span>
+            {t("newProject.hostLabel")} <span className="text-[var(--color-fg-faint)]">{t("newProject.hostOptional")}</span>
             <div className="mt-1.5 flex gap-2">
               <Input
                 value={path}
@@ -607,29 +597,24 @@ export function NewProjectDialog() {
                 onKeyDown={submitOnEnter(canAddMulti, handleAddMulti)}
                 placeholder="~/Notes/team-knowledge"
               />
-              <Button variant="secondary" size="lg" onClick={browse}>Browse…</Button>
+              <Button variant="secondary" size="lg" onClick={browse}>{t("common:browse")}</Button>
             </div>
             <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
-              Where the shared <code className="mono">CLAUDE.md</code>,{" "}
-              <code className="mono">AGENTS.md</code>, and{" "}
-              <code className="mono">.claude/</code> live. Leave blank and Termic
-              creates one at{" "}
-              <code className="mono">~/termic/projects/&lt;name&gt;/</code>. A plain
-              folder works too: we'll confirm after you pick it.
+              <Trans i18nKey="newProject.hostHint" components={{ code: <code className="mono" /> }} />
             </span>
           </label>
 
           <div className="mt-4">
             <div className="mb-1.5 flex items-baseline justify-between text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-              <span>Members</span>
+              <span>{t("newProject.membersLabel")}</span>
               <span className="font-mono normal-case text-[11.5px] text-[var(--color-fg-faint)]">
-                {memberRows.length} of {memberCandidates.length}
+                {t("newProject.membersCount", { count: memberRows.length, total: memberCandidates.length })}
               </span>
             </div>
             <>
                 {memberRows.length === 0 ? (
                   <div className="rounded-md border border-dashed border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-6 text-center text-[12.5px] text-[var(--color-fg-faint)]">
-                    No members yet. Add repos below: pick from your existing projects or add any folder from disk.
+                    {t("newProject.membersEmpty")}
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
@@ -641,7 +626,7 @@ export function NewProjectDialog() {
                             <div className="flex items-center gap-1.5">
                               <span className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{row.name}</span>
                               {row.non_git && (
-                                <span className="shrink-0 rounded bg-[var(--color-bg-1)] px-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]">folder</span>
+                                <span className="shrink-0 rounded bg-[var(--color-bg-1)] px-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("newProject.folderBadge")}</span>
                               )}
                             </div>
                             <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{row.root_path}</div>
@@ -649,7 +634,7 @@ export function NewProjectDialog() {
                           <button
                             type="button"
                             onClick={() => removeMember(row.root_path)}
-                            title="Remove from this multi-repo project"
+                            title={t("newProject.removeMemberTitle")}
                             className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
                           >
                             <X className="h-3.5 w-3.5" />
@@ -657,19 +642,19 @@ export function NewProjectDialog() {
                         </div>
                         <div className="flex flex-col gap-2 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2">
                           <ScriptInput
-                            label="Setup"
+                            label={t("newProject.scriptSetup")}
                             value={row.setup_script}
                             onChange={v => updateMember(row.root_path, { setup_script: v })}
                             placeholder="docker compose up -d"
                           />
                           <ScriptInput
-                            label="Run"
+                            label={t("newProject.scriptRun")}
                             value={row.run_script}
                             onChange={v => updateMember(row.root_path, { run_script: v })}
                             placeholder="PORT=$TERMIC_PORT npm run dev"
                           />
                           <ScriptInput
-                            label="Archive"
+                            label={t("newProject.scriptArchive")}
                             value={row.archive_script}
                             onChange={v => updateMember(row.root_path, { archive_script: v })}
                             placeholder="docker compose down"
@@ -695,13 +680,13 @@ export function NewProjectDialog() {
           {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
 
           <div className="mt-4 flex justify-end gap-2">
-            <Button variant="ghost" onClick={close}>Cancel</Button>
+            <Button variant="ghost" onClick={close}>{t("common:cancel")}</Button>
             <Button
               variant="primary"
               disabled={!canAddMulti}
               onClick={handleAddMulti}
             >
-              <Layers className="h-4 w-4" /> Add multi-repo
+              <Layers className="h-4 w-4" /> {t("newProject.addMulti")}
             </Button>
           </div>
         </>
@@ -734,20 +719,22 @@ export function NewProjectDialog() {
                   for (const r of filtered) next ? s.add(r.path) : s.delete(r.path);
                   return s;
                 })}
-                aria-label="Select all discovered repos"
+                aria-label={t("newProject.selectAllAria")}
                 data-testid="discovered-select-all"
               />
-              <span>Discovered repos</span>
+              <span>{t("newProject.discoveredRepos")}</span>
             </span>
             <span className="font-mono normal-case text-[11.5px] text-[var(--color-fg-faint)]">
-              {q ? `${filtered.length} of ${visible.length}` : visible.length} in {reposDir}
+              {q
+                ? t("newProject.discoveredIn", { shown: t("newProject.filteredOf", { filtered: filtered.length, total: visible.length }), dir: reposDir })
+                : t("newProject.discoveredIn", { shown: visible.length, dir: reposDir })}
             </span>
           </div>
           {visible.length > 5 && (
             <Input
               value={filter}
               onChange={e => setFilter(e.target.value)}
-              placeholder="Filter…"
+              placeholder={t("newProject.filterPlaceholder")}
               className="mb-1.5"
               autoFocus
               autoComplete="off"
@@ -760,7 +747,7 @@ export function NewProjectDialog() {
           <div className="max-h-[220px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
             {filtered.length === 0 ? (
               <div className="px-3 py-3 text-[12.5px] text-[var(--color-fg-faint)]">
-                No repos match "{filter}".
+                {t("newProject.noReposMatch", { filter })}
               </div>
             ) : filtered.map(r => (
               // The ROW is the surface: tint and hover live here, not on the
@@ -783,7 +770,7 @@ export function NewProjectDialog() {
                       next ? s.add(r.path) : s.delete(r.path);
                       return s;
                     })}
-                    aria-label={`Select ${r.name}`}
+                    aria-label={t("newProject.selectRepoAria", { name: r.name })}
                     data-testid={`discovered-check-${r.name}`}
                   />
                 </span>
@@ -815,8 +802,8 @@ export function NewProjectDialog() {
                 </button>
                 <button
                   onClick={() => dismissRepo(r.path, true)}
-                  title="Hide from discovery"
-                  aria-label={`Hide ${r.name} from discovery`}
+                  title={t("newProject.hideFromDiscovery")}
+                  aria-label={t("newProject.hideAria", { name: r.name })}
                   className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] focus-visible:opacity-100 group-hover:opacity-100"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -831,7 +818,7 @@ export function NewProjectDialog() {
                 onClick={() => setShowHidden(v => !v)}
                 className="text-[11.5px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
               >
-                {showHidden ? "Hide" : "Show"} {hidden.length} hidden
+                {showHidden ? t("newProject.hideHidden", { count: hidden.length }) : t("newProject.showHidden", { count: hidden.length })}
               </button>
               {showHidden && (
                 <div className="mt-1 max-h-[140px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
@@ -842,8 +829,8 @@ export function NewProjectDialog() {
                       <span dir="rtl" className="min-w-0 flex-1 truncate text-right text-[11px] text-[var(--color-fg-faint)] opacity-50">{r.path}</span>
                       <button
                         onClick={() => dismissRepo(r.path, false)}
-                        title="Restore to discovery"
-                        aria-label={`Restore ${r.name} to discovery`}
+                        title={t("newProject.restoreTitle")}
+                        aria-label={t("newProject.restoreAria", { name: r.name })}
                         className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                       >
                         <RotateCcw className="h-3.5 w-3.5" />
@@ -856,14 +843,14 @@ export function NewProjectDialog() {
           )}
           <div className="relative my-3 text-center">
             <div className="absolute inset-x-0 top-1/2 h-px bg-[var(--color-border-soft)]" />
-            <span className="relative bg-[var(--color-bg-1)] px-2 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">or add manually</span>
+            <span className="relative bg-[var(--color-bg-1)] px-2 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("newProject.orAddManually")}</span>
           </div>
         </div>
         );
       })()}
 
       <label className="block text-[13.5px]">
-        {nonGit ? "Folder" : "Repository root"}
+        {nonGit ? t("newProject.pathLabelFolder") : t("newProject.pathLabelRepo")}
         <div className="mt-1.5 flex gap-2">
           <Input
             data-testid="new-project-path"
@@ -872,21 +859,21 @@ export function NewProjectDialog() {
             onKeyDown={submitOnEnter(!!path.trim() && !busy, handleAdd)}
             placeholder="/path/to/repo"
           />
-          <Button variant="secondary" size="lg" onClick={browse}>Browse…</Button>
+          <Button variant="secondary" size="lg" onClick={browse}>{t("common:browse")}</Button>
         </div>
         {/* Issue #4: a plain folder (e.g. a parent dir of several repos)
             works too — it becomes a repo-root-only project (agents run at
             the folder, no worktrees). We detect git after you pick the dir
             and confirm before adding, so there's no checkbox to set. */}
         <span className="mt-1 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-          A git repo gets worktrees and branches. A plain folder works too: agents run at the folder root. We confirm after you pick it.
+          {t("newProject.pathHint")}
         </span>
       </label>
 
       {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
 
       <div className="mt-2 flex justify-end gap-2">
-        <Button variant="ghost" onClick={close}>Cancel</Button>
+        <Button variant="ghost" onClick={close}>{t("common:cancel")}</Button>
         {/* One button, two jobs, and the label says which: ticked rows are the
             sweep, and the manual field is the fallback for a path discovery
             never offered. Showing both at once would leave the user guessing
@@ -895,11 +882,11 @@ export function NewProjectDialog() {
           <Button variant="primary" disabled={busy} onClick={() => void addSelected()}
                   data-testid="add-selected-projects">
             <FolderPlus className="h-4 w-4" />
-            {busy ? "Adding..." : `Add ${selected.size} ${selected.size === 1 ? "project" : "projects"}`}
+            {busy ? t("newProject.addingDots") : t(selected.size === 1 ? "newProject.addProjectsOne" : "newProject.addProjectsMany", { count: selected.size })}
           </Button>
         ) : (
           <Button variant="primary" disabled={!path || busy} onClick={handleAdd}>
-            <FolderPlus className="h-4 w-4" /> Add
+            <FolderPlus className="h-4 w-4" /> {t("common:add")}
           </Button>
         )}
       </div>
@@ -912,18 +899,18 @@ export function NewProjectDialog() {
     <AppDialog
       open={!!confirm}
       onOpenChange={(v) => { if (!v) resolveConfirm(false); }}
-      title={confirm ? CONFIRM_COPY[confirm.kind].title : ""}
+      title={confirm ? t(CONFIRM_COPY[confirm.kind].titleKey) : ""}
       className="max-w-md"
     >
       {confirm && (
         <>
           <p className="text-[13.5px] leading-snug text-[var(--color-fg-dim)]">
-            {CONFIRM_COPY[confirm.kind].body}
+            {t(CONFIRM_COPY[confirm.kind].bodyKey)}
           </p>
           <div className="mt-4 flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => resolveConfirm(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => resolveConfirm(false)}>{t("common:cancel")}</Button>
             <Button variant="primary" onClick={() => resolveConfirm(true)}>
-              <FolderPlus className="h-4 w-4" /> Add as folder
+              <FolderPlus className="h-4 w-4" /> {t("newProject.addAsFolder")}
             </Button>
           </div>
         </>
@@ -971,6 +958,7 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
   onAdd: (p: Project) => void;
   onQuickAdd?: (path: string) => Promise<void>;
 }) {
+  const { t } = useTranslation("dialogs");
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // Path for the inline "Add repo from disk" row — same path + Browse
@@ -983,7 +971,7 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
   if (candidates.length === 0 && !onQuickAdd && !open) {
     return (
       <div className="mt-3 text-[11.5px] text-[var(--color-fg-faint)]">
-        Every other repository is already a member.
+        {t("newProject.everyOtherMember")}
       </div>
     );
   }
@@ -994,7 +982,7 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
         onClick={() => setOpen(true)}
         className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
       >
-        + Add member
+        + {t("newProject.addMember")}
       </button>
     );
   }
@@ -1012,20 +1000,18 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border-soft)]">
       <div className="flex items-center justify-between px-3 py-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-        <span>Available repositories</span>
+        <span>{t("newProject.availableRepos")}</span>
         <button
           type="button"
           onClick={() => setOpen(false)}
           className="rounded p-0.5 hover:text-[var(--color-fg)]"
-          aria-label="Close"
+          aria-label={t("common:close")}
         >
           <X className="h-3 w-3" />
         </button>
       </div>
       <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
-        Pick one of your existing projects to copy in, or use “Add repo from
-        disk” for any folder. Members are self-contained: each carries its own
-        scripts, and nothing is registered as a standalone project.
+        {t("newProject.pickerIntro")}
       </div>
       {candidates.map(c => (
         <button
@@ -1038,13 +1024,13 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
             <div className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{c.name}</div>
             <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{c.root_path}</div>
           </div>
-          <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Add</span>
+          <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">{t("common:add")}</span>
         </button>
       ))}
       {onQuickAdd && (
         <div className="border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2.5">
           <div className="mb-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-            Add repo from disk
+            {t("newProject.addFromDisk")}
           </div>
           <div className="flex gap-2">
             <Input
@@ -1055,13 +1041,13 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
               className="flex-1"
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
-            <Button variant="secondary" size="lg" onClick={browseDisk} disabled={busy}>Browse…</Button>
+            <Button variant="secondary" size="lg" onClick={browseDisk} disabled={busy}>{t("common:browse")}</Button>
             <Button variant="primary" size="lg" onClick={addDisk} disabled={busy || !diskPath.trim()}>
-              {busy ? "Adding…" : "Add"}
+              {busy ? t("newProject.adding") : t("common:add")}
             </Button>
           </div>
           <p className="mt-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-            Adds the folder as a member of this project only (no standalone project). A plain folder works too: we confirm after you pick it, then it mounts as the main checkout only (no worktree).
+            {t("newProject.diskHint")}
           </p>
         </div>
       )}

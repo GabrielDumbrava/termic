@@ -8,6 +8,7 @@
 // on Close. Renders nothing off Windows.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IS_WINDOWS } from "@/lib/platform";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,9 @@ const GLYPH = {
 } as const;
 
 export function WindowControls() {
+  // Hooks run before the IS_WINDOWS bail below, which is why the t() calls
+  // sit there and not at the button call sites after it.
+  const { t } = useTranslation("common");
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -71,9 +75,9 @@ export function WindowControls() {
       data-maximized={maximized ? "true" : "false"}
       className="flex h-full shrink-0 items-stretch self-stretch"
     >
-      {button("minimize", "Minimize", () => { win.minimize().catch(() => {}); })}
-      {button("maximize", maximized ? "Restore" : "Maximize", () => { win.toggleMaximize().catch(() => {}); })}
-      {button("close", "Close", () => { win.close().catch(() => {}); })}
+      {button("minimize", t("minimize"), () => { win.minimize().catch(() => {}); })}
+      {button("maximize", maximized ? t("restore") : t("maximize"), () => { win.toggleMaximize().catch(() => {}); })}
+      {button("close", t("close"), () => { win.close().catch(() => {}); })}
     </div>
   );
 }
