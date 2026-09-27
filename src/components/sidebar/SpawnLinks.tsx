@@ -15,12 +15,19 @@ import { useApp } from "@/store/app";
 import { spawnLinkPairs, spawnMarkParent } from "@/lib/spawnLinks";
 import type { Task } from "@/lib/types";
 
-export function SpawnedFromMark({ task }: { task: Task }) {
+export function SpawnedFromMark({ task, suppressInGroup = true }: {
+  task: Task;
+  /** The sidebar draws the group rail, which already links same-block
+   *  pairs, so it keeps the default and marks only the pairs the rail does
+   *  not explain. The dashboard draws no rail, so it passes false and marks
+   *  every spawned child. See `spawnMarkParent`. */
+  suppressInGroup?: boolean;
+}) {
   const { t } = useTranslation("sidebar");
   // One string, so the row re-renders when the PARENT's label changes, not
   // on every store write (docs/performance.md, selector fanout).
   const key = useApp(s => {
-    const p = spawnMarkParent(task, s.tasks);
+    const p = spawnMarkParent(task, s.tasks, { suppressInGroup });
     if (!p) return "";
     const project = p.project_id === task.project_id ? "" : s.projects.find(x => x.id === p.project_id)?.name ?? "";
     return `${p.id}\u0000${p.name}\u0000${project}`;

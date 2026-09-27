@@ -2,6 +2,11 @@
 // grouped into the same folders the sidebar shows. Designed so the empty state
 // and the populated state share the same shape — adding a project doesn't yank
 // you somewhere else.
+//
+// Task rows inside a project card render FLAT on purpose: the sidebar keeps
+// the task-group rail, collapse and the drag gestures, and each row carries
+// the spawned-by mark (`suppressInGroup={false}`) instead — on this surface
+// nothing else says who started whom.
 
 import { useTranslation, Trans } from "react-i18next";
 import { useApp, selectTaskTabs } from "@/store/app";
@@ -12,6 +17,7 @@ import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "@/components/sidebar/GroupActionsMenuItems";
+import { SpawnedFromMark } from "@/components/sidebar/SpawnLinks";
 import { taskLabel } from "@/lib/taskLabel";
 import { taskWorkBadge, taskDelegatedWork } from "@/lib/taskWorkState";
 import { groupOf, projectSections, sortSectionsActiveFirst } from "@/lib/projectGroups";
@@ -317,6 +323,9 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
   // it the same task reads as a plain spinner here and a ring there, which is
   // the drift `taskWorkBadge` exists to prevent.
   const held = taskDelegatedWork(tabs, ctx.workPrefs);
+  // The sidebar's `(n)` signal: MAIN terminal tabs only (a split pane is not
+  // a separate tab), shown from two up.
+  const mainTabCount = tabs.filter(t => t.type === "terminal" && !t.paneId).length;
 
   return (
     // A div with a button role, not a <button>: the PR chip is itself a button
@@ -363,6 +372,17 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
         </>
       )}
       <TaskLocationIcon isMainCheckout={w.is_main_checkout} className="self-center" />
+      {/* No group rail here, so unlike the sidebar EVERY spawned child is
+          marked — the sidebar suppresses the mark for a child inside its
+          parent's drawn group, whose rail already says it. */}
+      {w.spawned_by && <SpawnedFromMark task={w} suppressInGroup={false} />}
+      {/* Multi-terminal count, same trigger and style as the sidebar's row:
+          a task with several terminals reads as one otherwise. */}
+      {mainTabCount > 1 && (
+        <span className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-fg-dim)]">
+          ({mainTabCount})
+        </span>
+      )}
       {/* Live signals, right-aligned so a row with none is unchanged. Both
           are read-only here: the PR chip renders what the poller already
           resolved and never kicks a fetch of its own. */}
