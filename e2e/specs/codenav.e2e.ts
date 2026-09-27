@@ -1262,10 +1262,17 @@ describe("code intelligence", () => {
       }
     }, taskId);
     // Wait for the reap to have HAPPENED rather than for the time it usually
-    // takes: the host's own list is the fact this case is about.
+    // takes. The thing that has to happen is WEBVIEW-side: the entry holding
+    // the client for the dead process has to go, or arming below is handed
+    // that client and spawns nothing ("no server to reap"). The host's
+    // `lsp_list` is the wrong question, and asking it cost this case on both
+    // runners: the process was already gone while the entry was still there.
+    // `__termicLspClients` is that map, put on globalThis by lib/lsp/host.ts
+    // precisely so there is one of it.
     await browser.waitUntil(
-      async () => ((await browser.execute(async () => await window.__termic!.invoke("lsp_list"))) as unknown[]).length === 0,
-      { timeout: 15_000, timeoutMsg: "the idle reap never dropped the abandoned server" },
+      () => browser.execute(() =>
+        ((globalThis as unknown as { __termicLspClients?: Map<string, unknown> }).__termicLspClients?.size ?? 0) === 0),
+      { timeout: 15_000, timeoutMsg: "the idle reap never released the abandoned client" },
     );
 
     await armGrant(root, taskId);
