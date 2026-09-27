@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
 
 /** `execSync` for git against the shared fixture, retrying a moment on
  *  `index.lock`. The app runs its own git on this repo (the Git panel's status
@@ -887,8 +887,8 @@ describe("git history tab", () => {
 
   it("searches commit messages across the branch, not just the loaded rows", async () => {
     await openGraph();
-    const box = await $('input[placeholder="Search messages"]');
-    await box.setValue(subject.slice(0, 12));
+    const SEARCH = 'input[placeholder="Search messages"]';
+    await setInputValue(SEARCH, subject.slice(0, 12));
     await browser.waitUntil(
       async () => {
         const s = await commitSubjects();
@@ -899,12 +899,12 @@ describe("git history tab", () => {
     // A query nothing matches is an empty graph with an explanation, not the
     // unfiltered list and not an error (the box takes literal text, so an
     // unbalanced bracket is a query with no hits).
-    await box.setValue("[no-such-commit");
+    await setInputValue(SEARCH, "[no-such-commit");
     await browser.waitUntil(
       async () => (await commitSubjects()).length === 0,
       { timeout: 10_000, timeoutMsg: "a no-match search still listed commits" },
     );
-    await box.setValue("");
+    await setInputValue(SEARCH, "");
     await browser.waitUntil(
       async () => (await commitSubjects()).length > 1,
       { timeout: 10_000, timeoutMsg: "clearing the search did not restore the graph" },
@@ -1126,8 +1126,8 @@ describe("git compare mode", () => {
   it("narrows the list with the filter", async () => {
     // The filter is GitPanel's, on the branch row and shared by all three
     // sub-tabs, so it is outside the compare panel in the DOM.
-    const input = await $('input[placeholder="Filter"]');
-    await input.setValue("committed");
+    const FILTER = 'input[placeholder="Filter"]';
+    await setInputValue(FILTER, "committed");
     await browser.waitUntil(
       async () => {
         const r = await rows();
@@ -1135,7 +1135,7 @@ describe("git compare mode", () => {
       },
       { timeout: 8_000, timeoutMsg: "the filter never narrowed the compare list" },
     );
-    await input.setValue("");
+    await setInputValue(FILTER, "");
     await waitForRow("README.md", "clearing the filter did not restore the list");
   });
 

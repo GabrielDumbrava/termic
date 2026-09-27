@@ -47,6 +47,8 @@ import {
   waitTaskUnmounted,
   waitPtyQuiet,
   waitForAttr,
+  setInputValue,
+  textOf,
 } from "../helpers";
 
 /** ms since the task's agent tab last produced PTY bytes. Not in the DOM. */
@@ -606,9 +608,9 @@ describe("scheduled messages", () => {
     const tab = await mainTab(taskId);
 
     await clickWhenVisible(`[data-task-id="${taskId}"] [data-testid="queue-button"]`);
-    const composer = await $('textarea[placeholder^="Add a message"]');
-    await composer.waitForDisplayed({ timeout: 5_000 });
-    await composer.setValue("check the release logs");
+    const COMPOSER = 'textarea[placeholder^="Add a message"]';
+    await waitVisible(COMPOSER, 5_000);
+    await setInputValue(COMPOSER, "check the release logs");
     // No date field until asked for: WebKit paints an EMPTY one as today's
     // date, which reads as already picked. Asking opens it on tomorrow.
     const dateField = () => browser.execute(() =>
@@ -623,14 +625,14 @@ describe("scheduled messages", () => {
     await clickWhenVisible('[data-testid="queue-send-after-7"]');
     expect(await dateField()).toBeNull();
     // The hint states the ceiling where the choice is made, and never a time.
-    const hint = await $('[data-testid="queue-hint"]').getText();
+    const hint = await textOf('[data-testid="queue-hint"]');
     expect(hint).toMatch(/^Sends the next time this chat is open on or after /);
     await clickByText("Schedule");
 
     await browser.waitUntil(async () => (await scheduledChip(taskId)) === 1, {
       timeout: 5_000, timeoutMsg: "the queue chip never counted the scheduled message",
     });
-    expect(await $('[data-testid="queue-item-scheduled"]').isDisplayed()).toBe(true);
+    await waitVisible('[data-testid="queue-item-scheduled"]', 5_000);
     await snap("scheduled-message-popover.png");
     await pressEscape(taskId);
     expect(await onDisk(taskId, tab)).toEqual(["check the release logs"]);

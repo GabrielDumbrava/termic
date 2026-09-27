@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -2859,7 +2859,7 @@ describe("task groups", () => {
       t.useApp.setState({ activeTaskId: null });
     }, child1, child2);
     try {
-      await $(toggle).click();
+      await clickWhenVisible(toggle);
       // Collapsed: no member rows, and the caption carries one of each mark
       // present, attention first.
       await browser.waitUntil(async () => (await blockRows(orch)).length === 0, {
@@ -2900,7 +2900,7 @@ describe("task groups", () => {
         timeout: 5_000, timeoutMsg: "navigating to a member did not expand its group",
       });
       // Collapse again while on that member: its row stays in view.
-      await $(toggle).click();
+      await clickWhenVisible(toggle);
       await browser.waitUntil(async () => (await blockRows(orch)).join() === child2, {
         timeout: 5_000, timeoutMsg: "a collapsed group hid the task you are on",
       });
@@ -2959,7 +2959,9 @@ describe("task groups", () => {
     const input = `[data-testid="project-filter-input-${fixtureProjectId}"]`;
     const typeFilter = async (v: string) => {
       if (!(await browser.execute((sel) => !!document.querySelector(sel), input))) {
-        await $(`[data-testid="project-filter-toggle-${fixtureProjectId}"]`).click();
+        // Present but opacity-0 until the row is hovered, so visibility is the
+    // wrong gate here.
+    await clickPresent(`[data-testid="project-filter-toggle-${fixtureProjectId}"]`);
         await waitVisible(input);
       }
       await browser.execute((sel, val) => {
@@ -3075,7 +3077,7 @@ describe("task groups", () => {
     expect(look.padLeft).toBe("0px");
     expect(look.border).toBe("0px");
     await snap("task-groups-05-renaming.png");
-    await $(input).setValue("Auth refactor");
+    await setInputValue(input, "Auth refactor");
     await browser.keys("Enter");
     await browser.waitUntil(async () => (await label(orch)) === "Auth refactor", {
       timeout: 8_000, timeoutMsg: "the header never showed the new group name",
@@ -3214,7 +3216,7 @@ describe("task groups", () => {
       const el = document.querySelector(sel) as HTMLInputElement | null;
       return !!el && el.value.length > 0 && el.selectionStart === 0 && el.selectionEnd === el.value.length;
     }, input), { timeout: 5_000, timeoutMsg: "a new group's name was not selected for renaming" });
-    await $(input).setValue("Hand-made");
+    await setInputValue(input, "Hand-made");
     await browser.keys("Enter");
     await browser.waitUntil(async () => (await label(manualGid)) === "Hand-made", {
       timeout: 8_000, timeoutMsg: "the new group never showed its typed name",

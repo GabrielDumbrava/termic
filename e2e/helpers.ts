@@ -1466,10 +1466,11 @@ export async function waitTabInFront(taskId: string, tabId: string, timeout = 10
 
 /** Wait until `taskId`'s first tab has seen no PTY output for `quietMs`.
  *
- *  The loop runs IN THE PAGE, one round trip, because the round trip is the
- *  cost: a WebDriver command is ~2s here (docs/e2e-tests.md), so polling
- *  `lastOutputAt` from the spec every 500ms spends more time asking than
- *  waiting, and six cases doing it was most of two minutes.
+ *  The loop runs IN THE PAGE. Measured afterwards, that is NOT where the time
+ *  was (an `execute` round trip is 4ms here, so the polling it replaced cost
+ *  9ms of a 24s case); the win is legibility, and one command cannot
+ *  interleave with another spec's reads mid-wait. The slow waits were the
+ *  ELEMENT-command ones, which `waitForAttr` covers.
  *
  *  Still a condition, not a sleep: the wait ends when the bytes stop, and the
  *  `quietMs` a caller passes is the app threshold it has to outlast (byte-quiet
@@ -1496,9 +1497,10 @@ export async function waitPtyQuiet(taskId: string, quietMs: number, timeout = 30
  *  poll.
  *
  *  `browser.$(sel)` then `isExisting()` then `getAttribute()` is three
- *  commands, and a command costs ~2s here (docs/e2e-tests.md): one such loop
- *  spent 24s watching an attribute that had been correct for 23.9 of them.
- *  The DOM read itself is instant; the protocol is the price, so pay it once.
+ *  ELEMENT commands, which are the expensive kind here (~2s each on this
+ *  offscreen window, against 4ms for a plain `execute`: measured, see
+ *  docs/e2e-tests.md). One such loop spent 24s watching an attribute that had
+ *  been correct for 23.9 of them.
  */
 export async function waitForAttr(
   selector: string,
@@ -1517,4 +1519,51 @@ export async function waitForAttr(
         + `${await browser.execute((sel, a) => document.querySelector(sel)?.getAttribute(a) ?? "<no element>", selector, attr)})`,
     },
   );
+}
+
+/** Set a controlled input the way React sees it, then fire its input event.
+ *
+ *  The in-page path, not `$(sel).setValue()`: an ELEMENT command on this
+ *  offscreen window is seconds, and two `$(sel).click()` calls alone were 58s
+ *  of one 60s case (measured, docs/e2e-tests.md). React also ignores a plain
+ *  `input.value = x`, which is why this goes through the prototype setter.
+ */
+export async function setInputValue(selector: string, value: string): Promise<void> {
+  const ok = await browser.execute((sel, v) => {
+    const input = document.querySelector(sel) as HTMLInputElement | HTMLTextAreaElement | null;
+    if (!input) return false;
+    // FOCUS first: `$(sel).setValue()` focuses as a side effect, and specs
+    // lean on it (`setInputValue(...)` then `browser.keys("Enter")` to commit
+    // a rename). Without it the keys land on whatever had focus and the edit
+    // is never submitted, which is silent: the value is right on screen.
+    input.focus();
+    const proto = input instanceof HTMLTextAreaElement
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(input, v);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }, selector, value);
+  if (!ok) throw new Error(`no input to set: ${selector}`);
+}
+
+/** `innerText` of the first match, in one `execute`. */
+export async function textOf(selector: string): Promise<string> {
+  return await browser.execute((sel) =>
+    (document.querySelector(sel) as HTMLElement | null)?.innerText ?? "", selector);
+}
+
+/** Click an element that is PRESENT but may not be visible, in the page.
+ *
+ *  For controls that only paint on hover (`opacity-0 group-hover:opacity-100`,
+ *  e.g. the project filter toggle): `clickWhenVisible` gates on opacity and so
+ *  waits forever, and `$(sel).click()` costs seconds on this window. The click
+ *  itself is what the hover would enable, so dispatch it directly.
+ */
+export async function clickPresent(selector: string, timeout = 15_000): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute((sel) => !!document.querySelector(sel), selector),
+    { timeout, timeoutMsg: `never appeared in the DOM: ${selector}` },
+  );
+  await browser.execute((sel) => { (document.querySelector(sel) as HTMLElement).click(); }, selector);
 }

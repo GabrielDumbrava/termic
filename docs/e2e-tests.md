@@ -312,27 +312,32 @@ Measured on `agent.e2e.ts`, 73 tests: **11 of them were 315s of 470s**, and
 
 Two causes, and only one of them is fixable:
 
-**A WebDriver command costs roughly two seconds here.** Not the app, the
-protocol round trip. A case that read one chip through fifteen
-`getAttribute` / `getText` calls took 50s; the same assertions read in a
-single `browser.execute` returning an object took 20s. Batch reads that
-belong to one moment. It is also more correct: fifteen round trips describe
-the DOM across fifteen seconds, which is a slideshow, not a snapshot.
+**ELEMENT commands cost seconds; `browser.execute` costs milliseconds.**
+Measured on this stack, not estimated: 50 sequential `browser.execute` calls
+ran in 201ms, **4ms each**, and one holding a 1s timer in the page took
+1015ms. So the protocol itself is not slow. What is slow is WebdriverIO's
+ELEMENT layer (`$`, `$$`, `getAttribute`, `isExisting`, `getText`,
+`waitForExist`, `waitForDisplayed`), which resolves elements over the wire
+and, on our offscreen window, drags in Tauri window-state calls; that is the
+same reason `waitVisible` here does its own visibility check inside a single
+`execute` instead of calling `isDisplayed`.
 
-The same tax applies to WAITING, and it is easier to miss. A poll written as
-`browser.$(sel)` then `isExisting()` then `getAttribute()` is three commands
-per iteration: one case spent **24s watching an attribute that had been
-correct for 23.9 of them** (measured with in-page marks: the store took the
-report at 41ms, the DOM carried it at 51ms, and the spec noticed at 23.9s).
-`waitForAttr` in helpers.ts is that poll in ONE command, and
-`waitPtyQuiet` is the same idea for "the bytes stopped": the loop runs in
-the page and the protocol is paid once. Converting the five loops in
-`agent.e2e.ts` took its notifications block from 3m27 to 1m20 and the file
-from 8m53 to 6m47, with no behaviour changed.
+An earlier version of this section said "a WebDriver command costs roughly
+two seconds", which read as ALL commands and sent one optimisation pass
+chasing `execute` polls that were never the problem (it moved a poll into
+the page and won 9ms of 24s). Read it as: batch element work into one
+`execute`, and poll with `execute` freely.
 
-`waitForExist` on an element that is ALREADY on screen from an earlier case
-is worse than slow, it is wrong: it returns at once and the read that
-follows races the update. Wait for the value (`waitForAttr`), not the node.
+The case that made the difference: a poll written as `browser.$(sel)` then
+`isExisting()` then `getAttribute()` spent **24s watching an attribute that
+had been correct for 23.9 of them** (in-page marks: store at 41ms, DOM at
+51ms, spec noticed at 23.9s). `waitForAttr` in helpers.ts is that poll in one
+`execute`. Converting five such loops took `agent.e2e.ts`'s notifications
+block from 3m27 to 1m20 and the file from 8m53 to 6m47.
+
+`waitForExist` on an element an earlier case ALREADY put on screen is worse
+than slow, it is wrong: it returns at once and the read after it races the
+update. Wait for the value (`waitForAttr`), not the node.
 
 **The rest is the app's own timers, and it is not waste.** `SETTLE_MS` is
 5s, `STICKY_DONE_MS` 8s, byte-quiet 4s, and a case proving a badge does NOT
