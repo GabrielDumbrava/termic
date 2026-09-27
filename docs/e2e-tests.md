@@ -339,6 +339,19 @@ block from 3m27 to 1m20 and the file from 8m53 to 6m47.
 than slow, it is wrong: it returns at once and the read after it races the
 update. Wait for the value (`waitForAttr`), not the node.
 
+**Tried and reverted: shortening the sticky-done window.** The three
+two-stage cases (~20-27s each) idle 16s in the fixture to let a premature
+done expire, so an override looked like the obvious win: `stickyDoneMs` in
+localStorage, read by the one function both the store's gate and the pane's
+token consult, fixture gap passed as `#stage <seconds>`. It does not pay.
+The 16s is not sized by the 8s sticky window alone: the settle is 2 samples
+of a 3s sampler, so the done it is waiting to take back lands up to ~9s
+after the idle title, and the gap has to clear THAT and then the window. At
+a 2s window and a 12s gap the title case failed outright ("the agent never
+went back to work") and the pair ran no faster than the 45.3s they take
+unmodified. The only remaining lever is the settle cadence itself, which is
+the work-done detector, and that is not worth 8 seconds of a 10-minute run.
+
 **The rest is the app's own timers, and it is not waste.** `SETTLE_MS` is
 5s, `STICKY_DONE_MS` 8s, byte-quiet 4s, and a case proving a badge does NOT
 appear has to outlast them. The fixture's two `sleep 16`s exist because a
