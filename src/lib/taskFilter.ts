@@ -3,6 +3,11 @@
 // agent tabs' titles. Pure functions of store state, evaluated at render, so
 // a CLI rename or a notification arriving shows or hides a row with no extra
 // wiring.
+//
+// The filter reads a task's tabs through `TaskFilterFacts`, not the tabs
+// themselves, so the sidebar can hold what it reads in a selector that stays
+// put while an agent streams (src/store/sidebarTabs.ts, docs/performance.md
+// bear trap 5).
 
 import type { Agent, Tab, Task, TerminalTab } from "@/lib/types";
 import { agentDisplayName } from "@/lib/agents";
@@ -28,25 +33,39 @@ export function taskHasNotification(tabs: Tab[] | undefined): boolean {
   return st === "waiting" || st === "done";
 }
 
-/** The STABLE titles of a task's terminal tabs: the user's rename, else the
- *  default title. `liveTitle` (the agent's OSC title) is deliberately left
- *  out: agents rewrite it every second ("thinking...", spinners), and
- *  matching on it would make rows flap in and out of the list. A task whose
- *  tabs are not loaded yet falls back to its persisted tabs, titled the way
- *  a restore would title them. */
-function tabTitles(task: Task, tabs: Tab[] | undefined, agents: Agent[]): string[] {
-  if (tabs) {
-    return tabs.filter((t): t is TerminalTab => t.type === "terminal").map(t => t.title);
-  }
+/** Everything the filter reads from one task's LOADED tabs. A task whose
+ *  tabs were never loaded this session has no facts at all (`undefined`),
+ *  which is what sends the text match to its persisted tabs. */
+export interface TaskFilterFacts {
+  /** `taskHasNotification`, the bell's classification. */
+  readonly notification: boolean;
+  /** The STABLE titles of the task's terminal tabs: the user's rename, else
+   *  the default title. `liveTitle` (the agent's OSC title) is deliberately
+   *  left out: agents rewrite it every second ("thinking...", spinners), and
+   *  matching on it would make rows flap in and out of the list. */
+  readonly titles: readonly string[];
+}
+
+export function taskFilterFacts(tabs: Tab[]): TaskFilterFacts {
+  return {
+    notification: taskHasNotification(tabs),
+    titles: tabs.filter((t): t is TerminalTab => t.type === "terminal").map(t => t.title),
+  };
+}
+
+/** A task whose tabs are not loaded yet falls back to its persisted tabs,
+ *  titled the way a restore would title them. */
+function tabTitles(task: Task, facts: TaskFilterFacts | undefined, agents: Agent[]): readonly string[] {
+  if (facts) return facts.titles;
   return (task.persisted_tabs ?? []).map(pt =>
     pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli, agents));
 }
 
-export function taskMatchesText(task: Task, tabs: Tab[] | undefined, agents: Agent[], text: string): boolean {
+export function taskMatchesText(task: Task, facts: TaskFilterFacts | undefined, agents: Agent[], text: string): boolean {
   const needle = text.trim().toLowerCase();
   if (!needle) return true;
   if (task.name.toLowerCase().includes(needle)) return true;
-  return tabTitles(task, tabs, agents).some(t => t.toLowerCase().includes(needle));
+  return tabTitles(task, facts, agents).some(t => t.toLowerCase().includes(needle));
 }
 
 /** Tasks that pass `filter` (both parts AND). The active task always stays:
@@ -56,13 +75,13 @@ export function taskMatchesText(task: Task, tabs: Tab[] | undefined, agents: Age
 export function filterTasks(
   list: Task[],
   filter: TaskFilter | undefined,
-  tabs: Record<string, Tab[] | undefined>,
+  facts: Readonly<Record<string, TaskFilterFacts | undefined>>,
   agents: Agent[],
   activeTaskId: string | null,
 ): Task[] {
   if (!isFilterActive(filter)) return list;
   return list.filter(t =>
     t.id === activeTaskId
-    || ((!filter.bell || taskHasNotification(tabs[t.id]))
-      && taskMatchesText(t, tabs[t.id], agents, filter.text)));
+    || ((!filter.bell || !!facts[t.id]?.notification)
+      && taskMatchesText(t, facts[t.id], agents, filter.text)));
 }

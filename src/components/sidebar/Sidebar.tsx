@@ -2,11 +2,12 @@
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
 import { ThemePicker } from "@/components/ThemePicker";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
-import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
+import { useApp, useActiveTabId } from "@/store/app";
+import { useRowTabs, useSidebarTabFacts } from "@/store/sidebarTabs";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -46,7 +47,7 @@ import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
 import { ProjectFilterBar, ProjectFilterToggle } from "./ProjectTaskFilter";
-import { filterTasks, isFilterActive, taskHasNotification } from "@/lib/taskFilter";
+import { filterTasks, isFilterActive } from "@/lib/taskFilter";
 import { TaskGroupBlock } from "./TaskGroupBlock";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
@@ -128,7 +129,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const setActive = useApp(s => s.setActiveTask);
   const setView = useApp(s => s.setView);
   const currentView = useApp(s => s.view.page);
-  const tabs = useApp(s => s.tabs);
+  // NOT the `tabs` map: that re-rendered the whole sidebar, every row with
+  // it, on each `lastOutputAt` stamp of each streaming terminal. The body
+  // reads only these per-task facts (src/store/sidebarTabs.ts); rows
+  // subscribe to their own tabs.
+  const tabFacts = useSidebarTabFacts();
   const agents = useApp(s => s.agents);
   const taskFilters = useUI(s => s.taskFilters);
   const setTaskFilterText = useUI(s => s.setTaskFilterText);
@@ -157,8 +162,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // Sidebar itself doesn't need the registry.)
 
   // If the user disabled the settled highlight (Settings → Notifications),
-  // every isUnread() call returns false — the icon stays in its calm
-  // state regardless of agent activity.
+  // isWorkDone() below returns false and the rollup dots stay calm
+  // regardless of agent activity.
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const branchPrefix = usePrefs(s => s.branchPrefix);
   const taskExpandMode = usePrefs(s => s.taskExpandMode);
@@ -169,9 +174,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // whenever the hide pref flips off so the "Show N inactive" row starts
   // collapsed next time the user re-enables hiding.
   const [showInactive, setShowInactive] = useState(false);
-  const isUnread = (taskId: string) =>
-    settledHighlight &&
-    (tabs[taskId] || []).some(t => t.type === "terminal" && t.unread);
 
   /** Build a mailto: URL with prefilled subject + body and hand it to
    *  the OS's default mail handler via `open_path` (the same Rust
@@ -203,14 +205,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
    *  user). Gated on the same `settledHighlight` pref so the check
    *  disappears entirely when the user disables the work-done UI. */
   const isWorkDone = (taskId: string) =>
-    taskWorkDone(tabs[taskId] || [], { settledHighlight });
+    settledHighlight && !!tabFacts[taskId]?.done;
   // Distinct from work-done: the agent is explicitly blocked on the
   // user (Gemini ✋ Action Required, Codex Waiting, OSC 1337
   // RequestAttention). Different sidebar icon (bell vs check).
-  const needsAttention = (taskId: string) =>
-    taskNeedsAttention(tabs[taskId] || [], { settledHighlight });
-  const isLoaded = (taskId: string) =>
-    (tabs[taskId] || []).some(t => t.type === "terminal" && t.ptyId);
+  const needsAttention = (taskId: string) => !!tabFacts[taskId]?.attention;
 
   // Inline rename state for PROJECTS and GROUPS (for groups, `id` is the
   // group NAME — groups are derived from Project.group labels and have no
@@ -632,6 +631,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     document.addEventListener("pointerup", onUp);
     document.addEventListener("pointercancel", onUp);
   };
+  // Rows are memoized (TaskRowSlot), and a handler re-created per render
+  // would defeat that for every row on every sidebar render. One stable
+  // function that calls whatever the last committed render built.
+  const taskDragPointerDownRef = useRef(onTaskDragPointerDown);
+  useLayoutEffect(() => { taskDragPointerDownRef.current = onTaskDragPointerDown; });
+  const onTaskDragPointerDownStable = useCallback(
+    (e: React.PointerEvent, w: Task) => taskDragPointerDownRef.current(e, w), []);
 
   // ── Group header drag-to-reorder ──────────────────────────────────────
   // Same pointer pattern as project rows, but the unit is the whole folder:
@@ -1239,12 +1245,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // chevron would stop working while a filter is up.
             const filter = taskFilters[p.id];
             const filterOn = !compact && isFilterActive(filter);
-            const visibleTasks = filterOn ? filterTasks(taskList, filter, tabs, agents, activeTask) : taskList;
+            const visibleTasks = filterOn ? filterTasks(taskList, filter, tabFacts, agents, activeTask) : taskList;
             // "No matching tasks" only when the filter left the list EMPTY. The
             // active task is kept on screen even when it does not match, and a
             // hint saying nothing matched under a visible row contradicts it.
             const noMatches = filterOn && taskList.length > 0 && visibleTasks.length === 0;
-            const notifCount = compact ? 0 : taskList.filter(w => taskHasNotification(tabs[w.id])).length;
+            const notifCount = compact ? 0 : taskList.filter(w => tabFacts[w.id]?.notification).length;
             // An active filter keeps its bar on screen on its own; otherwise
             // the bar is open only while the user put it there.
             const filterBarOpen = !compact && (filterOn || filterInputs[p.id] !== undefined);
@@ -1506,11 +1512,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       nothing to fan out to (0 or 1). Computed here so it only
                       runs when the menu is actually open. */}
                   {(() => {
-                    const n = taskList.filter(w => (tabs[w.id] ?? []).some(
-                      t => t.type === "terminal" && !!(t as TerminalTab).is_default
-                        && !(t as TerminalTab).paneId && !(t as TerminalTab).runTab
-                        && !!(t as TerminalTab).ptyId,
-                    )).length;
+                    const n = taskList.filter(w => tabFacts[w.id]?.liveDefault).length;
                     return (
                       <ContextMenuItem
                         disabled={n <= 1}
@@ -1699,8 +1701,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       w={w}
                       compact={compact}
                       dragging={dragTaskId === w.id}
-                      dragTy={dragTaskTy}
-                      onDragPointerDown={onTaskDragPointerDown}
+                      // Only the dragged row reads it; a shared value would
+                      // re-render every memoized row on every pointermove.
+                      dragTy={dragTaskId === w.id ? dragTaskTy : 0}
+                      onDragPointerDown={onTaskDragPointerDownStable}
                       clickSuppressed={taskClickSuppressed}
                     />
                   );
@@ -2278,12 +2282,17 @@ function iconSize(compact: boolean) {
 /** Picks the row a real task gets: the normal one, or the inert "Archiving…"
  *  placeholder while its background archive runs (GH #246). A component, not
  *  a branch inside the project section's map, so the archiving subscription is
- *  per row — one archive re-renders one row, not every task in the project. */
-function TaskRowSlot(props: React.ComponentProps<typeof TaskRow>) {
+ *  per row: one archive re-renders one row, not every task in the project.
+ *
+ *  Memoized so a sidebar render re-renders only the rows whose props changed:
+ *  every prop is a primitive, a stable ref, or the Task object, which keeps
+ *  its identity until `tasks` is reloaded. A row's own tab writes reach it
+ *  through its own subscription (useRowTabs), not through here. */
+const TaskRowSlot = memo(function TaskRowSlot(props: React.ComponentProps<typeof TaskRow>) {
   const archiving = useIsArchiving(props.w.id);
   if (archiving) return <ArchivingTaskRow w={props.w} compact={props.compact} />;
   return <TaskRow {...props} />;
-}
+});
 
 /** A task with an archive in flight (GH #246). The Task is still in the store
  *  (it only leaves on the post-archive loadAll), but its worktree is being
@@ -2484,7 +2493,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const { t } = useTranslation("sidebar");
   // Sandbox mode names live in the chrome namespace (SandboxIcon's table).
   const { t: tChrome } = useTranslation("chrome");
-  const tabs = useTaskTabs(w.id);
+  // Its own tabs, but not re-rendered for the timestamps a streaming agent
+  // rewrites and no row draws (ROW_HIDDEN_TAB_FIELDS).
+  const tabs = useRowTabs(w.id);
   const activeTabId = useActiveTabId(w.id);
   const activeTaskId = useApp(s => s.activeTaskId);
   const setActive = useApp(s => s.setActiveTask);
