@@ -24,12 +24,17 @@ export function useAttentionNotifier() {
 
   useEffect(() => {
     const unsub = useApp.subscribe((state, prev) => {
+      // Runs synchronously on EVERY store write. An unread edge is a tab
+      // write, and `patchTab` replaces only the patched task's array, so an
+      // untouched map (or task) has nothing new to announce.
+      if (state.tabs === prev.tabs) return;
       // Gate every notification on the user's pref. We still update unread
       // dots in the sidebar — only the OS notification is opt-in.
       const desktopNotifications = usePrefs.getState().desktopNotifications;
       if (!desktopNotifications) return;
       const taskIds = Object.keys(state.tabs);
       for (const taskId of taskIds) {
+        if (state.tabs[taskId] === prev.tabs[taskId]) continue;
         const tabs = state.tabs[taskId] || [];
         const prevTabs = prev.tabs[taskId] || [];
         for (const t of tabs) {

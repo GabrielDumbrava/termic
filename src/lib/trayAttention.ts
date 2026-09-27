@@ -80,7 +80,13 @@ export function initTrayAttention(): () => void {
     }, PUSH_DEBOUNCE_MS);
   };
 
-  const unsub = useApp.subscribe(schedule);
+  // Only what computeTrayAttention reads (computeAgentStates's tabs, tasks
+  // and agents, plus project names), same guard as initAgentStatePush.
+  const unsub = useApp.subscribe((s, prev) => {
+    if (s.tabs === prev.tabs && s.tasks === prev.tasks
+      && s.agents === prev.agents && s.projects === prev.projects) return;
+    schedule();
+  });
   // The row-icon colors are picked in Rust (menu_bar_is_dark) at push time,
   // not template-recolored by macOS. Without this, toggling the system
   // appearance while the attention list happens not to change leaves the

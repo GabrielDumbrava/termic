@@ -18,7 +18,7 @@ vi.mock("@/lib/agents", () => ({
   isTerminalCli: vi.fn(() => false),
 }));
 
-import { filterTasks, isFilterActive, taskHasNotification, taskMatchesText } from "@/lib/taskFilter";
+import { filterTasks, isFilterActive, taskFilterFacts, taskHasNotification, taskMatchesText } from "@/lib/taskFilter";
 import { computeTrayAttention } from "@/lib/trayAttention";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
@@ -63,18 +63,18 @@ describe("taskHasNotification", () => {
 
 describe("taskMatchesText", () => {
   it("matches the task name, case-insensitive and trimmed", () => {
-    expect(taskMatchesText(task("1", "Fix Login Bug"), [], [], "  login ")).toBe(true);
-    expect(taskMatchesText(task("1", "Fix Login Bug"), [], [], "logout")).toBe(false);
+    expect(taskMatchesText(task("1", "Fix Login Bug"), taskFilterFacts([]), [], "  login ")).toBe(true);
+    expect(taskMatchesText(task("1", "Fix Login Bug"), taskFilterFacts([]), [], "logout")).toBe(false);
   });
 
   it("matches a stable tab title", () => {
     const tabs = [term({ title: "Reviewer", customTitle: true })];
-    expect(taskMatchesText(task("1", "x"), tabs, [], "review")).toBe(true);
+    expect(taskMatchesText(task("1", "x"), taskFilterFacts(tabs), [], "review")).toBe(true);
   });
 
   it("ignores the agent's live OSC title", () => {
     const tabs = [term({ title: "Claude", liveTitle: "Refactoring parser" })];
-    expect(taskMatchesText(task("1", "x"), tabs, [], "parser")).toBe(false);
+    expect(taskMatchesText(task("1", "x"), taskFilterFacts(tabs), [], "parser")).toBe(false);
   });
 
   it("falls back to persisted tabs for a task not loaded yet", () => {
@@ -87,7 +87,7 @@ describe("taskMatchesText", () => {
   });
 
   it("an empty needle matches everything", () => {
-    expect(taskMatchesText(task("1", "x"), [], [], "   ")).toBe(true);
+    expect(taskMatchesText(task("1", "x"), taskFilterFacts([]), [], "   ")).toBe(true);
   });
 });
 
@@ -98,14 +98,15 @@ describe("filterTasks", () => {
     b: [term({ unread: { reason: "attention" } })],
     c: [term()],
   };
+  const facts = Object.fromEntries(Object.entries(tabs).map(([id, ts]) => [id, taskFilterFacts(ts)]));
 
   it("returns the list untouched with no active filter", () => {
-    expect(filterTasks(list, undefined, tabs, [], null)).toBe(list);
-    expect(filterTasks(list, { text: "  ", bell: false }, tabs, [], null)).toBe(list);
+    expect(filterTasks(list, undefined, facts, [], null)).toBe(list);
+    expect(filterTasks(list, { text: "  ", bell: false }, facts, [], null)).toBe(list);
   });
 
   it("ANDs the bell and the text", () => {
-    const ids = (f: { text: string; bell: boolean }) => filterTasks(list, f, tabs, [], null).map(t => t.id);
+    const ids = (f: { text: string; bell: boolean }) => filterTasks(list, f, facts, [], null).map(t => t.id);
     expect(ids({ text: "", bell: true })).toEqual(["a", "b"]);
     expect(ids({ text: "a", bell: false })).toEqual(["a", "b", "c"]);
     expect(ids({ text: "gam", bell: false })).toEqual(["c"]);
@@ -113,7 +114,7 @@ describe("filterTasks", () => {
   });
 
   it("keeps the active task even when it no longer matches", () => {
-    expect(filterTasks(list, { text: "", bell: true }, tabs, [], "c").map(t => t.id)).toEqual(["a", "b", "c"]);
+    expect(filterTasks(list, { text: "", bell: true }, facts, [], "c").map(t => t.id)).toEqual(["a", "b", "c"]);
   });
 
   it("isFilterActive treats whitespace as empty", () => {

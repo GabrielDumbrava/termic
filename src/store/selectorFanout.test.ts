@@ -18,6 +18,9 @@
 // new snapshot differs from the old one by Object.is.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
 // Same mocks as app.test.ts — importing the store pulls in the ipc layer.
 vi.mock("@/lib/ipc", () => ({
@@ -38,8 +41,11 @@ vi.mock("@/lib/tabFocus", () => ({
 
 import { useApp, selectTaskTabs, selectActiveTabId, EMPTY_TABS } from "@/store/app";
 import { useAgentUsage, usageKey } from "@/store/agentUsage";
+import {
+  createSidebarFactsSelector, createRowTabsSelector, tabRenderEqual, tabListRenderEqual,
+} from "@/store/sidebarTabs";
 import type { AppState } from "@/store/app";
-import type { Tab } from "@/lib/types";
+import type { Tab, TerminalTab } from "@/lib/types";
 
 /** Mounted subscribers to simulate. A busy window is a handful of panes, not
  *  2500 — but the budget should hold with two orders of magnitude of slack. */
@@ -53,6 +59,8 @@ const MAX_MS_PER_WRITE = 2;
 interface FanoutResult {
   selectorRuns: number;
   invalidations: number;
+  /** Invalidations per subscriber, in the order they were passed. */
+  perSub: number[];
   msPerWrite: number;
 }
 
@@ -65,6 +73,7 @@ function measureFanout(
 ): FanoutResult {
   let selectorRuns = 0;
   let invalidations = 0;
+  const perSub = subs.map(() => 0);
 
   const snapshots = subs.map(sel => sel(useApp.getState()));
   const unsub = useApp.subscribe(() => {
@@ -73,6 +82,7 @@ function measureFanout(
       const next = subs[i](useApp.getState());
       if (!Object.is(next, snapshots[i])) {
         invalidations++;
+        perSub[i]++;
         snapshots[i] = next;
       }
     }
@@ -83,7 +93,7 @@ function measureFanout(
   const elapsed = performance.now() - t0;
   unsub();
 
-  return { selectorRuns, invalidations, msPerWrite: elapsed / times };
+  return { selectorRuns, invalidations, perSub, msPerWrite: elapsed / times };
 }
 
 function tab(id: string): Tab {
@@ -322,5 +332,173 @@ describe("selector fan-out budget (bear trap 5)", () => {
     useApp.getState().previewPlace("a", "a1");
     unsub();
     expect(notifications).toBe(2);
+  });
+});
+
+// ── The sidebar while agents stream ────────────────────────────────────
+//
+// A WebContent profile of 16 tasks with 10 live claude PTYs had the main
+// thread ~12% busy, most of it React renders driven by store writes, with
+// object spreads as the hot leaves. The writes were `lastOutputAt` stamps:
+// bear trap 9 bounds their RATE (one per 500 ms per streaming terminal), but
+// the sidebar selected the whole `tabs` map, so each one re-rendered the
+// sidebar and, with its rows unmemoized, every row in it. These counts pin
+// the FAN-OUT: a stamp reaches no sidebar subscriber at all, and a write the
+// sidebar does draw reaches exactly the subscribers that draw it.
+
+describe("sidebar under streaming output (bear traps 5, 8)", () => {
+  const TASKS = 16;
+  const ids = Array.from({ length: TASKS }, (_, i) => `task-${i}`);
+  const main = (id: string) => `${id}-main`;
+
+  beforeEach(() => {
+    useApp.setState({
+      tabs: Object.fromEntries(ids.map(id => [id, [
+        { ...tab(main(id)), is_default: true, ptyId: `pty-${id}` } as Tab,
+        tab(`${id}-shell`),
+      ]])),
+    });
+  });
+
+  /** What the mounted sidebar subscribes with: one facts selector for the
+   *  body, one tabs selector per row. */
+  const mountSidebar = () => [
+    createSidebarFactsSelector(),
+    ...ids.map(id => createRowTabsSelector(id)),
+  ];
+
+  const stamp = (i: number) => {
+    const id = ids[i % TASKS];
+    useApp.getState().patchTab(id, main(id), { lastOutputAt: 1_000 + i });
+  };
+
+  it("an output stamp invalidates neither the sidebar body nor any row", () => {
+    const subs = mountSidebar();
+    const r = measureFanout(subs, WRITES, stamp);
+
+    expect(r.invalidations).toBe(0);
+    // Not vacuous: every write notified, and every subscriber re-ran.
+    expect(r.selectorRuns).toBe(subs.length * WRITES);
+    expect(r.msPerWrite).toBeLessThan(MAX_MS_PER_WRITE);
+  });
+
+  it("the subscriptions this replaced fail the same count (positive control)", () => {
+    // The body used to select `s.tabs`, and each row `selectTaskTabs(id)`.
+    const r = measureFanout(
+      [(s: AppState) => s.tabs, ...ids.map(id => selectTaskTabs(id))], WRITES, stamp);
+
+    expect(r.perSub[0]).toBe(WRITES);
+    // Each row re-rendered for its own task's stamps, i.e. once per write.
+    expect(r.perSub.slice(1).reduce((a, b) => a + b, 0)).toBe(WRITES);
+    expect(r.perSub.slice(1).every(n => n > 0)).toBe(true);
+  });
+
+  it("a sidebar drag invalidates neither", () => {
+    const r = measureFanout(mountSidebar(), WRITES, i =>
+      useApp.getState().setSidebarWidth(200 + (i % 120)));
+    expect(r.invalidations).toBe(0);
+  });
+
+  // No false negatives: each write below changes something the sidebar
+  // draws, so it must still get through, to exactly the subscribers that
+  // draw it. perSub[0] is the body; perSub[1 + n] is row n.
+  const OWNER = 3;
+  const expectReached = (r: FanoutResult, body: number) => {
+    expect(r.perSub[0]).toBe(body);
+    expect(r.perSub.slice(1)).toEqual(ids.map((_, i) => (i === OWNER ? 1 : 0)));
+  };
+  const owner = ids[OWNER];
+
+  it("an agent's live title reaches its row and not the body", () => {
+    // The case a whole-map "ignore the timestamps" comparator gets wrong:
+    // agents rewrite their title about once a second while they work, and
+    // the body draws none of it.
+    expectReached(measureFanout(mountSidebar(), 1, () =>
+      useApp.getState().setTabLiveTitle(owner, main(owner), "thinking")), 0);
+  });
+
+  it("a finished turn reaches the body (rollup dot, bell count) and its row", () => {
+    expectReached(measureFanout(mountSidebar(), 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { workState: "done" })), 1);
+  });
+
+  it("an agent blocked on the user reaches the body and its row", () => {
+    expectReached(measureFanout(mountSidebar(), 1, () =>
+      useApp.getState().markAttention(owner, main(owner), "attention")), 1);
+  });
+
+  it("a tab rename reaches the body (the filter matches it) and its row", () => {
+    expectReached(measureFanout(mountSidebar(), 1, () =>
+      useApp.getState().renameTab(owner, `${owner}-shell`, "Reviewer")), 1);
+  });
+
+  it("a main agent exiting reaches the body (broadcast count) and its row", () => {
+    expectReached(measureFanout(mountSidebar(), 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { ptyId: undefined })), 1);
+  });
+
+  it("a row held across stamps still shows the next visible change", () => {
+    // The row keeps its PREVIOUS array while only hidden fields move, so
+    // what it hands back after a stamp must not mask what comes next.
+    const sel = createRowTabsSelector(owner);
+    const before = sel(useApp.getState());
+    stamp(OWNER);
+    expect(sel(useApp.getState())).toBe(before);
+    useApp.getState().patchTab(owner, main(owner), { workState: "done" });
+    const after = sel(useApp.getState());
+    expect(after).not.toBe(before);
+    expect((after[0] as TerminalTab).workState).toBe("done");
+    // And it carries the real timestamp again, not the held one.
+    expect((after[0] as TerminalTab).lastOutputAt).toBe(1_000 + OWNER);
+  });
+
+  it("a task's tabs loading or going away reaches the body", () => {
+    const facts = createSidebarFactsSelector();
+    const before = facts(useApp.getState());
+    expect(before["late"]).toBeUndefined();
+    useApp.setState({ tabs: { ...useApp.getState().tabs, late: [tab("late-1")] } });
+    const loaded = facts(useApp.getState());
+    expect(loaded).not.toBe(before);
+    expect(loaded["late"]).toBeDefined();
+    // Untouched tasks keep their facts object, so nothing reading them moves.
+    expect(loaded[owner]).toBe(before[owner]);
+    const { late: _, ...rest } = useApp.getState().tabs;
+    useApp.setState({ tabs: rest });
+    expect(facts(useApp.getState())["late"]).toBeUndefined();
+  });
+
+  it("the Sidebar body does not select the tabs map", () => {
+    // The counts above measure the selectors; this pins that the Sidebar
+    // still USES them. `useApp(s => s.tabs)` is the exact line that caused
+    // the fan-out, and a row selector reading one task's entry is fine.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
+    expect(src).not.toMatch(/=>\s*s\.tabs\s*\)/);
+    expect(src).toMatch(/useSidebarTabFacts\(\)/);
+    expect(src).toMatch(/useRowTabs\(w\.id\)/);
+  });
+});
+
+describe("tab render equality (sidebar rows)", () => {
+  const base = { ...tab("t"), ptyId: "p", lastOutputAt: 1 } as Tab;
+
+  it("ignores only the timestamps no row draws", () => {
+    expect(tabRenderEqual(base, { ...base, lastOutputAt: 2 } as Tab)).toBe(true);
+    expect(tabRenderEqual(base, { ...base, lastInputAt: 5, firstOutputAt: 6 } as Tab)).toBe(true);
+    expect(tabRenderEqual(base, { ...base, title: "other" } as Tab)).toBe(false);
+    expect(tabRenderEqual(base, { ...base, liveTitle: "x" } as Tab)).toBe(false);
+    expect(tabRenderEqual(base, { ...base, ptyId: undefined } as Tab)).toBe(false);
+  });
+
+  it("reads an absent key and an undefined one the same, as they render", () => {
+    expect(tabRenderEqual(base, { ...base, workState: undefined } as Tab)).toBe(true);
+    expect(tabRenderEqual(base, { ...base, workState: "idle" } as Tab)).toBe(false);
+  });
+
+  it("compares lists by position", () => {
+    const a = tab("a"), b = tab("b");
+    expect(tabListRenderEqual([a, b], [a, b])).toBe(true);
+    expect(tabListRenderEqual([a, b], [b, a])).toBe(false);
+    expect(tabListRenderEqual([a, b], [a])).toBe(false);
   });
 });
