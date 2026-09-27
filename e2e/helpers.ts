@@ -1433,3 +1433,33 @@ export async function rawI18nKeysOnScreen(): Promise<string[]> {
     return [...seen];
   }) as string[];
 }
+
+/** Wait until a stopped task has no terminal left in the DOM.
+ *
+ *  `stopTask` clears the store synchronously, but the PTYs die with the React
+ *  unmount that follows, so re-activating in the same tick can re-mount a task
+ *  whose processes were never killed and get no respawn at all. The unmounted
+ *  pane is the observable end of that, which is why this waits for an element
+ *  to go rather than for a guessed number of milliseconds.
+ */
+export async function waitTaskUnmounted(taskId: string, timeout = 10_000): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute((id) => !document.querySelector(`[data-task-id="${id}"] .xterm`), taskId),
+    { timeout, timeoutMsg: `task ${taskId} still had a terminal mounted after it was stopped` },
+  );
+}
+
+/** Wait until `tabId` is the tab at the front of `taskId`: the store says it
+ *  is active AND its pane has been laid out, which is what typing into "the
+ *  visible terminal" depends on. */
+export async function waitTabInFront(taskId: string, tabId: string, timeout = 10_000): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute((id, tb) => {
+      if (window.__termic!.useApp.getState().activeTab[id] !== tb) return false;
+      const pane = document.querySelector(`[data-task-id="${id}"] [data-tab-id="${tb}"]`);
+      const r = pane?.getBoundingClientRect();
+      return !!r && r.width > 0 && r.height > 0;
+    }, taskId, tabId),
+    { timeout, timeoutMsg: `tab ${tabId} never came to the front of task ${taskId}` },
+  );
+}

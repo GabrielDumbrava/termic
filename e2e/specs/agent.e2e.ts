@@ -43,6 +43,8 @@ import {
   setWindowPresence,
   delegatedLabel,
   workBadgeMark,
+  waitTabInFront,
+  waitTaskUnmounted,
 } from "../helpers";
 
 /** ms since the task's agent tab last produced PTY bytes. Not in the DOM. */
@@ -2306,7 +2308,7 @@ describe("a claude session that moves after /clear is the one resumed", () => {
    *  visible terminal, and wait on THAT tab's input stamp. */
   async function submitTo(id: string, tabId: string, line: string): Promise<void> {
     await browser.execute((t, tb) => window.__termic!.useApp.getState().setActiveTabId(t, tb), id, tabId);
-    await browser.pause(150);
+    await waitTabInFront(id, tabId);
     const idx = tabIds.indexOf(tabId);
     const before = (await sessions(id))[idx].lastInputAt;
     const ok = await browser.execute((t, text) => {
@@ -2389,7 +2391,7 @@ describe("a claude session that moves after /clear is the one resumed", () => {
       s.stopTask(t);
       s.setActiveTask(null);
     }, id);
-    await browser.pause(300);
+    await waitTaskUnmounted(id);
     await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
     await browser.waitUntil(
       () => Promise.resolve(spawnArgv(id).length >= before + 3),
@@ -2462,7 +2464,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
       s.stopTask(t);
       s.setActiveTask(null);
     }, id);
-    await browser.pause(300);
+    await waitTaskUnmounted(id);
     await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
   };
   const waitSpawns = (id: string, n: number, msg: string) => browser.waitUntil(

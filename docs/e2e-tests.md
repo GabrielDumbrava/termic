@@ -145,7 +145,19 @@ fuzzy):
 
 1. **Never sleep.** No `setTimeout`/fixed waits. Use `browser.waitUntil(...)`
    or an auto-retrying `expect(...)`. Every wait is a *condition*, not a
-   duration.
+   duration. If you are about to write `browser.pause(n)`, name the thing you
+   are waiting for and poll THAT: the pane leaving the DOM
+   (`waitTaskUnmounted`), the tab reaching the front (`waitTabInFront`), the
+   host's own list emptying (`invoke("lsp_list")`). A duration that is long
+   enough on your Mac is a coin flip on a loaded CI runner, and it is slower
+   every run in exchange.
+
+   **The one legitimate `pause`** is a wait whose subject IS time: proving
+   something did NOT happen (a negative assertion needs a window for the
+   thing to fail to happen in), or outlasting a timer the app itself owns (a
+   500 ms debounce, `SURVIVE_MS`, a grace period). Those read as
+   `await browser.pause(GRACE_MS * 2)` next to a comment saying which clock
+   is being outlasted. Everything else is a condition you have not named yet.
 2. **Assert on state, not pixels.** Screenshots are for humans to eyeball, not
    for assertions. Assert DOM text/attributes, or app state.
 3. **Terminal content is NOT in the DOM.** xterm renders to a WebGL canvas —

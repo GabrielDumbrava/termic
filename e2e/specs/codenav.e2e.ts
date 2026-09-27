@@ -1261,7 +1261,12 @@ describe("code intelligence", () => {
         app.closeTab(id, tab.id);
       }
     }, taskId);
-    await browser.pause(2_500);
+    // Wait for the reap to have HAPPENED rather than for the time it usually
+    // takes: the host's own list is the fact this case is about.
+    await browser.waitUntil(
+      async () => ((await browser.execute(async () => await window.__termic!.invoke("lsp_list"))) as unknown[]).length === 0,
+      { timeout: 15_000, timeoutMsg: "the idle reap never dropped the abandoned server" },
+    );
 
     await armGrant(root, taskId);
     await openSettled(taskId, "navme.ts", "TypeScript");

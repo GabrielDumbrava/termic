@@ -4,6 +4,7 @@ import { dataDir } from "../../wdio.conf.js";
 import {
   clickWhenVisible, dismissOverlays, requireTermicApi, snap, waitForText,
   waitForAppShell, waitVisible, waitGone, submitToAgent, waitForAgentReady,
+  waitTaskUnmounted,
 } from "../helpers";
 
 // The account switcher (GH #278): several credential sets per agent, and a
@@ -164,7 +165,7 @@ async function respawn(taskId: string): Promise<void> {
     s.stopTask(id);
     s.setActiveTask(null);
   }, taskId);
-  await browser.pause(300);
+  await waitTaskUnmounted(taskId);
   await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
 }
 

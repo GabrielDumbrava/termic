@@ -20,20 +20,32 @@ describe("tab management", () => {
     );
 
   /** Open the tab strip's "+" menu. Radix opens on pointerdown, so a bare
-   *  .click() is not enough. */
+   *  .click() is not enough.
+   *
+   *  Retried until the menu is THERE rather than dispatched once and waited
+   *  on: a synthetic pointer sequence can land before Radix has bound its
+   *  handler, and one that does is silently swallowed. That cost the Linux
+   *  runner this whole file (the + menu case fails, and the eight cases that
+   *  build on its tab cascade off it). The dispatch is skipped while a menu
+   *  is already open, since a second pointerdown on the trigger closes it. */
   const openPlusMenu = async () => {
-    await browser.execute(() => {
-      const strip = document.querySelector("[data-main-strip]");
-      const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
-        b.querySelector("svg.lucide-plus"),
-      );
-      if (!plus) throw new Error("tab '+' button not found");
-      const el = plus as HTMLElement;
-      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-      el.click();
-    });
+    await browser.waitUntil(
+      () => browser.execute(() => {
+        if (document.querySelector("[role='menu']")) return true;
+        const strip = document.querySelector("[data-main-strip]");
+        const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
+          b.querySelector("svg.lucide-plus"),
+        );
+        if (!plus) return false;
+        const el = plus as HTMLElement;
+        const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        el.click();
+        return !!document.querySelector("[role='menu']");
+      }),
+      { timeout: 15_000, interval: 250, timeoutMsg: "the tab strip's + menu never opened" },
+    );
     await waitVisible("[role='menu']");
   };
 
@@ -62,21 +74,9 @@ describe("tab management", () => {
       { timeout: 10_000, timeoutMsg: "tab '+' button never appeared" },
     );
 
-    // Open the tab bar's "+" menu (the button carrying the lucide plus icon,
-    // scoped to the main tab strip). Radix opens the menu on pointerdown, so a
-    // bare .click() isn't enough — dispatch the pointer sequence.
-    await browser.execute(() => {
-      const strip = document.querySelector("[data-main-strip]");
-      const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
-        b.querySelector("svg.lucide-plus"),
-      );
-      if (!plus) throw new Error("tab '+' button not found");
-      const el = plus as HTMLElement;
-      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-      el.click();
-    });
+    // Open the tab bar's "+" menu through the retrying helper: dispatched
+    // once, this is the click the Linux runner drops.
+    await openPlusMenu();
     // Wait for the Radix menu to render, then add a Terminal.
     await browser.waitUntil(
       () =>
