@@ -92,6 +92,23 @@ lives at …` (or, once the directory was gone but the registration was not,
 `branch … is already checked out elsewhere`). `seed()` now wipes that directory
 and prunes the fixture repo's worktrees on every run.
 
+### The language: an e2e build defaults to English, and writes no pref
+
+The suites assert on English catalog text ("Dashboard", the open-with toast),
+and the app's language pref defaults to `system`, which follows
+`navigator.language`. On a zh-CN machine every user-visible string rendered in
+Chinese and those assertions failed in a way no code change caused — which is
+why `src/lib/i18n.ts` defaults the pref to `en` when `VITE_E2E` is set and
+nothing is stored. An explicit choice from the settings picker still wins, in
+both builds.
+
+It defaults rather than **writes** because the app data dir is not the only
+store an e2e run touches: the WebView's `localStorage` lives under the app
+identifier (`com.simion.termic`), shared by an installed build and an e2e
+binary on the same machine. A written pin would have switched the user's own
+app's language. Same reason a spec that flips a localStorage-backed pref
+should restore it afterwards — `recentTasks` is shared the same way.
+
 It also deletes every branch but `main` in the fixture and its bare origin
 (then `fetch --prune`), keeping any branch a worktree still has checked out.
 Archiving a worktree task keeps its branch, so each local run added a few

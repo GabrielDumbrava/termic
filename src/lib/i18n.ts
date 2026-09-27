@@ -48,6 +48,15 @@ export function resolveLanguage(pref: LanguagePref): ResolvedLanguage {
 function initialLanguage(): ResolvedLanguage {
   let raw: string | null = null;
   try { raw = localStorage.getItem(LS_LANGUAGE); } catch {}
+  // The e2e suites assert on English catalog text, and the app's pref
+  // defaults to "system", which follows navigator.language — on a zh-CN
+  // machine every user-visible string rendered in Chinese and the English
+  // assertions failed in a way no code change caused. Default the pref to
+  // English in an e2e build rather than WRITING it: an e2e binary shares its
+  // WebView localStorage (identifier com.simion.termic) with an installed
+  // build, so a written pin would switch the user's own app's language. An
+  // explicit choice from the settings picker still wins, in both.
+  if (!raw && import.meta.env.VITE_E2E) return "en";
   return resolveLanguage(parseLanguagePref(raw));
 }
 
