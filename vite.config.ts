@@ -62,7 +62,14 @@ export default defineConfig({
   server: {
     port: devPort,
     strictPort: true,
-    host: false,
+    // Explicit IPv4: `host: false` (localhost) binds whichever address
+    // the resolver lists first, and on Windows that is often ::1 only -
+    // while the tauri CLI's readiness probe connects to 127.0.0.1, so
+    // `tauri dev` waits forever on a ready server (measured: netstat
+    // showed the probe parked in SYN_SENT against a ::1-only listener).
+    // The webview still loads via `localhost`: the browser falls back
+    // from ::1 to 127.0.0.1 when the first address refuses.
+    host: "127.0.0.1",
     hmr: { protocol: "ws", host: "localhost", port: devPort + 1 },
     watch: { ignored: ["**/src-tauri/**"] },
   },
