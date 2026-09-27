@@ -213,7 +213,7 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-[var(--color-fg-faint)]">
             {target
-              ? <Trans i18nKey="reviewBar.sendsTo" values={{ label: tabLabel(target) }} components={{ span: <span className="text-[var(--color-fg-dim)]" /> }} />
+              ? <Trans ns="panels" i18nKey="reviewBar.sendsTo" values={{ label: tabLabel(target) }} components={{ span: <span className="text-[var(--color-fg-dim)]" /> }} />
               : t("reviewBar.noAgent")}
           </span>
           <Button variant="primary" size="sm" className="gap-1.5" data-testid="review-comments-send"

@@ -1140,7 +1140,7 @@ export function NewTaskDialog() {
               </div>
             ) : importList.length === 0 ? (
               <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-                <Trans i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
+                <Trans ns="dialogs" i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
               </div>
             ) : (
               <div className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
@@ -1704,17 +1704,17 @@ export function NewTaskDialog() {
               {issueLookup.status === "cli-missing" ? (
                 <>
                   <div className="text-[var(--color-fg)]">
-                    <Trans i18nKey="newTask.issuesNeedCli" values={{ cli: forgeCli }} components={{ mono: <span className="mono" /> }} />
+                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCli" values={{ cli: forgeCli }} components={{ mono: <span className="mono" /> }} />
                   </div>
                   <div className="mt-1">
-                    <Trans i18nKey="newTask.issuesNeedCliBody" values={{ cli: forgeCli, install: installCommand(forgeCli) }} components={{ code: <code className="mono" /> }} />
+                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCliBody" values={{ cli: forgeCli, install: installCommand(forgeCli) }} components={{ code: <code className="mono" /> }} />
                   </div>
                 </>
               ) : issueLookup.status === "cli-unauthed" ? (
                 <>
                   <div className="text-[var(--color-fg)]">{t("newTask.signInTitle")}</div>
                   <div className="mt-1">
-                    <Trans i18nKey="newTask.signInBody" values={{ cli: forgeCli }} components={{ code: <code className="mono" /> }} />
+                    <Trans ns="dialogs" i18nKey="newTask.signInBody" values={{ cli: forgeCli }} components={{ code: <code className="mono" /> }} />
                   </div>
                 </>
               ) : (

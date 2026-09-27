@@ -999,7 +999,7 @@ function BranchBar({ task, branch, dir, right }: {
                       <DropdownItem onSelect={() => runUpdate("pull")} className="items-center">
                         <ArrowDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
                         <span className="truncate text-[12px]">
-                          <Trans i18nKey="gitPanel.pullFrom" values={{ upstream: info!.upstream }} components={{ mono: <span className="font-mono" /> }} />
+                          <Trans ns="panels" i18nKey="gitPanel.pullFrom" values={{ upstream: info!.upstream }} components={{ mono: <span className="font-mono" /> }} />
                         </span>
                       </DropdownItem>
                     )}
@@ -1008,13 +1008,13 @@ function BranchBar({ task, branch, dir, right }: {
                         <DropdownItem onSelect={() => runUpdate("merge")} className="items-center">
                           <GitMerge className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
                           <span className="truncate text-[12px]">
-                            <Trans i18nKey="gitPanel.mergeInto" values={{ base: info!.base }} components={{ mono: <span className="font-mono" /> }} />
+                            <Trans ns="panels" i18nKey="gitPanel.mergeInto" values={{ base: info!.base }} components={{ mono: <span className="font-mono" /> }} />
                           </span>
                         </DropdownItem>
                         <DropdownItem onSelect={() => runUpdate("rebase")} className="items-center">
                           <RotateCw className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
                           <span className="truncate text-[12px]">
-                            <Trans i18nKey="gitPanel.rebaseOnto" values={{ base: info!.base }} components={{ mono: <span className="font-mono" /> }} />
+                            <Trans ns="panels" i18nKey="gitPanel.rebaseOnto" values={{ base: info!.base }} components={{ mono: <span className="font-mono" /> }} />
                           </span>
                         </DropdownItem>
                       </>

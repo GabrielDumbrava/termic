@@ -183,10 +183,10 @@ export function PrCard({ task }: { task: Task }) {
     const hint =
       lookup.status === "cli-missing" ? {
         title: t("pr.cliMissingTitle", { provider: providerLabel, noun: prNoun, cli }),
-        body: <Trans i18nKey="pr.cliMissingBody" values={{ install: installCommand(cli), auth: `${cli} auth login` }} components={{ code: <Code /> }} />,
+        body: <Trans ns="panels" i18nKey="pr.cliMissingBody" values={{ install: installCommand(cli), auth: `${cli} auth login` }} components={{ code: <Code /> }} />,
       } : lookup.status === "cli-unauthed" ? {
         title: t("pr.signInTitle", { provider: providerLabel }),
-        body: <Trans i18nKey="pr.signInBody" values={{ command: `${cli} auth login` }} components={{ code: <Code /> }} />,
+        body: <Trans ns="panels" i18nKey="pr.signInBody" values={{ command: `${cli} auth login` }} components={{ code: <Code /> }} />,
       } : {
         title: t("pr.unreachable", { provider: providerLabel }),
         body: <span className="break-words">{lookup.message}</span>,

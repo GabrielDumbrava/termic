@@ -512,7 +512,7 @@ export function NewProjectDialog() {
             </div>
             <span className="mt-1 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
               {cloneDest
-                ? <Trans i18nKey="newProject.clonesInto" values={{ dest: cloneDest }} components={{ code: <code className="mono" data-testid="clone-dest" /> }} />
+                ? <Trans ns="dialogs" i18nKey="newProject.clonesInto" values={{ dest: cloneDest }} components={{ code: <code className="mono" data-testid="clone-dest" /> }} />
                 : reposDir
                   ? t("newProject.cloneIntoHintRepos")
                   : t("newProject.cloneIntoHintNone")}
@@ -569,7 +569,7 @@ export function NewProjectDialog() {
       ) : mode === "multi" ? (
         <>
           <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-            <Trans i18nKey="newProject.multiIntro" components={{ code: <code className="mono" /> }} />
+            <Trans ns="dialogs" i18nKey="newProject.multiIntro" components={{ code: <code className="mono" /> }} />
           </p>
 
           <label className="block text-[13.5px]">
@@ -600,7 +600,7 @@ export function NewProjectDialog() {
               <Button variant="secondary" size="lg" onClick={browse}>{t("common:browse")}</Button>
             </div>
             <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
-              <Trans i18nKey="newProject.hostHint" components={{ code: <code className="mono" /> }} />
+              <Trans ns="dialogs" i18nKey="newProject.hostHint" components={{ code: <code className="mono" /> }} />
             </span>
           </label>
 
