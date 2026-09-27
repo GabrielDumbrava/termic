@@ -267,7 +267,7 @@ draw it:
   state and reads the task list only when the hovered row changes, so
   hovering re-renders nothing else; it skips a drag and the icon rail, and a
   row that is not in the DOM (collapsed project, filtered out) gets no line.
-## Board view (kanban over tasks)
+## Kanban view (over tasks)
 
 The third nav view (GH #318), an overlay like History: `view.page === "board"`
 in `src/store/app.ts`, mounted by `MainArea`'s overlay chain, unmounted when

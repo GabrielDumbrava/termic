@@ -3,7 +3,7 @@
 export default {
   navDashboard: "Dashboard",
   navHistory: "History",
-  navBoard: "Board",
+  navBoard: "Kanban",
   projectsHeader: "Projects",
   listOptionsTip: "Project list options",
   expandAll: "Expand all agents",

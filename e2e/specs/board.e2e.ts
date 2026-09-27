@@ -1,4 +1,4 @@
-// Board view (docs/ui.md "Board view", issue #318): nav entry, derived
+// Kanban view (docs/ui.md "Kanban view", issue #318): nav entry, derived
 // columns, the two drags that mean something (same-project reorder,
 // drop-to-archive with its confirm dialog), and the drag that does not
 // (cross-column snap-back).
@@ -71,7 +71,7 @@ describe("board view", () => {
     t2 = await openTask("board-b", false, "fakeagent");
     t3 = await openTask("board-c", false, "fakecapture");
 
-    await clickByText("Board");
+    await clickByText("Kanban");
     await waitVisible('[data-testid="board-view"]');
 
     // One lane per cli actually in use, named for the agent.
@@ -116,7 +116,7 @@ describe("board view", () => {
 
   it("dragging within a same-project group reorders, and the order persists", async () => {
     t4 = await openTask("board-d", false, "fakeagent");
-    await clickByText("Board");
+    await clickByText("Kanban");
     await waitVisible('[data-testid="board-view"]');
     await dismissOverlays();
 
@@ -175,7 +175,7 @@ describe("board view", () => {
     await waitForWorkBadge(t1, "working", { timeout: 20_000 });
     await waitForWorkBadgeGone(t1, "working", { timeout: 30_000 });
 
-    await clickByText("Board");
+    await clickByText("Kanban");
     await waitVisible('[data-testid="board-view"]');
     await browser.waitUntil(
       async () => !!(await cellCardOrder("fakeagent", "settled")).includes(t1),

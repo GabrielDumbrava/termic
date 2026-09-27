@@ -1,4 +1,4 @@
-// Board view (docs/ui.md "Board view", issue #318): a global kanban over
+// Kanban view (docs/ui.md "Kanban view", issue #318): a global kanban over
 // every task, columns DERIVED from live state (see src/lib/taskBoardState.ts
 // for the precedence). The terminal is the ground truth, so nothing here is a
 // stored status and nothing a card shows can drift from the PTY.
@@ -20,7 +20,7 @@
 // Drag discipline: hand-rolled pointer events, the same pattern as the
 // sidebar's task reorder. Columns are derived, never stored, so a drop cannot
 // SET a status; instead a cross-column drop is a COMMAND (the "drag as
-// command" model, docs/ui.md "Board view"): reorder within the origin group
+// command" model, docs/ui.md "Kanban view"): reorder within the origin group
 // (settle -> `task_reorder`, whose Rust contract is same-project ids),
 // drop-to-archive (-> the shared `confirmAndArchive`, inheriting its confirm
 // dialog and spinner), drop-on-Settled (-> `clearTaskWorkState`, the
