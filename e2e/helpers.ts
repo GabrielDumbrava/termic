@@ -1587,3 +1587,36 @@ export async function clearLanguagePref(): Promise<void> {
     try { localStorage.removeItem("uiLanguage"); } catch { /* private mode */ }
   });
 }
+
+/** `clickMenuItemUntil` for a result no CSS selector describes.
+ *
+ *  Same race, same cure: Radix remounts a menu's content when what it renders
+ *  changes, and a click dispatched into that remount lands on a node React is
+ *  replacing, so it does nothing and the menu just stays open. The sibling
+ *  helper stops when a `doneSelector` appears; this one stops when `ready()`
+ *  says so, for results that live in the store (a tab was added) or in text
+ *  (a submenu's entries painted).
+ *
+ *  Costs one extra `execute` per poll, which is 4ms (docs/e2e-tests.md), and
+ *  buys the nine-case cascade `tabs-layout.e2e.ts` loses on Linux whenever the
+ *  first click is swallowed.
+ */
+export async function clickMenuItemUntilReady(
+  text: string,
+  ready: () => Promise<boolean>,
+  timeout = 15_000,
+): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      if (await ready()) return true;
+      await browser.execute((t) => {
+        const el = [...document.querySelectorAll("[role='menuitem']")].find(
+          (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
+        );
+        if (el) (el as HTMLElement).click();
+      }, text);
+      return await ready();
+    },
+    { timeout, timeoutMsg: `menu item "${text}" never produced its result` },
+  );
+}

@@ -1,4 +1,4 @@
-import { archiveTask, clickByText, clickMenuItem, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickMenuItemUntilReady, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 // Tabs are how a task holds multiple terminals/agents/editors. Guards adding a
 // tab through the "+" menu and switching the active tab by clicking it.
@@ -87,13 +87,10 @@ describe("tab management", () => {
         ),
       { timeout: 5_000, timeoutMsg: "the + menu (Terminal item) never opened" },
     );
-    await clickMenuItem("Terminal");
-
-    // Now two tabs, and the new terminal is the active one.
-    await browser.waitUntil(async () => (await tabCount()) === 2, {
-      timeout: 10_000,
-      timeoutMsg: "terminal tab was not added",
-    });
+    // Retried until the tab EXISTS: a click into Radix's remount does
+    // nothing and leaves the menu open, which is how this case (and the eight
+    // built on its tab) fails on the Linux runner.
+    await clickMenuItemUntilReady("Terminal", async () => (await tabCount()) === 2);
     expect(await activeTab()).not.toBe(agentTabId);
 
     // Switch back to the agent tab with a real click.
@@ -222,7 +219,12 @@ describe("sidebar task menu: New submenu", () => {
   async function openNewSubmenu(): Promise<string[]> {
     // Radix opens a SubTrigger on hover OR click; click is the deterministic
     // one under WebDriver (no pointer position involved).
-    await clickMenuItem("New");
+    // Retried: the submenu's entries are the result, and a swallowed click
+    // leaves the parent menu open with nothing new in it.
+    await clickMenuItemUntilReady("New", () => browser.execute(() =>
+      [...document.querySelectorAll("[role='menuitem']")].some(
+        (e) => e.textContent?.trim() === "Terminal",
+      )) as Promise<boolean>);
     await browser.waitUntil(
       () =>
         browser.execute(() =>
@@ -254,7 +256,8 @@ describe("sidebar task menu: New submenu", () => {
 
     await openTaskRowMenu(taskId);
     await openNewSubmenu();
-    await clickMenuItem("Terminal");
+    await clickMenuItemUntilReady("Terminal", async () =>
+      (await tabsOf(taskId!)).includes("shell"));
 
     // The row's task is now the active one and holds BOTH its seeded agent tab
     // and the new shell — picking "Terminal" on a cold task must not cost the
