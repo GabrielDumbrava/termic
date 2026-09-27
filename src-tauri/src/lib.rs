@@ -4603,14 +4603,67 @@ fn account_signed_in(agent_id: &str, account: &str, realm: LoginRealm, agents: &
 /// restart a task onto a login screen.
 ///
 /// The split is exact rather than heuristic. Everything the farm plants is a
-/// symlink, plus one marker file; what an agent writes when it logs in is a
-/// real file it owns. A shared entry the agent writes THROUGH stays a symlink
+/// link, plus one marker file; what an agent writes when it logs in is a
+/// real file it owns. A shared entry the agent writes THROUGH stays a link
 /// here, which is correct: settings.json changing is not a login.
+///
+/// Windows: without Developer Mode, `fs_link` plants shared FILES as hard
+/// links (`symlink_file` fails there), which `is_symlink` cannot see - so a
+/// furnished-but-never-signed-in store read as signed in. A hard link
+/// carries more than one link in the file's link count; a file the agent
+/// wrote fresh has exactly one.
 fn farm_planted(entry: &std::fs::DirEntry) -> bool {
     if entry.file_name() == std::ffi::OsStr::new(ACCOUNT_FARM_MARKER) {
         return true;
     }
+    #[cfg(windows)]
+    {
+        if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+            return true;
+        }
+        return file_is_hardlinked(&entry.path());
+    }
+    #[cfg(not(windows))]
     entry.file_type().map(|t| t.is_symlink()).unwrap_or(false)
+}
+
+/// Does `path` carry more than one hard link? The Windows half of
+/// `farm_planted`.
+#[cfg(windows)]
+fn file_is_hardlinked(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: a read-attributes open of a path from a live directory
+    // listing; INVALID_HANDLE_VALUE maps to the error path and the handle
+    // is closed on every exit.
+    let opened = unsafe {
+        let h = CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            (FILE_SHARE_READ | FILE_SHARE_WRITE) as u32,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut() as _,
+        );
+        if h.is_null() || h == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        let ok = GetFileInformationByHandle(h, &mut info);
+        CloseHandle(h);
+        ok != 0 && info.nNumberOfLinks > 1
+    };
+    opened
 }
 
 #[tauri::command]
@@ -25142,6 +25195,36 @@ mod tests {
         assert!(
             store.join(".credentials.json").symlink_metadata().is_err(),
             "the credential must never be shared: two accounts would be one account",
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_hard_linked_shared_file_is_farm_planted() {
+        // Without Developer Mode, `fs_link` plants the shared FILES as hard
+        // links (`symlink_file` needs the privilege), which `is_symlink`
+        // cannot see - so `account_signed_in` treated a furnished store the
+        // agent never signed into as signed in. The link count is what
+        // gives a hard link away.
+        let tmp = std::env::temp_dir().join(format!("termic-farm-hl-{}", Uuid::new_v4()));
+        let primary = tmp.join("primary");
+        let store = tmp.join("store");
+        fs::create_dir_all(primary.join("projects")).unwrap();
+        fs::write(primary.join("settings.json"), b"{}").unwrap();
+
+        let entries = crate::agent_dirs::shared_config_entries("claude");
+        let made = crate::build_account_farm(&primary, &store, entries).unwrap();
+        assert!(made >= 2, "expected settings.json and projects to be linked, made {made}");
+
+        let all_planted = fs::read_dir(&store)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name() != std::ffi::OsStr::new(crate::ACCOUNT_FARM_MARKER))
+            .all(|entry| crate::farm_planted(&entry));
+        assert!(
+            all_planted,
+            "every planted entry is recognized as termic's, not as sign-in evidence",
         );
         let _ = fs::remove_dir_all(&tmp);
     }
