@@ -1798,8 +1798,23 @@ fn load_tasks_all() -> Vec<Task> {
     out
 }
 
+// How many task-directory scans THIS thread has run. Test builds only, and
+// per thread so a count cannot pick up another test's scans: the suite runs in
+// parallel and most of it loads tasks. A path that must not touch the disk is
+// asserted as a count of these, never as a timing.
+#[cfg(test)]
+thread_local! {
+    static TASK_DIR_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+fn task_dir_scans() -> u64 {
+    TASK_DIR_SCANS.with(|c| c.get())
+}
+
 /// One profile's tasks. For listing, and for anything scoped to a window.
 fn load_tasks_in(id: &ProfileId) -> Vec<Task> {
+    #[cfg(test)]
+    TASK_DIR_SCANS.with(|c| c.set(c.get() + 1));
     let dir = match tasks_dir_in(id) {
         Ok(p) => p,
         Err(_) => return Vec::new(),
@@ -2102,10 +2117,12 @@ fn save_task(w: &Task) -> Result<()> {
     let f = tasks_dir_in(&w.profile)?.join(format!("{}.json", w.id));
     let json = serde_json::to_string_pretty(w)?;
     write_atomic(&f, json.as_bytes())?;
+    // The only writer of task records, so it is also what keeps a remembered
+    // routing miss from outliving a task created after it (see TASK_WINDOW).
+    note_task_window(&w.id, w.profile.window_label());
     Ok(())
 }
 fn delete_task_file(id: &str) -> Result<()> {
-    forget_task_window(Some(id));
     // Sweep every profile rather than guessing: the caller has only an id, and
     // an unlink of a path that does not exist is free.
     for pid in profiles_registry().ids() {
@@ -2113,6 +2130,9 @@ fn delete_task_file(id: &str) -> Result<()> {
             let _ = fs::remove_file(dir.join(format!("{id}.json")));
         }
     }
+    // AFTER the unlink: a routing lookup that read the file before it went
+    // would otherwise store its label once this had already run.
+    forget_task_window(Some(id));
     // The task record is gone for good (History's "Empty archive", or its
     // project being removed), so its scratchpads have nowhere left to appear.
     // ARCHIVING deliberately does not come through here: it is recoverable,
@@ -3743,6 +3763,11 @@ fn pty_spawn(
     // Read from the SPAWNING task's profile. `spawn_task` is already
     // resolved just above, so this costs nothing.
     let spawn_profile = spawn_task.as_ref().map(|t| t.profile.clone()).unwrap_or_default();
+    // The window this PTY's events go to, resolved ONCE, here. Its topics
+    // carry the PTY's own id, not the task's, so a per-event lookup could never
+    // find it and every flush re-read every task file (see TASK_WINDOW). `None`
+    // (a PTY with no task) broadcasts.
+    let pty_window: Option<String> = spawn_task.as_ref().map(|t| t.profile.window_label());
     let docker_globally_enabled = load_settings_in(&spawn_profile).docker_sandbox_enabled;
     // Fail closed, not open: a task that opted into Docker isolation must
     // never silently fall through to an unsandboxed spawn just because an
@@ -4168,6 +4193,7 @@ fn pty_spawn(
     let feed_r = feed.clone();
     let out_bytes_r = out_bytes.clone();
     let attached_r = attached.clone();
+    let window_r = pty_window.clone();
     // Touch ID for sudo offer (sudo_touchid.rs). Host PTYs only: a
     // sandboxed agent cannot run the setuid sudo, and a Docker PTY's
     // foreground job is `docker`, whose sudo is not the host's.
@@ -4210,8 +4236,9 @@ fn pty_spawn(
                         feed.push(&buf[..n]);
                     }
                     if let Some(show) = sudo_watch.as_mut().and_then(|w| w.on_read(n)) {
-                        emit_scoped(
+                        emit_to_window(
                             &app_final,
+                            window_r.as_deref(),
                             &format!("pty-sudo-touchid://{}", id_final),
                             sudo_touchid::SudoOffer { show },
                         );
@@ -4234,7 +4261,7 @@ fn pty_spawn(
             // have its ENTIRE output emitted to nobody. `done` is still false
             // here, so this waits on the ack, not on itself.
             wait_for_attach(&buf_r, &attached_r, &done_r, PTY_ATTACH_GRACE);
-            emit_scoped(&app_final, &format!("pty://{}", id_final), PtyChunk { data: remaining });
+            emit_to_window(&app_final, window_r.as_deref(), &format!("pty://{}", id_final), PtyChunk { data: remaining });
         }
         // Set `done` and notify UNDER the buffer mutex. The flusher and the
         // waiter both check `done` while holding it, then park; a store
@@ -4266,6 +4293,7 @@ fn pty_spawn(
     let done_f = reader_done.clone();
     let app_f = app.clone();
     let attached_f = attached.clone();
+    let window_f = pty_window.clone();
     thread::spawn(move || {
         let interval = Duration::from_millis(8);
         // Nothing goes on the wire until someone is listening. The reader
@@ -4285,7 +4313,7 @@ fn pty_spawn(
             thread::sleep(interval);
             let data = std::mem::take(&mut *buf_f.0.lock());
             if !data.is_empty() {
-                emit_scoped(&app_f, &format!("pty://{}", id_r), PtyChunk { data });
+                emit_to_window(&app_f, window_f.as_deref(), &format!("pty://{}", id_r), PtyChunk { data });
             }
             if done_f.load(Ordering::Acquire) {
                 break;
@@ -4303,6 +4331,7 @@ fn pty_spawn(
     let pid_for_waiter = child_pid;
     let done_w = reader_done.clone();
     let buf_w = pty_buf.clone();
+    let window_w = pty_window;
     thread::spawn(move || {
         let status = child.wait().ok();
         let code = status.and_then(|s| i32::try_from(s.exit_code()).ok());
@@ -4348,7 +4377,7 @@ fn pty_spawn(
                 buf_w.1.wait(&mut b);
             }
         }
-        emit_scoped(&app_w, &format!("pty-exit://{}", id_w), PtyExit { code });
+        emit_to_window(&app_w, window_w.as_deref(), &format!("pty-exit://{}", id_w), PtyExit { code });
         // Drop this PID from the sandbox's PID set so the path watcher
         // stops counting denies from anything that happened to inherit
         // this PID after exit (rare but possible on macOS).
@@ -8844,16 +8873,46 @@ fn procmon_signal(
 // project -> profile -> window), so nothing has to be tracked, but the
 // derivation must not touch the disk on a hot path.
 
-/// Memoized task id -> window label.
+/// Memoized task id -> window label, misses included.
 ///
-/// A task NEVER changes profile in v1, so an entry is permanent once resolved
-/// and a miss costs one directory scan. That is what lets the low-frequency
-/// emitters (setup output, script runs, greps, spotlight) route by task id
-/// without a `load_tasks_all()` per event. The PTY path does not come through
-/// here at all: it captures its label at SPAWN, where the task is already in
-/// hand for the Docker branch, so the hottest path in the app pays nothing.
-static TASK_WINDOW: std::sync::Mutex<Option<HashMap<String, String>>> =
-    std::sync::Mutex::new(None);
+/// A task NEVER changes profile in v1, so an entry is permanent once resolved.
+/// That is what lets the low-frequency emitters (setup output, script runs,
+/// spotlight, raising a task's window) route by task id without a
+/// `load_tasks_all()` per event.
+///
+/// A MISS is remembered too, as `None`, and that is load-bearing. The lookup
+/// reads and parses every task file of every profile, archived ones included,
+/// so a forgotten miss re-runs it on every event. `pty://` used to come through
+/// here carrying the PTY's own uuid, which no task has: every PTY flush was a
+/// full scan, ~50 a second with a few busy agents and 57 task files, and it got
+/// worse with every task ever created. `save_task` writes every task record and
+/// seeds the entry for the one it wrote, which is what lets a task created
+/// after a miss still resolve.
+///
+/// Topics keyed by anything but a task id do not come through here at all.
+/// `pty_spawn` and `task_grep_start` resolve the label once, from the task they
+/// already hold, and emit with [`emit_to_window`]. A new emitter keyed by a PTY
+/// id, a search id or any other non-task id must do the same.
+struct TaskWindowMemo {
+    labels: Option<HashMap<String, Option<String>>>,
+    /// Bumped by every write, so a lookup that raced one does not store what
+    /// it read before it. Never reset, not even when the map is dropped.
+    generation: u64,
+}
+
+impl TaskWindowMemo {
+    fn labels(&mut self) -> &mut HashMap<String, Option<String>> {
+        self.labels.get_or_insert_with(HashMap::new)
+    }
+}
+
+static TASK_WINDOW: std::sync::Mutex<TaskWindowMemo> =
+    std::sync::Mutex::new(TaskWindowMemo { labels: None, generation: 0 });
+
+/// Remembered misses are dropped past this many entries. Nothing today looks
+/// up a stream of fresh non-task ids, so this is a bound on memory should
+/// something start to, not a tuning knob.
+const TASK_WINDOW_MAX_ENTRIES: usize = 4096;
 
 /// The window label owning `task_id`, or `None` if it cannot be resolved.
 ///
@@ -8864,17 +8923,40 @@ pub(crate) fn window_for_task(task_id: &str) -> Option<String> {
     if task_id.is_empty() {
         return None;
     }
-    let mut guard = TASK_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-    let map = guard.get_or_insert_with(HashMap::new);
-    if let Some(label) = map.get(task_id) {
-        return Some(label.clone());
-    }
+    let generation = {
+        let mut memo = TASK_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = memo.labels().get(task_id) {
+            return hit.clone();
+        }
+        memo.generation
+    };
+    // The scan runs with the memo UNLOCKED. Holding it here queued every
+    // other emitter, from every thread, behind a directory of file reads.
     let found = load_tasks_all()
         .into_iter()
         .find(|t| t.id == task_id)
-        .map(|t| t.profile.window_label())?;
-    map.insert(task_id.to_string(), found.clone());
-    Some(found)
+        .map(|t| t.profile.window_label());
+    let mut memo = TASK_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+    // A task was saved or forgotten while we read, so what we read may
+    // predate it. Answer with it, but do not remember it.
+    if memo.generation == generation {
+        let labels = memo.labels();
+        if found.is_none() && labels.len() >= TASK_WINDOW_MAX_ENTRIES {
+            labels.retain(|_, label| label.is_some());
+        }
+        labels.insert(task_id.to_string(), found.clone());
+    }
+    found
+}
+
+/// Record the window a task routes to, from the record `save_task` just wrote.
+///
+/// Written AFTER the file, so a lookup that starts in between finds the file
+/// and one that started before it sees the generation move and stores nothing.
+fn note_task_window(task_id: &str, label: String) {
+    let mut memo = TASK_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+    memo.generation += 1;
+    memo.labels().insert(task_id.to_string(), Some(label));
 }
 
 /// The window label owning `project_id`.
@@ -8888,40 +8970,36 @@ pub(crate) fn window_for_project(project_id: &str) -> Option<String> {
 /// Forget a task's routing. Called when a task is deleted, and when the
 /// registry changes, so a stale label cannot outlive the window it names.
 fn forget_task_window(task_id: Option<&str>) {
-    let mut guard = TASK_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+    let mut memo = TASK_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+    memo.generation += 1;
     match task_id {
         Some(id) => {
-            if let Some(m) = guard.as_mut() {
+            if let Some(m) = memo.labels.as_mut() {
                 m.remove(id);
             }
         }
-        None => *guard = None,
+        None => memo.labels = None,
     }
 }
 
 /// The task id a task-keyed TOPIC carries.
 ///
-/// Every one of these topics already embeds it (`pty://<id>`,
-/// `setup-done://<id>`, `script-output://<id>:<member>:<kind>`,
-/// `grep-done://<id>`), so routing needs nothing at the call site beyond
-/// swapping `app.emit` for [`emit_scoped`]. Parsing the topic rather than
-/// threading an id is what kept this a mechanical change across ~30 sites
-/// instead of thirty separate signature edits.
+/// Every one of these topics already embeds it (`setup-done://<id>`,
+/// `setup-output://<id>`, `script-output://<id>:<member>:<kind>`), so routing
+/// needs nothing at the call site beyond swapping `app.emit` for
+/// [`emit_scoped`]. Parsing the topic rather than threading an id is what kept
+/// this a mechanical change across ~30 sites instead of thirty separate
+/// signature edits.
+///
+/// It cannot tell a task id from any other id, and `pty://<id>` and
+/// `grep-*://<id>` carry a PTY id and a search id. Those resolve their window
+/// once and never come through here; see [`TASK_WINDOW`].
 fn task_id_in_topic(topic: &str) -> Option<&str> {
     let rest = topic.split_once("://")?.1;
     let id = rest.split(':').next()?;
     (!id.is_empty()).then_some(id)
 }
 
-/// Emit a TASK-KEYED event to the window that owns the task.
-///
-/// Falls back to a broadcast when the owner cannot be resolved (see
-/// [`window_for_task`]).
-/// Which window a task-keyed topic routes to, or `None` for a broadcast.
-///
-/// Named and split out so the FALLBACK is testable: "no owner means every
-/// window" is a deliberate choice, not an oversight, and a change that made an
-/// unresolvable event reach nobody would otherwise be silent.
 /// The window-state file for THIS build flavour. See the plugin setup in
 /// `run`: release keeps the plugin's default so no install loses its saved
 /// frames; the e2e and dev builds each get their own, because all three
@@ -8936,12 +9014,22 @@ fn window_state_filename() -> &'static str {
     }
 }
 
+/// Which window a task-keyed topic routes to, or `None` for a broadcast.
+///
+/// Named and split out so the FALLBACK is testable: "no owner means every
+/// window" is a deliberate choice, not an oversight, and a change that made an
+/// unresolvable event reach nobody would otherwise be silent.
 fn emit_target(topic: &str) -> Option<String> {
     task_id_in_topic(topic).and_then(window_for_task)
 }
 
-fn emit_scoped<S: Serialize + Clone>(app: &AppHandle, topic: &str, payload: S) {
-    match emit_target(topic) {
+/// Emit to the window `label` names, or to every window when there is none.
+///
+/// For a caller that resolved its window ONCE, up front: a PTY or a grep,
+/// whose topics carry an id that is not a task id. `None` broadcasts, the same
+/// fallback [`emit_scoped`] uses.
+fn emit_to_window<S: Serialize + Clone>(app: &AppHandle, label: Option<&str>, topic: &str, payload: S) {
+    match label {
         Some(label) => {
             let _ = app.emit_to(label, topic, payload);
         }
@@ -8949,19 +9037,20 @@ fn emit_scoped<S: Serialize + Clone>(app: &AppHandle, topic: &str, payload: S) {
             let _ = app.emit(topic, payload);
         }
     }
+}
+
+/// Emit a TASK-KEYED event to the window that owns the task.
+///
+/// Falls back to a broadcast when the owner cannot be resolved (see
+/// [`window_for_task`]).
+fn emit_scoped<S: Serialize + Clone>(app: &AppHandle, topic: &str, payload: S) {
+    emit_to_window(app, emit_target(topic).as_deref(), topic, payload);
 }
 
 /// Emit an event whose task id is in the PAYLOAD rather than the topic
 /// (spotlight, whose topics are project-wide but whose payload names the task).
 fn emit_scoped_by_id<S: Serialize + Clone>(app: &AppHandle, task_id: &str, topic: &str, payload: S) {
-    match window_for_task(task_id) {
-        Some(label) => {
-            let _ = app.emit_to(label, topic, payload);
-        }
-        None => {
-            let _ = app.emit(topic, payload);
-        }
-    }
+    emit_to_window(app, window_for_task(task_id).as_deref(), topic, payload);
 }
 
 /// Every live PROFILE window, in no particular order.
@@ -18140,11 +18229,15 @@ fn task_grep_start(
     }
     let emit_done = format!("grep-done://{search_id}");
     let emit_out  = format!("grep-result://{search_id}");
+    // Resolved from the task in hand. The topics carry a search id that is
+    // fresh per keystroke, so looking the window up from them would miss,
+    // and scan every task file, on every batch of every search.
+    let grep_window = w.profile.window_label();
 
     // Empty query → just emit done. UI shouldn't bother calling us, but
     // be defensive (debounce can race).
     if query.trim().is_empty() {
-        emit_scoped(&app, &emit_done, serde_json::json!({ "truncated": false }));
+        emit_to_window(&app, Some(&grep_window), &emit_done, serde_json::json!({ "truncated": false }));
         return Ok(());
     }
 
@@ -18215,7 +18308,7 @@ fn task_grep_start(
         let flush_batch = |app: &tauri::AppHandle, topic: &str, batch: &mut Vec<serde_json::Value>| {
             if batch.is_empty() { return; }
             let payload = serde_json::json!({ "hits": batch.clone() });
-            emit_scoped(&app, topic, payload);
+            emit_to_window(&app, Some(&grep_window), topic, payload);
             batch.clear();
         };
 
@@ -18295,7 +18388,7 @@ fn task_grep_start(
             }
         }
         if !superseded {
-            emit_scoped(&app_o, &emit_done, serde_json::json!({ "truncated": truncated }));
+            emit_to_window(&app_o, Some(&grep_window), &emit_done, serde_json::json!({ "truncated": truncated }));
         }
         // search_id_o is only used in the topic strings above; reference it
         // here so the borrow checker doesn't complain about an unused move.
@@ -24288,11 +24381,12 @@ mod tests {
     fn a_task_keyed_topic_yields_its_task_id() {
         // Routing parses the TOPIC rather than threading an id, which is what
         // kept ~30 emit sites a one-word change. Every shape has to work.
+        // `pty://` and `grep-*://` are absent on purpose: their ids are not
+        // task ids, so they never come through here (see
+        // `pty_and_grep_events_are_routed_by_a_label_resolved_once`).
         use crate::task_id_in_topic;
-        assert_eq!(task_id_in_topic("pty://abc"), Some("abc"));
-        assert_eq!(task_id_in_topic("pty-exit://abc"), Some("abc"));
         assert_eq!(task_id_in_topic("setup-done://abc"), Some("abc"));
-        assert_eq!(task_id_in_topic("grep-done://abc"), Some("abc"));
+        assert_eq!(task_id_in_topic("setup-output://abc"), Some("abc"));
         // script topics append `:<member>:<kind>` after the id.
         assert_eq!(task_id_in_topic("script-output://abc:web:run"), Some("abc"));
         assert_eq!(task_id_in_topic("script-done://abc::setup"), Some("abc"));
@@ -24300,7 +24394,7 @@ mod tests {
         // to a window named by a fragment of the topic.
         assert_eq!(task_id_in_topic("termic://windowless"), Some("windowless"));
         assert_eq!(task_id_in_topic("no-scheme"), None);
-        assert_eq!(task_id_in_topic("pty://"), None);
+        assert_eq!(task_id_in_topic("setup-done://"), None);
     }
 
     #[test]
@@ -24340,6 +24434,89 @@ mod tests {
             crate::delete_task_file("t2").unwrap();
             assert_eq!(crate::window_for_task("t2"), None, "a deleted task kept its cached window");
         });
+    }
+
+    #[test]
+    fn an_id_no_task_owns_is_looked_up_once_not_per_event() {
+        // The battery drain. A miss used to be forgotten, so every event on a
+        // topic whose id no task has re-read and re-parsed every task file of
+        // every profile, archived ones included. `pty://` carries a PTY uuid,
+        // so that was every PTY flush: ~50 full scans a second on a machine
+        // with 57 task files and a few busy agents.
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            crate::forget_task_window(None);
+            crate::save_task(&a_task("t1", ProfileId::Root)).unwrap();
+            let topic = "setup-output://00000000-0000-4000-8000-000000000000";
+
+            let before = crate::task_dir_scans();
+            assert_eq!(crate::emit_target(topic), None, "an unknown id must still broadcast");
+            let one_lookup = crate::task_dir_scans() - before;
+            assert!(one_lookup > 0, "the first miss has to look");
+            for _ in 0..1000 {
+                assert_eq!(crate::emit_target(topic), None);
+            }
+            assert_eq!(crate::task_dir_scans() - before, one_lookup,
+                "a miss was not remembered: every event scanned the disk again");
+        });
+    }
+
+    #[test]
+    fn a_task_created_after_a_miss_still_resolves() {
+        // The one way a remembered miss can be wrong: the task did not exist
+        // yet. Every task record is written by `save_task`, which is what has
+        // to invalidate it.
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            crate::forget_task_window(None);
+            assert_eq!(crate::window_for_task("t9"), None);
+            crate::save_task(&a_task("t9", ProfileId::Slug("home".into()))).unwrap();
+            assert_eq!(crate::window_for_task("t9").as_deref(), Some("profile-home"),
+                "a remembered miss outlived the task being created");
+        });
+    }
+
+    #[test]
+    fn a_saved_task_routes_without_touching_the_disk() {
+        // `save_task` has the profile in hand, so it seeds the memo and even a
+        // task's FIRST event costs nothing.
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            crate::forget_task_window(None);
+            crate::save_task(&a_task("t3", ProfileId::Slug("home".into()))).unwrap();
+            let before = crate::task_dir_scans();
+            for _ in 0..100 {
+                assert_eq!(crate::emit_target("setup-done://t3").as_deref(), Some("profile-home"));
+            }
+            assert_eq!(crate::task_dir_scans() - before, 0);
+        });
+    }
+
+    #[test]
+    fn pty_and_grep_events_are_routed_by_a_label_resolved_once() {
+        // `emit_scoped` looks the window up from the id in the TOPIC and
+        // assumes it is a task id. A PTY's topics carry the PTY's own uuid and
+        // a grep's carry a fresh search id per keystroke, so neither is ever
+        // found. Both commands already hold their task when they start, so
+        // they resolve the label there and every event reuses it.
+        //
+        // A source guard, because driving the real reader and flusher threads
+        // needs an AppHandle this suite cannot build. Going back through
+        // `emit_scoped` costs one scan per PTY with the memo above, and one
+        // per keystroke for grep, so it is still wrong and this is what says so.
+        let src = include_str!("lib.rs");
+        for (func, topic) in [("fn pty_spawn(", "pty-exit://"), ("fn task_grep_start(", "grep-done://")] {
+            let body = src.split_once(func).unwrap_or_else(|| panic!("{func} exists")).1;
+            let body = &body[..body.find("\n}\n").expect("function ends")];
+            assert!(body.contains(topic), "{func} no longer emits {topic}, so this slice is wrong");
+            let per_event: Vec<&str> = body
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.starts_with("//") && l.contains("emit_scoped"))
+                .collect();
+            assert!(per_event.is_empty(),
+                "{func} resolves its window per event again: {per_event:#?}");
+        }
     }
 
     #[test]
@@ -24969,7 +25146,7 @@ mod tests {
         // silent regression, and this is the assertion that would catch it.
         with_scratch_data_dir(|_| {
             crate::forget_task_window(None);
-            assert_eq!(crate::emit_target("pty://does-not-exist"), None,
+            assert_eq!(crate::emit_target("setup-done://does-not-exist"), None,
                 "None is the signal to broadcast");
             assert_eq!(crate::emit_target("termic://windowless"), None);
             assert_eq!(crate::emit_target("no-scheme-at-all"), None);
@@ -24982,7 +25159,7 @@ mod tests {
             crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
             crate::forget_task_window(None);
             crate::save_task(&a_task("t2", ProfileId::Slug("home".into()))).unwrap();
-            assert_eq!(crate::emit_target("pty://t2").as_deref(), Some("profile-home"));
+            assert_eq!(crate::emit_target("setup-done://t2").as_deref(), Some("profile-home"));
             // Script topics append `:<member>:<kind>` after the id.
             assert_eq!(crate::emit_target("script-done://t2::setup").as_deref(), Some("profile-home"));
         });
