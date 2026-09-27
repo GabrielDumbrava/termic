@@ -74,6 +74,8 @@ export default {
   resumeOverrideOn: "Resume args override: on",
   copyBranch: "Copy branch name",
   copyBriefing: "Copy agent CLI briefing",
+  spawnedBy: "Started by {{name}}",
+  spawnedByTitle: "Started by {{name}}. Click to go there.",
   duplicateWorktree: "Duplicate worktree",
   stopTask: "Stop task",
   archiveTask: "Archive task",

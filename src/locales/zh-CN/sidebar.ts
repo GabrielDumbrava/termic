@@ -74,6 +74,8 @@ export default {
   resumeOverrideOn: "恢复参数覆盖：开",
   copyBranch: "复制分支名",
   copyBriefing: "复制智能体 CLI 简报",
+  spawnedBy: "由 {{name}} 启动",
+  spawnedByTitle: "由 {{name}} 启动，点击前往。",
   duplicateWorktree: "复制工作树",
   stopTask: "停止任务",
   archiveTask: "归档任务",

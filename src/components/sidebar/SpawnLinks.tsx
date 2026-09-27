@@ -10,11 +10,13 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { CornerDownRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { spawnLinkPairs, spawnMarkParent } from "@/lib/spawnLinks";
 import type { Task } from "@/lib/types";
 
 export function SpawnedFromMark({ task }: { task: Task }) {
+  const { t } = useTranslation("sidebar");
   // One string, so the row re-renders when the PARENT's label changes, not
   // on every store write (docs/performance.md, selector fanout).
   const key = useApp(s => {
@@ -34,8 +36,8 @@ export function SpawnedFromMark({ task }: { task: Task }) {
       data-no-drag
       data-testid={`task-spawned-from-${task.id}`}
       data-parent-id={parentId}
-      title={`Started by ${label}. Click to go there.`}
-      aria-label={`Started by ${label}`}
+      title={t("spawnedByTitle", { name: label })}
+      aria-label={t("spawnedBy", { name: label })}
       onPointerDown={e => e.stopPropagation()}
       onClick={e => {
         e.stopPropagation();
