@@ -1,6 +1,6 @@
 import {
-  clickWhenVisible, ensureActiveTask, openTask, rawI18nKeysOnScreen, requireTermicApi,
-  snap, waitForAppShell, waitForText, waitVisible,
+  archiveTask, clickWhenVisible, ensureActiveTask, openTask, rawI18nKeysOnScreen,
+  requireTermicApi, snap, waitForAppShell, waitForText, waitVisible,
 } from "../helpers";
 
 // Translation keys must not reach the screen as text (GH #330).
@@ -55,6 +55,11 @@ describe("no untranslated keys on screen", () => {
       window.__termic!.usePrefs.getState().setLanguage("system");
       window.__termic!.useApp.getState().closeSettings();
     });
+    // Self-clean like every other spec: the whole suite shares one data dir
+    // (wdio.conf.ts), so this task outlives the window it was made in. Not
+    // hygiene, load-bearing: without it `tabs-layout.e2e.ts` lost 8 cases,
+    // and archiving here (alone, no other change) put them back.
+    if (taskId) await archiveTask(taskId);
   });
 
   it("would notice a key that reached the screen", async () => {
