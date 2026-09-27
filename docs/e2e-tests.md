@@ -319,6 +319,21 @@ single `browser.execute` returning an object took 20s. Batch reads that
 belong to one moment. It is also more correct: fifteen round trips describe
 the DOM across fifteen seconds, which is a slideshow, not a snapshot.
 
+The same tax applies to WAITING, and it is easier to miss. A poll written as
+`browser.$(sel)` then `isExisting()` then `getAttribute()` is three commands
+per iteration: one case spent **24s watching an attribute that had been
+correct for 23.9 of them** (measured with in-page marks: the store took the
+report at 41ms, the DOM carried it at 51ms, and the spec noticed at 23.9s).
+`waitForAttr` in helpers.ts is that poll in ONE command, and
+`waitPtyQuiet` is the same idea for "the bytes stopped": the loop runs in
+the page and the protocol is paid once. Converting the five loops in
+`agent.e2e.ts` took its notifications block from 3m27 to 1m20 and the file
+from 8m53 to 6m47, with no behaviour changed.
+
+`waitForExist` on an element that is ALREADY on screen from an earlier case
+is worse than slow, it is wrong: it returns at once and the read that
+follows races the update. Wait for the value (`waitForAttr`), not the node.
+
 **The rest is the app's own timers, and it is not waste.** `SETTLE_MS` is
 5s, `STICKY_DONE_MS` 8s, byte-quiet 4s, and a case proving a badge does NOT
 appear has to outlast them. The fixture's two `sleep 16`s exist because a

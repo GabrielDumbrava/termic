@@ -3484,6 +3484,8 @@ describe("spawn links across projects", () => {
     await hover(loose);
     await browser.waitUntil(async () => (await drawnLinks()).length === 0, { timeout: 5_000 });
     await hover(near);
+    // A negative: an unlinked task draws nothing, and nothing is not an event
+    // to wait for. Long enough that a wrong link would have been drawn.
     await browser.pause(300);
     expect(await drawnLinks()).toEqual([]);
     await hover(far);

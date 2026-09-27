@@ -1463,3 +1463,58 @@ export async function waitTabInFront(taskId: string, tabId: string, timeout = 10
     { timeout, timeoutMsg: `tab ${tabId} never came to the front of task ${taskId}` },
   );
 }
+
+/** Wait until `taskId`'s first tab has seen no PTY output for `quietMs`.
+ *
+ *  The loop runs IN THE PAGE, one round trip, because the round trip is the
+ *  cost: a WebDriver command is ~2s here (docs/e2e-tests.md), so polling
+ *  `lastOutputAt` from the spec every 500ms spends more time asking than
+ *  waiting, and six cases doing it was most of two minutes.
+ *
+ *  Still a condition, not a sleep: the wait ends when the bytes stop, and the
+ *  `quietMs` a caller passes is the app threshold it has to outlast (byte-quiet
+ *  at 4s, the settle window at 6s) for a "no badge appeared" assertion to mean
+ *  anything.
+ */
+export async function waitPtyQuiet(taskId: string, quietMs: number, timeout = 30_000): Promise<void> {
+  const quiet = await browser.execute(async (id, ms, cap) => {
+    const started = Date.now();
+    const since = () => {
+      const tab = window.__termic!.useApp.getState().tabs[id]?.[0];
+      return Date.now() - (tab?.lastOutputAt ?? 0);
+    };
+    while (Date.now() - started < cap) {
+      if (since() > ms) return true;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    return false;
+  }, taskId, quietMs, timeout);
+  if (!quiet) throw new Error(`PTY never went quiet for ${quietMs}ms within ${timeout}ms`);
+}
+
+/** Wait until `selector`'s `attr` reads `value`, in ONE WebDriver command per
+ *  poll.
+ *
+ *  `browser.$(sel)` then `isExisting()` then `getAttribute()` is three
+ *  commands, and a command costs ~2s here (docs/e2e-tests.md): one such loop
+ *  spent 24s watching an attribute that had been correct for 23.9 of them.
+ *  The DOM read itself is instant; the protocol is the price, so pay it once.
+ */
+export async function waitForAttr(
+  selector: string,
+  attr: string,
+  value: string,
+  timeout = 20_000,
+): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute(
+      (sel, a, v) => document.querySelector(sel)?.getAttribute(a) === v,
+      selector, attr, value,
+    ),
+    {
+      timeout,
+      timeoutMsg: `${selector} never reported ${attr}="${value}" (last: `
+        + `${await browser.execute((sel, a) => document.querySelector(sel)?.getAttribute(a) ?? "<no element>", selector, attr)})`,
+    },
+  );
+}

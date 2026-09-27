@@ -45,15 +45,11 @@ import {
   workBadgeMark,
   waitTabInFront,
   waitTaskUnmounted,
+  waitPtyQuiet,
+  waitForAttr,
 } from "../helpers";
 
 /** ms since the task's agent tab last produced PTY bytes. Not in the DOM. */
-const quietFor = (taskId: string) =>
-  browser.execute((id) => {
-    const t = window.__termic!.useApp.getState().tabs[id][0];
-    return Date.now() - (t.lastOutputAt ?? 0);
-  }, taskId);
-
 // Synthetic native-shaped events exercise the installed xterm + IME bridge
 // together. This covers event routing, not macOS input-source generation.
 describe("terminal IME", () => {
@@ -447,6 +443,8 @@ describe("inline images", () => {
       },
       { timeout: 10_000, timeoutMsg: "Pi's redraw erased the inline image after rendering settled" },
     );
+    // A negative, so it needs a window: the redraw that used to erase the image
+    // came AFTER the frames settled, and an instant re-read would miss it.
     await browser.pause(500);
     expect(await opaquePixelCount()).toBeGreaterThan(0);
     await snap("inline-image.png");
@@ -1002,11 +1000,7 @@ describe("pending work defers done", () => {
     // the two thresholds that would otherwise fire — byte-quiet at 4s and the
     // settle timer at 5s. Without clearing those, "still working" would prove
     // nothing.
-    await browser.waitUntil(async () => (await quietFor(taskId!)) > 9_000, {
-      timeout: 25_000,
-      interval: 500,
-      timeoutMsg: "PTY never went quiet",
-    });
+    await waitPtyQuiet(taskId!, 9_000, 25_000);
 
     // Still spinning, and no bell — the hold is a hold, not a swallowed done.
     expect(await taskViewBadge(taskId)).toBe("working");
@@ -1506,11 +1500,7 @@ describe("agent notifications", () => {
 
     // Prove the directive was consumed (the PTY echoed past it) rather than
     // asserting on a race: bytes must have flowed after the send.
-    await browser.waitUntil(async () => (await quietFor(taskId!)) > 6_000, {
-      timeout: 30_000,
-      interval: 500,
-      timeoutMsg: "PTY never went quiet after the nag",
-    });
+    await waitPtyQuiet(taskId!, 6_000);
 
     expect(await taskViewBadge(taskId!)).not.toBe("attention");
     expect(await sidebarBadge(taskId!)).not.toBe("attention");
@@ -1548,11 +1538,7 @@ describe("agent notifications", () => {
 
     // Past the settle window the idle title armed. If cancelSettle regressed,
     // a done bullet stacks on top of the bell right about here.
-    await browser.waitUntil(async () => (await quietFor(taskId!)) > 7_000, {
-      timeout: 30_000,
-      interval: 500,
-      timeoutMsg: "PTY never went quiet after the hook",
-    });
+    await waitPtyQuiet(taskId!, 7_000);
     expect(await taskViewBadge(taskId!)).toBe("attention");
     expect(await sidebarBadge(taskId!)).not.toBe("done");
   });
@@ -1580,8 +1566,9 @@ describe("agent notifications", () => {
     await ensureActiveTask(taskId!);
     await submitToAgent(taskId!, "#usage usage 30 95 - -");
 
-    const chip = await browser.$('[data-testid="usage-chip"]');
-    await chip.waitForExist({ timeout: 20_000 });
+    // This report's session number, not merely a chip on screen: one command
+    // per poll, and it cannot pass against the value an earlier case left.
+    await waitForAttr('[data-testid="usage-chip"]', "data-usage-session", "30");
     // ONE round trip for the whole readout, not fifteen. Every `getAttribute`
     // and `getText` is a WebDriver command, and this case was spending the
     // best part of a minute on them; read together they also describe the
@@ -1647,7 +1634,8 @@ describe("agent notifications", () => {
   // budget the case above is already written against.
   it("hides whole chips rather than truncating them, and says when it did", async () => {
     await ensureActiveTask(taskId!);
-    const before = (await browser.$$('[data-testid="usage-chip"]')).length;
+    const before = await browser.execute(() =>
+      document.querySelectorAll('[data-testid="usage-chip"]').length);
     const added = await browser.execute((t) => {
       const ids: string[] = [];
       for (const cli of ["codex", "gemini", "grok"]) {
@@ -1666,8 +1654,9 @@ describe("agent notifications", () => {
     // "xterm never forwarded it".
     try {
       await browser.waitUntil(
-        async () => (await browser.$$('[data-testid="usage-chip"]')).length > before
-          || !!(await browser.$('[data-testid="agent-chips-more"]')).elementId,
+        () => browser.execute((n) =>
+          document.querySelectorAll('[data-testid="usage-chip"]').length > n
+          || !!document.querySelector('[data-testid="agent-chips-more"]'), before),
         { timeout: 10_000, timeoutMsg: "the extra agents changed nothing in the footer" },
       );
 
@@ -1709,7 +1698,8 @@ describe("agent notifications", () => {
         for (const id of ids as string[]) app.closeTab(t, id);
       }, taskId, added);
       await browser.waitUntil(
-        async () => (await browser.$$('[data-testid="usage-chip"]')).length <= before,
+        () => browser.execute((n) =>
+          document.querySelectorAll('[data-testid="usage-chip"]').length <= n, before),
         { timeout: 10_000, timeoutMsg: "the extra agent tabs were not cleaned up" },
       );
     }
@@ -1749,10 +1739,7 @@ describe("agent notifications", () => {
       };
       store.setState({ byAgent });
     });
-    await browser.waitUntil(
-      async () => (await (await browser.$('[data-usage-window="5h"]')).getAttribute("data-usage-fill")) === "75",
-      { timeout: 10_000, timeoutMsg: "the 5h gauge never redrew at 75%" },
-    );
+    await waitForAttr('[data-usage-window="5h"]', "data-usage-fill", "75", 10_000);
     await snap("usage-gauge-warn.png");
   });
 
@@ -1774,15 +1761,9 @@ describe("agent notifications", () => {
     await setWindowPresence(false);
 
     await submitToAgent(taskId!, "#usage usage 61 44 - -");
-    await browser.waitUntil(async () => {
-      const el = await browser.$('[data-testid="usage-chip"]');
-      return (await el.isExisting()) && (await el.getAttribute("data-usage-session")) === "61";
-    }, { timeout: 20_000, timeoutMsg: "the second usage report never landed" });
+    await waitForAttr('[data-testid="usage-chip"]', "data-usage-session", "61");
 
-    await browser.waitUntil(async () => (await quietFor(taskId!)) > 6_000, {
-      timeout: 30_000, interval: 500,
-      timeoutMsg: "PTY never went quiet after the usage report",
-    });
+    await waitPtyQuiet(taskId!, 6_000);
     expect(await taskViewBadge(taskId!)).not.toBe("attention");
     expect(await sidebarBadge(taskId!)).not.toBe("attention");
   });
@@ -1795,8 +1776,11 @@ describe("agent notifications", () => {
   it("shows the context window in the chip beside the plan windows", async () => {
     await ensureActiveTask(taskId!);
     await submitToAgent(taskId!, "#usage ctx 170000 200000");
-    const gauge = await browser.$('[data-testid="context-gauge"]');
-    await gauge.waitForExist({ timeout: 20_000, timeoutMsg: "the context gauge never appeared" });
+    // Wait for the gauge to carry THIS report's number, not merely to exist:
+    // an earlier case left one on screen, so existence is already true and the
+    // read below would race the update. One command per poll (waitForAttr),
+    // where `waitForExist` is a protocol round trip per poll.
+    await waitForAttr('[data-testid="context-gauge"]', "data-usage-fill", "85");
     // One read, same reason as the case above.
     const seen = await browser.execute(() => {
       const g = document.querySelector('[data-testid="context-gauge"]') as HTMLElement;
@@ -1823,11 +1807,9 @@ describe("agent notifications", () => {
     // An agent-supplied percentage wins over tokens/window (codex reserves a
     // baseline, so its figure is not the plain ratio).
     await submitToAgent(taskId!, "#usage ctx 34357 258400 9");
-    await browser.waitUntil(
-      async () => (await (await browser.$('[data-testid="context-gauge"]')).getAttribute("data-usage-fill")) === "9",
-      { timeout: 20_000, timeoutMsg: "the agent's own percentage never replaced the ratio" },
-    );
-    expect(await (await browser.$('[data-testid="usage-chip"]')).getAttribute("data-context-percent")).toBe("9");
+    await waitForAttr('[data-testid="context-gauge"]', "data-usage-fill", "9");
+    expect(await browser.execute(() =>
+      document.querySelector('[data-testid="usage-chip"]')?.getAttribute("data-context-percent"))).toBe("9");
   });
 
   // The popover alone: the reading above is still on screen, so this spends
@@ -1855,13 +1837,8 @@ describe("agent notifications", () => {
     }, taskId);
     await setWindowPresence(false);
     await submitToAgent(taskId!, "#usage ctx 50000 200000");
-    await browser.waitUntil(async () => {
-      const el = await browser.$('[data-testid="usage-chip"]');
-      return (await el.isExisting()) && (await el.getAttribute("data-context-percent")) === "25";
-    }, { timeout: 20_000, timeoutMsg: "the context report never landed" });
-    await browser.waitUntil(async () => (await quietFor(taskId!)) > 6_000, {
-      timeout: 30_000, interval: 500, timeoutMsg: "PTY never went quiet after the context report",
-    });
+    await waitForAttr('[data-testid="usage-chip"]', "data-context-percent", "25");
+    await waitPtyQuiet(taskId!, 6_000);
     expect(await taskViewBadge(taskId!)).not.toBe("attention");
     expect(await sidebarBadge(taskId!)).not.toBe("attention");
     await setWindowPresence(true);
@@ -2097,10 +2074,7 @@ describe("agent notifications", () => {
 
       // Past SETTLE_MS with the PTY quiet, which is precisely the situation
       // that used to fire a done off the title.
-      await browser.waitUntil(async () => (await quietFor(taskId!)) > 8_000, {
-        timeout: 30_000, interval: 500,
-        timeoutMsg: "PTY never went quiet after the turn",
-      });
+      await waitPtyQuiet(taskId!, 8_000);
       expect(await taskViewBadge(taskId!)).not.toBe("done");
       expect(await sidebarBadge(taskId!)).not.toBe("done");
     });
@@ -2351,6 +2325,8 @@ describe("a claude session that moves after /clear is the one resumed", () => {
         !!(window.__termic!.useApp.getState().tabs[t] ?? []).find((x: any) => x.id === tb)?.lastOutputAt), id, tabIds),
       { timeout: 30_000, timeoutMsg: "not every agent tab produced output" },
     );
+    // Outlast the app's own survive window: a minted id is only held once the
+    // spawn has lived past it, so acting sooner asserts against a pending id.
     await browser.pause(SURVIVE_MS);
 
     // Reorder, as dragging in the tab bar does: nothing below may depend on it.
@@ -2568,6 +2544,8 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     siblingId = await openTask("e2e-picker-sibling", true, "fakeclaude");
     const sib = siblingId;
     await waitForAgentReady(sib);
+    // RESUME_FAILURE_MS: the id the spawn minted is only kept once it survives
+    // that window, and this case is about which task stores which id.
     await browser.pause(2500);
     await submitToAgent(sib, "hello");
     await browser.waitUntil(async () => !!(await stored(sib)),
@@ -2576,6 +2554,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
 
     await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
     await waitForAgentReady(id);
+    // RESUME_FAILURE_MS again, for this task's own mint.
     await browser.pause(2500);
     await submitToAgent(id, "mine");
     await browser.waitUntil(async () => !!(await stored(id)),
@@ -2623,6 +2602,8 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
       const st = window.__termic!.useApp.getState();
       await window.__termic!.ipc.ptyWrite((st.tabs[t] ?? [])[0]?.ptyId, [3]);
     }, id);
+    // A negative over RESUME_FAILURE_MS: no SECOND respawn may follow the
+    // interrupt, and only waiting the window out can show that none came.
     await browser.pause(2500);
     expect(spawnArgv(id).length).toBe(before + 1);
     expect(spawnArgv(id)[before]).toContain(`--resume ${kept}`);
@@ -3018,6 +2999,8 @@ describe("delegated work", () => {
     await browser.waitUntil(async () => (await taskViewBadge(taskId)) === "partial", {
       timeout: 20_000, timeoutMsg: `the next subagent back did not re-mark partial (saw ${await taskViewBadge(taskId)})`,
     });
+    // A negative: the bell must NOT ring while a subagent is still out, and a
+    // bell that has not rung yet has no event to wait on.
     await browser.pause(1_500);
     if ((await workBadges(taskId)).includes("done")) {
       throw new Error("rang done with one subagent still running, which is the bug");
@@ -3085,6 +3068,8 @@ describe("delegated work", () => {
       const s = window.__termic!.useApp.getState();
       s.enqueueAgentMessage(id, s.tabs[id][0].id, "user-queued-while-delegated");
     }, taskId);
+    // A negative: the queued message must STAY queued while the turn is open,
+    // so this waits long enough for a wrong drain to have happened.
     await browser.pause(2_000);
     expect(await queuedCount(taskId)).toBe(1);
     expect(await echoed("user-queued-while-delegated")).toBe(false);

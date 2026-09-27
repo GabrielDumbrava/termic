@@ -93,7 +93,14 @@ jobs:
         timeout-minutes: 75
         env:
           TERMIC_E2E_FAIL_CAPTURE: "1"
+          TERMIC_E2E_TIMING: "1"
         run: dbus-run-session -- xvfb-run -a -s "-screen 0 1440x900x24" npm run test:e2e
+      # Reported, never gated: wall-clock on a shared runner flakes, and a
+      # flaky gate gets muted (docs/perf-ci.md). The gate on fixed waits is
+      # e2e/fixedWaits.test.ts, which counts instead of timing.
+      - name: Slowest e2e cases
+        if: always()
+        run: node scripts/e2e-slowest.mjs
       - name: Collect the debug log
         if: always()
         run: |
@@ -132,7 +139,12 @@ jobs:
       - name: Build e2e binary
         run: npm run e2e:build
       - name: Run e2e suite
+        env:
+          TERMIC_E2E_TIMING: "1"
         run: npm run test:e2e
+      - name: Slowest e2e cases
+        if: always()
+        run: node scripts/e2e-slowest.mjs
       # The debug log lives in the per-user temp dir (`std::env::temp_dir()`),
       # i.e. somewhere under /var/folders on macOS. Copying it here rather
       # than globbing it in upload-artifact: `/var/folders/**` made the

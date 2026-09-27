@@ -1564,6 +1564,8 @@ describe("recently-used tab navigation", () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
     await waitVisible("[data-testid='ctrl-tab-mode']");
     await walk(c, [false]);
+    // Same asynchronous switch as the case above: assert after a settle, or
+    // "the task did not change" passes against the broken behaviour too.
     await browser.pause(500);
     expect(await visibleTask()).toBe(c);
     expect(await browser.execute(

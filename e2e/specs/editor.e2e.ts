@@ -307,6 +307,9 @@ describe("terminal cmd+click opens a permanent tab", () => {
       await browser.execute((id) => window.__termic!.useApp.getState().openPreviewTab(id, {
         type: "edit", path: "README.md", title: "README.md",
       }), taskId);
+      // A settle window against IPC still in flight from the case before: its
+      // clicks resolve their paths over IPC, and a late one lands here and
+      // pins README again. Nothing observable says "no more are coming".
       await browser.pause(500);
       return (await tabFor("README.md"))?.preview === true;
     }, { timeout: 15_000, interval: 100, timeoutMsg: "README never stayed in the preview slot" });
