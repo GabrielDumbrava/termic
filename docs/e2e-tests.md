@@ -109,6 +109,30 @@ binary on the same machine. A written pin would have switched the user's own
 app's language. Same reason a spec that flips a localStorage-backed pref
 should restore it afterwards — `recentTasks` is shared the same way.
 
+### Windows: the staged sidecar must be the DEBUG one, or every `runCli` dies
+
+`runCli` passes `TERMIC_DATA_DIR`, and the CLI honors it **only in a debug
+build** (`cfg!(debug_assertions)`, `termic-cli/src/client.rs`) — a release
+sidecar looks in the real app's data dir, finds no socket there, and every
+`--no-launch` call fails with "Termic must be open", taking down every
+describe that drives the CLI (task groups, spawn links) with cascading
+`undefined` failures after the first one. The app side is fine; only the CLI
+is misdirected.
+
+Which sidecar lands in `src-tauri/binaries/` is a race between two writers:
+`beforeBuildCommand` stages a **release** one (`scripts/build-cli.mjs`, right
+for bundling), and `src-tauri/build.rs` re-stages one matching the app's
+profile — debug for `npm run e2e:build` — but only when cargo actually reruns
+the build script. A FRESH checkout always reruns it and lands debug, which is
+why CI never sees this; an incremental machine can skip it and keep the
+release one `beforeBuildCommand` just wrote. Symptom check: the staged
+`termic-cli-<triple>.exe` is ~2.6MB (release), not ~4MB (debug). Fix:
+
+```sh
+cp src-tauri/target/debug/termic-cli.exe \
+   "src-tauri/binaries/termic-cli-x86_64-pc-windows-msvc.exe"
+```
+
 It also deletes every branch but `main` in the fixture and its bare origin
 (then `fetch --prune`), keeping any branch a worktree still has checked out.
 Archiving a worktree task keeps its branch, so each local run added a few
