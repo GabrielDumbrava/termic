@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 // End-to-end config for the termic app. WebdriverIO drives the REAL macOS
 // WKWebView window via @wdio/tauri-service's embedded WebDriver provider
@@ -99,6 +100,7 @@ export const config: WebdriverIO.Config = {
     // each other's notes in a strip they expected to be empty.
     rmSync(path.join(dataDir, "scratch"), { recursive: true, force: true });
     seedArchive();
+    warmTheLoader();
     if (process.env.TERMIC_E2E_TIMING) rmSync(timingLog, { force: true });
   },
 
@@ -127,6 +129,29 @@ export const config: WebdriverIO.Config = {
     appendFileSync(timingLog, `${String(ms).padStart(7)}  ${test.parent} > ${test.title}\n`);
   },
 };
+
+/** Pay the cold-start cost of `cmd.exe` + `node` before anything is timed.
+ *
+ *  Windows only, and measured: the FIRST language server the suite starts is
+ *  a `.cmd` shim around node, and it took 6.8s from `sent initialize` to the
+ *  server's first byte (termic-debug.log, run 36390843154). Every later spawn
+ *  in the same run took 0.24s. Nothing about the second one is different
+ *  except that the image loader and Defender have already seen cmd.exe and
+ *  node.exe, so the first case to need a server pays for all of them and
+ *  races its own wait; the two Terraform cases have failed that race twice
+ *  and passed it twice.
+ *
+ *  Warming it here moves that one-off cost outside every timeout in the
+ *  suite. Best effort: a runner without node on PATH would not be running
+ *  this file at all, and if the probe fails the suite is no worse off. */
+function warmTheLoader(): void {
+  if (process.platform !== "win32") return;
+  try {
+    execFileSync("cmd.exe", ["/c", "node", "-e", "0"], { stdio: "ignore", timeout: 60_000 });
+  } catch {
+    /* the first real spawn pays it instead, exactly as before */
+  }
+}
 
 /** Archived task records, written straight to disk before the run.
  *

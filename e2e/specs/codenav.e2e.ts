@@ -127,10 +127,17 @@ const lspWhy = (root: string, server: string) =>
     });
   }, root, server);
 
-/** Wait for a diagnostic in this task, and say WHY if none comes. */
+/** Wait for a diagnostic in this task, and say WHY if none comes.
+ *
+ *  Longer than the 15s default on purpose. This waits on a PROCESS starting,
+ *  and the first `.cmd` shim around node on a Windows runner took 6.8s from
+ *  `sent initialize` to its first byte, against 0.24s for every spawn after it
+ *  (termic-debug.log, run 36390843154). wdio.conf.ts now warms that path
+ *  before the suite, but a cold image loader on a shared runner is not
+ *  something a spec should be betting a case on either way. */
 const waitLintRange = async (taskId: string, root: string, server: string) => {
   try {
-    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`);
+    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`, 40_000);
   } catch (e) {
     throw new Error(`${(e as Error).message}\nhost says: ${await lspWhy(root, server)}`);
   }
