@@ -3144,15 +3144,26 @@ mod tests {
         // control socket must textually FOLLOW every network allow in both
         // enforcing branches (last-match-wins). Not a substitute for the
         // behavioral checks - a complement that pins the ordering.
+        //
+        // Inside a scratch data dir, and with the account named on the TASK,
+        // because both of those were read off the host otherwise. `Task::
+        // default()` plus no account sends `task_login_store` to the real
+        // settings file, so whether the one legitimate post-deny allow below
+        // got rendered depended on whether the machine running the test had a
+        // default account configured for that agent: green on CI, which has
+        // none, and red on a maintainer's Mac, which does.
+        crate::test_support::with_scratch_data_dir(|_| {
         let fx = fixture();
         let control = ControlPlanePaths {
             data_dir: Some(fx.data_dir.clone()),
             socket: Some(fx.socket_path.clone()),
         };
+        const ACCOUNT: &str = "Work";
         for (mode, agent) in
             [(SandboxMode::Enforce, "claude"), (SandboxMode::EnforceFs, "claude"), (SandboxMode::Enforce, "agy")]
         {
-            let task = Task { cli: agent.into(), ..Default::default() };
+            let mut task = Task { cli: agent.into(), ..Default::default() };
+            task.accounts.insert(agent.to_string(), ACCOUNT.into());
             let profile =
                 render_profile_with(&task, 5, agent, &[], mode, &control).unwrap();
             let deny_tok = format!("(path-literal \"{}\")", sbpl_escape(&fx.socket_path));
@@ -3163,14 +3174,32 @@ mod tests {
                 !after.contains("(allow network"),
                 "{mode:?}/{agent}: a network allow follows the socket deny (would make it inert)"
             );
-            // And the data-dir read deny is the final filesystem rule: no
-            // file allow after it.
+            // The data-dir read deny is the last filesystem rule but ONE: the
+            // task's own login store is re-opened after it on purpose (GH
+            // #278), because the store lives inside the denied data dir and an
+            // allow before the deny is inert. So the tail may hold exactly
+            // that one allow and nothing else - a second one, or a broader
+            // one, is a hole in the rule this whole block exists to hold.
             let dd_deny = format!("(deny file-read* (subpath \"{}\"))", sbpl_escape(&fx.data_dir));
             let dd_at = profile.find(&dd_deny).expect("data-dir read deny must be present");
+            let tail = &profile[dd_at + dd_deny.len()..];
+            // Rebased onto the fixture's data dir exactly as the profile does:
+            // the store does not exist under a scratch data dir, so the
+            // renderer takes its "rebase, do not canonicalize" branch.
+            let raw = crate::login_store_dir(agent, Some(ACCOUNT), crate::LoginRealm::Host)
+                .expect("a named account has a store").to_string_lossy().into_owned();
+            let dd_raw = crate::global_dir().unwrap().to_string_lossy().into_owned();
+            let store = raw.replacen(&dd_raw, &fx.data_dir, 1);
+            assert!(store.starts_with(&fx.data_dir), "rebasing failed: {store}");
+            assert_eq!(
+                tail.matches("(allow file-").count(), 1,
+                "{mode:?}/{agent}: the data-dir deny must be followed by exactly one file allow\n{tail}"
+            );
             assert!(
-                !profile[dd_at + dd_deny.len()..].contains("(allow file-"),
-                "{mode:?}/{agent}: a file allow follows the data-dir deny"
+                tail.contains(&format!("(allow file-read* file-write* (subpath \"{}\"))", sbpl_escape(&store))),
+                "{mode:?}/{agent}: the one allow after the deny must be this task's own login store\n{tail}"
             );
         }
+        });
     }
 }
