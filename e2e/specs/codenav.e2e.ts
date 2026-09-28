@@ -136,12 +136,14 @@ const lspWhy = (root: string, server: string) =>
  *  before the suite, but a cold image loader on a shared runner is not
  *  something a spec should be betting a case on either way.
  *
- *  75s, because warming node did NOT cover terraform-ls: a later Windows run
- *  measured 40.4s from `sent initialize` to its first byte for the 31MB binary
- *  (its own image, not node's), and the budget has to clear the client's
- *  handshake timeout (60s, see lib/lsp/host.ts) or a pass here would only mean
- *  the wait gave up after the client did. Costs nothing when the server is
- *  warm: the wait returns on the element, not on the clock. */
+ *  75s, because the warm-up did not hold: a later Windows run (36416742549)
+ *  measured 40.4s from `sent initialize` to the first byte, with the same 22
+ *  specs' later servers at 0.14 to 0.27s each. The budget has to clear the
+ *  CLIENT's handshake timeout (60s, lib/lsp/host.ts) or a pass here would only
+ *  mean this wait gave up before the client did, which is how that run read:
+ *  the 40s wait expired 133ms before the server answered. Costs nothing when
+ *  the server is warm, because it waits on the element, not on the clock.
+ *  docs/lsp.md rule 22 has what is and is not known about the 40s. */
 const waitLintRange = async (taskId: string, root: string, server: string) => {
   try {
     await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`, 75_000);

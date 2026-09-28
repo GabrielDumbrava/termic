@@ -185,12 +185,17 @@ export function acquireClient(root: string, server: string): {
       //
       // 60s, not 20s, because `initialize` is billed against this same budget
       // and a COLD server on Windows can lose most of a minute before its
-      // first byte. Measured on a CI runner: `terraform-ls.cmd` (a 31MB binary
-      // behind a shim) was spawned, sent `initialize` 6ms later, and answered
-      // 40.4 SECONDS after that, mostly Defender reading the image. The client
-      // had already rejected the request at 20s, which marked the server
+      // first byte. Measured on a CI runner: the server was spawned, sent
+      // `initialize` 6ms later, and answered 40.4 SECONDS after that, while
+      // every other server spawned in the same run answered in about 0.2s. The
+      // client had already rejected the request at 20s, which marked the server
       // failed and killed it, so code intelligence was permanently dead for
       // that root on a machine where nothing was actually wrong.
+      //
+      // WHY the first spawn costs that is not established, so do not write a
+      // cause into this comment. What is measured is the shape: on Windows the
+      // first server of a session can be two orders of magnitude slower to
+      // speak than the tenth.
       //
       // The cost of the larger budget is that a server which never speaks
       // takes a minute to be called failed instead of 20s. That is the better

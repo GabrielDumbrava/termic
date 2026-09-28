@@ -558,12 +558,22 @@ passing quietly.
 
 `LSPClient`'s `timeout` (`lib/lsp/host.ts`) covers EVERY request including
 `initialize`, so it is not a "how long may a hover take" number: it is how long
-a server gets to say its first word. Measured on a Windows CI runner,
-`terraform-ls.cmd` was spawned, sent `initialize` 6ms later, and answered 40.4
-seconds after that, essentially all of it Defender reading a 31 MB image. At the
-old 20s the client rejected the request, `status` went to `failed: Request timed
-out`, and the server was killed: code intelligence permanently dead for that
-root on a machine where nothing was wrong. It is 60s now.
+a server gets to say its first word. Measured on a Windows CI runner
+(`termic-debug.log`, run 36416742549): the server was spawned, sent `initialize`
+6ms later, and answered 40.4 SECONDS after that. At the old 20s the client
+rejected the request, `status` went to `failed: Request timed out`, and the
+server was killed: code intelligence permanently dead for that root on a machine
+where nothing was wrong. It is 60s now.
+
+The cause is NOT established, and the obvious explanations are each contradicted
+by the same log, so do not repeat one. It was not the server's own image being
+scanned: on Windows the suite's "terraform-ls" is a `.cmd` shim around
+`node <fake-lsp.mjs>`, and the 31 MB in the offer JSON beside it is the real
+terraform-ls's install metadata, which was never downloaded. It was not node's
+cold `.cmd` path in general either: the five `tsgo.cmd` servers spawned 41
+seconds later in the same run answered in 0.14 to 0.27s each. What the log
+supports is only the shape, that the FIRST server of a session can be two orders
+of magnitude slower to speak than the tenth.
 
 Two consequences worth keeping. A server that never speaks takes a minute to be
 called failed, which is the better error, because until then the chip says
@@ -572,9 +582,11 @@ to out-wait this number, or it reports the wait giving up before the client
 did: `e2e/specs/codenav.e2e.ts`'s `waitLintRange` is 75s for that reason, which
 costs nothing when the server is warm because it waits on the element.
 
-Warming the shim is not a substitute. `wdio.conf.ts` pays node's first
-`.cmd`+image-loader cost before the suite (6.8s, then 0.24s per spawn), and that
-did nothing for terraform-ls, whose own 31 MB image is the thing being read.
+Warming the shim did not turn out to be a substitute. `wdio.conf.ts` pays node's
+first `.cmd`+image-loader cost before the suite (6.8s, then 0.24s per spawn, the
+measurement that motivated it), and the 40.4s above happened with that warm-up
+in place. It runs in the wdio process, not the app's, which may be the reason it
+did not help, or may not be: see above on not asserting the cause.
 
 ## What is deliberately not built
 
