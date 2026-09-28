@@ -285,8 +285,9 @@ window answer a CLI request only one of them can serve.
 
 Task-keyed events must go through `emit_scoped` (which parses the id out of the
 topic and memoizes the owning window) or `emit_scoped_by_id`. `pty://` resolves
-its label at SPAWN instead, because it is the hottest path in the app and a
-lookup per chunk is not free. An unresolvable id falls back to a broadcast
+its label at SPAWN instead, and `grep-*://` at search start, and both emit with
+`emit_to_window`: their ids are not task ids, so the memo could never find them
+(see the next entry). An unresolvable id falls back to a broadcast
 deliberately: that is the pre-profiles behaviour, and far better than an event
 reaching no window at all.
 
@@ -308,6 +309,30 @@ window uses `getCurrentWebviewWindow().listen(...)`: `cli-rpc://request`
 (src/lib/cliRpc.ts) and `termic://close-requested` (windowlessMode.ts) do.
 Per-task topics (`setup-output://<id>`) are safe with the global listen only
 because a window subscribes to its own tasks' ids alone.
+
+## A topic keyed by a non-task id turns a cached lookup into a disk scan
+
+`emit_scoped` cannot tell a task id from any other id. It takes whatever
+follows `://` in the topic and looks it up in `TASK_WINDOW`, and a miss
+means `load_tasks_all()`: a read and parse of every task file in every
+profile, archived ones included. `pty://<id>` carries the PTY's own uuid,
+so from the day per-profile routing shipped every PTY flush missed and
+scanned, and because a miss was not remembered, the next flush 8ms later
+scanned again. Nothing failed. The event fell back to a broadcast and its
+one listener still got the bytes, so the only symptom was battery. The
+comment above the memo said the PTY path "captures its label at SPAWN";
+nothing did. Measured cost: [performance.md](performance.md) bear trap 12.
+
+Two defences now, and a new emitter needs the first one:
+
+- A topic whose id is NOT a task id (a PTY id, a search id, anything
+  minted per run) resolves its window from the task it already holds and
+  emits with `emit_to_window`. `pty_spawn` and `task_grep_start` do, and
+  a source-guard test fails if either calls `emit_scoped` again.
+- The memo remembers misses and `save_task` seeds it, so even a wrong
+  caller costs one scan per id rather than one per event, and a task
+  created after a miss still resolves. It never holds its lock across the
+  scan, which had queued every flusher behind whichever one was reading.
 
 ## `std::mem::take` on a shared queue swallows another window's work (GH #280)
 
