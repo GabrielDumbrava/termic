@@ -557,7 +557,13 @@ if [ "$agent" = agy ]; then
           case "$v" in ''|*[!0-9]*) ;; *) r=$((now + v)) ;; esac ;;
         esac
         [ "$f" = '-' ] && return
-        pct=$(awk -v f="$f" 'BEGIN { p = (1 - f) * 100; if (p < 0) p = 0; printf "%.2f", p }')
+        # LC_ALL=C, because awk's printf follows the locale: on a machine set
+        # to a comma-decimal locale (ro_RO, de_DE, fr_FR...) this prints
+        # "1,60", and the usage body is parsed as a bare number with a DOT
+        # (lib/agentUsage parseUsageBody), so the reading silently vanishes for
+        # everyone in half of Europe. Found by the Rust test failing on a
+        # ro_RO.UTF-8 box while CI, on C, was green.
+        pct=$(LC_ALL=C awk -v f="$f" 'BEGIN { p = (1 - f) * 100; if (p < 0) p = 0; printf "%.2f", p }')
         echo "$pct $r" ;;
     esac
   }
@@ -3773,6 +3779,30 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             "session_input_tokens":90000,"used_percentage":4}}"#;
         let (emitted, _) = statusline_run_as("grok", payload);
         assert_eq!(emitted, format!("\x1b]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}21000 500000\x07"));
+    }
+
+    /// Every `awk` in the hook body formats under LC_ALL=C.
+    ///
+    /// awk's printf follows the locale, so "%.2f" is "1,60" on a
+    /// comma-decimal machine (ro_RO, de_DE, fr_FR...). The usage body is
+    /// parsed as a bare dotted number (lib/agentUsage `parseUsageBody`), so
+    /// such a reading is dropped and the footer shows nothing, for the user
+    /// and never for CI, which runs on C. Source-level because the locales
+    /// needed to reproduce it are not installed on a runner.
+    #[test]
+    fn every_awk_in_the_hook_body_is_locale_pinned() {
+        for agent in ["claude", "agy", "codex", "grok"] {
+            let body = statusline_body_for(agent);
+            for line in body.lines() {
+                // The CALL, not the word: the block above it explains why the
+                // maths is in awk at all, and a comment is not a formatter.
+                let Some(at) = line.find("awk -v") else { continue };
+                assert!(
+                    line[..at].contains("LC_ALL=C"),
+                    "{agent}: awk without LC_ALL=C formats numbers in the user's locale: {line}",
+                );
+            }
+        }
     }
 
     /// agy: claude-shaped context, plus a `quota` of REMAINING fractions per
