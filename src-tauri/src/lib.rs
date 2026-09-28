@@ -26598,6 +26598,27 @@ mod tests {
     }
 
     #[test]
+    fn a_checkout_local_server_resolves_through_a_cmd_shim() {
+        // Windows cannot execute an extensionless script, so a repo-local
+        // server arrives as `terraform-ls.cmd` (what npm writes for its own
+        // shims, and what e2e/specs/codenav.e2e.ts installs there). Both
+        // platforms' rules are checked from either host: a resolution miss on
+        // Windows arms the grant and then starts nothing, which on screen is
+        // indistinguishable from a server that came up and answered nothing,
+        // and that cost two CI runs to tell apart.
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("bin")).unwrap();
+        fs::write(dir.path().join("bin").join("terraform-ls.cmd"), "@node fake %*\r\n").unwrap();
+        assert_eq!(
+            lsp_local_exe_for(dir.path(), "bin/terraform-ls", true).map(PathBuf::from),
+            Some(dir.path().join("bin").join("terraform-ls.cmd")),
+        );
+        // And the unix rules do not take it: there the name IS the file, and
+        // accepting a `.cmd` would hand portable-pty something it cannot run.
+        assert!(lsp_local_exe_for(dir.path(), "bin/terraform-ls", false).is_none());
+    }
+
+    #[test]
     fn every_pinned_server_names_a_digest_and_a_payload() {
         // A pin with an empty digest would download and run an unverified
         // binary against the user's source. The shape is checked here because

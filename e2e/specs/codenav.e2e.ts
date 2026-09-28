@@ -99,6 +99,43 @@ const isArmed = (root: string, server = "typescript") =>
 const clearGrants = () =>
   browser.execute(() => window.__termic!.useCodeIntel.setState({ grants: {} }));
 
+/** The host's own account of a server, for a failure message.
+ *
+ *  A red underline that never arrives has three causes that look identical on
+ *  screen: the binary was never resolved, it was resolved and would not start,
+ *  or it started and answered nothing. `lspStatus` separates the last two
+ *  (host.ts writes `starting`, then `failed` with the process's own words),
+ *  `lsp_offer` says which executable the resolver found, and `lsp_list` says
+ *  whether anything is alive on this checkout. On a CI runner nobody can
+ *  attach to, the assertion message is the only place that answer can arrive:
+ *  the Windows job spent two runs on "never became visible" alone. */
+const lspWhy = (root: string, server: string) =>
+  browser.execute(async (r, sv) => {
+    const t = window.__termic!;
+    const { useLspStatus, statusKey } = t.lspStatus as {
+      useLspStatus: { getState(): { byKey: Record<string, unknown> } };
+      statusKey: (root: string, server: string) => string;
+    };
+    const said = async (fn: () => Promise<unknown>) => {
+      try { return await fn(); } catch (e) { return `threw: ${String(e)}`; }
+    };
+    const servers = await said(() => t.invoke("lsp_list") as Promise<unknown>);
+    return JSON.stringify({
+      status: useLspStatus.getState().byKey[statusKey(r, sv)] ?? null,
+      offer: await said(() => t.invoke("lsp_offer", { root: r, language: sv }) as Promise<unknown>),
+      here: Array.isArray(servers) ? servers.filter((s: { root: string }) => s.root === r) : servers,
+    });
+  }, root, server);
+
+/** Wait for a diagnostic in this task, and say WHY if none comes. */
+const waitLintRange = async (taskId: string, root: string, server: string) => {
+  try {
+    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`);
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nhost says: ${await lspWhy(root, server)}`);
+  }
+};
+
 const openFile = (taskId: string, rel: string) =>
   browser.execute((id, p) => {
     window.__termic!.useApp.getState().openPreviewTab(id, { type: "edit", path: p, title: p });
@@ -193,14 +230,24 @@ describe("Terraform code intelligence", () => {
     const catalog = await browser.execute(async () => await window.__termic!.invoke("lsp_catalog")) as
       Array<{ language: string; servers: Array<{ name: string }> }>;
     expect(catalog.find(c => c.language === "terraform")?.servers[0].name).toBe("terraform-ls");
+    // The offer must name the FIXTURE's binary, not a download. The resolver
+    // looks for `bin/terraform-ls` in the checkout, which on Windows means
+    // `bin\terraform-ls.cmd` through PATHEXT; a miss there arms the grant
+    // anyway and then starts nothing, which reads on screen as a server that
+    // came up and said nothing. Asserted here so it says so instead.
+    const offer = await browser.execute(async (r) =>
+      await window.__termic!.invoke("lsp_offer", { root: r, language: "terraform" }),
+    root) as { exe: string | null };
+    if (!offer.exe?.includes("terraform-ls"))
+      throw new Error(`terraform-ls not resolved under ${root}: offer ${JSON.stringify(offer)}`);
   });
 
   it("serves .tf and .tfvars through one grant with their own protocol ids", async () => {
     await chipAction("code-intel-turn-on-for-this-task");
-    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`);
+    await waitLintRange(taskId, root, "terraform");
     expect(await isArmed(root, "terraform")).toBe(true);
     await openSettled(taskId, files[1], "HCL");
-    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`);
+    await waitLintRange(taskId, root, "terraform");
     const seen = JSON.parse(readFileSync(path.join(root, ".fake-lsp.json"), "utf8"));
     expect(seen.opened).toEqual(expect.arrayContaining([
       expect.objectContaining({ uri: expect.stringContaining(files[0]), languageId: "terraform" }),
@@ -218,7 +265,13 @@ describe("Terraform code intelligence", () => {
     for (const [file, language] of [[files[2], "HCL"], [files[3], "JSON"]]) {
       await openSettled(taskId, file, language);
       await waitGone('[data-testid="code-intel-chip"]');
-      const seen = JSON.parse(readFileSync(path.join(root, ".fake-lsp.json"), "utf8"));
+      // The transcript only exists if the server ran. Without this the case
+      // reports `ENOENT .fake-lsp.json`, which names the symptom of the case
+      // before it and says nothing about this one.
+      const transcript = path.join(root, ".fake-lsp.json");
+      if (!existsSync(transcript))
+        throw new Error(`no server transcript, so nothing was sent anywhere: ${await lspWhy(root, "terraform")}`);
+      const seen = JSON.parse(readFileSync(transcript, "utf8"));
       expect(seen.opened.some((d: { uri: string }) => d.uri.endsWith(file))).toBe(false);
     }
   });
