@@ -187,23 +187,61 @@ declare global {
  * fire the instant the element appears + is visible.
  */
 export async function waitVisible(selector: string, timeout = 15_000): Promise<void> {
-  await browser.waitUntil(
-    () =>
-      browser.execute((sel) => {
-        const el = document.querySelector(sel) as HTMLElement | null;
-        if (!el) return false;
-        const r = el.getBoundingClientRect();
-        const st = getComputedStyle(el);
-        return (
-          r.width > 0 &&
-          r.height > 0 &&
-          st.visibility !== "hidden" &&
-          st.display !== "none" &&
-          st.opacity !== "0"
-        );
-      }, selector),
-    { timeout, timeoutMsg: `never became visible: ${selector}` },
-  );
+  try {
+    await browser.waitUntil(
+      () =>
+        browser.execute((sel) => {
+          const el = document.querySelector(sel) as HTMLElement | null;
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const st = getComputedStyle(el);
+          if (r.width <= 0 || r.height <= 0) return false;
+          if (st.visibility === "hidden" || st.display === "none") return false;
+          if (st.opacity !== "0") return true;
+          // opacity 0 with a laid-out box and an animation attached: an ENTRY
+          // animation that has not advanced past its first frame. WebKit
+          // freezes animations in a window it believes is occluded, which is
+          // every local run (nobody gives the e2e window focus), so
+          // `termic-pop-in` never plays and a dialog that is open, sized and
+          // interactive sits at opacity 0 forever. Measured on the project
+          // picker: data-state="open", 760x79, visibility visible, opacity 0,
+          // animation termic-pop-in, transform still at its -16px start.
+          //
+          // `data-state` is the authority for a Radix element, so a CLOSING one
+          // is still excluded: it is the same shape in reverse, and treating it
+          // as visible would make a stale dialog answer for a fresh one.
+          return st.animationName !== "none" && el.getAttribute("data-state") !== "closed";
+        }, selector),
+      { timeout, timeoutMsg: `never became visible: ${selector}` },
+    );
+  } catch (e) {
+    // Say WHICH of the five conditions failed. "never became visible" reads as
+    // "it was not there", and the two cases need opposite fixes: a selector
+    // that matches nothing is a spec or product bug, while a node sitting at
+    // opacity 0 with a real box is usually an animation that never ran, which
+    // is what happens to every fade-in while the window has no OS focus (see
+    // docs/e2e-tests.md). Guessing between them has cost whole sessions.
+    const why = await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el) {
+        const tag = sel.match(/\[data-testid="([^"]+)"\]/)?.[1];
+        return { found: false, similarTestIds: tag
+          ? [...document.querySelectorAll("[data-testid]")]
+            .map((n) => n.getAttribute("data-testid")!)
+            .filter((t) => t.includes(tag.split("-")[0])).slice(0, 8)
+          : [] };
+      }
+      const r = el.getBoundingClientRect();
+      const st = getComputedStyle(el);
+      return {
+        found: true, w: Math.round(r.width), h: Math.round(r.height),
+        opacity: st.opacity, visibility: st.visibility, display: st.display,
+        animation: st.animationName, transform: st.transform,
+        state: el.getAttribute("data-state"),
+      };
+    }, selector);
+    throw new Error(`${(e as Error).message}\nelement: ${JSON.stringify(why)}`);
+  }
 }
 
 /** Wait for the element to appear + be visible, then click it. */
