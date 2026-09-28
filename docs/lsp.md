@@ -554,6 +554,28 @@ asset name still exists on the release, and whether it still carries a digest.
 A run that could not exercise the comparison says so on stdout rather than
 passing quietly.
 
+### 22. The handshake budget is a cold-start budget, and cold means a minute
+
+`LSPClient`'s `timeout` (`lib/lsp/host.ts`) covers EVERY request including
+`initialize`, so it is not a "how long may a hover take" number: it is how long
+a server gets to say its first word. Measured on a Windows CI runner,
+`terraform-ls.cmd` was spawned, sent `initialize` 6ms later, and answered 40.4
+seconds after that, essentially all of it Defender reading a 31 MB image. At the
+old 20s the client rejected the request, `status` went to `failed: Request timed
+out`, and the server was killed: code intelligence permanently dead for that
+root on a machine where nothing was wrong. It is 60s now.
+
+Two consequences worth keeping. A server that never speaks takes a minute to be
+called failed, which is the better error, because until then the chip says
+"starting" and that is true. And any test that waits on a first diagnostic has
+to out-wait this number, or it reports the wait giving up before the client
+did: `e2e/specs/codenav.e2e.ts`'s `waitLintRange` is 75s for that reason, which
+costs nothing when the server is warm because it waits on the element.
+
+Warming the shim is not a substitute. `wdio.conf.ts` pays node's first
+`.cmd`+image-loader cost before the suite (6.8s, then 0.24s per spawn), and that
+did nothing for terraform-ls, whose own 31 MB image is the thing being read.
+
 ## What is deliberately not built
 
 The plan this file replaced (`docs/plans/lsp.md`, deleted when the work

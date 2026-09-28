@@ -134,10 +134,17 @@ const lspWhy = (root: string, server: string) =>
  *  `sent initialize` to its first byte, against 0.24s for every spawn after it
  *  (termic-debug.log, run 36390843154). wdio.conf.ts now warms that path
  *  before the suite, but a cold image loader on a shared runner is not
- *  something a spec should be betting a case on either way. */
+ *  something a spec should be betting a case on either way.
+ *
+ *  75s, because warming node did NOT cover terraform-ls: a later Windows run
+ *  measured 40.4s from `sent initialize` to its first byte for the 31MB binary
+ *  (its own image, not node's), and the budget has to clear the client's
+ *  handshake timeout (60s, see lib/lsp/host.ts) or a pass here would only mean
+ *  the wait gave up after the client did. Costs nothing when the server is
+ *  warm: the wait returns on the element, not on the clock. */
 const waitLintRange = async (taskId: string, root: string, server: string) => {
   try {
-    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`, 40_000);
+    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`, 75_000);
   } catch (e) {
     throw new Error(`${(e as Error).message}\nhost says: ${await lspWhy(root, server)}`);
   }

@@ -182,7 +182,22 @@ export function acquireClient(root: string, server: string): {
       sanitizeHTML: (html: string) => DOMPurify.sanitize(html, HOVER_SANITIZE),
       // Indexing a large repo is not a 3-second operation, and the default
       // would time out the first hover on every cold server.
-      timeout: 20_000,
+      //
+      // 60s, not 20s, because `initialize` is billed against this same budget
+      // and a COLD server on Windows can lose most of a minute before its
+      // first byte. Measured on a CI runner: `terraform-ls.cmd` (a 31MB binary
+      // behind a shim) was spawned, sent `initialize` 6ms later, and answered
+      // 40.4 SECONDS after that, mostly Defender reading the image. The client
+      // had already rejected the request at 20s, which marked the server
+      // failed and killed it, so code intelligence was permanently dead for
+      // that root on a machine where nothing was actually wrong.
+      //
+      // The cost of the larger budget is that a server which never speaks
+      // takes a minute to be called failed instead of 20s. That is the better
+      // error: until it expires the chip says "starting", which is true, where
+      // the old one said "failed: Request timed out" about a server that was
+      // about to work.
+      timeout: 60_000,
       // Diagnostics feed `lintGutter()`, which EditorPane has had mounted with
       // no source since the day it was written. It belongs on the CLIENT, not
       // in the editor's extension array, because it also has to claim pull
