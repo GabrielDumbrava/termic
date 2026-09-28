@@ -542,7 +542,7 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
                 );
               })}
               {hasMoreArchived && (
-                <DropdownItem onSelect={() => setView("history")}>
+                <DropdownItem onSelect={() => setView("history", { projectId })}>
                   {t("projectActions.more")}
                 </DropdownItem>
               )}

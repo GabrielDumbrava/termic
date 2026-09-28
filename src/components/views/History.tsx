@@ -7,8 +7,9 @@ import { i18n } from "@/lib/i18n";
 import { taskRestore, taskDelete } from "@/lib/ipc";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
 import { cn } from "@/lib/utils";
-import { ChevronRight, Search, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Search, Trash2 } from "lucide-react";
 import type { Task } from "@/lib/types";
 
 function groupLabel(iso: string, t: TFunction): string {
@@ -39,6 +40,8 @@ export function HistoryView() {
   const agents    = useApp(s => s.agents);
   const loadAll   = useApp(s => s.loadAll);
   const setActive = useApp(s => s.setActiveTask);
+  const projectFilter     = useApp(s => s.view.projectId);
+  const setHistoryProject = useApp(s => s.setHistoryProject);
 
   useEffect(() => { void loadAll(); }, []);
 
@@ -47,10 +50,35 @@ export function HistoryView() {
   const [restoring, setRestoring] = useState<Set<string>>(new Set());
   const [emptying, setEmptying]   = useState(false);
 
+  // Everything archived, filters ignored. Feeds the project dropdown (so it
+  // only offers projects that have something to show, with counts) and the
+  // "Empty archive" scope below.
+  const archivedAll = useMemo(() => tasks.filter(w => w.archived), [tasks]);
+
+  // Projects with at least one archived task, by name. A project that has
+  // been removed can't be picked (no name to show), which is fine: its
+  // tasks still appear under All projects as "Unknown".
+  const projectOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const w of archivedAll) counts.set(w.project_id, (counts.get(w.project_id) ?? 0) + 1);
+    return projects
+      .filter(p => counts.has(p.id))
+      .map(p => ({ id: p.id, name: p.name, count: counts.get(p.id)! }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [archivedAll, projects]);
+
+  // A filter pointing at a project with nothing archived (its last task was
+  // restored or deleted, or the project was removed) falls back to All, so
+  // the page never sits on an empty list the dropdown can't even name.
+  const activeProject = projectOptions.find(p => p.id === projectFilter);
+  useEffect(() => {
+    if (projectFilter && !activeProject) setHistoryProject(undefined);
+  }, [projectFilter, activeProject]);
+
   const archived = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return [...tasks.filter(w => {
-      if (!w.archived) return false;
+    return [...archivedAll.filter(w => {
+      if (activeProject && w.project_id !== activeProject.id) return false;
       if (!q) return true;
       const p = projects.find(x => x.id === w.project_id);
       return (
@@ -59,7 +87,7 @@ export function HistoryView() {
         (p?.name ?? "").toLowerCase().includes(q)
       );
     })].sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created));
-  }, [tasks, projects, query]);
+  }, [archivedAll, projects, query, activeProject]);
 
   const groups = useMemo(() => {
     const map = new Map<string, Task[]>();
@@ -71,25 +99,35 @@ export function HistoryView() {
     return [...map.entries()];
   }, [archived, t]); // t: group labels re-translate on a live language switch
 
-  // Everything archived, filter ignored: "Empty archive" is about the archive,
-  // not about what the search box happens to be showing. The confirmation
-  // names the real count so the two can never disagree.
-  const archivedAll = useMemo(() => tasks.filter(w => w.archived), [tasks]);
+  // "Empty archive" ignores the search box (it's about the archive, not what
+  // the query happens to show) but honors the project filter: with a project
+  // picked, it empties that project's archive only. The confirmation names
+  // the real count and project so the two can never disagree.
+  const emptyScope = activeProject
+    ? archivedAll.filter(w => w.project_id === activeProject.id)
+    : archivedAll;
 
-  // Hard-delete every archived task. Each one is already archived, so its
+  // Hard-delete every archived task in scope. Each one is already archived, so its
   // worktree is gone and this only wipes the record (task_delete re-runs the
   // archive path harmlessly, then removes the json). Sequential because the
   // deletes all rewrite the same tasks dir; one failure is counted and
   // reported at the end rather than aborting the rest, so a single stuck
   // record can't leave the archive half-emptied with no explanation.
   async function emptyArchive() {
-    const doomed = useApp.getState().tasks.filter(w => w.archived);
+    const scopeId = activeProject?.id;
+    const doomed = useApp.getState().tasks.filter(w => w.archived && (!scopeId || w.project_id === scopeId));
     if (doomed.length === 0) return;
     const ok = await useUI.getState().askConfirm({
-      title: t("history.confirmTitle"),
-      message: doomed.length === 1
-        ? t("history.confirmMessageOne", { count: doomed.length })
-        : t("history.confirmMessageMany", { count: doomed.length }),
+      title: activeProject
+        ? t("history.confirmTitleProject", { project: activeProject.name })
+        : t("history.confirmTitle"),
+      message: activeProject
+        ? (doomed.length === 1
+          ? t("history.confirmMessageOneProject", { count: doomed.length, project: activeProject.name })
+          : t("history.confirmMessageManyProject", { count: doomed.length, project: activeProject.name }))
+        : (doomed.length === 1
+          ? t("history.confirmMessageOne", { count: doomed.length })
+          : t("history.confirmMessageMany", { count: doomed.length })),
       confirmLabel: t("history.confirmLabel"),
       destructive: true,
     });
@@ -132,16 +170,45 @@ export function HistoryView() {
           placeholder={t("history.filterPlaceholder")}
           className="flex-1 bg-transparent text-[13.5px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] outline-none"
         />
+        {/* Project filter. Single-select; lives in the store (view.projectId)
+            so the sidebar's Resume › More… can land here pre-filtered. */}
+        {projectOptions.length > 0 && (
+          <DropdownRoot>
+            <DropdownTrigger asChild>
+              <button
+                type="button"
+                data-history-project-filter
+                title={t("history.projectFilterTip")}
+                className={cn(
+                  "flex min-w-0 max-w-[200px] shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12.5px] transition-colors hover:bg-[var(--color-hover)]",
+                  activeProject ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                )}
+              >
+                <span className="truncate">{activeProject?.name ?? t("history.allProjects")}</span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+              </button>
+            </DropdownTrigger>
+            <DropdownMenu align="end" className="max-w-[280px]">
+              <ProjectItem label={t("history.allProjects")} count={archivedAll.length} active={!activeProject} onSelect={() => setHistoryProject(undefined)} />
+              <DropdownSeparator />
+              {projectOptions.map(p => (
+                <ProjectItem key={p.id} label={p.name} count={p.count} active={activeProject?.id === p.id} onSelect={() => setHistoryProject(p.id)} />
+              ))}
+            </DropdownMenu>
+          </DropdownRoot>
+        )}
         {/* Permanent delete, so it sits here as a plain quiet control rather
             than on every row: the archive is the recycle bin, and emptying it
             is one deliberate act. Hidden entirely when there's nothing to
             empty, so the page never offers a no-op destructive button. */}
-        {archivedAll.length > 0 && (
+        {emptyScope.length > 0 && (
           <button
             type="button"
             onClick={emptyArchive}
             disabled={emptying}
-            title={t("history.emptyArchiveTip")}
+            title={activeProject
+              ? t("history.emptyArchiveTipProject", { project: activeProject.name })
+              : t("history.emptyArchiveTip")}
             className={cn(
               "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px] transition-colors",
               emptying
@@ -160,7 +227,9 @@ export function HistoryView() {
         <div className="mx-auto max-w-3xl">
           {archived.length === 0 ? (
             <p className="py-8 text-[13.5px] text-[var(--color-fg-dim)]">
-              {query ? t("history.noMatch") : t("history.noArchived")}
+              {query ? t("history.noMatch")
+                : activeProject ? t("history.noArchivedInProject", { project: activeProject.name })
+                : t("history.noArchived")}
             </p>
           ) : groups.map(([label, task]) => (
             <div key={label} className="mb-2">
@@ -237,5 +306,15 @@ export function HistoryView() {
         </div>
       </div>
     </div>
+  );
+}
+
+function ProjectItem({ label, count, active, onSelect }: { label: string; count: number; active: boolean; onSelect: () => void }) {
+  return (
+    <DropdownItem onSelect={onSelect} className="items-center">
+      <Check className={cn("h-3.5 w-3.5 shrink-0", !active && "opacity-0")} />
+      <span className="min-w-0 flex-1 truncate text-[13px]">{label}</span>
+      <span className="shrink-0 pl-3 text-[11px] tabular-nums text-[var(--color-fg-faint)]">{count}</span>
+    </DropdownItem>
   );
 }

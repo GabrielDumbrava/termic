@@ -155,6 +155,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Launcher CLI order | The project `+` menu leads with that project's default CLI and keeps the rest in registry order, Terminal last; when the default IS Terminal, that row is hoisted too | `projects.e2e.ts` |
 | ✅ Resume submenu | The project `+` menu keeps archived sessions behind one Resume row; the submenu lists them and restores the picked one. The tab strip's `+` menu nests its closed tabs the same way: the top level shows one Resume row and no sessions, hovering it lists them | `projects.e2e.ts`, `tabs-layout.e2e.ts` |
 | ✅ Empty archive | History's Empty archive: cancelling keeps every task, confirming deletes them all for good | `task.e2e.ts` |
+| ✅ History project filter | History opens on All projects; the dropdown narrows/restores and ANDs with search; sidebar Resume › More… lands pre-filtered; Empty archive under a filter deletes only that project, then falls back to All | `history.e2e.ts` |
 | ✅ Signal inspector layout | Observed titles render whole (no clipped column) and each row offers a copy button | `settings.e2e.ts` |
 | ✅ Dialogs/palettes | Shortcuts help, prompt palette, broadcast open (and close) | `app.e2e.ts` |
 | ✅ More dialogs | Changelog, welcome, race dialog open | `app.e2e.ts` |
