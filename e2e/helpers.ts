@@ -354,6 +354,21 @@ export async function clickMenuItemUntil(
           dialogs: [...document.querySelectorAll('[role="dialog"]')].map(
             (d) => `${box(d)} state=${d.getAttribute("data-state")}`,
           ),
+          // Everything above can be empty for two opposite reasons, and the
+          // shape "no menu, no item, no prompt" has now cost two CI runs
+          // without saying which. So: did the click LAND (a task appeared,
+          // or some other inline row is up), and where did focus end up?
+          // A row that mounted and was cancelled leaves focus somewhere
+          // telling; a click that never landed leaves it on the trigger.
+          tasks: window.__termic?.useApp.getState().tasks.length ?? -1,
+          inlineInputs: [...document.querySelectorAll("aside input")].map(
+            (i) => `${box(i)} ph=${(i as HTMLInputElement).placeholder}`,
+          ),
+          focus: (() => {
+            const a = document.activeElement as HTMLElement | null;
+            if (!a) return "none";
+            return `${a.tagName}${a.dataset?.testid ? `#${a.dataset.testid}` : ""}`;
+          })(),
         };
       },
       text,

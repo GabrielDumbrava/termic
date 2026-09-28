@@ -769,6 +769,31 @@ describe("branch new tasks from", () => {
   // The quick path has no dialog to show the YOLO default in, so it applies
   // it the way it applies the project's cage, says so in the menu, and the
   // created task carries it from its first spawn.
+  // A control for the CI failure shape "no menu, no menu item, no prompt":
+  // the row focuses itself two frames after it mounts, and cancels on blur, so
+  // anything that takes focus in between takes the row with it. Radix restores
+  // focus to the menu's trigger when the menu closes, which is exactly that.
+  // Driven here rather than reasoned about: focus the trigger the moment the
+  // row appears and require the row to still be there.
+  it("keeps the quick-create row when the menu hands focus back to its trigger", async () => {
+    const nameInput = 'input[placeholder="Task name"]';
+    await pickFromNewTaskMenu(projectId, "main", "FakeAgent", nameInput);
+    await browser.execute((sel) => {
+      (document.querySelector(sel) as HTMLElement | null)?.focus();
+    }, `[data-testid="project-new-task-${projectId}"]`);
+    // Two frames plus a beat: long enough for the row's own focus effect and
+    // for a blur-cancel to have run, short enough to stay a condition.
+    await browser.waitUntil(
+      async () => await browser.execute((sel) => !!document.querySelector(sel), nameInput),
+      { timeout: 2_000, timeoutMsg: "the quick-create row was cancelled by the menu's focus restoration" },
+    );
+    // Cancel through the row's own input: focus is inside it by now (its
+    // two-frame effect took it back off the trigger), and leaving the row up
+    // costs the next case its menu.
+    await keysIn(nameInput, "Escape");
+    await waitGone(nameInput);
+  });
+
   it("applies the YOLO default to a quick-created agent task", async () => {
     const nameInput = 'input[placeholder="Task name"]';
     const NOTE = '[data-testid="quick-create-yolo-note"]';
