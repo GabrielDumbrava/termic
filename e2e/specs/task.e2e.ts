@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent } from "../helpers";
+import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent , rmTemp } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -1600,7 +1600,7 @@ describe("check out an existing branch", () => {
       quiet(fixture, `update-ref -d refs/remotes/origin/${b}`);
       quiet(origin, `branch -D ${b}`);
     }
-    if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(scratch);
   });
 
   /** Open New Task for fixture-repo in worktree mode, then flip to the
@@ -2537,7 +2537,7 @@ describe("sidebar task drag", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, otherProjectId);
     }
-    if (otherDir) rmSync(otherDir, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(otherDir);
   });
 
   // Sidebar rows, NOT `[data-task-id]` — that one is MainArea's mounted
@@ -3407,7 +3407,7 @@ describe("spawn links across projects", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, otherProjectId);
     }
-    if (otherDir) rmSync(otherDir, { recursive: true, force: true });
+    rmTemp(otherDir);
   });
 
   let far: string;

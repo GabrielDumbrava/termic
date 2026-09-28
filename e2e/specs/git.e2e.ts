@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible , rmTemp } from "../helpers";
 
 /** `execSync` for git against the shared fixture, retrying a moment on
  *  `index.lock`. The app runs its own git on this repo (the Git panel's status
@@ -1485,7 +1485,7 @@ describe("git commit & push", () => {
       }
     }
     execGit(`git -C "${fixture}" clean -fd`);
-    rmSync(bare, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(bare);
   });
 
   it("commits and pushes to the remote", async () => {
@@ -1722,7 +1722,7 @@ describe("git multi-repo panel", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, projectId);
     }
-    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(tmp);
   });
 
   /** The repo pills, in render order. There is exactly one Git panel in the

@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { archiveTask, cliRpc, FILE_MANAGER_NAME, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitVisible } from "../helpers";
+import { archiveTask, cliRpc, FILE_MANAGER_NAME, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitVisible, rmTemp } from "../helpers";
 
 declare global {
   interface Window {
@@ -208,7 +208,7 @@ describe("editor open", () => {
     await browser.waitUntil(async () => !!(await tabOf(path.join(dir, "other.md"))), {
       timeout: 8_000, timeoutMsg: "a relative link in an external document did not open its sibling",
     });
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(dir);
   });
 });
 

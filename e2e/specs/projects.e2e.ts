@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setWindowPresence, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setWindowPresence, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible , rmTemp } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -24,7 +24,7 @@ describe("project add/remove", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, projectId);
     }
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(dir);
   });
 
   it("adds a git repo as a project", async () => {
@@ -100,7 +100,7 @@ describe("project add/remove", () => {
       } else {
         await browser.execute(() => window.__termic!.useUI.getState().closeNewProject());
       }
-      rmSync(dir2, { recursive: true, force: true, maxRetries: 10 });
+      rmTemp(dir2);
     }
   });
 
@@ -631,7 +631,7 @@ describe("branch new tasks from", () => {
         .catch(() => {});
     }
     for (const r of remotes) rmSync(remotePath(r), { recursive: true, force: true, maxRetries: 10 });
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(dir);
   });
 
   it("adds the repo and reports its branch context", async () => {
@@ -937,7 +937,7 @@ describe("sidebar project drag", () => {
       }, id);
     }
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
-    for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 10 });
+    for (const d of dirs) rmTemp(d);
   });
 
   // Project ids in sidebar order.
@@ -1314,7 +1314,7 @@ describe("dashboard", () => {
       window.__termic!.useApp.getState().setView("dashboard");
     }, GROUP);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
-    for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 10 });
+    for (const d of dirs) rmTemp(d);
   });
 
   it("renders a group folder with its members inside it", async () => {
@@ -1624,7 +1624,7 @@ describe("multi member modes (New Task dialog)", () => {
         await window.__termic!.useApp.getState().loadAll();
       }
     }, projectId);
-    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(tmp);
   });
 
   it("seeds every git member row on Worktree when nothing is remembered", async () => {
@@ -1979,7 +1979,7 @@ describe("recursive files to copy (GH #320)", () => {
       }
       await t.useApp.getState().loadAll();
     }, repo);
-    if (repo) rmSync(repo, { recursive: true, force: true });
+    rmTemp(repo);
   });
 
   it("copies root and nested env files into a single-repo worktree", async () => {
@@ -2080,7 +2080,7 @@ describe("multi files to copy (GH #264)", () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     if (taskId) await archiveTask(taskId);
     await sweepProjects();
-    if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(tmp);
   });
 
   it("copies the host list into the task root and each member's own list into its worktree", async () => {
@@ -2462,7 +2462,7 @@ describe("new project from a git URL", () => {
       + `&& git -C "${work}" -c user.email=e2e@termic.dev -c user.name=alice commit -q --allow-empty -m init `
       + `&& git -C "${work}" clone -q --bare . "${origin}/repo.git"`,
     );
-    rmSync(work, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(work);
     parent = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "e2e-clone-into-")));
   });
 
@@ -2474,8 +2474,8 @@ describe("new project from a git URL", () => {
       }, addedId);
     }
     // Both are this spec's own temp dirs; the clone lands inside `parent`.
-    rmSync(origin, { recursive: true, force: true, maxRetries: 10 });
-    rmSync(parent, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(origin);
+    rmTemp(parent);
   });
 
   it("proposes a destination from the URL and refuses to guess without one", async () => {

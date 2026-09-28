@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, clearLanguagePref, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible } from "../helpers";
+import { archiveTask, clearLanguagePref, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible , rmTemp } from "../helpers";
 
 /** Click the [role="switch"] in the settings row whose label matches exactly.
  *  Toggle rows are label + switch inside one .justify-between wrapper
@@ -1644,8 +1644,8 @@ describe("default tasks path", () => {
       }, projectId);
     }
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
-    rmSync(repoDir, { recursive: true, force: true, maxRetries: 10 });
-    rmSync(absRoot, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(repoDir);
+    rmTemp(absRoot);
   });
 
   // The setting is REQUIRED, so a loaded profile always carries a real value
@@ -3273,7 +3273,7 @@ describe("agent hooks", () => {
       await window.__termic!.invoke("agent_hooks_remove", { agentId: "devin" }));
     expect(readFileSync(devinConfig, "utf8")).toBe(userDevinConfig);
     expect(existsSync(devinScripts)).toBe(false);
-    rmSync(devinDir, { recursive: true, force: true, maxRetries: 10 });
+    rmTemp(devinDir);
   });
 
   it("refuses a malformed config rather than clobbering it", async () => {
