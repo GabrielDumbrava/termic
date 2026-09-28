@@ -16922,6 +16922,11 @@ async fn lsp_start(
 
     let mut child = cmd.spawn().map_err(|e| format!("{exe}: {e}"))?;
     let pid = child.id() as i32;
+    // The handshake is the part that goes wrong on someone else's machine,
+    // and none of it is visible from the UI: the chip says "starting" whether
+    // the process is missing, wedged, or answering something we reject. Three
+    // lines mark it - spawned, asked, answered - so a debug log says WHICH.
+    dlog(&format!("[{language} lsp] spawn pid={pid} {exe} {args:?}"));
     let stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take();
@@ -16932,6 +16937,7 @@ async fn lsp_start(
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     {
         let mut stdin = stdin;
+        let write_tag = language.clone();
         thread::spawn(move || {
             let mut init_opts = init_options;
             while let Ok(body) = rx.recv() {
@@ -16951,8 +16957,13 @@ async fn lsp_start(
                         }
                     }
                 }
-                if lsp_write(&mut stdin, &out_body).is_err() {
+                let asking = out_body.contains("\"method\":\"initialize\"");
+                if let Err(e) = lsp_write(&mut stdin, &out_body) {
+                    dlog(&format!("[{write_tag} lsp] write failed: {e}"));
                     break;
+                }
+                if asking {
+                    dlog(&format!("[{write_tag} lsp] sent initialize"));
                 }
             }
         });
@@ -16977,15 +16988,21 @@ async fn lsp_start(
     let reader_id = id.clone();
     let reply_root = root_path.clone();
     let reply_settings = user_settings.clone();
+    let read_tag = language.clone();
     thread::spawn(move || {
         let mut r = BufReader::new(stdout);
         let mut buf: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 8192];
+        let mut spoke = false;
         loop {
             let n = match r.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
+            if !spoke {
+                spoke = true;
+                dlog(&format!("[{read_tag} lsp] answered ({n} bytes)"));
+            }
             buf.extend_from_slice(&chunk[..n]);
             // One pass per complete message currently in the buffer.
             loop {
@@ -17073,7 +17090,11 @@ async fn lsp_start(
         // Signal the GROUP: language servers fork (cargo check, node) and
         // signalling the leader alone leaves the children behind.
         proc_ctl::signal_group(pid, proc_ctl::Sig::Term);
-        let _ = child.wait();
+        let status = child.wait();
+        dlog(&format!(
+            "[{read_tag} lsp] stream closed, pid {pid} exited {}",
+            status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string()),
+        ));
     });
 
     // stderr is the server's own log. Kept off the JSON-RPC path entirely and
