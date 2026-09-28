@@ -857,6 +857,12 @@ every agent shell), then falls back to the current directory. So from inside \
 a task, `termic tab --agent codex -p \"review my diff\"` starts a second agent \
 beside you.
 
+New agent tabs start fresh unless --resume SESSION_ID is explicit. \
+--model and repeated --arg values configure only this tab and survive \
+restoration; both require --agent. Settings defaults come first, then \
+--arg values, then --model, then managed runtime arguments. Consult the \
+selected provider CLI for supported models and reasoning settings.
+
 The new tab is NOT focused: a shell command should not yank the window you \
 are working in.
 
@@ -923,6 +929,13 @@ never delivered."
         /// Agent registry id (claude, codex, ...). Must be enabled and installed.
         #[arg(long, group = "tabkind")]
         agent: Option<String>,
+        /// Model override for this tab, after --arg values. Requires --agent.
+        #[arg(long, requires = "agent", conflicts_with_all = ["shell", "terminal"])]
+        model: Option<String>,
+        /// One additional argv element for this tab (repeatable). For Codex
+        /// reasoning: --arg=-c --arg='model_reasoning_effort="xhigh"'.
+        #[arg(long = "arg", requires = "agent", conflicts_with_all = ["shell", "terminal"], action = clap::ArgAction::Append)]
+        agent_args: Vec<String>,
         /// Custom terminal registry id (kind: "terminal" entries).
         #[arg(long, group = "tabkind")]
         terminal: Option<String>,
@@ -961,7 +974,7 @@ never delivered."
         /// Rename this OPEN tab instead of opening one: a tab id, a 1-based
         /// strip index, or a title. Needs --title.
         #[arg(long, value_name = "TAB", requires = "title",
-              conflicts_with_all = ["agent", "terminal", "shell", "prompt", "library", "resume", "wait", "timeout"])]
+              conflicts_with_all = ["agent", "terminal", "shell", "prompt", "library", "resume", "wait", "timeout", "model", "agent_args"])]
         tab: Option<String>,
     },
 
@@ -1439,7 +1452,7 @@ pub fn cage_refused(sandbox: Option<&str>, mode: Option<&str>) -> bool {
 /// especially before auto-launch: a typo must never boot the app.
 /// Pure so that no-boot property is testable without an environment.
 fn pre_connect_guard(cmd: &Cmd) -> Result<(), CliError> {
-    if let Cmd::New { model: Some(model), .. } = cmd {
+    if let Cmd::New { model: Some(model), .. } | Cmd::Tab { model: Some(model), .. } = cmd {
         if model.trim().is_empty() {
             return Err(CliError::new(exit_code::ERROR, "the model is empty"));
         }
@@ -1755,7 +1768,7 @@ outside.",
         }
         Cmd::Tab {
             close: None,
-            task, project, agent, terminal, shell, prompt: _, library, resume, wait, timeout,
+            task, project, agent, model, agent_args, terminal, shell, prompt: _, library, resume, wait, timeout,
             title, tab: None,
         } => {
             let kind = if let Some(id) = agent {
@@ -1776,6 +1789,7 @@ outside.",
             // usage typo never auto-launches the app.)
             let timeout_ms = timeout.as_deref().map(parse_duration_ms).transpose()?;
             let wire = proto::Command::Tab {
+                agent_args: proto::compose_task_agent_args(agent_args, model.as_deref()),
                 // Without <TASK>, the caller's own task, like `rename`: an
                 // agent opening a helper beside itself should not have to
                 // spell its own id, and cwd alone breaks after a `cd`.
@@ -3619,4 +3633,17 @@ mod tests {
         assert!(io.unregistered_root().is_none());
         assert_eq!(io.into_cli().code, exit_code::CONNECTION_LOST);
     }
+    #[test]
+    fn tab_launch_options_require_an_explicit_agent_and_preserve_argv() {
+        let parsed = Cli::try_parse_from(["termic", "tab", "task", "--agent", "codex", "--model", "worker", "--arg=-c", "--arg=model_reasoning_effort=\"xhigh\""]).unwrap();
+        let Cmd::Tab { model, agent_args, .. } = parsed.cmd else { panic!("not tab") };
+        assert_eq!(proto::compose_task_agent_args(&agent_args, model.as_deref()),
+            ["-c", "model_reasoning_effort=\"xhigh\"", "--model", "worker"]);
+        for args in [
+            vec!["termic", "tab", "--model", "worker"],
+            vec!["termic", "tab", "--shell", "--arg=--effort"],
+            vec!["termic", "tab", "--agent", "codex", "--tab", "2", "--title", "name", "--model", "worker"],
+        ] { assert!(Cli::try_parse_from(args.clone()).is_err(), "accepted {args:?}"); }
+    }
+
 }

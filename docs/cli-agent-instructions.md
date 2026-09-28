@@ -37,6 +37,33 @@ code. `$TERMIC_TASK` / `$TERMIC_TASK_ID` name the task you are running
 inside, if any; prefer the id for self-reference (names can be renamed
 or reused).
 
+### Choose the launch configuration explicitly
+
+A new `tab` starts a fresh conversation. Use `--resume SESSION_ID` only
+when the assignment is to continue that specific conversation. Do not
+use a model-switch prompt to repair a tab that resumed the wrong thread.
+
+Choose the registry agent with `--agent`; choose a model with `--model`.
+Pass provider-specific reasoning options as repeated `--arg` values, one
+argv element per flag. For example, Codex accepts a configuration override:
+
+    "$TERMIC_CLI" tab --agent codex --model MODEL \
+      --arg=-c --arg='model_reasoning_effort="xhigh"'
+
+Honor the user's explicit model/effort choice and project routing policy.
+Otherwise match the assignment: routine, well-specified edits usually need
+less reasoning than unresolved design, difficult debugging, or a broad
+review. Consult the selected provider's help/configuration for its actual
+supported values; different providers need not share reasoning names.
+State the choice in the assignment. Never silently fall back to a different
+model or change global agent settings to configure one tab.
+
+These overrides belong to that tab and survive restoration. Opening replies
+and `status --json` expose `agent_args` for verification. They report the
+configured arguments, not a provider-confirmed active model. `help --json`
+is the discovery source for installed CLI support; an older app/CLI pair
+may not provide these flags.
+
 ### Talking to another agent: prompt, do not wait
 
 Every task is an agent with an inbox, and `send` is how you reach it.

@@ -688,6 +688,7 @@ mod tests {
     #[test]
     fn tab_text_prints_the_id() {
         let t = TabData {
+            agent_args: Vec::new(),
             task_id: "ws1".into(), tab_id: "abc-123".into(),
             cli: "claude".into(), title: "claude".into(),
             prompt: None,
@@ -703,6 +704,7 @@ mod tests {
             agents: vec![AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: None, usable: true }],
         });
         let t = tab_text(&TabData {
+            agent_args: Vec::new(),
             task_id: "ws1".into(), tab_id: "x".into(), cli: "shell".into(), title: "Terminal".into(),
             prompt: None,
         });
@@ -756,6 +758,7 @@ mod tests {
         queued: u32,
     ) -> TabStatus {
         TabStatus {
+            agent_args: Vec::new(),
             id: format!("tab-{index}"),
             index,
             kind: kind.into(),
@@ -899,6 +902,7 @@ tabs:        [1] claude (claude, working, default)
     #[test]
     fn tab_text_prompt_outcomes() {
         let base = TabData {
+            agent_args: Vec::new(),
             task_id: "ws1".into(),
             tab_id: "abc".into(),
             cli: "claude".into(),

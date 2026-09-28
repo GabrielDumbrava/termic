@@ -1126,3 +1126,55 @@ describe("termic new task parameters (GH #287)", () => {
     });
   });
 });
+
+
+describe("per-tab model and reasoning arguments", () => {
+  let taskId = "";
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await waitForClisDetected();
+    taskId = await openTask("cli-tab-options");
+  });
+  after(async () => { if (taskId) await archiveTask(taskId); });
+
+  it("does not resume worktree history for the first tab of another profile", async () => {
+    // This fixture has cwd-resume args but no per-session id support. The
+    // old first-of-cli primary heuristic incorrectly gave it --continue.
+    await browser.execute(tid => {
+      const app = window.__termic!.useApp;
+      app.setState((state: { tasks: Array<{ id: string; [key: string]: unknown }> }) => ({ tasks: state.tasks.map(t => t.id === tid
+        ? { ...t, is_main_checkout: false, has_resumable_history: true } : t) }));
+    }, taskId);
+    const created = await rpc({ cmd: "tab", task: taskId, kind: { tab: "agent", id: "fakenoresume" } });
+    expect(created.ok).toBe(true);
+    await waitForTabPty(taskId, created.data.tab_id, taskId);
+    await browser.waitUntil(async () => {
+      const logs = await rpc({ cmd: "logs", task: taskId, tab: created.data.tab_id });
+      return String(logs.data?.data ?? "").includes("FAKE-AGENT ready");
+    }, { timeout: 20_000 });
+    const logs = await rpc({ cmd: "logs", task: taskId, tab: created.data.tab_id });
+    expect(String(logs.data?.data ?? "")).not.toContain("--continue");
+    expect(String(logs.data?.data ?? "")).not.toContain("--last");
+  });
+
+  it("launches a fresh tab with isolated argv and persists the selection", async () => {
+    const agentArgs = ["--reasoning-effort", "high", "--model", "worker"];
+    const created = JSON.parse(runCli([
+      "--no-launch", "--json", "tab", taskId, "--agent", "fakeagent",
+      "--arg=--reasoning-effort", "--arg=high", "--model", "worker",
+    ], { TERMIC_DATA_DIR: dataDir }));
+    expect(created.agent_args).toEqual(agentArgs);
+    await waitForTabPty(taskId, created.tab_id, taskId);
+    await browser.waitUntil(async () => {
+      const logs = await rpc({ cmd: "logs", task: taskId, tab: created.tab_id });
+      const output = String(logs.data?.data ?? "");
+      return output.includes("--reasoning-effort high --model worker")
+        && !output.includes("--continue") && !output.includes("--resume");
+    }, { timeout: 20_000, timeoutMsg: "tab launch did not use fresh isolated arguments" });
+    const stored = JSON.parse(fs.readFileSync(path.join(dataDir, "tasks", `${taskId}.json`), "utf8"));
+    expect(stored.persisted_tabs.find((t: any) => t.id === created.tab_id).agent_args).toEqual(agentArgs);
+    const main = await rpc({ cmd: "logs", task: taskId });
+    expect(String(main.data?.data ?? "")).not.toContain("--model worker");
+  });
+});

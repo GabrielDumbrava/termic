@@ -948,6 +948,7 @@ export function listPromptsHandler(params?: unknown): {
 // ─────────────────────────── new_tab (GH #138) ───────────────────────
 
 interface NewTabParams {
+  agentArgs?: string[];
   taskId: string;
   /** "agent" | "terminal" | "shell" | "default" */
   kind: string;
@@ -1025,6 +1026,13 @@ export async function newTabHandler(raw: unknown): Promise<{
   if (!task) throw new Error(`unknown task ${p.taskId}`);
   if (task.archived) throw new Error(`task ${task.name} is archived`);
 
+  if (p.agentArgs !== undefined && (!Array.isArray(p.agentArgs)
+    || p.agentArgs.some(arg => typeof arg !== "string"))) {
+    throw new Error("agentArgs must be an array of argv strings");
+  }
+  if (p.agentArgs?.length && p.kind !== "agent") {
+    throw new Error("tab launch arguments require an explicit agent");
+  }
   const registry = app.agents;
   let cli: string;
   // Extra tab fields a kind may need (a custom task's launch command).
@@ -1162,7 +1170,7 @@ export async function newTabHandler(raw: unknown): Promise<{
   const named = wanted ? { customTitle: true } : {};
   s.addTab(
     p.taskId,
-    { id: tabId, type: "terminal", title, cli, ...named, ...seed, ...extra },
+    { id: tabId, type: "terminal", title, cli, agentArgs: p.agentArgs, ...named, ...seed, ...extra },
     { focus: false },
   );
   return { taskId: p.taskId, tabId, cli, title };

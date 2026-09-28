@@ -1350,6 +1350,8 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "kind", json_type: "string", required: false, description: "When opening: \"agent\" (needs agentId), \"terminal\" (needs agentId naming a terminal entry), \"shell\" for a plain login shell, or \"default\" for another tab of whatever the task already runs.", cli_flag: None },
             ParamDef { name: "agentId", json_type: "string", required: false, description: "Registry id for the agent and terminal kinds; see task_agents. Ignored by the other kinds.", cli_flag: Some("--agent") },
             ParamDef { name: "prompt", json_type: "string", required: false, description: "Deliver this prompt into the tab just opened (agent kinds only).", cli_flag: Some("--prompt") },
+            ParamDef { name: "model", json_type: "string", required: false, description: "Model override for this tab only. Requires agent kind; passed after args.", cli_flag: Some("--model") },
+            ParamDef { name: "args", json_type: "array", required: false, description: "Additional argv strings for this tab only, such as provider-specific reasoning settings. Requires agent kind.", cli_flag: Some("--arg") },
             P_LIBRARY,
             ParamDef { name: "resume", json_type: "string", required: false, description: "Session id the new agent tab resumes (agents with id-resume support only).", cli_flag: Some("--resume") },
             P_WAIT,
@@ -1363,7 +1365,7 @@ const TOOLS: &[ToolDef] = &[
             // Rename mode (GH #331): a tab selector turns the call into the
             // tab strip's rename, which opens nothing.
             if let Some(tab) = arg_str(a, "tab")? {
-                for open_only in ["kind", "agentId", "prompt", "library", "resume", "wait", "timeoutMs"] {
+                for open_only in ["kind", "agentId", "prompt", "library", "resume", "wait", "timeoutMs", "model", "args"] {
                     if a.get(open_only).is_some_and(|v| !v.is_null()) {
                         return Err(format!(
                             "\"{open_only}\" applies to opening a tab; with \"tab\" the call renames an open one"
@@ -1396,6 +1398,7 @@ const TOOLS: &[ToolDef] = &[
                 }
             };
             Ok(Command::Tab {
+                agent_args: proto::compose_task_agent_args(&arg_str_list(a, "args")?, arg_str(a, "model")?.as_deref()),
                 task: Some(need_str(a, "task")?),
                 project: arg_str(a, "project")?,
                 kind,
@@ -3160,7 +3163,9 @@ mod tests {
         // `termic tab --title` / `--tab`: name a tab so it is a selector
         // that survives the agent retitling itself, and rename an open one
         // without a sixth tab tool. Descriptions cut to one clause each.
-        const RECORDED: usize = 17500;
+        // 17800: task_tab model/args, preserving CLI parity without adding
+        // provider-specific model catalogues or a separate launch tool.
+        const RECORDED: usize = 17800;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -3390,6 +3395,7 @@ mod tests {
         // there holds a connection forever, which is the invariant the
         // cap exists for.
         let tab_cmd = |wait: bool, ms: Option<u64>| Command::Tab {
+            agent_args: Vec::new(),
             task: Some("t".into()),
             project: None,
             kind: proto::TabKind::Shell,

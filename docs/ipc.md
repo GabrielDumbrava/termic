@@ -211,3 +211,25 @@ The same bug at the other end of a task's life, and the same fix. `archiveTask.t
 3. `Sidebar.tsx`'s `TaskRowSlot` swaps that one row for `ArchivingTaskRow` — struck-through name, spinner, no click, no menu, no tab children — until `loadAll` drops the task. Nothing else in the window changes.
 
 `archiveAndRefresh` still swallows the IPC rejection (issue #24: the task is already persisted as archived, so the refresh must run regardless), but it now also toasts the cleanup error. In the background that toast is the ONLY signal: a worktree that failed to remove would otherwise vanish from the sidebar with the directory still on disk. Read the task's name for that toast BEFORE `loadAll` drops it.
+
+
+### CLI tab launch options
+
+`termic tab TASK --agent codex --model MODEL --arg=-c
+--arg='model_reasoning_effort="xhigh"'` opens a fresh agent tab with explicit
+provider arguments. Each `--arg` is one argv element, not a shell fragment.
+`--model` is appended after these values so it wins for CLIs with
+last-value-wins parsing. Both options require an explicit agent, conflict
+with rename/shell/terminal modes, and do not alter global configuration.
+
+The `task_tab` MCP tool exposes equivalent `model` and `args` parameters.
+Protocol 17 carries composed `agent_args` through `new_tab` as `agentArgs`;
+opening replies and `status --json` tab rows expose the explicit overrides.
+These fields describe configured overrides, not proof of the provider's
+actual active model. Agents should honor the user's requested model and
+reasoning; otherwise choose for the assignment and consult the provider's
+own help for supported options. Termic does not maintain a model catalogue
+or silently choose a reasoning level.
+
+A model-switch prompt sent after creating a tab cannot make the original
+launch fresh and is not an equivalent substitute for launch arguments.

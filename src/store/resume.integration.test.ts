@@ -28,7 +28,7 @@ function makeTask(o: Partial<Task> = {}): Task {
 }
 
 // Mirror of TerminalPane's spawn wiring: tab + task → actual argv.
-function argvFor(tab: TerminalTab, task: Task, isPrimary = true): string[] {
+function argvFor(tab: TerminalTab, task: Task, isPrimary = !!tab.is_default): string[] {
   const decision = decideResume({
     isAgent: true,
     idCapable: cliSupportsIdSession(tab.cli),
@@ -221,16 +221,8 @@ describe("a fast-exit resume drops the dead uuid and starts fresh", () => {
   });
 });
 
-// A task's resume override belongs to the task's OWN agent. A "+" tab running
-// a different CLI is still the FIRST tab of that CLI, so `isPrimary` is true
-// for it, and it was handed the override verbatim. The strings are not
-// interchangeable: claude spells it `--resume <name>`, codex spells it
-// `resume <name>`, and codex answers the first with
-//
-//   error: unexpected argument '--resume' found
-//   tip: a similar argument exists: '--remote'
-//
-// i.e. the tab is dead before it draws a frame, and every Restart repeats it.
+// New tabs never inherit task-level history, even if they are the first tab
+// of another profile. Restored default tabs retain their legacy resume path.
 describe("a second agent ignores the task's resume override", () => {
   const OVERRIDE = "--resume {WORKSPACE_NAME}";
 
@@ -245,8 +237,8 @@ describe("a second agent ignores the task's resume override", () => {
     });
     const argv = argvFor(plusTab("codex"), task);
     expect(argv).not.toContain("--resume");
-    // Codex's own worktree answer instead: its subcommand-form resume.
-    expect(argv).toEqual(["resume", "--last"]);
+    // A new tab must not take the latest conversation in the shared cwd.
+    expect(argv).toEqual([]);
   });
 
   it("the task's own agent still gets the override, expanded", () => {
@@ -256,12 +248,27 @@ describe("a second agent ignores the task's resume override", () => {
     });
     // `--name` is deliberately absent under an override (renaming the session
     // on every relaunch moves the target the override points at).
-    expect(argvFor(plusTab("claude"), task)).toEqual(["--resume", "seo improvements"]);
+    expect(argvFor({ ...plusTab("claude"), is_default: true }, task)).toEqual(["--resume", "seo improvements"]);
   });
 
   it("a second CLAUDE tab is not primary, so it mints rather than colliding", () => {
     const task = makeTask({ cli: "claude", resume_override: OVERRIDE });
     const argv = argvFor(plusTab("claude"), task, /* isPrimary */ false);
     expect(argv).toEqual(["--session-id", "MINTED-UUID"]);
+  });
+});
+
+
+describe("new tabs are fresh in a worktree with history", () => {
+  it.each(["codex", "claude"])("keeps a new %s tab fresh after the default tab closes", cli => {
+    const task = makeTask({ cli, has_resumable_history: true });
+    useApp.setState({ tasks: [task] });
+    const tab: TerminalTab = { id: "new", type: "terminal", cli, title: cli };
+    useApp.getState().addTab(task.id, tab, { focus: false });
+    const argv = argvFor(firstTab(), task);
+    expect(argv).not.toContain("resume");
+    expect(argv).not.toContain("--continue");
+    expect(argv).not.toContain("--last");
+    expect(argv).not.toContain("--resume");
   });
 });

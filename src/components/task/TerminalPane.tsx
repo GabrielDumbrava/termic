@@ -2399,16 +2399,9 @@ const captureArmedRef = useRef(false);
     const rendererAddon = loadTerminalRenderer(term, (tag, content) =>
       debugLogRef.current?.(tag, content));
 
-    // Decide synchronously — BEFORE the rAF await in the spawn IIFE below —
-    // whether this is the task's "primary" agent tab (the one allowed to
-    // auto-resume). Reading the tab list after the async gap can see a stale
-    // snapshot: two same-cli tabs mounting in the same frame could each miss
-    // the other and both claim primary, racing two resumes onto one uuid.
-    // We can't lean on tab.is_default alone — a task woken from sleep
-    // re-creates its agent tab without that flag — so treat the FIRST terminal
-    // tab of this cli as primary too (a "+" tab is never first → still starts
-    // fresh). `tabs` deliberately stays OUT of the effect deps: respawning the
-    // PTY on every tab add/remove would be far worse than this one snapshot.
+    // Only the task's durable default tab may inherit task-level resume
+    // history. The first tab of another profile is still a NEW tab, even
+    // when its underlying binary is the same as the default agent's.
     const isShell = tab.cli === "shell";
     // The Touch ID install tab: types its line once, never offers.
     const sudoInstallInput = tab.sudoTouchIdInstall;
@@ -2426,17 +2419,10 @@ const captureArmedRef = useRef(false);
     const idCapable = isAgent && cliSupportsIdSession(tab.cli);
     const captureCapable = isAgent && cliSupportsCaptureResume(tab.cli);
     const taskTabsNow = useApp.getState().tabs[task.id] || [];
-    const firstAgentOfCli = taskTabsNow.find(
-      t => t.type === "terminal" && (t as TerminalTab).cli === tab.cli,
-    );
-    const isPrimaryTab = !!tab.is_default || firstAgentOfCli?.id === tab.id;
+    const isPrimaryTab = !!tab.is_default;
 
-    // Per-tab resume. EVERY agent tab resumes now (not just the primary):
-    // id-capable agents (claude / gemini) get their own `sessionId` so two
-    // agents in one task resume independently; cwd-only agents (codex)
-    // resume on the primary tab and start fresh on secondary tabs (the CLI
-    // can't address a specific past session). decideResume is pure + unit-
-    // tested; here we just map its verdict onto spawnArgsForCli's inputs.
+    // Every restored tab can resume its own stored session. Only the
+    // durable default tab may fall back to legacy task-level cwd history.
     // Read the uuid from the LIVE store snapshot, not the captured `tab`
     // prop — `setTabSessionId` updates it out-of-band and `tabs` is kept
     // out of this effect's deps (respawning on every tab edit is far worse).
@@ -2607,6 +2593,7 @@ const captureArmedRef = useRef(false);
           // for the pill / top-bar controls.
           ? loginShellArgs(userShell, launchCmd, !!(tab as TerminalTab).runTab)
           : spawnArgsForCli(tab.cli, {
+          agentArgs: tab.agentArgs,
           // YOLO auto-on whenever the task is caged, by EITHER mechanism:
           // Seatbelt ENFORCING / ENFORCING (FS), or Docker mode. Either way
           // the cage is the real security boundary, so the agent's own

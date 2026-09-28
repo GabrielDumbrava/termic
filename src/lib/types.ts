@@ -432,6 +432,8 @@ export interface Task {
 export interface PersistedTab {
   id: string;
   cli: string;
+  /** Explicit launch arguments for this tab only, after registry defaults. */
+  agent_args?: string[];
   title?: string | null;
   custom_title?: boolean;
   is_default?: boolean;
@@ -1309,6 +1311,8 @@ export interface TerminalTab extends BaseTab {
    *  sentinel `"shell"` for a plain login-shell tab, OR `"custom"` for a
    *  task launched with a user-supplied command (see `command`). */
   cli: string;
+  /** Explicit launch arguments for this tab only, after registry defaults. */
+  agentArgs?: string[];
   /** Launch command for `cli === "custom"` tabs — run through a login
    *  shell (`zsh -lc`). Seeded from the task's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */
