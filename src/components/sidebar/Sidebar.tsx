@@ -1120,7 +1120,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   if (showInactive && inactiveCount === 0) setShowInactive(false);
 
   return (
-    <aside ref={asideRef} className="relative flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
+    // The aside clips (`overflow-hidden`), so the resize handle is its SIBLING
+    // inside this wrapper rather than its child: the outer half of a grab strip
+    // that leaves the aside's box is clipped out of existence, hit testing
+    // included, which is how the divider shipped grabbable across one pixel.
+    // The wrapper is the grid cell now; it does not clip, and the 5px that
+    // overhang the sidebar land on the main area, a sibling.
+    <div className="relative flex h-full min-w-0">
+    <aside ref={asideRef} className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
       {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
       <nav className={cn("flex flex-col gap-0.5", compact ? "p-1.5 pt-2" : "p-2 pt-3")}>
         <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label={t("navDashboard")}
@@ -2222,13 +2229,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         </div>
       </div>
 
+      </aside>
+
       {/* Drag handle on the sidebar's right edge — disabled in compact mode
           (compact has a fixed 56px width that's the whole point of the mode). */}
       {!compact && (
         <ResizeHandle
           direction="x"
           label="sidebar-width"
-          className="right-0"
+          anchor="right"
           onDrag={(dx) => {
             // Read the CURRENTLY RENDERED width via DOM measurement, not
             // the stored preferred — when the window is narrow the clamp
@@ -2244,7 +2253,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           }}
         />
       )}
-    </aside>
+    </div>
   );
 }
 

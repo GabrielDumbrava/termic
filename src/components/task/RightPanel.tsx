@@ -499,7 +499,8 @@ export function RightPanel() {
           snap back to a few px after each move. */}
       <ResizeHandle
         direction="x"
-        className="left-0"
+        label="right-panel-width"
+        anchor="left"
         onDrag={(dx) => {
           // Measure CURRENT rendered width (the App.tsx clamp may have
           // capped it below stored preferred on a narrow window).
@@ -587,7 +588,7 @@ export function RightPanel() {
         {!footCollapsed && (
           <ResizeHandle
             direction="y"
-            className="top-0"
+            anchor="top"
             onDrag={(dy) => {
               const cur = useApp.getState().rightFooterHeight;
               const asideH = asideRef.current?.clientHeight ?? 600;

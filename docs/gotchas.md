@@ -419,6 +419,29 @@ right. It took a screenshot to notice and a computed-style assertion to prove.
 Assert the painted colour, not the attribute, wherever selection is carried by
 colour alone.
 
+## An overhanging hit area is clipped out of existence
+
+`overflow: hidden` clips hit testing, not just painting. A child positioned
+outside its parent's box (`-right-2` on a 1px divider, to widen the grab
+target) is unreachable wherever an ancestor clips, and nothing about the
+element says so: it is in the DOM, it has a size, `getBoundingClientRect`
+reports the generous rect, and every spec that dispatches events AT the
+element passes.
+
+The sidebar's resize divider shipped that way. The aside clips, so the
+overhang was gone, and the divider was grabbable across **one pixel** - the
+line itself. Measured, not guessed: walk `document.elementFromPoint` across
+the edge and ask whether the topmost element is the handle
+(`e2e/specs/tabs-layout.e2e.ts`, "gives both dividers a grab strip"). The
+existing resize cases all passed throughout, because `mouseDrag` dispatches a
+`mousedown` straight at the handle and never asks what a pointer would hit.
+
+Two rules. An interactive area must live inside the element's own box, inside
+whatever clips it: widen the element, do not hang a child off it. And when the
+element that PAINTS the affordance is not the element that RECEIVES the press,
+you have built a control that lights up and then ignores you, which is how
+this one was reported.
+
 ## A scratchpad is unregistered while its editor remounts
 
 An agent's `termic scratchpad write` to an OPEN pad goes into the editor

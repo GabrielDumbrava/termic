@@ -885,6 +885,54 @@ describe("layout", () => {
       timeoutMsg: "sidebar width never clamped to its minimum",
     });
   });
+
+  // The cases above dispatch mousedown AT the handle element, which skips hit
+  // testing: they pass against a target a pointer cannot land on. What a user
+  // aims at is the divider, so measure the strip around it the way a pointer
+  // finds one, with elementFromPoint, and require room on BOTH sides. The
+  // handle's painted hover line is the same element, so a strip narrower than
+  // this is also a lie: the divider lights up under the cursor and then does
+  // not take the press.
+  const grabStrip = (label: string) =>
+    browser.execute((sel) => {
+      const el = document.querySelector(`[data-resize-handle='${sel}']`);
+      if (!el) throw new Error(`no resize handle ${sel}`);
+      // Measured from the painted LINE, not from the strip: the line is what
+      // a user aims at, and the strip is deliberately not centred on it (the
+      // panel's own side of the edge carries its scrollbar).
+      const line = el.firstElementChild ?? el;
+      const r = line.getBoundingClientRect();
+      const y = Math.round(r.top + r.height / 2);
+      const edge = Math.round(r.left + r.width / 2);
+      const hits: number[] = [];
+      for (let dx = -12; dx <= 12; dx++) {
+        if (document.elementFromPoint(edge + dx, y)?.closest(`[data-resize-handle='${sel}']`))
+          hits.push(dx);
+      }
+      return hits;
+    }, label) as Promise<number[]>;
+
+  it("gives both dividers a grab strip a pointer can actually land on", async () => {
+    // The right panel only exists with a task on screen, and only when it has
+    // not been hidden by a previous case.
+    const taskId = await openTask("e2e-grab-strip");
+    await ensureActiveTask(taskId);
+    await browser.execute(() => {
+      const app = window.__termic!.useApp.getState();
+      if (app.rightPanelHidden) app.toggleRightPanel();
+    });
+    await waitVisible("[data-resize-handle='right-panel-width']");
+    for (const label of ["sidebar-width", "right-panel-width"]) {
+      const hits = await grabStrip(label);
+      const report = `${label} grabbable at dx ${hits.join(",") || "nowhere"}`;
+      // 4px each side of the line. Fitts's law, and the number VS Code's sash
+      // uses: 1px was the shipped behaviour and it is unusable.
+      if (hits.length < 8) throw new Error(`${report} (${hits.length}px wide, want >= 8)`);
+      if (!hits.some(dx => dx <= -3)) throw new Error(`${report} (nothing to the left of the line)`);
+      if (!hits.some(dx => dx >= 3)) throw new Error(`${report} (nothing to the right of the line)`);
+    }
+    await archiveTask(taskId);
+  });
 });
 
 // P0: a split whose pane tabs don't come back must not restore as a blank
