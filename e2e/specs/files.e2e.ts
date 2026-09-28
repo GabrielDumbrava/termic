@@ -245,32 +245,57 @@ describe("file finder", () => {
   // terminal), so the next ⌘F opened find-in-terminal instead of the file's.
   // Driven with the terminal focused first, since that is the real starting
   // point and the one Radix hands focus back to on close.
+  // Every step below addresses the OPEN dialog, never "the dialog". A closed
+  // one can sit in the DOM indefinitely: Radix defers the unmount until the
+  // close animation ends, and animations are frozen while the window is
+  // occluded, which it always is on a machine somebody is using. So after
+  // editor.e2e this spec ran with three `[role="dialog"]` nodes on screen (a
+  // closed syntax palette, a closed command palette, and this finder), and the
+  // two unscoped selectors here both picked the wrong one: the query was typed
+  // into the command palette's input, and the unfiltered finder's first row was
+  // then read as a ranking failure for README.md. `data-state` is the signal,
+  // not presence, which editor.e2e's own syntax case already says.
+  const OPEN_DIALOG = '[role="dialog"]:not([data-state="closed"])';
   const pickWithEnter = async (name: string) => {
     await browser.execute(
       (id) => window.__termic!.useUI.getState().openFileFinder(id),
       taskId,
     );
-    const input = 'input[placeholder]';
     await browser.waitUntil(
-      () => browser.execute((n) =>
-        [...document.querySelectorAll("[data-row]")].some((r) => r.textContent?.includes(n)), name),
+      () => browser.execute((open, n) =>
+        [...document.querySelectorAll(`${open} [data-row]`)].some((r) => r.textContent?.includes(n)),
+        OPEN_DIALOG, name),
       { timeout: 8_000, timeoutMsg: `file finder never listed ${name}` },
     );
-    await browser.execute((sel, n) => {
-      const el = [...document.querySelectorAll<HTMLInputElement>(sel)]
-        .find((i) => i.closest('[role="dialog"]'))!;
+    await browser.execute((open, n) => {
+      const el = document.querySelector<HTMLInputElement>(`${open} input[placeholder]`)!;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, n);
       el.dispatchEvent(new Event("input", { bubbles: true }));
-    }, input, name);
-    await browser.waitUntil(
-      () => browser.execute((n) =>
-        document.querySelector('[role="dialog"] [data-row]')?.textContent?.includes(n) ?? false, name),
-      { timeout: 8_000, timeoutMsg: `${name} never became the top result` },
-    );
-    await browser.execute(() => {
-      const d = [...document.querySelectorAll('[role="dialog"]')].pop() as HTMLElement;
+    }, OPEN_DIALOG, name);
+    try {
+      await browser.waitUntil(
+        () => browser.execute((open, n) =>
+          document.querySelector(`${open} [data-row]`)?.textContent?.includes(n) ?? false,
+          OPEN_DIALOG, name),
+        { timeout: 8_000, timeoutMsg: `${name} never became the top result` },
+      );
+    } catch (e) {
+      // Say WHAT ranked above it, and in WHICH dialog. "never became the top
+      // result" on its own sent one investigation into the ranking code when
+      // the answer was that the query had been typed somewhere else entirely.
+      const rows = await browser.execute(() =>
+        [...document.querySelectorAll('[role="dialog"]')].map((d) => ({
+          dialog: d.getAttribute("data-testid") ?? d.getAttribute("aria-label") ?? "(unlabelled)",
+          state: d.getAttribute("data-state") ?? "(none)",
+          rows: [...d.querySelectorAll("[data-row]")].slice(0, 5)
+            .map((r) => (r as HTMLElement).innerText.trim().replace(/\s+/g, " ")),
+        })));
+      throw new Error(`${(e as Error).message}\ndialogs on screen: ${JSON.stringify(rows)}`);
+    }
+    await browser.execute((open) => {
+      const d = document.querySelector(open) as HTMLElement;
       d.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    });
+    }, OPEN_DIALOG);
   };
 
   const focusTerminal = () =>

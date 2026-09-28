@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { archiveTask, cliRpc, FILE_MANAGER_NAME, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitVisible, rmTree } from "../helpers";
+import { archiveTask, cliRpc, dismissOverlays, FILE_MANAGER_NAME, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitVisible, rmTree } from "../helpers";
 
 declare global {
   interface Window {
@@ -3134,6 +3134,12 @@ describe("inline git blame", () => {
     await browser.execute(() =>
       window.__termic!.usePrefs.getState().setInlineBlame(false),
     );
+    // And close what the cases here opened. "toggles from the command palette"
+    // clicks a command and the palette stays up, which is a dialog left on
+    // screen for every later spec file in a REUSED window. files.e2e's file
+    // finder then had two other dialogs above its own in the document, and its
+    // top-result assertion was reading one of them.
+    await dismissOverlays();
     if (taskId) await archiveTask(taskId);
   });
 

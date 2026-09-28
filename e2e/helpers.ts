@@ -547,6 +547,10 @@ export async function dismissOverlays(): Promise<void> {
     ui.closeProjectPicker();
     ui.closeCommandPalette();
     ui.closePromptPalette();
+    // The syntax palette was missing here, and it is a `[role="dialog"]` like
+    // the rest: editor.e2e left one up, and files.e2e's "top result" assertion
+    // read the FIRST dialog on screen, which by then was not its own.
+    ui.closeSyntaxPalette();
   });
   await browser.keys(["Escape"]);
   await browser.execute(() => {
