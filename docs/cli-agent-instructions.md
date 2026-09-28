@@ -198,7 +198,13 @@ task you run in (the headers helper sends your `$TERMIC_TASK_ID`).
 - A task can hold SEVERAL agent tabs. `"$TERMIC_CLI" tab <task>
   --agent <id> -p "<text>"` opens one and prompts it; record the
   printed tab id and pass `--tab <id>` to `send`/`wait`/`logs` to keep
-  addressing that tab (ids are stable; indexes and titles shift).
+  addressing that tab (ids are stable; indexes shift, and a title the
+  agent sets for itself changes mid-turn).
+- Name the tab when you open it with `--title <name>` (unique in the
+  task, not a bare number) and `--tab <name>` works just as well: a
+  title you set survives the agent retitling itself and a relaunch.
+  `"$TERMIC_CLI" tab <task> --tab <tab> --title <name>` renames an open
+  tab, and `--title ""` gives it back its automatic title.
   `status --json` lists every tab with its id, state and queue.
 - Without a task, `tab` opens the new agent in YOUR task:
   `"$TERMIC_CLI" tab --agent codex -p "..."` starts a second agent
@@ -260,6 +266,14 @@ Address pads by id: a title works when it is unique, but titles change.
   `... result plan | ... new review -P builtin:review -p -` hands one
   agent's output to another under a curated prompt. Pin ids in scripts
   (titles are user-editable); `prompts show <id>` prints a body.
+- `"$TERMIC_CLI" agents --json` - the agent ids `--agent` accepts, with
+  `enabled` / `installed` / `usable` per id. Ask before passing an id you
+  guessed: an unusable one fails the `new` or `tab` that names it.
+- `"$TERMIC_CLI" rename "<new name>"` - retitle YOUR OWN task (no task
+  argument). Worth doing once you know the real subject of your work (an
+  issue filed, a PR opened), because the name is what the user reads in
+  the sidebar. The label only: the branch and the directory keep theirs,
+  and the task id never changes.
 - `"$TERMIC_CLI" archive <task> --yes` - kill the task's agents and
   remove its worktree. Destructive; only when asked to clean up.
 - `"$TERMIC_CLI" project add <path>` - register a repo (needed once

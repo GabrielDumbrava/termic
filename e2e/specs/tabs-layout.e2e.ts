@@ -1,4 +1,4 @@
-import { archiveTask, clickByText, clickMenuItem, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickMenuItemUntilReady, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 // Tabs are how a task holds multiple terminals/agents/editors. Guards adding a
 // tab through the "+" menu and switching the active tab by clicking it.
@@ -20,20 +20,32 @@ describe("tab management", () => {
     );
 
   /** Open the tab strip's "+" menu. Radix opens on pointerdown, so a bare
-   *  .click() is not enough. */
+   *  .click() is not enough.
+   *
+   *  Retried until the menu is THERE rather than dispatched once and waited
+   *  on: a synthetic pointer sequence can land before Radix has bound its
+   *  handler, and one that does is silently swallowed. That cost the Linux
+   *  runner this whole file (the + menu case fails, and the eight cases that
+   *  build on its tab cascade off it). The dispatch is skipped while a menu
+   *  is already open, since a second pointerdown on the trigger closes it. */
   const openPlusMenu = async () => {
-    await browser.execute(() => {
-      const strip = document.querySelector("[data-main-strip]");
-      const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
-        b.querySelector("svg.lucide-plus"),
-      );
-      if (!plus) throw new Error("tab '+' button not found");
-      const el = plus as HTMLElement;
-      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-      el.click();
-    });
+    await browser.waitUntil(
+      () => browser.execute(() => {
+        if (document.querySelector("[role='menu']")) return true;
+        const strip = document.querySelector("[data-main-strip]");
+        const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
+          b.querySelector("svg.lucide-plus"),
+        );
+        if (!plus) return false;
+        const el = plus as HTMLElement;
+        const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        el.click();
+        return !!document.querySelector("[role='menu']");
+      }),
+      { timeout: 15_000, interval: 250, timeoutMsg: "the tab strip's + menu never opened" },
+    );
     await waitVisible("[role='menu']");
   };
 
@@ -62,21 +74,9 @@ describe("tab management", () => {
       { timeout: 10_000, timeoutMsg: "tab '+' button never appeared" },
     );
 
-    // Open the tab bar's "+" menu (the button carrying the lucide plus icon,
-    // scoped to the main tab strip). Radix opens the menu on pointerdown, so a
-    // bare .click() isn't enough — dispatch the pointer sequence.
-    await browser.execute(() => {
-      const strip = document.querySelector("[data-main-strip]");
-      const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
-        b.querySelector("svg.lucide-plus"),
-      );
-      if (!plus) throw new Error("tab '+' button not found");
-      const el = plus as HTMLElement;
-      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-      el.click();
-    });
+    // Open the tab bar's "+" menu through the retrying helper: dispatched
+    // once, this is the click the Linux runner drops.
+    await openPlusMenu();
     // Wait for the Radix menu to render, then add a Terminal.
     await browser.waitUntil(
       () =>
@@ -87,13 +87,11 @@ describe("tab management", () => {
         ),
       { timeout: 5_000, timeoutMsg: "the + menu (Terminal item) never opened" },
     );
-    await clickMenuItem("Terminal");
-
-    // Now two tabs, and the new terminal is the active one.
-    await browser.waitUntil(async () => (await tabCount()) === 2, {
-      timeout: 10_000,
-      timeoutMsg: "terminal tab was not added",
-    });
+    // Retried until the tab EXISTS: a click into Radix's remount does
+    // nothing and leaves the menu open, which is how this case (and the eight
+    // built on its tab) fails on the Linux runner.
+    await clickMenuItemUntilReady("Terminal", async () => (await tabCount()) === 2,
+      { reopen: openPlusMenu });
     expect(await activeTab()).not.toBe(agentTabId);
 
     // Switch back to the agent tab with a real click.
@@ -219,10 +217,18 @@ describe("sidebar task menu: New submenu", () => {
   }
 
   /** Open the "New" submenu and return the entries it offers. */
-  async function openNewSubmenu(): Promise<string[]> {
+  async function openNewSubmenu(rowId: string): Promise<string[]> {
     // Radix opens a SubTrigger on hover OR click; click is the deterministic
     // one under WebDriver (no pointer position involved).
-    await clickMenuItem("New");
+    // Retried: the submenu's entries are the result, and a swallowed click
+    // leaves the parent menu open with nothing new in it.
+    await clickMenuItemUntilReady("New", () => browser.execute(() =>
+      [...document.querySelectorAll("[role='menuitem']")].some(
+        (e) => e.textContent?.trim() === "Terminal",
+      )) as Promise<boolean>,
+    // The parent menu is what closes under a swallowed click here, and the
+    // submenu cannot be reopened without it.
+    { reopen: () => openTaskRowMenu(rowId) });
     await browser.waitUntil(
       () =>
         browser.execute(() =>
@@ -253,8 +259,10 @@ describe("sidebar task menu: New submenu", () => {
     await waitVisible(`[data-sidebar-task-id="${taskId}"]`);
 
     await openTaskRowMenu(taskId);
-    await openNewSubmenu();
-    await clickMenuItem("Terminal");
+    await openNewSubmenu(taskId);
+    await clickMenuItemUntilReady("Terminal", async () =>
+      (await tabsOf(taskId!)).includes("shell"),
+    { reopen: async () => { await openTaskRowMenu(taskId!); await openNewSubmenu(taskId!); } });
 
     // The row's task is now the active one and holds BOTH its seeded agent tab
     // and the new shell — picking "Terminal" on a cold task must not cost the
@@ -294,7 +302,7 @@ describe("sidebar task menu: New submenu", () => {
     await ensureActiveTask(taskId!);
 
     await openTaskRowMenu(taskId!);
-    const fromSidebar = await openNewSubmenu();
+    const fromSidebar = await openNewSubmenu(taskId!);
     await dismissOverlays();
 
     // Same list from the "+" button on the active task's strip. Radix opens on
@@ -858,6 +866,10 @@ describe("layout", () => {
   // are the one gesture family that isn't pointer-based), persisted to
   // localStorage so the width survives a relaunch.
   it("widens the sidebar by dragging its edge", async () => {
+    // From the floor, so the drag has room under the 33vw cap: on a 1024px
+    // window (the CI runner's) the default width plus 60 is past it.
+    await mouseDrag("[data-resize-handle='sidebar-width']", -600);
+    await browser.waitUntil(async () => ((await width()) as number) === 160, { timeout: 8_000 });
     const start = (await width()) as number;
     await mouseDrag("[data-resize-handle='sidebar-width']", 60);
     await browser.waitUntil(async () => ((await width()) as number) > start + 40, {
@@ -877,6 +889,54 @@ describe("layout", () => {
       timeout: 8_000,
       timeoutMsg: "sidebar width never clamped to its minimum",
     });
+  });
+
+  // The cases above dispatch mousedown AT the handle element, which skips hit
+  // testing: they pass against a target a pointer cannot land on. What a user
+  // aims at is the divider, so measure the strip around it the way a pointer
+  // finds one, with elementFromPoint, and require room on BOTH sides. The
+  // handle's painted hover line is the same element, so a strip narrower than
+  // this is also a lie: the divider lights up under the cursor and then does
+  // not take the press.
+  const grabStrip = (label: string) =>
+    browser.execute((sel) => {
+      const el = document.querySelector(`[data-resize-handle='${sel}']`);
+      if (!el) throw new Error(`no resize handle ${sel}`);
+      // Measured from the painted LINE, not from the strip: the line is what
+      // a user aims at, and the strip is deliberately not centred on it (the
+      // panel's own side of the edge carries its scrollbar).
+      const line = el.firstElementChild ?? el;
+      const r = line.getBoundingClientRect();
+      const y = Math.round(r.top + r.height / 2);
+      const edge = Math.round(r.left + r.width / 2);
+      const hits: number[] = [];
+      for (let dx = -12; dx <= 12; dx++) {
+        if (document.elementFromPoint(edge + dx, y)?.closest(`[data-resize-handle='${sel}']`))
+          hits.push(dx);
+      }
+      return hits;
+    }, label) as Promise<number[]>;
+
+  it("gives both dividers a grab strip a pointer can actually land on", async () => {
+    // The right panel only exists with a task on screen, and only when it has
+    // not been hidden by a previous case.
+    const taskId = await openTask("e2e-grab-strip");
+    await ensureActiveTask(taskId);
+    await browser.execute(() => {
+      const app = window.__termic!.useApp.getState();
+      if (app.rightPanelHidden) app.toggleRightPanel();
+    });
+    await waitVisible("[data-resize-handle='right-panel-width']");
+    for (const label of ["sidebar-width", "right-panel-width"]) {
+      const hits = await grabStrip(label);
+      const report = `${label} grabbable at dx ${hits.join(",") || "nowhere"}`;
+      // 4px each side of the line. Fitts's law, and the number VS Code's sash
+      // uses: 1px was the shipped behaviour and it is unusable.
+      if (hits.length < 8) throw new Error(`${report} (${hits.length}px wide, want >= 8)`);
+      if (!hits.some(dx => dx <= -3)) throw new Error(`${report} (nothing to the left of the line)`);
+      if (!hits.some(dx => dx >= 3)) throw new Error(`${report} (nothing to the right of the line)`);
+    }
+    await archiveTask(taskId);
   });
 });
 
@@ -1560,6 +1620,8 @@ describe("recently-used tab navigation", () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
     await waitVisible("[data-testid='ctrl-tab-mode']");
     await walk(c, [false]);
+    // Same asynchronous switch as the case above: assert after a settle, or
+    // "the task did not change" passes against the broken behaviour too.
     await browser.pause(500);
     expect(await visibleTask()).toBe(c);
     expect(await browser.execute(

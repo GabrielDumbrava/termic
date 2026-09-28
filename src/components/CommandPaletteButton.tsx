@@ -9,20 +9,22 @@
 // project picker, settings, theme) work with nothing selected.
 
 import { useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { SquareChevronRight } from "lucide-react";
 import { Tip } from "@/components/ui/Tooltip";
 import { Button } from "@/components/ui/Button";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
-import { bindingGlyphs } from "@/lib/shortcuts";
+import { bindingGlyphs, bindingText } from "@/lib/shortcuts";
 
 export function CommandPaletteButton() {
+  const { t } = useTranslation("chrome");
   // Read the live binding, not the default: the shortcut is rebindable in
   // settings, and a tooltip naming a key that no longer opens anything is
   // worse than a tooltip with no key at all.
   const binding = usePrefs(s => s.shortcuts["command-palette"]);
-  const glyphs = binding ? bindingGlyphs(binding).join("") : "";
-  const label = `Command palette${glyphs ? ` (${glyphs})` : ""}`;
+  const glyphs = binding ? bindingText(binding) : "";
+  const label = `${t("commandPalette.label")}${glyphs ? ` (${glyphs})` : ""}`;
 
   // Radix's dismissable layer closes the open palette on document pointerdown,
   // BEFORE our click ever fires, so a click handler that reads

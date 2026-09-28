@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, runCli, snap, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible } from "../helpers";
+import { archiveTask, FILE_MANAGER_NAME, waitForAgentReady, clickByText, clickMenuItem, clickWhenVisible, cliRpc, dismissOverlays, ensureActiveTask, openTask, pointerDrag, readClipboard, requireTermicApi, runCli, snap, waitForAgentPty, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible, setInputValue, clickPresent, rmTree } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 // Click a button by its exact text inside the NewTaskDialog specifically
@@ -234,6 +234,11 @@ describe("create task wizard", () => {
           .getState()
           .tasks.find((t: any) => t.name === "e2e-wizard-wt" && !t.archived)?.id,
     );
+    // The dialog closes before the worktree exists (that is the point of
+    // the case), so wait for it before tearing it down: archiving a
+    // checkout git is still writing fails on Windows, and deletes a branch
+    // that does not exist yet.
+    await waitForAgentPty(wtTaskId, 30_000);
     await browser.execute(async (id) => {
       await window.__termic!.ipc.taskArchive(id, true); // deleteBranch
       await window.__termic!.useApp.getState().loadAll();
@@ -426,7 +431,8 @@ describe("YOLO default for new tasks", () => {
     await setProjectDefault(null);
   });
 
-  it("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
+  // The Seatbelt cards are macOS only.
+  (process.platform === "darwin" ? it : it.skip)("reads auto-on and cannot be unticked while the sandbox cages the task", async () => {
     await setAppDefault(false);
     await openDialog();
     await pickSandbox("ENFORCING (filesystem + network)");
@@ -1594,7 +1600,7 @@ describe("check out an existing branch", () => {
       quiet(fixture, `update-ref -d refs/remotes/origin/${b}`);
       quiet(origin, `branch -D ${b}`);
     }
-    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    if (scratch) rmTree(scratch, { bestEffort: true });
   });
 
   /** Open New Task for fixture-repo in worktree mode, then flip to the
@@ -2015,7 +2021,7 @@ describe("agent race", () => {
       ]) {
         try {
           for (const entry of readdirSync(dir)) {
-            if (entry.startsWith(stale)) rmSync(path.join(dir, entry), { recursive: true, force: true });
+            if (entry.startsWith(stale)) rmSync(path.join(dir, entry), { recursive: true, force: true, maxRetries: 10 });
           }
         } catch { /* the directory may not exist on this machine */ }
       }
@@ -2531,7 +2537,7 @@ describe("sidebar task drag", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, otherProjectId);
     }
-    if (otherDir) rmSync(otherDir, { recursive: true, force: true });
+    if (otherDir) rmTree(otherDir, { bestEffort: true });
   });
 
   // Sidebar rows, NOT `[data-task-id]` — that one is MainArea's mounted
@@ -2853,7 +2859,7 @@ describe("task groups", () => {
       t.useApp.setState({ activeTaskId: null });
     }, child1, child2);
     try {
-      await $(toggle).click();
+      await clickWhenVisible(toggle);
       // Collapsed: no member rows, and the caption carries one of each mark
       // present, attention first.
       await browser.waitUntil(async () => (await blockRows(orch)).length === 0, {
@@ -2894,7 +2900,7 @@ describe("task groups", () => {
         timeout: 5_000, timeoutMsg: "navigating to a member did not expand its group",
       });
       // Collapse again while on that member: its row stays in view.
-      await $(toggle).click();
+      await clickWhenVisible(toggle);
       await browser.waitUntil(async () => (await blockRows(orch)).join() === child2, {
         timeout: 5_000, timeoutMsg: "a collapsed group hid the task you are on",
       });
@@ -2953,7 +2959,9 @@ describe("task groups", () => {
     const input = `[data-testid="project-filter-input-${fixtureProjectId}"]`;
     const typeFilter = async (v: string) => {
       if (!(await browser.execute((sel) => !!document.querySelector(sel), input))) {
-        await $(`[data-testid="project-filter-toggle-${fixtureProjectId}"]`).click();
+        // Present but opacity-0 until the row is hovered, so visibility is the
+    // wrong gate here.
+    await clickPresent(`[data-testid="project-filter-toggle-${fixtureProjectId}"]`);
         await waitVisible(input);
       }
       await browser.execute((sel, val) => {
@@ -3069,7 +3077,7 @@ describe("task groups", () => {
     expect(look.padLeft).toBe("0px");
     expect(look.border).toBe("0px");
     await snap("task-groups-05-renaming.png");
-    await $(input).setValue("Auth refactor");
+    await setInputValue(input, "Auth refactor");
     await browser.keys("Enter");
     await browser.waitUntil(async () => (await label(orch)) === "Auth refactor", {
       timeout: 8_000, timeoutMsg: "the header never showed the new group name",
@@ -3208,7 +3216,7 @@ describe("task groups", () => {
       const el = document.querySelector(sel) as HTMLInputElement | null;
       return !!el && el.value.length > 0 && el.selectionStart === 0 && el.selectionEnd === el.value.length;
     }, input), { timeout: 5_000, timeoutMsg: "a new group's name was not selected for renaming" });
-    await $(input).setValue("Hand-made");
+    await setInputValue(input, "Hand-made");
     await browser.keys("Enter");
     await browser.waitUntil(async () => (await label(manualGid)) === "Hand-made", {
       timeout: 8_000, timeoutMsg: "the new group never showed its typed name",
@@ -3399,7 +3407,7 @@ describe("spawn links across projects", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, otherProjectId);
     }
-    if (otherDir) rmSync(otherDir, { recursive: true, force: true });
+    if (otherDir) rmTree(otherDir, { bestEffort: true });
   });
 
   let far: string;
@@ -3441,8 +3449,13 @@ describe("spawn links across projects", () => {
     await waitVisible(`[data-task-group-id="${orch}"] ${row(near)}`);
     const d = await disk();
     expect(d[near]).toEqual({ group: orch, spawnedBy: orch });
-    // The rail already says it.
-    expect(await browser.execute((s) => !!document.querySelector(s), mark(near))).toBe(false);
+    // The rail already says it. Waited for, not read once: the parent only
+    // gets its group when this first child joins, and until the store has
+    // that, the two do not share a block yet and the mark is (briefly) right.
+    await browser.waitUntil(
+      () => browser.execute((s) => !document.querySelector(s), mark(near)),
+      { timeout: 5_000, timeoutMsg: "a same-group child kept its started-by mark" },
+    );
   });
 
   it("hovering a task draws lines to its parent and the tasks it spawned, and only then", async () => {
@@ -3473,6 +3486,8 @@ describe("spawn links across projects", () => {
     await hover(loose);
     await browser.waitUntil(async () => (await drawnLinks()).length === 0, { timeout: 5_000 });
     await hover(near);
+    // A negative: an unlinked task draws nothing, and nothing is not an event
+    // to wait for. Long enough that a wrong link would have been drawn.
     await browser.pause(300);
     expect(await drawnLinks()).toEqual([]);
     await hover(far);
@@ -3481,6 +3496,35 @@ describe("spawn links across projects", () => {
     await browser.waitUntil(async () => (await drawnLinks()).length === 0, {
       timeout: 5_000, timeoutMsg: "the lines outlived the hover",
     });
+  });
+
+  it("the dashboard's flat rows mark every spawned child, grouped or not", async () => {
+    // Real click, the way the user gets there (app.e2e.ts's nav case). The
+    // dashboard draws no group rail, so its rule is the sidebar's inverted:
+    // every spawned child is marked, `near` included — the pair the sidebar
+    // suppresses because its rail already says it.
+    await clickByText("Dashboard");
+    await waitForText("HOME FOR YOUR CLI CODING AGENTS");
+    // Scoped through `data-dashboard-task-id` for the same reason as
+    // `dashboardBadge()`: the sidebar row for the same task renders the same
+    // `task-spawned-from-*` testid, and a bare query returns whichever came
+    // first in document order.
+    const dashMark = (id: string) =>
+      `[data-dashboard-task-id="${id}"] [data-testid="task-spawned-from-${id}"]`;
+    await waitVisible(dashMark(far));
+    const title = await browser.execute((s) => document.querySelector(s)!.getAttribute("title"), dashMark(far));
+    expect(title).toContain("Started by spawn-orchestrator (fixture-repo)");
+    // Same project, same group: the sidebar draws no mark here; the dashboard does.
+    await waitVisible(dashMark(near));
+    // Captured on the dashboard itself: the snap after the click would show
+    // the task view the click navigates to.
+    await snap("spawn-links-03-dashboard.png");
+    // The mark is a way to the parent from here too.
+    await browser.execute((s) => (document.querySelector(s) as HTMLElement).click(), dashMark(far));
+    await browser.waitUntil(
+      () => browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, orch),
+      { timeout: 5_000, timeoutMsg: "clicking the dashboard mark did not go to the parent" },
+    );
   });
 
   it("a group left spanning projects by an older build draws as plain rows", async () => {
@@ -3735,7 +3779,7 @@ describe("copy agent briefing", () => {
     await waitForCopyToast("task menu");
     // What the user actually pastes: one block, tagged with THIS task, the
     // command addressing it by id and signed with its identity.
-    const pasted = execSync("pbpaste", { encoding: "utf8" });
+    const pasted = readClipboard();
     expect(pasted.startsWith(`<termic-task id="${taskId}" `)).toBe(true);
     expect(pasted.trimEnd().endsWith("</termic-task>")).toBe(true);
     expect(pasted).toContain(` send ${taskId} -p "[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID]`);
@@ -3921,7 +3965,8 @@ describe("branch as the task name (GH #260)", () => {
 // button instead of staying dead; and Escape launches nothing.
 describe("open the task folder in another app", () => {
   const openLog = path.join(process.cwd(), ".e2e", "profile", "e2e-open-with.log");
-  const FILE_MANAGER_PICK = { key: "file-manager", label: "Finder", kind: "file-manager" };
+  const FILE_MANAGER = FILE_MANAGER_NAME;
+  const FILE_MANAGER_PICK = { key: "file-manager", label: FILE_MANAGER, kind: "file-manager" };
   let taskId = "";
 
   /** `<app key>\t<absolute dir>` per launch, newest last. */
@@ -4045,7 +4090,7 @@ describe("open the task folder in another app", () => {
     // load-bearing: a terminal sorted among the editors would put a separator
     // in the middle of them.
     await openMenu();
-    expect(await menuLabels()).toEqual(["Finder", "E2E Editor", "E2E Terminal"]);
+    expect(await menuLabels()).toEqual([FILE_MANAGER, "E2E Editor", "E2E Terminal"]);
     await snap("open-with-menu.png");
     await browser.keys(["Escape"]);
     await waitGone('[data-testid="open-with-file-manager"]');
@@ -4068,7 +4113,7 @@ describe("open the task folder in another app", () => {
     expect(key).toBe("e2e-editor");
     // Absolute, and resolved in Rust from the task id: the frontend never
     // sends a path at all.
-    expect(dir.startsWith("/")).toBe(true);
+    expect(path.isAbsolute(dir)).toBe(true);
     const want = await browser.execute(
       (i) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.path,
       taskId,

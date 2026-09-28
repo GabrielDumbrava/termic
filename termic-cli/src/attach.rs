@@ -13,7 +13,6 @@
 use crate::client::Conn;
 use crate::{CliError, Output};
 use std::io::Write as _;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use termic_proto as proto;
@@ -100,84 +99,258 @@ impl DetachMatcher {
     }
 }
 
-// ───────────────────────────── raw mode ──────────────────────────────
+// ───────────────────────── terminal plumbing ─────────────────────────
 
-/// Puts the controlling terminal into raw mode; Drop restores it, so
-/// every exit path (detach, EOF, error) leaves the shell usable.
-struct RawGuard {
-    fd: i32,
-    saved: libc::termios,
-}
+/// Unix: termios raw mode, SIGWINCH for resize, a raw `read(0)` so the
+/// EINTR a SIGWINCH causes surfaces instead of being retried away.
+#[cfg(unix)]
+mod sys {
+    use super::*;
 
-impl RawGuard {
-    fn new(fd: i32) -> Result<Self, CliError> {
-        // SAFETY: termios is a plain C struct; tcgetattr fills it.
-        let mut t = unsafe { std::mem::zeroed::<libc::termios>() };
-        if unsafe { libc::tcgetattr(fd, &mut t) } != 0 {
-            return Err(CliError::new(exit_code::ERROR, "attach needs a terminal on stdin"));
+    /// Puts the controlling terminal into raw mode; Drop restores it, so
+    /// every exit path (detach, EOF, error) leaves the shell usable.
+    pub struct RawGuard {
+        fd: i32,
+        saved: libc::termios,
+    }
+
+    impl RawGuard {
+        pub fn new() -> Result<Self, CliError> {
+            let fd = 0;
+            // SAFETY: termios is a plain C struct; tcgetattr fills it.
+            let mut t = unsafe { std::mem::zeroed::<libc::termios>() };
+            if unsafe { libc::tcgetattr(fd, &mut t) } != 0 {
+                return Err(CliError::new(exit_code::ERROR, "attach needs a terminal on stdin"));
+            }
+            let saved = t;
+            unsafe { libc::cfmakeraw(&mut t) };
+            if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) } != 0 {
+                return Err(CliError::new(exit_code::ERROR, "could not switch the terminal to raw mode"));
+            }
+            Ok(RawGuard { fd, saved })
         }
-        let saved = t;
-        unsafe { libc::cfmakeraw(&mut t) };
-        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) } != 0 {
-            return Err(CliError::new(exit_code::ERROR, "could not switch the terminal to raw mode"));
+    }
+
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
         }
-        Ok(RawGuard { fd, saved })
+    }
+
+    pub static WINCH: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_winch(_: libc::c_int) {
+        WINCH.store(true, Ordering::Relaxed);
+    }
+
+    /// Install the SIGWINCH handler WITHOUT SA_RESTART, so the stdin
+    /// thread's blocking read returns EINTR and notices the flag promptly.
+    pub fn install_resize(_writer: &Arc<Mutex<proto::local::Stream>>) {
+        // SAFETY: standard sigaction setup; the handler only stores a flag.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_winch as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = 0;
+            libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+        }
+    }
+
+    /// Block SIGWINCH on the CALLING thread. Run on the socket-read thread
+    /// after the stdin thread spawns, so delivery lands where the EINTR is
+    /// useful (the stdin read loop).
+    pub fn block_resize_here() {
+        // SAFETY: standard pthread_sigmask block of one signal.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGWINCH);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        }
+    }
+
+    /// Called by the stdin loop before each read: a pending SIGWINCH
+    /// becomes a `resize` frame.
+    pub fn poll_resize(writer: &Arc<Mutex<proto::local::Stream>>) {
+        if WINCH.swap(false, Ordering::Relaxed) {
+            if let Some((rows, cols)) = win_size() {
+                let _ = write_frame(writer, &proto::AttachFrame::resize(rows, cols));
+            }
+        }
+    }
+
+    pub fn win_size() -> Option<(u16, u16)> {
+        // SAFETY: TIOCGWINSZ fills a winsize struct for a tty fd.
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_row > 0 {
+            Some((ws.ws_row, ws.ws_col))
+        } else {
+            None
+        }
+    }
+
+    pub enum Read {
+        Data(usize),
+        Eof,
+        Interrupted,
+        Failed,
+    }
+
+    pub fn read_stdin(buf: &mut [u8]) -> Read {
+        // Raw libc read so a SIGWINCH EINTR surfaces (std's helpers
+        // retry it silently and would sit on the flag until a keypress).
+        // SAFETY: reading into a buffer of the stated size.
+        let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n == 0 {
+            Read::Eof
+        } else if n < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                Read::Interrupted
+            } else {
+                Read::Failed
+            }
+        } else {
+            Read::Data(n as usize)
+        }
     }
 }
 
-impl Drop for RawGuard {
-    fn drop(&mut self) {
-        unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
+/// Windows: console modes instead of termios. VT input mode makes the
+/// console hand us the same escape sequences a unix tty would, with
+/// processed input off so Ctrl+C arrives as 0x03 for the agent. There
+/// is no SIGWINCH, so under --resize a small thread polls the window
+/// size and sends a `resize` frame when it changes.
+#[cfg(windows)]
+mod sys {
+    use super::*;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleCP, GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle,
+        SetConsoleCP, SetConsoleMode, SetConsoleOutputCP, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO,
+        DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS, ENABLE_LINE_INPUT,
+        ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    pub struct RawGuard {
+        input: HANDLE,
+        output: HANDLE,
+        in_mode: CONSOLE_MODE,
+        out_mode: CONSOLE_MODE,
+        in_cp: u32,
+        out_cp: u32,
     }
-}
 
-// ───────────────────────────── SIGWINCH ──────────────────────────────
-
-static WINCH: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_winch(_: libc::c_int) {
-    WINCH.store(true, Ordering::Relaxed);
-}
-
-/// Install the SIGWINCH handler WITHOUT SA_RESTART, so the stdin
-/// thread's blocking read returns EINTR and notices the flag promptly.
-fn install_winch() {
-    // SAFETY: standard sigaction setup; the handler only stores a flag.
-    unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = on_winch as *const () as usize;
-        libc::sigemptyset(&mut sa.sa_mask);
-        sa.sa_flags = 0;
-        libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+    impl RawGuard {
+        pub fn new() -> Result<Self, CliError> {
+            // SAFETY: plain console API calls on the process's std handles.
+            unsafe {
+                let input = GetStdHandle(STD_INPUT_HANDLE);
+                let output = GetStdHandle(STD_OUTPUT_HANDLE);
+                let mut in_mode: CONSOLE_MODE = 0;
+                let mut out_mode: CONSOLE_MODE = 0;
+                if GetConsoleMode(input, &mut in_mode) == 0 || GetConsoleMode(output, &mut out_mode) == 0 {
+                    return Err(CliError::new(exit_code::ERROR, "attach needs a console on stdin and stdout"));
+                }
+                let guard = RawGuard {
+                    input,
+                    output,
+                    in_mode,
+                    out_mode,
+                    in_cp: GetConsoleCP(),
+                    out_cp: GetConsoleOutputCP(),
+                };
+                let raw_in = (in_mode
+                    & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE))
+                    | ENABLE_VIRTUAL_TERMINAL_INPUT
+                    | ENABLE_EXTENDED_FLAGS;
+                let raw_out = out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+                if SetConsoleMode(input, raw_in) == 0 || SetConsoleMode(output, raw_out) == 0 {
+                    return Err(CliError::new(
+                        exit_code::ERROR,
+                        "could not switch the console to raw mode (needs Windows 10 1809 or newer)",
+                    ));
+                }
+                SetConsoleCP(65001);
+                SetConsoleOutputCP(65001);
+                Ok(guard)
+            }
+        }
     }
-}
 
-/// Block SIGWINCH on the CALLING thread. Run on the socket-read thread
-/// after the stdin thread spawns, so delivery lands where the EINTR is
-/// useful (the stdin read loop).
-fn block_winch_here() {
-    // SAFETY: standard pthread_sigmask block of one signal.
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGWINCH);
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            // SAFETY: restoring the modes and code pages saved in new().
+            unsafe {
+                SetConsoleMode(self.input, self.in_mode);
+                SetConsoleMode(self.output, self.out_mode);
+                SetConsoleCP(self.in_cp);
+                SetConsoleOutputCP(self.out_cp);
+            }
+        }
     }
-}
 
-fn win_size(fd: i32) -> Option<(u16, u16)> {
-    // SAFETY: TIOCGWINSZ fills a winsize struct for a tty fd.
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_row > 0 {
-        Some((ws.ws_row, ws.ws_col))
-    } else {
-        None
+    pub fn win_size() -> Option<(u16, u16)> {
+        // SAFETY: fills a plain struct for the stdout console handle.
+        unsafe {
+            let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+            if GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) == 0 {
+                return None;
+            }
+            // The visible window, not the scrollback buffer.
+            let rows = (info.srWindow.Bottom - info.srWindow.Top + 1).max(0) as u16;
+            let cols = (info.srWindow.Right - info.srWindow.Left + 1).max(0) as u16;
+            (rows > 0 && cols > 0).then_some((rows, cols))
+        }
+    }
+
+    /// Poll the window size every 250ms and forward changes. Exits when
+    /// a write fails (the session is over).
+    pub fn install_resize(writer: &Arc<Mutex<proto::local::Stream>>) {
+        let writer = writer.clone();
+        std::thread::spawn(move || {
+            let mut last = win_size();
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let now = win_size();
+                if now != last {
+                    last = now;
+                    if let Some((rows, cols)) = now {
+                        if write_frame(&writer, &proto::AttachFrame::resize(rows, cols)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn block_resize_here() {}
+
+    pub fn poll_resize(_writer: &Arc<Mutex<proto::local::Stream>>) {}
+
+    pub enum Read {
+        Data(usize),
+        Eof,
+        #[allow(dead_code)]
+        Interrupted,
+        Failed,
+    }
+
+    pub fn read_stdin(buf: &mut [u8]) -> Read {
+        use std::io::Read as _;
+        match std::io::stdin().lock().read(buf) {
+            Ok(0) => Read::Eof,
+            Ok(n) => Read::Data(n),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Read::Interrupted,
+            Err(_) => Read::Failed,
+        }
     }
 }
 
 // ───────────────────────────── session ───────────────────────────────
 
-fn write_frame(writer: &Arc<Mutex<UnixStream>>, frame: &proto::AttachFrame) -> std::io::Result<()> {
+fn write_frame(writer: &Arc<Mutex<proto::local::Stream>>, frame: &proto::AttachFrame) -> std::io::Result<()> {
     let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
     proto::write_msg(&mut *w, frame)
 }
@@ -192,7 +365,7 @@ fn write_frame(writer: &Arc<Mutex<UnixStream>>, frame: &proto::AttachFrame) -> s
 /// exit (stdin EOF, a write failure from a stalled server) shuts the
 /// socket down so the reader unblocks into "connection lost".
 fn stdin_loop(
-    writer: Arc<Mutex<UnixStream>>,
+    writer: Arc<Mutex<proto::local::Stream>>,
     detach_seq: Vec<u8>,
     resize: bool,
     detach_sent: Arc<AtomicBool>,
@@ -201,27 +374,18 @@ fn stdin_loop(
     let mut buf = [0u8; 4096];
     let mut clean_detach = false;
     loop {
-        if resize && WINCH.swap(false, Ordering::Relaxed) {
-            if let Some((rows, cols)) = win_size(0) {
-                let _ = write_frame(&writer, &proto::AttachFrame::resize(rows, cols));
-            }
+        if resize {
+            sys::poll_resize(&writer);
         }
-        // Raw libc read so a SIGWINCH EINTR surfaces (std's helpers
-        // retry it silently and would sit on the flag until a keypress).
-        // SAFETY: reading into a stack buffer of the stated size.
-        let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if n == 0 {
-            break; // stdin EOF (terminal gone)
-        }
-        if n < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue; // EINTR: recheck the WINCH flag
-            }
-            break;
-        }
+        let n = match sys::read_stdin(&mut buf) {
+            sys::Read::Data(n) => n,
+            sys::Read::Eof => break, // stdin EOF (terminal gone)
+            sys::Read::Interrupted => continue, // EINTR: recheck the resize flag
+            sys::Read::Failed => break,
+        };
         let mut forward: Vec<u8> = Vec::new();
         let mut detach = false;
-        for &b in &buf[..n as usize] {
+        for &b in &buf[..n] {
             let (flush, done) = matcher.feed(b);
             forward.extend(flush);
             if done {
@@ -265,8 +429,8 @@ pub fn run_attach(
     detach_hint: &str,
     resize: bool,
 ) -> Result<Output, CliError> {
-    // SAFETY: isatty on the standard fds.
-    if unsafe { libc::isatty(0) } != 1 || unsafe { libc::isatty(1) } != 1 {
+    use std::io::IsTerminal as _;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(CliError::new(
             exit_code::ERROR,
             "attach needs a terminal on stdin and stdout (it is interactive; use logs for output)",
@@ -311,10 +475,10 @@ pub fn run_attach(
     conn.clear_read_timeout();
     let (mut reader, writer) = conn.into_split();
     let writer = Arc::new(Mutex::new(writer));
-    let raw = RawGuard::new(0)?;
+    let raw = sys::RawGuard::new()?;
     if resize {
-        install_winch();
-        if let Some((rows, cols)) = win_size(0) {
+        sys::install_resize(&writer);
+        if let Some((rows, cols)) = sys::win_size() {
             let _ = write_frame(&writer, &proto::AttachFrame::resize(rows, cols));
         }
     }
@@ -326,7 +490,7 @@ pub fn run_attach(
     }
     // Deliver SIGWINCH to the stdin thread (where the EINTR matters),
     // not here.
-    block_winch_here();
+    sys::block_resize_here();
 
     let (code, message) = loop {
         match proto::read_line(&mut reader) {

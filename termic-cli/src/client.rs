@@ -10,7 +10,7 @@
 
 use crate::CliError;
 use std::io::{BufReader, Read};
-use std::os::unix::net::UnixStream;
+use termic_proto::local::Stream as UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 use termic_proto as proto;
@@ -111,7 +111,7 @@ impl Conn {
 }
 
 fn try_connect(paths: &SocketPaths) -> std::io::Result<Conn> {
-    let stream = UnixStream::connect(&paths.socket)?;
+    let stream = proto::local::connect(&paths.socket)?;
     // Replies for these read verbs are quick; the generous ceiling only
     // exists so a wedged app can never hang a script forever.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));

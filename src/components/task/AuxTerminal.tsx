@@ -8,6 +8,7 @@
 // counter that retears down the xterm + spawns a fresh PTY.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -26,7 +27,7 @@ import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
-import { loginShell } from "@/lib/loginShell";
+import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
@@ -34,6 +35,8 @@ import { isTerminalFindCombo } from "@/lib/terminalFind";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
+import { IS_WINDOWS } from "@/lib/platform";
+import { isConsoleHostTitle } from "@/lib/terminalTitle";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
 // `currentTerminalTheme()` picks the matching palette at mount; the
@@ -42,6 +45,7 @@ import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExited, onTitle, initialInput }: { taskId?: string; tabId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void;
   /** Typed at the prompt on spawn. Runs only if it ends with a CR. */
   initialInput?: string }) {
+  const { t } = useTranslation("task");
   // Keep the latest onTitle in a ref so the long-lived spawn effect's
   // onTitleChange handler always calls the current callback without
   // re-running (and respawning the PTY) when the parent re-renders.
@@ -191,7 +195,10 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           e.stopPropagation();
           return false;
         }
-        if (bindingMatches(e, binds["terminal-paste"])) {
+        // Windows also pastes on plain Ctrl+V, as every Windows terminal does.
+        const winPaste = IS_WINDOWS && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey
+          && (e.key === "v" || e.key === "V");
+        if (winPaste || bindingMatches(e, binds["terminal-paste"])) {
           navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
           e.preventDefault();
           e.stopPropagation();
@@ -245,7 +252,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       if (cancelled) return;
       try {
         const { id: ptyId } = await ipc.ptySpawn({
-          cwd: taskPath, cmd: shell, args: ["-l"],
+          cwd: taskPath, cmd: shell, args: loginShellArgs(shell),
           // Signal terminal theme so prompts / status bars that honor
           // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right
           // colors for the current chrome.
@@ -323,7 +330,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         // changes also feed the debounced fs bump: shells that set the
         // title from precmd fire it right when a command finishes, which
         // catches commands that outlive the Enter-keyed debounce.
-        term.onTitleChange(t => { onTitleRef.current?.(t); scheduleFsBump(); });
+        term.onTitleChange(t => { if (!isConsoleHostTitle(t)) onTitleRef.current?.(t); scheduleFsBump(); });
         setTimeout(() => { try { fit.fit(); } catch {} }, 200);
         // Reliable focus for user-created scratch shells (⇧⌘D / + / ⌘T).
         // We do it HERE, once the PTY is live and the grid has rendered,
@@ -458,8 +465,8 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         // interactive so its scrollback is still selectable/copyable, and it
         // isn't covered. `gen++` relaunches a fresh shell.
         <TerminalExitedBanner
-          label="Shell exited."
-          actionLabel="New shell"
+          label={t("aux.shellExited")}
+          actionLabel={t("aux.newShell")}
           icon={Plus}
           onAction={() => setGen(g => g + 1)}
         />

@@ -176,7 +176,13 @@ export function initAgentStatePush(): () => void {
     }, PUSH_DEBOUNCE_MS);
   };
 
-  const unsub = useApp.subscribe(schedule);
+  // Only what computeAgentStates reads. Every other store write (a sidebar
+  // drag, a pref, a selection) used to arm the timer and rebuild the whole
+  // payload just to find it unchanged.
+  const unsub = useApp.subscribe((s, prev) => {
+    if (s.tabs === prev.tabs && s.tasks === prev.tasks && s.agents === prev.agents) return;
+    schedule();
+  });
   const interval = window.setInterval(() => push(true), REFRESH_EVERY_MS);
   // Boot snapshot, but only once the store has hydrated: a reload's
   // pre-loadAll push would wipe the cache with an empty map under an

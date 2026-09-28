@@ -87,6 +87,12 @@ interface View {
    *  toggle it changed). Consumed and cleared by the section itself on
    *  mount, so a later manual visit to the same tab doesn't re-trigger it. */
   settingsHighlight?: string;
+  /** History only: the page's project filter (undefined = All projects).
+   *  Seeded by setView (sidebar Resume › More…), changed by the page's
+   *  dropdown. Any other setView drops it, so the plain History entry
+   *  points always open on All projects; the Settings overlay spreads the
+   *  view, so it survives opening Settings over History. */
+  projectId?: string;
 }
 
 export interface AppState {
@@ -195,6 +201,11 @@ export interface AppState {
    *  work was still outstanding, and its own `Stop` correctly stayed silent
    *  the whole time. Refreshed by `refreshAgentHooks`. */
   agentHooksInstalled: Record<string, boolean>;
+  /** Whether termic can install hooks for each agent at all, from the same
+   *  status read. False for an agent whose hooks do not work on this OS
+   *  (Windows: everything but claude-based agents, agent_hooks.rs
+   *  `hooks_work_for`), where offering the install would only fail. */
+  agentHooksSupported: Record<string, boolean>;
   /** Per-project spotlight: project_id → ws_id of the currently spotlighted
    *  task, or absent if none. Updated by spotlight://status events and
    *  hydrated from the Rust side on app start. Session-only (not persisted). */
@@ -224,7 +235,8 @@ export interface AppState {
    *  so opening the task again respawns the agents with their conversations
    *  resumed. */
   stopTask: (taskId: string) => void;
-  setView: (page: View["page"]) => void;
+  setView: (page: View["page"], opts?: { projectId?: string }) => void;
+  setHistoryProject: (projectId: string | undefined) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
   clearSettingsHighlight: () => void;
@@ -682,6 +694,19 @@ export function isUserWatching(taskId: string, tabId?: string): boolean {
   return isUserWatchingIn(useApp.getState(), taskId, tabId);
 }
 
+/** The title a terminal tab carries when nobody renamed it: the rules the
+ *  restore path and `termic tab` title tabs by, so resetting a rename lands
+ *  on what a relaunch would show. */
+function automaticTabTitle(t: TerminalTab, task: Task | undefined, agents: AppState["agents"]): string {
+  if (t.runTab) {
+    if (t.runTab.kind === "setup") return "Setup";
+    return t.runTab.member ? `Run · ${t.runTab.member}` : "Run";
+  }
+  if (t.cli === "shell") return "Terminal";
+  if (t.cli === "custom") return task?.name || "Command";
+  return agentDisplayName(t.cli, agents);
+}
+
 export const useApp = create<AppState>((set, get) => ({
   projects: [],
   tasks: [],
@@ -717,6 +742,7 @@ export const useApp = create<AppState>((set, get) => ({
   previewBrowser: "",
   detectedClis: {},
   agentHooksInstalled: {},
+  agentHooksSupported: {},
   spotlightTaskId: {},
 
   setSpotlight: (projectId, taskId) =>
@@ -844,11 +870,15 @@ export const useApp = create<AppState>((set, get) => ({
   refreshAgentHooks: async () => {
     try {
       const ids = get().agents.filter(a => a.kind !== "terminal").map(a => a.id);
-      const rows = await Promise.all(
-        ids.map(id => ipc.agentHooksStatus(id).then(s => [id, s.host.installed] as const)
-          .catch(() => [id, false] as const)),
+      const statuses = await Promise.all(
+        ids.map(id => ipc.agentHooksStatus(id).then(s => [id, s.host.installed, s.supported] as const)
+          .catch(() => [id, false, true] as const)),
       );
-      set({ agentHooksInstalled: Object.fromEntries(rows) });
+      const rows = statuses.map(([id, on]) => [id, on] as const);
+      set({
+        agentHooksInstalled: Object.fromEntries(rows),
+        agentHooksSupported: Object.fromEntries(statuses.map(([id, , ok]) => [id, ok])),
+      });
       // Logged because the SPAWN line lies about this until it resolves. This
       // is async and a tab can spawn first, so the trace showed
       // `hooksInstalled=false` for an agent whose hooks were installed and
@@ -1021,7 +1051,8 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
-  setView: (page) => set({ view: { page }, activeTaskId: null }),
+  setView: (page, opts) => set({ view: { page, projectId: opts?.projectId }, activeTaskId: null }),
+  setHistoryProject: (projectId) => set(s => ({ view: { ...s.view, projectId } })),
   // Opening Settings does NOT clear `activeTaskId` or change `view.page`
   // away from whatever the user was on — Settings renders as a fixed
   // z-40 overlay (App.tsx). Preserving the underlying state means closing
@@ -2683,7 +2714,16 @@ export const useApp = create<AppState>((set, get) => ({
   clearTabCustomTitle: (taskId, tabId) => {
     set(s => {
       const list = s.tabs[taskId] || [];
-      const next = list.map(t => t.id !== tabId ? t : { ...t, customTitle: false } as Tab);
+      const task = s.tasks.find(t => t.id === taskId);
+      // Put the AUTOMATIC title back, not just drop the lock. Leaving the
+      // custom string in `title` kept it as the tab's selector (`--tab`
+      // matches `title`, GH #331) and on screen for any tab with no live
+      // OSC title yet, e.g. a shell, until a relaunch re-derived it.
+      const next = list.map(t => t.id !== tabId ? t : {
+        ...t,
+        customTitle: false,
+        ...(t.type === "terminal" ? { title: automaticTabTitle(t as TerminalTab, task, s.agents) } : {}),
+      } as Tab);
       return { tabs: { ...s.tabs, [taskId]: next } };
     });
     get().syncDurableTabs(taskId);

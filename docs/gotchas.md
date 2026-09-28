@@ -285,8 +285,9 @@ window answer a CLI request only one of them can serve.
 
 Task-keyed events must go through `emit_scoped` (which parses the id out of the
 topic and memoizes the owning window) or `emit_scoped_by_id`. `pty://` resolves
-its label at SPAWN instead, because it is the hottest path in the app and a
-lookup per chunk is not free. An unresolvable id falls back to a broadcast
+its label at SPAWN instead, and `grep-*://` at search start, and both emit with
+`emit_to_window`: their ids are not task ids, so the memo could never find them
+(see the next entry). An unresolvable id falls back to a broadcast
 deliberately: that is the pre-profiles behaviour, and far better than an event
 reaching no window at all.
 
@@ -308,6 +309,30 @@ window uses `getCurrentWebviewWindow().listen(...)`: `cli-rpc://request`
 (src/lib/cliRpc.ts) and `termic://close-requested` (windowlessMode.ts) do.
 Per-task topics (`setup-output://<id>`) are safe with the global listen only
 because a window subscribes to its own tasks' ids alone.
+
+## A topic keyed by a non-task id turns a cached lookup into a disk scan
+
+`emit_scoped` cannot tell a task id from any other id. It takes whatever
+follows `://` in the topic and looks it up in `TASK_WINDOW`, and a miss
+means `load_tasks_all()`: a read and parse of every task file in every
+profile, archived ones included. `pty://<id>` carries the PTY's own uuid,
+so from the day per-profile routing shipped every PTY flush missed and
+scanned, and because a miss was not remembered, the next flush 8ms later
+scanned again. Nothing failed. The event fell back to a broadcast and its
+one listener still got the bytes, so the only symptom was battery. The
+comment above the memo said the PTY path "captures its label at SPAWN";
+nothing did. Measured cost: [performance.md](performance.md) bear trap 12.
+
+Two defences now, and a new emitter needs the first one:
+
+- A topic whose id is NOT a task id (a PTY id, a search id, anything
+  minted per run) resolves its window from the task it already holds and
+  emits with `emit_to_window`. `pty_spawn` and `task_grep_start` do, and
+  a source-guard test fails if either calls `emit_scoped` again.
+- The memo remembers misses and `save_task` seeds it, so even a wrong
+  caller costs one scan per id rather than one per event, and a task
+  created after a miss still resolves. It never holds its lock across the
+  scan, which had queued every flusher behind whichever one was reading.
 
 ## `std::mem::take` on a shared queue swallows another window's work (GH #280)
 
@@ -394,6 +419,29 @@ right. It took a screenshot to notice and a computed-style assertion to prove.
 Assert the painted colour, not the attribute, wherever selection is carried by
 colour alone.
 
+## An overhanging hit area is clipped out of existence
+
+`overflow: hidden` clips hit testing, not just painting. A child positioned
+outside its parent's box (`-right-2` on a 1px divider, to widen the grab
+target) is unreachable wherever an ancestor clips, and nothing about the
+element says so: it is in the DOM, it has a size, `getBoundingClientRect`
+reports the generous rect, and every spec that dispatches events AT the
+element passes.
+
+The sidebar's resize divider shipped that way. The aside clips, so the
+overhang was gone, and the divider was grabbable across **one pixel** - the
+line itself. Measured, not guessed: walk `document.elementFromPoint` across
+the edge and ask whether the topmost element is the handle
+(`e2e/specs/tabs-layout.e2e.ts`, "gives both dividers a grab strip"). The
+existing resize cases all passed throughout, because `mouseDrag` dispatches a
+`mousedown` straight at the handle and never asks what a pointer would hit.
+
+Two rules. An interactive area must live inside the element's own box, inside
+whatever clips it: widen the element, do not hang a child off it. And when the
+element that PAINTS the affordance is not the element that RECEIVES the press,
+you have built a control that lights up and then ignores you, which is how
+this one was reported.
+
 ## A scratchpad is unregistered while its editor remounts
 
 An agent's `termic scratchpad write` to an OPEN pad goes into the editor
@@ -456,6 +504,44 @@ which is exactly the case nobody hits until the feature is really used.
 Whenever you add a window LABEL, add it to a capability in the same change, and
 remember `tauri.conf.json` / capabilities changes need a quit + relaunch, not a
 reload.
+
+## A window built inside a command hangs on Windows
+
+A `#[tauri::command]` without `async` runs on the main thread. Building a
+webview window there works on macOS and hangs on Windows: WebView2 creation
+needs the message loop that the command is blocking (wry#583). Nothing errors;
+the command just never returns and the window never appears.
+
+`profile_open` and `procmon_open_window` shipped like that, and nothing on
+macOS could show it. The first Windows e2e run did: "creating a profile did
+not open its window", then every later profile case timed out.
+
+Making them `(async)` was NOT enough, and the next run showed it: the
+window builds on the worker thread and the command returns, but the window
+is not usable, and the next window command hangs. What works is what the
+startup window does: build it on the main thread from the event loop.
+Both commands stay `(async)` and hand the window work to `on_main_thread`
+(`run_on_main_thread` plus a channel), waiting on their worker thread for
+the result. Never call `on_main_thread` FROM the main thread (the tray
+handler, `setup`): it waits on itself. The tray row calls `profile_open`
+from the blocking pool for that reason.
+
+## ConPTY gives the reader no EOF when the child exits
+
+On unix, the PTY reader hits EOF when the last process holding the slave
+exits, and the waiter fires `pty-exit` once the reader has drained. ConPTY
+keeps its output pipe open until the pseudoconsole itself is closed, so on
+Windows a child that exits by itself left the reader blocked forever and
+`pty-exit` never fired. Nothing errors: a failed `--resume` never retried
+and never opened the picker, and an agent that quit never showed its
+exited banner. A killed PTY was fine, because `pty_kill` drops the slot,
+which closes the pseudoconsole.
+
+Seen in the Windows e2e debug log: `child exited code=Some(1)` for a dead
+resume, then no `pty-exit` and no respawn. The waiter now does what
+`pty_kill` does after a 200 ms drain. `conpty_osc_probe` measures both
+halves (EOF or not with the pseudoconsole open, then once it is closed),
+with macOS as the control.
 
 ## Docker is a SECOND REALM, and it does not inherit host fixes
 

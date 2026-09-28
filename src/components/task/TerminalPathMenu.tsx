@@ -1,10 +1,12 @@
 import { useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { FolderOpen, ExternalLink, Copy } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { copyToClipboard } from "@/lib/clipboard";
 import { revealPath, openFileExternal } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
+import { FILE_MANAGER } from "@/lib/openExternal";
 
 /** An absolute path the click resolved to something OUTSIDE the task (GH
  *  #240). It has no task-relative form, so there is nothing to hand the
@@ -23,6 +25,7 @@ export function TerminalPathMenu({ x, y, candidates, external, onPick, onClose, 
   // click-away), so the caller can route focus accordingly.
   onCloseAutoFocus?: (e: Event, picked: boolean) => void;
 }) {
+  const { t } = useTranslation("task");
   const picked = useRef(false);
   return (
     <DropdownRoot open onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -48,31 +51,31 @@ export function TerminalPathMenu({ x, y, candidates, external, onPick, onClose, 
                 stray Return key should hit. */}
             <DropdownItem onSelect={() => {
               picked.current = true;
-              revealPath(external.abs).catch(() => useUI.getState().pushToast("Couldn't reveal that path", "error"));
+              revealPath(external.abs).catch(() => useUI.getState().pushToast(t("pathMenu.revealFailed"), "error"));
             }}>
               <FolderOpen className="h-4 w-4 shrink-0" />
-              <span>Reveal in Finder</span>
+              <span>{t("pathMenu.revealInFinder", { manager: FILE_MANAGER })}</span>
             </DropdownItem>
             <DropdownItem onSelect={() => {
               picked.current = true;
               openFileExternal(external.abs)
-                .then(r => { if (r === "revealed") useUI.getState().pushToast("No app for that file type, revealed it instead", "info"); })
-                .catch(() => useUI.getState().pushToast("Couldn't open that file", "error"));
+                .then(r => { if (r === "revealed") useUI.getState().pushToast(t("pathMenu.noAppRevealed"), "info"); })
+                .catch(() => useUI.getState().pushToast(t("pathMenu.openFailed"), "error"));
             }}>
               <ExternalLink className="h-4 w-4 shrink-0" />
-              <span>Open in default app</span>
+              <span>{t("pathMenu.openInDefaultApp")}</span>
             </DropdownItem>
             <DropdownItem onSelect={() => {
               picked.current = true;
               void copyToClipboard(external.abs, "path");
             }}>
               <Copy className="h-4 w-4 shrink-0" />
-              <span>Copy path</span>
+              <span>{t("pathMenu.copyPath")}</span>
             </DropdownItem>
           </>
         ) : candidates.length === 0 ? (
           <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">
-            No matches
+            {t("pathMenu.noMatches")}
           </div>
         ) : candidates.map(path => {
           const name = path.split("/").pop() || path;

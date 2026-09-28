@@ -1,0 +1,205 @@
+import { execSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { clickByText, dismissOverlays, requireTermicApi, snap, waitForAppShell, waitVisible } from "../helpers";
+
+// History's project filter. Cases: the History button opens on All projects;
+// picking a project narrows the list and All restores it; the filter ANDs with
+// the search box; the sidebar's Resume › More… lands pre-filtered to its
+// project (and the plain History button still resets to All); "Empty archive"
+// under a filter deletes only that project's archive, then the filter falls
+// back to All. Fixture: 6 archived tasks in fixture-repo (one past the
+// sidebar's Resume limit, so More… shows) + 1 in a throwaway second project.
+describe("history project filter", () => {
+  let dir = "";
+  let otherId = "";
+  let fixtureId = "";
+  const fixtureTasks: string[] = [];
+  const FX = ["e2e-hist-fx-1", "e2e-hist-fx-2", "e2e-hist-fx-3", "e2e-hist-fx-4", "e2e-hist-fx-5", "e2e-hist-fx-6"];
+  const OTHER = "e2e-hist-other-1";
+
+  before(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), "e2e-hist-"));
+    execSync(
+      `git -C "${dir}" init -q && git -C "${dir}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
+    );
+  });
+  after(async () => {
+    await browser.execute(async (ids, pid) => {
+      const t = window.__termic!;
+      for (const id of ids) {
+        try { await t.ipc.taskDelete(id); } catch { /* already gone */ }
+      }
+      if (pid) {
+        try { await t.ipc.projectRemove(pid); } catch { /* already gone */ }
+      }
+      await t.useApp.getState().loadAll();
+    }, fixtureTasks, otherId);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const historyText = async () =>
+    (await browser.execute(() => {
+      const el = document.querySelector('[data-testid="history-root"]') as HTMLElement | null;
+      return el?.innerText ?? "";
+    })) as string;
+
+  const waitHistory = async (pred: (text: string) => boolean, msg: string) =>
+    browser.waitUntil(async () => pred(await historyText()), { timeout: 8_000, timeoutMsg: msg });
+
+  const filterLabel = async () =>
+    (await browser.execute(() => {
+      const el = document.querySelector("[data-history-project-filter]") as HTMLElement | null;
+      return el?.innerText.trim() ?? "";
+    })) as string;
+
+  // Radix opens on pointerdown, so a bare .click() isn't enough.
+  const pressOpen = async (sel: string) => {
+    await waitVisible(sel);
+    await browser.execute((s) => {
+      const el = document.querySelector(s) as HTMLElement;
+      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+      el.click();
+    }, sel);
+    await waitVisible('[role="menu"]');
+  };
+
+  // Matched on `data-project-name`, not on the row's text.
+  //
+  // The row renders the name plus a trailing count, so matching the row's
+  // leading text also matches every name the target is a prefix of. That is
+  // unreachable today, and only by luck: the options are sorted by name, a
+  // prefix always sorts before its extensions, so `find` happens to reach the
+  // right row first. This does not depend on that, and it drops the text
+  // parsing along with it. There is deliberately no case for the collision,
+  // because no gesture through this UI can produce one.
+  const pickFilter = async (label: string) => {
+    await pressOpen("[data-history-project-filter]");
+    await browser.execute((l) => {
+      const row = [...document.querySelectorAll('[role="menuitem"][data-project-name]')]
+        .find((e) => e.getAttribute("data-project-name") === l) as HTMLElement | undefined;
+      if (!row) throw new Error(`no filter row: ${l}`);
+      row.click();
+    }, label);
+    await browser.waitUntil(async () => (await filterLabel()) === label, {
+      timeout: 8_000, timeoutMsg: `filter never showed ${label}`,
+    });
+  };
+
+  const setSearch = (value: string) =>
+    browser.execute((v) => {
+      const input = document.querySelector('[data-testid="history-root"] input') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+
+  it("opens on All projects from the History button", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await dismissOverlays();
+    const proj = await browser.execute(async (d) => await window.__termic!.ipc.projectAdd(d), dir);
+    otherId = (proj as any).id;
+    fixtureId = (await browser.execute(
+      () => window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo").id as string,
+    )) as string;
+
+    // Repo-root tasks: archiving one never touches a worktree.
+    const make = async (pid: string, name: string) =>
+      (await browser.execute(async (p, n) => {
+        const t = window.__termic!;
+        const task = await t.ipc.taskOpenRepo(p, "fakeagent", n);
+        await t.ipc.taskArchive(task.id);
+        return task.id as string;
+      }, pid, name)) as string;
+    for (const n of FX) fixtureTasks.push(await make(fixtureId, n));
+    fixtureTasks.push(await make(otherId, OTHER));
+    await browser.execute(() => window.__termic!.useApp.getState().loadAll());
+
+    await clickByText("Dashboard");
+    await clickByText("History");
+    await waitHistory((t) => t.includes(OTHER) && t.includes("e2e-hist-fx-6"), "History never listed both projects");
+    expect(await filterLabel()).toBe("All projects");
+  });
+
+  it("narrows to one project and back to All", async () => {
+    const otherName = path.basename(dir);
+    await pickFilter(otherName);
+    await waitHistory((t) => t.includes(OTHER) && !t.includes("e2e-hist-fx-1"), "filter never narrowed to the other project");
+
+    await pickFilter("fixture-repo");
+    await waitHistory((t) => t.includes("e2e-hist-fx-1") && !t.includes(OTHER), "filter never switched to fixture-repo");
+
+    await pickFilter("All projects");
+    await waitHistory((t) => t.includes("e2e-hist-fx-1") && t.includes(OTHER), "All projects never restored the list");
+  });
+
+  it("combines the project filter with the search box", async () => {
+    await pickFilter(path.basename(dir));
+    await setSearch("e2e-hist-fx");
+    await waitHistory((t) => t.includes("No tasks match your filter."), "search + filter should match nothing");
+    await setSearch("e2e-hist");
+    await waitHistory((t) => t.includes(OTHER) && !t.includes("e2e-hist-fx-1"), "search should keep the project filter");
+    await setSearch("");
+  });
+
+  it("lands pre-filtered from the sidebar's Resume › More…", async () => {
+    // Leave History on the OTHER project so the landing proves More… sets it.
+    await clickByText("Dashboard");
+    await pressOpen(`[data-testid="project-new-task-${fixtureId}"]`);
+    await browser.execute(() => {
+      const t = [...document.querySelectorAll('[aria-haspopup="menu"]')].find((e) =>
+        e.textContent?.includes("Resume"),
+      ) as HTMLElement | undefined;
+      if (!t) throw new Error("no Resume submenu trigger");
+      const opts = { bubbles: true, pointerType: "mouse" } as any;
+      t.dispatchEvent(new PointerEvent("pointerover", opts));
+      t.dispatchEvent(new PointerEvent("pointermove", opts));
+      t.click();
+    });
+    await browser.waitUntil(
+      () => browser.execute(() =>
+        [...document.querySelectorAll('[role="menuitem"]')].some((e) => (e as HTMLElement).innerText.trim() === "More…"),
+      ),
+      { timeout: 8_000, timeoutMsg: "Resume submenu never offered More…" },
+    );
+    await browser.execute(() => {
+      const more = [...document.querySelectorAll('[role="menuitem"]')].find(
+        (e) => (e as HTMLElement).innerText.trim() === "More…",
+      ) as HTMLElement;
+      more.click();
+    });
+    await waitHistory((t) => t.includes("e2e-hist-fx-1") && !t.includes(OTHER), "More… did not land filtered to fixture-repo");
+    expect(await filterLabel()).toBe("fixture-repo");
+    await snap("history-project-filter.png");
+
+    // The plain History entry point never carries a stale filter.
+    await clickByText("Dashboard");
+    await clickByText("History");
+    await waitHistory((t) => t.includes("e2e-hist-fx-1") && t.includes(OTHER), "History button should reset to All");
+    expect(await filterLabel()).toBe("All projects");
+  });
+
+  it("empties only the filtered project's archive, then falls back to All", async () => {
+    await pickFilter(path.basename(dir));
+    await clickByText("Empty archive");
+    await browser.waitUntil(
+      () => browser.execute((n) =>
+        [...document.querySelectorAll('[role="dialog"]')].some((d) =>
+          d.textContent?.includes(`in ${n}`) && d.textContent?.includes("1 archived task")),
+        path.basename(dir),
+      ),
+      { timeout: 8_000, timeoutMsg: "scoped confirm dialog never appeared" },
+    );
+    await clickByText("Delete all");
+    // The other project's only archived task is gone, so the filter has
+    // nothing to show and drops back to All; fixture-repo's are untouched.
+    await browser.waitUntil(async () => (await filterLabel()) === "All projects", {
+      timeout: 10_000, timeoutMsg: "filter never fell back to All",
+    });
+    await waitHistory((t) => t.includes("e2e-hist-fx-1") && !t.includes(OTHER), "Empty archive should only delete the filtered project");
+  });
+});

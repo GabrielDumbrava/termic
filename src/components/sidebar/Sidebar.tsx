@@ -2,10 +2,12 @@
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
 import { ThemePicker } from "@/components/ThemePicker";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
-import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
+import { useApp, useActiveTabId } from "@/store/app";
+import { useRowTabs, useSidebarTabFacts } from "@/store/sidebarTabs";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -36,7 +38,7 @@ import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Tab, Task, TaskGroup, TerminalTab } from "@/lib/types";
 import { agentDisplayName } from "@/lib/agents";
 import { effectiveSandboxMode, isSandboxEnforced, isTaskCaged } from "@/lib/types";
-import { SandboxIcon, SANDBOX_VISUALS, DockerSandboxIcon } from "@/components/SandboxIcon";
+import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { useTaskLabel } from "@/lib/taskLabel";
 import { useProfilesSync } from "@/components/ProfileChip";
@@ -45,12 +47,14 @@ import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
 import { ProjectFilterBar, ProjectFilterToggle } from "./ProjectTaskFilter";
-import { filterTasks, isFilterActive, taskHasNotification } from "@/lib/taskFilter";
+import { filterTasks, isFilterActive } from "@/lib/taskFilter";
 import { TaskGroupBlock } from "./TaskGroupBlock";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
 import { delegatedTitle } from "@/lib/delegatedWork";
+import { FILE_MANAGER } from "@/lib/openExternal";
+import { kbd } from "@/lib/platform";
 
 /** Pick a default name for a freshly-created task (repo-root OR worktree).
  *  Format: "<agent>-N" where N is the next unused index for that CLI among
@@ -88,6 +92,7 @@ const groupColorCss = accentCss;
 // plus a full-width overlay (`compact={false}`) that slides in on hover. The
 // optional prop lets that overlay force full mode regardless of the store.
 export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
+  const { t } = useTranslation("sidebar");
   const compactStore = useApp(s => s.compactSidebar);
   const compact = compactProp ?? compactStore;
   const openSettings = useApp(s => s.openSettings);
@@ -124,7 +129,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const setActive = useApp(s => s.setActiveTask);
   const setView = useApp(s => s.setView);
   const currentView = useApp(s => s.view.page);
-  const tabs = useApp(s => s.tabs);
+  // NOT the `tabs` map: that re-rendered the whole sidebar, every row with
+  // it, on each `lastOutputAt` stamp of each streaming terminal. The body
+  // reads only these per-task facts (src/store/sidebarTabs.ts); rows
+  // subscribe to their own tabs.
+  const tabFacts = useSidebarTabFacts();
   const agents = useApp(s => s.agents);
   const taskFilters = useUI(s => s.taskFilters);
   const setTaskFilterText = useUI(s => s.setTaskFilterText);
@@ -153,8 +162,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // Sidebar itself doesn't need the registry.)
 
   // If the user disabled the settled highlight (Settings → Notifications),
-  // every isUnread() call returns false — the icon stays in its calm
-  // state regardless of agent activity.
+  // isWorkDone() below returns false and the rollup dots stay calm
+  // regardless of agent activity.
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const branchPrefix = usePrefs(s => s.branchPrefix);
   const taskExpandMode = usePrefs(s => s.taskExpandMode);
@@ -165,9 +174,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // whenever the hide pref flips off so the "Show N inactive" row starts
   // collapsed next time the user re-enables hiding.
   const [showInactive, setShowInactive] = useState(false);
-  const isUnread = (taskId: string) =>
-    settledHighlight &&
-    (tabs[taskId] || []).some(t => t.type === "terminal" && t.unread);
 
   /** Build a mailto: URL with prefilled subject + body and hand it to
    *  the OS's default mail handler via `open_path` (the same Rust
@@ -199,14 +205,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
    *  user). Gated on the same `settledHighlight` pref so the check
    *  disappears entirely when the user disables the work-done UI. */
   const isWorkDone = (taskId: string) =>
-    taskWorkDone(tabs[taskId] || [], { settledHighlight });
+    settledHighlight && !!tabFacts[taskId]?.done;
   // Distinct from work-done: the agent is explicitly blocked on the
   // user (Gemini ✋ Action Required, Codex Waiting, OSC 1337
   // RequestAttention). Different sidebar icon (bell vs check).
-  const needsAttention = (taskId: string) =>
-    taskNeedsAttention(tabs[taskId] || [], { settledHighlight });
-  const isLoaded = (taskId: string) =>
-    (tabs[taskId] || []).some(t => t.type === "terminal" && t.ptyId);
+  const needsAttention = (taskId: string) => !!tabFacts[taskId]?.attention;
 
   // Inline rename state for PROJECTS and GROUPS (for groups, `id` is the
   // group NAME — groups are derived from Project.group labels and have no
@@ -410,8 +413,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         // Dropped into a collapsed group: open it, or the task you just
         // placed disappears from view the moment you let go.
         if (target) useApp.getState().setTaskGroupCollapsed(target.id, false);
-        const write = via ? taskGroupJoin(armed.id, via) : taskGroupLeave(armed.id);
-        void Promise.allSettled([reorder, write]).then(() => useApp.getState().loadAll());
+        // AFTER the reorder, not beside it: task_reorder re-saves every task
+        // whose order moved, the dropped one included, from a list it loaded
+        // before the join landed, so a concurrent join could be written and
+        // then overwritten with the old group. Lost on the Windows runner.
+        const armedId = armed.id;
+        void reorder.catch(() => {})
+          .then(() => (via ? taskGroupJoin(armedId, via) : taskGroupLeave(armedId)))
+          .catch(() => {})
+          .then(() => useApp.getState().loadAll());
       } else {
         reorder.catch(() => { void useApp.getState().loadAll(); });
       }
@@ -621,6 +631,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     document.addEventListener("pointerup", onUp);
     document.addEventListener("pointercancel", onUp);
   };
+  // Rows are memoized (TaskRowSlot), and a handler re-created per render
+  // would defeat that for every row on every sidebar render. One stable
+  // function that calls whatever the last committed render built.
+  const taskDragPointerDownRef = useRef(onTaskDragPointerDown);
+  useLayoutEffect(() => { taskDragPointerDownRef.current = onTaskDragPointerDown; });
+  const onTaskDragPointerDownStable = useCallback(
+    (e: React.PointerEvent, w: Task) => taskDragPointerDownRef.current(e, w), []);
 
   // ── Group header drag-to-reorder ──────────────────────────────────────
   // Same pointer pattern as project rows, but the unit is the whole folder:
@@ -1103,14 +1120,21 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   if (showInactive && inactiveCount === 0) setShowInactive(false);
 
   return (
-    <aside ref={asideRef} className="relative flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
+    // The aside clips (`overflow-hidden`), so the resize handle is its SIBLING
+    // inside this wrapper rather than its child: the outer half of a grab strip
+    // that leaves the aside's box is clipped out of existence, hit testing
+    // included, which is how the divider shipped grabbable across one pixel.
+    // The wrapper is the grid cell now; it does not clip, and the 5px that
+    // overhang the sidebar land on the main area, a sibling.
+    <div className="relative flex h-full min-w-0">
+    <aside ref={asideRef} className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
       {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
       <nav className={cn("flex flex-col gap-0.5", compact ? "p-1.5 pt-2" : "p-2 pt-3")}>
-        <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label="Dashboard"
+        <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label={t("navDashboard")}
           active={currentView === "dashboard" && !activeTask} compact={compact}
           onClick={() => setView("dashboard")}
         />
-        <NavItem icon={<History className={iconSize(compact)} />} label="History"
+        <NavItem icon={<History className={iconSize(compact)} />} label={t("navHistory")}
           active={currentView === "history" && !activeTask} compact={compact}
           onClick={() => setView("history")}
         />
@@ -1129,7 +1153,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           "flex items-center justify-between text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]",
           compact ? "flex-col gap-1.5 py-1" : "px-2 py-1",
         )}>
-          {!compact && <span>Projects</span>}
+          {!compact && <span>{t("projectsHeader")}</span>}
           <div className={cn("flex gap-0.5", compact && "flex-col")}>
             {/* Expand/collapse-all + expand-mode + hide-inactive controls act
                 on the full project TREE (names, task rows), none of which
@@ -1138,7 +1162,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 show a trigger with nothing behind it. */}
             {!compact && (
             <DropdownRoot>
-              <Tip content="Project list options">
+              <Tip content={t("listOptionsTip")}>
                 <DropdownTrigger asChild>
                   <Button size="icon" variant="icon">
                     <ChevronsUpDown className={iconSize(compact)} />
@@ -1154,19 +1178,19 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     and "collapse all" means the whole tree tidies up. */}
                 <DropdownItem onSelect={() => { setAllTasksCollapsed(false); setAllGroupsCollapsed(false); }}>
                   <ChevronsUpDown className="h-5 w-5 text-[var(--color-fg-dim)]" />
-                  <span>Expand all agents</span>
+                  <span>{t("expandAll")}</span>
                 </DropdownItem>
                 <DropdownItem onSelect={() => { setAllTasksCollapsed(true); setAllGroupsCollapsed(true); }}>
                   <ChevronsDownUp className="h-5 w-5 text-[var(--color-fg-dim)]" />
-                  <span>Collapse all agents</span>
+                  <span>{t("collapseAll")}</span>
                 </DropdownItem>
                 <DropdownSeparator />
-                <DropdownLabel>Default expand behavior</DropdownLabel>
+                <DropdownLabel>{t("defaultExpand")}</DropdownLabel>
                 {([
-                  ["chevron", "Chevron only", "Only the chevron toggles."],
-                  ["click",   "Click name",   "Active row toggles; auto-expands at 2+."],
-                  ["always",  "Auto open",    "Start expanded; chevron still collapses."],
-                ] as const).map(([id, label, hint]) => {
+                  ["chevron", "expandChevron", "expandChevronHint"],
+                  ["click",   "expandClick",   "expandClickHint"],
+                  ["always",  "expandAlways",  "expandAlwaysHint"],
+                ] as const).map(([id, labelKey, hintKey]) => {
                   const isActive = taskExpandMode === id;
                   return (
                     <DropdownItem
@@ -1180,8 +1204,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
                         : <span className="h-5 w-5 shrink-0" />}
                       <div className="flex min-w-0 flex-col gap-0.5">
-                        <span className={isActive ? "text-[var(--color-accent)] font-medium" : undefined}>{label}</span>
-                        <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">{hint}</span>
+                        <span className={isActive ? "text-[var(--color-accent)] font-medium" : undefined}>{t(labelKey)}</span>
+                        <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">{t(hintKey)}</span>
                       </div>
                     </DropdownItem>
                   );
@@ -1199,8 +1223,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
                     : <span className="h-5 w-5 shrink-0" />}
                   <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className={hideInactiveProjects ? "text-[var(--color-accent)] font-medium" : undefined}>Collapse inactive projects</span>
-                    <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">Fold ungrouped projects with no agents into a row at the bottom. Grouped projects stay in their folder.</span>
+                    <span className={hideInactiveProjects ? "text-[var(--color-accent)] font-medium" : undefined}>{t("collapseInactive")}</span>
+                    <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">{t("collapseInactiveHint")}</span>
                   </div>
                 </DropdownItem>
               </DropdownMenu>
@@ -1208,7 +1232,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             )}
             {/* The ONE Add project button (GH #280 removed the footer copy):
                 it belongs next to the list it acts on. */}
-            <Tip content="Add project (repo)"><Button size="icon" variant="icon" data-testid="sidebar-add-project" onClick={openNewProject}>
+            <Tip content={t("addProjectTip")}><Button size="icon" variant="icon" data-testid="sidebar-add-project" onClick={openNewProject}>
               <FolderPlus className={iconSize(compact)} /></Button></Tip>
           </div>
         </div>
@@ -1228,12 +1252,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // chevron would stop working while a filter is up.
             const filter = taskFilters[p.id];
             const filterOn = !compact && isFilterActive(filter);
-            const visibleTasks = filterOn ? filterTasks(taskList, filter, tabs, agents, activeTask) : taskList;
+            const visibleTasks = filterOn ? filterTasks(taskList, filter, tabFacts, agents, activeTask) : taskList;
             // "No matching tasks" only when the filter left the list EMPTY. The
             // active task is kept on screen even when it does not match, and a
             // hint saying nothing matched under a visible row contradicts it.
             const noMatches = filterOn && taskList.length > 0 && visibleTasks.length === 0;
-            const notifCount = compact ? 0 : taskList.filter(w => taskHasNotification(tabs[w.id])).length;
+            const notifCount = compact ? 0 : taskList.filter(w => tabFacts[w.id]?.notification).length;
             // An active filter keeps its bar on screen on its own; otherwise
             // the bar is open only while the user put it there.
             const filterBarOpen = !compact && (filterOn || filterInputs[p.id] !== undefined);
@@ -1393,7 +1417,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                               project names stay vertically aligned
                               regardless of type (no snake-indent). */}
                           {(p.type ?? "single") === "multi" && (
-                            <Tip content="Multi-repo project">
+                            <Tip content={t("multiRepoTip")}>
                               <Layers className="h-3 w-3 shrink-0 text-[var(--color-accent)]" />
                             </Tip>
                           )}
@@ -1417,7 +1441,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                               else setFilterInputs(prev => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
                             }}
                           />
-                          <Tip content="Project settings">
+                          <Tip content={t("projectSettingsTip")}>
                             <button
                               className={cn(
                                 "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] transition-opacity",
@@ -1441,7 +1465,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           <DropdownRoot
                             onOpenChange={(o) => setMenuOpenProjectId(o ? p.id : null)}
                           >
-                            <Tip content="New task for this project">
+                            <Tip content={t("newTaskForProjectTip")}>
                               <DropdownTrigger asChild>
                                 <button
                                   onClick={e => e.stopPropagation()}
@@ -1488,25 +1512,21 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     onSelect={() => requestAnimationFrame(() => openNewTask(p.id))}
                   >
                     <Plus />
-                    New task
+                    {t("ctxNewTask")}
                   </ContextMenuItem>
                   {/* Broadcast to the MAIN agent of every task in this
                       project. Count = live main agents; disabled when there is
                       nothing to fan out to (0 or 1). Computed here so it only
                       runs when the menu is actually open. */}
                   {(() => {
-                    const n = taskList.filter(w => (tabs[w.id] ?? []).some(
-                      t => t.type === "terminal" && !!(t as TerminalTab).is_default
-                        && !(t as TerminalTab).paneId && !(t as TerminalTab).runTab
-                        && !!(t as TerminalTab).ptyId,
-                    )).length;
+                    const n = taskList.filter(w => tabFacts[w.id]?.liveDefault).length;
                     return (
                       <ContextMenuItem
                         disabled={n <= 1}
                         onSelect={() => requestAnimationFrame(() => useUI.getState().openProjectBroadcast(p.id))}
                       >
                         <Megaphone />
-                        Broadcast message ({n})
+                        {t("broadcast", { count: n })}
                       </ContextMenuItem>
                     );
                   })()}
@@ -1521,20 +1541,20 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           const st = useApp.getState();
                           for (const w of live) st.stopTask(w.id);
                           useUI.getState().pushToast(
-                            live.length === 1 ? `Stopped ${live[0].name}` : `Stopped ${live.length} tasks`,
+                            live.length === 1 ? t("stoppedOne", { name: live[0].name }) : t("stoppedMany", { count: live.length }),
                             "success",
                           );
                         }}
                       >
                         <CircleStop />
-                        Stop all tasks ({live.length})
+                        {t("stopAll", { count: live.length })}
                       </ContextMenuItem>
                     );
                   })()}
                   <ContextMenuSeparator />
                   <ContextMenuItem onSelect={() => openSettings("repositories", p.id)}>
                     <Cog />
-                    Settings
+                    {t("ctxSettings")}
                   </ContextMenuItem>
                   {!compact && (
                     <ContextMenuItem onSelect={() => {
@@ -1542,13 +1562,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       setRenaming({ kind: "proj", id: p.id, value: p.name });
                     }}>
                       <Pencil />
-                      Rename
+                      {t("rename", { ns: "common" })}
                     </ContextMenuItem>
                   )}
                   <ContextMenuSub>
                     <ContextMenuSubTrigger>
                       <Folder />
-                      Move to group
+                      {t("moveToGroup")}
                     </ContextMenuSubTrigger>
                     <ContextMenuSubContent>
                       {allGroups.map(g => (
@@ -1565,12 +1585,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       {allGroups.length > 0 && <ContextMenuSeparator />}
                       <ContextMenuItem onSelect={() => createGroupWith(p)}>
                         <FolderPlus />
-                        New group
+                        {t("newGroup")}
                       </ContextMenuItem>
                       {!!groupOf(p) && (
                         <ContextMenuItem onSelect={() => moveToGroup(p, null)}>
                           <FolderMinus />
-                          Remove from group
+                          {t("removeFromGroup")}
                         </ContextMenuItem>
                       )}
                     </ContextMenuSubContent>
@@ -1581,29 +1601,29 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       await loadAll();
                     }}>
                       <Radio />
-                      {p.spotlight_enabled ? "Disable spotlight" : "Enable spotlight"}
+                      {p.spotlight_enabled ? t("spotlightDisable") : t("spotlightEnable")}
                     </ContextMenuItem>
                   )}
                   <ContextMenuItem onSelect={() => openPath(p.root_path).catch(() => {})}>
                     <FolderOpen />
-                    Reveal in Finder
+                    {t("revealInFinder", { manager: FILE_MANAGER })}
                   </ContextMenuItem>
                   <ContextMenuItem onSelect={() => copyToClipboard(p.root_path, "path")}>
                     <Copy />
-                    Copy path
+                    {t("copyPath")}
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem destructive onSelect={async () => {
                     const ui = useUI.getState();
                     const ok = await ui.askConfirm({
-                      title: `Remove "${p.name}"?`,
-                      message: "All tasks will be archived and their worktrees removed from disk. The repo folder is kept. This cannot be undone from inside Termic.",
-                      confirmLabel: "Remove",
+                      title: t("removeProjectTitle", { name: p.name }),
+                      message: t("removeProjectMessage"),
+                      confirmLabel: t("remove", { ns: "common" }),
                       destructive: true,
                     });
                     const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
                     if (!confirmed) return;
-                    ui.setBusy(`Removing "${p.name}"…`);
+                    ui.setBusy(t("removingBusy", { name: p.name }));
                     try {
                       await projectRemove(p.id);
                       await loadAll();
@@ -1612,7 +1632,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     }
                   }}>
                     <Trash2 />
-                    Remove project
+                    {t("removeProject")}
                   </ContextMenuItem>
                 </ContextMenuContent>
                 </ContextMenuRoot>
@@ -1649,7 +1669,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           className="flex h-[var(--task-row-h)] w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] bg-transparent px-2 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] data-[state=open]:border-[var(--color-accent-soft)] data-[state=open]:text-[var(--color-fg)]"
                         >
                           <Plus className="h-3.5 w-3.5 shrink-0" />
-                          <span>New task</span>
+                          <span>{t("ctxNewTask")}</span>
                         </button>
                       </DropdownTrigger>
                       <DropdownMenu side="right" align="start" sideOffset={4} className="w-[276px]">
@@ -1688,8 +1708,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       w={w}
                       compact={compact}
                       dragging={dragTaskId === w.id}
-                      dragTy={dragTaskTy}
-                      onDragPointerDown={onTaskDragPointerDown}
+                      // Only the dragged row reads it; a shared value would
+                      // re-render every memoized row on every pointermove.
+                      dragTy={dragTaskId === w.id ? dragTaskTy : 0}
+                      onDragPointerDown={onTaskDragPointerDownStable}
                       clickSuppressed={taskClickSuppressed}
                     />
                   );
@@ -1723,7 +1745,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       key={`group:${seg.group.id}`}
                       group={seg.group}
                       projectId={p.id}
-                      label={groupLabel(seg.group, tasks)}
+                      label={groupLabel(seg.group, tasks, t)}
                       compact={compact}
                       count={seg.tasks.length}
                       memberIds={seg.tasks.map(t => t.id)}
@@ -1746,7 +1768,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     data-testid={`project-filter-empty-${p.id}`}
                     className="ml-3 mr-1 mb-px flex h-[var(--task-row-h)] items-center justify-center gap-1.5 px-2 text-[13px] text-[var(--color-fg-faint)]"
                   >
-                    <span className="truncate">No matching tasks</span>
+                    <span className="truncate">{t("taskFilter.noMatches")}</span>
                     <button
                       className="shrink-0 rounded px-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                       onClick={() => {
@@ -1754,7 +1776,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         if (filter?.bell) toggleTaskFilterBell(p.id);
                         closeFilterBar();
                       }}
-                    >Clear filter</button>
+                    >{t("taskFilter.clear")}</button>
                   </div>
                 )}
                 {/* Tasks mid-creation (GH #242) — a real Task doesn't exist
@@ -2069,7 +2091,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   key="inactive-header"
                   type="button"
                   onClick={() => setShowInactive(v => !v)}
-                  title={compact ? `${inactiveCount} inactive ${inactiveCount === 1 ? "project" : "projects"}` : undefined}
+                  title={compact ? t(inactiveCount === 1 ? "inactiveTipOne" : "inactiveTipMany", { count: inactiveCount }) : undefined}
                   className={cn(
                     "flex items-center text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] transition-colors",
                     compact ? "flex-col gap-1 py-1" : "justify-between px-2 py-1 mt-1",
@@ -2088,7 +2110,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         {showInactive
                           ? <ChevronDown className="h-3 w-3 shrink-0" />
                           : <ChevronRight className="h-3 w-3 shrink-0" />}
-                        Inactive Projects
+                        {t("inactiveHeader")}
                       </span>
                       <span className="tabular-nums">{inactiveCount}</span>
                     </>
@@ -2156,21 +2178,21 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               thing you reach for while driving an agent, and this footer is
               where the other set-once affordances already live. */}
           <ThemePicker />
-          <Tip content="Report a bug">
+          <Tip content={t("reportBug")}>
             <Button size="icon" variant="icon" onClick={() =>
-              openIssue("Bug: ", "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ")
+              openIssue(t("bugIssueTitle"), t("bugIssueBody"))
             }>
               <Bug className={iconSize(compact)} />
             </Button>
           </Tip>
-          <Tip content="Contact">
+          <Tip content={t("contact")}>
             <Button size="icon" variant="icon" onClick={() =>
-              openMailto("contact@termic.dev", "Hello from Termic", "")
+              openMailto("contact@termic.dev", t("contactSubject"), "")
             }>
               <Mail className={iconSize(compact)} />
             </Button>
           </Tip>
-          <Tip content="Keyboard shortcuts">
+          <Tip content={t("shortcuts")}>
             <Button size="icon" variant="icon" onClick={() => useUI.getState().openShortcutsHelp()}>
               <Keyboard className={iconSize(compact)} />
             </Button>
@@ -2179,7 +2201,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               window (not a dialog) so it keeps updating while you drive the
               agent it is measuring. Sampling starts with that window and
               stops when it closes. */}
-          <Tip content="Activity (CPU / memory per agent)">
+          <Tip content={t("activityTip")}>
             <Button
               size="icon"
               variant="icon"
@@ -2198,7 +2220,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               removed earlier for a different reason: it duplicated the button
               in the PROJECTS header, which is where the action belongs, next
               to the list it acts on. */}
-          <Tip content="Settings (⌘,)">
+          <Tip content={t("settingsTip", { combo: kbd("⌘,") })}>
             <Button size="icon" variant="icon" className={compact ? undefined : "ml-auto"}
                     onClick={() => openSettings()}>
               <Settings className={iconSize(compact)} />
@@ -2207,13 +2229,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         </div>
       </div>
 
+      </aside>
+
       {/* Drag handle on the sidebar's right edge — disabled in compact mode
           (compact has a fixed 56px width that's the whole point of the mode). */}
       {!compact && (
         <ResizeHandle
           direction="x"
           label="sidebar-width"
-          className="right-0"
+          anchor="right"
           onDrag={(dx) => {
             // Read the CURRENTLY RENDERED width via DOM measurement, not
             // the stored preferred — when the window is narrow the clamp
@@ -2229,7 +2253,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           }}
         />
       )}
-    </aside>
+    </div>
   );
 }
 
@@ -2267,12 +2291,17 @@ function iconSize(compact: boolean) {
 /** Picks the row a real task gets: the normal one, or the inert "Archiving…"
  *  placeholder while its background archive runs (GH #246). A component, not
  *  a branch inside the project section's map, so the archiving subscription is
- *  per row — one archive re-renders one row, not every task in the project. */
-function TaskRowSlot(props: React.ComponentProps<typeof TaskRow>) {
+ *  per row: one archive re-renders one row, not every task in the project.
+ *
+ *  Memoized so a sidebar render re-renders only the rows whose props changed:
+ *  every prop is a primitive, a stable ref, or the Task object, which keeps
+ *  its identity until `tasks` is reloaded. A row's own tab writes reach it
+ *  through its own subscription (useRowTabs), not through here. */
+const TaskRowSlot = memo(function TaskRowSlot(props: React.ComponentProps<typeof TaskRow>) {
   const archiving = useIsArchiving(props.w.id);
   if (archiving) return <ArchivingTaskRow w={props.w} compact={props.compact} />;
   return <TaskRow {...props} />;
-}
+});
 
 /** A task with an archive in flight (GH #246). The Task is still in the store
  *  (it only leaves on the post-archive loadAll), but its worktree is being
@@ -2281,10 +2310,11 @@ function TaskRowSlot(props: React.ComponentProps<typeof TaskRow>) {
  *  disappearing the moment the user confirms, which would leave a multi-second
  *  gap where the archive silently might not have worked. */
 function ArchivingTaskRow({ w, compact }: { w: Task; compact: boolean }) {
+  const { t } = useTranslation("sidebar");
   const label = useTaskLabel(w);
   if (compact) {
     return (
-      <Tip content={`Archiving ${label}…`} side="right">
+      <Tip content={t("archivingTask", { name: label })} side="right">
         <div
           data-sidebar-task-id={w.id}
           data-task-archiving="true"
@@ -2307,10 +2337,10 @@ function ArchivingTaskRow({ w, compact }: { w: Task; compact: boolean }) {
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="min-w-0 truncate font-medium line-through">{label}</span>
         </div>
-        <Tip content="Archiving…">
+        <Tip content={t("archiving")}>
           <span
             data-testid="archiving-badge"
-            aria-label="Archiving"
+            aria-label={t("archivingAria")}
             className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[var(--color-fg-faint)]"
           >
             <Spinner size={12} />
@@ -2328,6 +2358,7 @@ function ArchivingTaskRow({ w, compact }: { w: Task; compact: boolean }) {
  *  is ready and the real TaskRow takes over (same id, so the click target
  *  doesn't move under the user). */
 function PendingTaskRow({ pending }: { pending: import("@/store/pendingTasks").PendingTask }) {
+  const { t } = useTranslation("sidebar");
   const activeTaskId = useApp(s => s.activeTaskId);
   const setActive = useApp(s => s.setActiveTask);
   const isActive = activeTaskId === pending.id;
@@ -2350,7 +2381,7 @@ function PendingTaskRow({ pending }: { pending: import("@/store/pendingTasks").P
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="min-w-0 truncate font-medium">{pending.name}</span>
         </div>
-        <Tip content={isError ? (pending.err ?? "Creation failed") : "Creating worktree…"}>
+        <Tip content={isError ? (pending.err ?? t("creationFailed")) : t("creatingWorktree")}>
           <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
             {isError ? <TaskWorkBadge reason="attention" /> : <TaskWorkBadge reason="working" />}
           </span>
@@ -2468,7 +2499,12 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
    *  activate the task the user was only moving. Read + cleared here. */
   clickSuppressed?: React.RefObject<boolean>;
 }) {
-  const tabs = useTaskTabs(w.id);
+  const { t } = useTranslation("sidebar");
+  // Sandbox mode names live in the chrome namespace (SandboxIcon's table).
+  const { t: tChrome } = useTranslation("chrome");
+  // Its own tabs, but not re-rendered for the timestamps a streaming agent
+  // rewrites and no row draws (ROW_HIDDEN_TAB_FIELDS).
+  const tabs = useRowTabs(w.id);
   const activeTabId = useActiveTabId(w.id);
   const activeTaskId = useApp(s => s.activeTaskId);
   const setActive = useApp(s => s.setActiveTask);
@@ -2829,7 +2865,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   handlers between the row and the drag that starts on it.
                   Mono matches how a branch reads everywhere else. */}
               <span
-                title={labelIsBranch ? `Task name: ${w.name}` : undefined}
+                title={labelIsBranch ? t("taskNameTitle", { name: w.name }) : undefined}
                 className={cn(
                   "min-w-0 truncate font-medium",
                   labelIsBranch && "font-mono text-[12px]",
@@ -2850,7 +2886,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           {/* Spotlight active indicator: just the animated wave icon.
               No branch text — avoids any truncation of the task name. */}
           {!taskRenaming && isSpotlighted ? (
-            <Tip content={`Spotlight: changes are synced with ${project?.base_branch?.replace(/^[^/]+\//, "") ?? "main"}`} delay={0}>
+            <Tip content={t("spotlightTip", { branch: project?.base_branch?.replace(/^[^/]+\//, "") ?? "main" })} delay={0}>
               <AudioWaveform className="termic-spotlight-wave h-3 w-3 shrink-0 text-[var(--color-accent)]" />
             </Tip>
           ) : (
@@ -2906,7 +2942,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             </span>
           )}
           <DropdownRoot open={menuOpen} onOpenChange={setMenuOpen}>
-            <Tip content="Task menu">
+            <Tip content={t("taskMenu")}>
             <DropdownTrigger asChild>
               <button
                 data-no-drag
@@ -3000,7 +3036,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <DropdownSubTrigger className="justify-between">
                   <span className="flex items-center gap-2">
                     <Plus className="h-4 w-4" />
-                    <span>New</span>
+                    <span>{t("menuNew")}</span>
                   </span>
                   <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
                 </DropdownSubTrigger>
@@ -3016,7 +3052,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     onSpawnShell={() => spawnIntoTask({
                       id: crypto.randomUUID(),
                       type: "terminal",
-                      title: "Terminal",
+                      title: t("terminalTabTitle"),
                       cli: "shell",
                     })}
                     onScratchpad={() => {
@@ -3034,7 +3070,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                       resumeClosedTab(w.id, entryId);
                       setMenuOpen(false);
                     }}
-                    onMore={() => { setMenuOpen(false); setView("history"); }}
+                    onMore={() => { setMenuOpen(false); setView("history", { projectId: w.project_id }); }}
                   />
                 </DropdownSubContent>
               </DropdownSub>
@@ -3055,7 +3091,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   }}
                 >
                   <AudioWaveform className={cn("h-4 w-4", isSpotlighted && "text-[var(--color-accent)]")} />
-                  <span>{isSpotlighted ? "Stop spotlight" : "Start spotlight"}</span>
+                  <span>{isSpotlighted ? t("stopSpotlight") : t("startSpotlight")}</span>
                 </DropdownItem>
               )}
               <DropdownItem
@@ -3068,9 +3104,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   ? <DockerSandboxIcon className="h-4 w-4" />
                   : <SandboxIcon mode={effectiveSandboxMode(w)} className="h-4 w-4" />}
                 <span>
-                  {w.docker_sandbox_enabled ? "Docker Container"
-                    : effectiveSandboxMode(w) === "off" ? "Sandbox settings"
-                    : SANDBOX_VISUALS[effectiveSandboxMode(w)].shortLabel}
+                  {w.docker_sandbox_enabled ? t("dockerContainer")
+                    : effectiveSandboxMode(w) === "off" ? t("sandboxSettings")
+                    : sandboxModeText(effectiveSandboxMode(w), tChrome).shortLabel}
                 </span>
               </DropdownItem>
               {/* Per-task YOLO toggle. Disabled (auto-on) under Enforcing
@@ -3099,12 +3135,12 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 />
                 <span>
                   {w.docker_sandbox_enabled
-                    ? "YOLO: auto-on (Docker)"
+                    ? t("yoloAutoDocker")
                     : effectiveSandboxMode(w) === "enforce"
-                    ? "YOLO: auto-on (Enforcing)"
+                    ? t("yoloAutoEnforce")
                     : effectiveSandboxMode(w) === "enforce-fs"
-                    ? "YOLO: auto-on (Enforcing FS)"
-                    : w.yolo ? "YOLO: on" : "YOLO: off"}
+                    ? t("yoloAutoEnforceFs")
+                    : w.yolo ? t("yoloOn") : t("yoloOff")}
                 </span>
               </DropdownItem>
               <DropdownItem
@@ -3112,7 +3148,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 onSelect={() => setTaskRenaming(w.name)}
               >
                 <Pencil className="h-4 w-4" />
-                <span>Rename</span>
+                <span>{t("rename", { ns: "common" })}</span>
               </DropdownItem>
               {/* Custom-command tasks carry an editable launch
                   script (agent / shell tasks resolve their command
@@ -3123,7 +3159,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   onSelect={() => useUI.getState().openEditCommand(w.id)}
                 >
                   <SquareChevronRight className="h-4 w-4" />
-                  <span>Edit command</span>
+                  <span>{t("editCommand")}</span>
                 </DropdownItem>
               )}
               {/* Member composition editing is a multi-repo-only thing —
@@ -3149,7 +3185,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   onSelect={() => useUI.getState().openResumeOverride(w.id)}
                 >
                   <History className={cn("h-4 w-4", w.resume_override && "text-[var(--color-accent)]")} />
-                  <span>{w.resume_override ? "Resume args override: on" : "Resume args override"}</span>
+                  <span>{w.resume_override ? t("resumeOverrideOn") : t("resumeOverride")}</span>
                 </DropdownItem>
               )}
               {w.branch && (
@@ -3158,7 +3194,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   onSelect={() => copyToClipboard(w.branch, `"${w.branch}"`)}
                 >
                   <Copy className="h-4 w-4" />
-                  <span>Copy branch name</span>
+                  <span>{t("copyBranch")}</span>
                 </DropdownItem>
               )}
               {/* Paste-ready briefing that teaches ANOTHER agent to drive
@@ -3170,7 +3206,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 onSelect={() => { void copyAgentBriefing(w, project?.name); }}
               >
                 <Waypoints className="h-4 w-4" />
-                <span>Copy agent CLI briefing</span>
+                <span>{t("copyBriefing")}</span>
               </DropdownItem>
               {/* Move to group: the project row's menu, for tasks. The group
                   list is READ while the menu is open rather than subscribed:
@@ -3186,7 +3222,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     <DropdownSubTrigger className="justify-between" data-testid={`task-move-to-group-${w.id}`}>
                       <span className="flex items-center gap-2">
                         <Folder className="h-4 w-4" />
-                        <span>Move to group</span>
+                        <span>{t("taskGroup.moveToGroup")}</span>
                       </span>
                       <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
                     </DropdownSubTrigger>
@@ -3211,7 +3247,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                             {current
                               ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" />
                               : <span className="block h-2.5 w-2.5 shrink-0 rounded-full mx-0.5" style={{ backgroundColor: taskGroupColorCss(g) }} />}
-                            <span className="truncate">{groupLabel(g, all)}</span>
+                            <span className="truncate">{groupLabel(g, all, t)}</span>
                           </DropdownItem>
                         );
                       })}
@@ -3235,7 +3271,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                         }}
                       >
                         <FolderPlus className="h-4 w-4" />
-                        <span>New group</span>
+                        <span>{t("taskGroup.newGroup")}</span>
                       </DropdownItem>
                       {w.group && (
                         <DropdownItem
@@ -3244,7 +3280,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                           onSelect={() => run(taskGroupLeave(w.id))}
                         >
                           <FolderMinus className="h-4 w-4" />
-                          <span>Remove from group</span>
+                          <span>{t("taskGroup.removeFromGroup")}</span>
                         </DropdownItem>
                       )}
                     </DropdownSubContent>
@@ -3274,7 +3310,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   }))}
                 >
                   <GitBranchPlus className="h-4 w-4" />
-                  <span>Duplicate worktree</span>
+                  <span>{t("duplicateWorktree")}</span>
                 </DropdownItem>
               )}
               <DropdownSeparator />
@@ -3287,11 +3323,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   className="items-center [&>svg]:mt-0"
                   onSelect={() => {
                     stopTask(w.id);
-                    useUI.getState().pushToast(`Stopped ${label}`, "success");
+                    useUI.getState().pushToast(t("stoppedOne", { name: label }), "success");
                   }}
                 >
                   <CircleStop className="h-4 w-4" />
-                  <span>Stop task</span>
+                  <span>{t("stopTask")}</span>
                 </DropdownItem>
               )}
               <DropdownItem
@@ -3302,7 +3338,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 }}
               >
                 <Archive className="h-4 w-4" />
-                <span>Archive task</span>
+                <span>{t("archiveTask")}</span>
               </DropdownItem>
             </DropdownMenu>
           </DropdownRoot>
@@ -3380,7 +3416,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               // to be reachable at all.
               <span
                 className="min-w-0 flex-1 truncate"
-                title={tab.delegatedWork ? delegatedTitle(tab.delegatedWork) : undefined}
+                title={tab.delegatedWork ? delegatedTitle(tab.delegatedWork, tChrome) : undefined}
               >{title}</span>
             )}
             {/* Run tabs (GH #54): the same two controls the tab pill carries,
@@ -3407,7 +3443,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 </span>
               )}
               <button
-                title="Close tab"
+                title={t("closeTab")}
                 onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
                 className={cn(
                   "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
@@ -3473,6 +3509,7 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
   onCommit: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation("sidebar");
   const ref = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isWorktree = mode === "worktree";
@@ -3524,7 +3561,7 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
           value={value}
           onChange={e => onChange(e.target.value)}
           onKeyDown={keyHandler}
-          placeholder="Task name"
+          placeholder={t("taskNamePlaceholder")}
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
           className={inputCls}
         />
@@ -3539,7 +3576,7 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
             value={branch}
             onChange={e => onBranchChange(e.target.value)}
             onKeyDown={keyHandler}
-            placeholder="branch"
+            placeholder={t("branchPlaceholder")}
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             className={cn(inputCls, "font-mono text-[12px] text-[var(--color-fg-dim)] ring-[var(--color-border)]")}
           />
@@ -3561,6 +3598,7 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
  *  running claude AND codex AND a shell read as just "claude-1", and the user
  *  could not tell which task they were about to open. */
 function CompactTaskTip({ name, tabs }: { name: string; tabs: TerminalTab[] }) {
+  const { t } = useTranslation("sidebar");
   const agents = useApp(s => s.agents);
   return (
     <div data-testid="compact-task-tip" className="flex max-w-[320px] flex-col gap-1">
@@ -3569,18 +3607,19 @@ function CompactTaskTip({ name, tabs }: { name: string; tabs: TerminalTab[] }) {
         const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const working = tab.workState === "working";
         const title = tab.customTitle ? rawTitle : formatTerminalTitle(rawTitle, tab.cli, working);
-        const state = tab.unread?.reason === "attention" ? "needs you"
-          : tab.workState === "done" ? "done"
-          : working ? "working"
+        // A KEY, not the rendered word: the colour logic below compares it.
+        const stateKey = tab.unread?.reason === "attention" ? "compactNeedsYou"
+          : tab.workState === "done" ? "compactDone"
+          : working ? "compactWorking"
           : "";
         return (
           <div key={tab.id} data-testid="compact-task-tip-tab" className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
             <CliIcon cli={resolveIconId(tab.cli, agents)} className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{title}</span>
-            {state && (
+            {stateKey && (
               <span className={cn("ml-auto shrink-0 pl-2",
-                state === "needs you" ? "text-[var(--color-warn)]" : "text-[var(--color-fg-faint)]")}>
-                {state}
+                stateKey === "compactNeedsYou" ? "text-[var(--color-warn)]" : "text-[var(--color-fg-faint)]")}>
+                {t(stateKey)}
               </span>
             )}
           </div>

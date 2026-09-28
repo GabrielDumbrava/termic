@@ -31,8 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use termic_proto::local::{Listener as LocalListener, Stream as LocalStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -45,6 +44,7 @@ use termic_proto::{Command, ErrorCode, Reply, ReplyData, Request, StreamEvent, W
 use crate::{dlog, Project, Task};
 
 /// Darwin's sockaddr_un.sun_path is 104 bytes including the NUL.
+#[cfg(unix)]
 const MAX_SUN_PATH: usize = 103;
 
 /// `open` is user-visible feedback; give a busy webview a little longer.
@@ -175,7 +175,7 @@ pub fn raise_owner(deep_link: Option<&str>) -> bool {
 /// file left by a crash), ask it to raise its window (and take over any
 /// deep link we were launched with) and report true.
 fn raise_existing(sock: &Path, deep_link: Option<&str>) -> bool {
-    let Ok(stream) = UnixStream::connect(sock) else { return false };
+    let Ok(stream) = proto::local::connect(sock) else { return false };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     let Ok(mut writer) = stream.try_clone() else { return false };
@@ -216,7 +216,8 @@ fn server_main(app: tauri::AppHandle) {
         }
     };
     let sock = dir.join(proto::SOCKET_FILE);
-    if sock.as_os_str().as_bytes().len() > MAX_SUN_PATH {
+    #[cfg(unix)]
+    if std::os::unix::ffi::OsStrExt::as_bytes(sock.as_os_str()).len() > MAX_SUN_PATH {
         dlog(&format!(
             "[cli] socket path exceeds the {MAX_SUN_PATH}-byte unix limit, control socket disabled: {}",
             sock.display()
@@ -226,13 +227,14 @@ fn server_main(app: tauri::AppHandle) {
     // Stale socket from a previous boot (or a crashed instance): unlink
     // before bind, the standard unix-daemon dance.
     let _ = std::fs::remove_file(&sock);
-    let listener = match UnixListener::bind(&sock) {
+    let listener = match proto::local::bind(&sock) {
         Ok(l) => l,
         Err(e) => {
             dlog(&format!("[cli] bind {} failed: {e}", sock.display()));
             return;
         }
     };
+    #[cfg(unix)]
     if let Err(e) = std::fs::set_permissions(&sock, {
         use std::os::unix::fs::PermissionsExt;
         std::fs::Permissions::from_mode(0o600)
@@ -259,7 +261,7 @@ fn server_main(app: tauri::AppHandle) {
 
 /// Accept loop, decomposed from `server_main` so integration tests can
 /// drive a real socket with a stub host.
-fn serve_listener(listener: UnixListener, host: Arc<dyn CliHost>) {
+fn serve_listener(listener: LocalListener, host: Arc<dyn CliHost>) {
     // A transient accept error (EMFILE when the app is fd-heavy with many
     // PTYs, ECONNABORTED, EINTR) must NOT kill the server thread: a dead
     // listener also silently breaks the release single-instance guard (a
@@ -289,10 +291,10 @@ fn serve_listener(listener: UnixListener, host: Arc<dyn CliHost>) {
     }
 }
 
-fn serve_conn(stream: UnixStream, host: Arc<dyn CliHost>) {
+fn serve_conn(stream: LocalStream, host: Arc<dyn CliHost>) {
     // Same-uid peer check BEFORE reading anything. Root is not exempted:
     // there is no reason for another uid, root included, to be here.
-    if peer_uid(&stream) != Some(unsafe { libc::geteuid() }) {
+    if !peer_is_current_user(&stream) {
         return;
     }
     // A client that connects and never sends must not pin this thread.
@@ -420,8 +422,8 @@ fn run_attach_session(
     task_id: String,
     attachment: crate::PtyAttachment,
     host: Arc<dyn CliHost>,
-    reader: BufReader<UnixStream>,
-    mut writer: UnixStream,
+    reader: BufReader<LocalStream>,
+    mut writer: LocalStream,
 ) {
     // Both directions can be legitimately silent for minutes; EOF is
     // the liveness signal, not a read timeout. (The socket options live
@@ -514,7 +516,7 @@ pub(crate) trait EventSink {
 }
 
 struct SocketSink<'a> {
-    writer: &'a mut UnixStream,
+    writer: &'a mut LocalStream,
 }
 
 impl EventSink for SocketSink<'_> {
@@ -837,6 +839,15 @@ pub(crate) fn dispatch_authenticated(
         Command::Agents => handle_agents(req, host),
         Command::Prompts { .. } => handle_prompts(req, host),
         Command::Tab { .. } => handle_tab(req, host, sink),
+        Command::TabRename { task, project, tab, title, cwd } => handle_tab_rename(
+            &req.id,
+            host,
+            task.as_deref(),
+            project.as_deref(),
+            tab,
+            title,
+            cwd.as_deref(),
+        ),
         Command::TabClose { task, project, tab, yes, cwd } => handle_tab_close(
             &req.id,
             host,
@@ -2649,8 +2660,9 @@ fn handle_prompts(req: &Request, host: &dyn CliHost) -> Reply {
 /// the spawn-pending rule, i.e. exactly what `send` to a respawned agent
 /// does, so delivery stays confirmed (docs/plans/cli.md, Phase 1).
 fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
-    let Command::Tab { task, project, kind, prompt, prompt_ref, wait, timeout_ms, resume, cwd } =
-        &req.cmd
+    let Command::Tab {
+        task, project, kind, prompt, prompt_ref, wait, timeout_ms, resume, title, cwd,
+    } = &req.cmd
     else {
         unreachable!("handle_tab called with a non-tab command")
     };
@@ -2710,6 +2722,12 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
     if *wait && !has_prompt {
         return Reply::err(id, ErrorCode::BadRequest, "--wait needs a prompt to wait on");
     }
+    // A title a selector could never reach (GH #331). Uniqueness is the
+    // webview's check: it needs the live strip.
+    if let Some(why) = title.as_deref().and_then(proto::tab_title_problem) {
+        return Reply::err(id, ErrorCode::BadRequest, why);
+    }
+    let title = title.as_deref().map(str::trim).filter(|t| !t.is_empty());
     let (projects, tasks) = host.projects_tasks();
     let t = match resolve_task_arg(
         &projects,
@@ -2753,10 +2771,18 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
 
     let value = match host.rpc(
         "new_tab",
-        serde_json::json!({ "taskId": t.id, "kind": kind_str, "id": agent_id, "resume": resume }),
+        serde_json::json!({
+            "taskId": t.id, "kind": kind_str, "id": agent_id, "resume": resume, "title": title,
+        }),
         OPEN_TIMEOUT,
     ) {
         Ok(v) => v,
+        // A title already in use on this task is a Conflict, the task-name
+        // rule, so a script can tell it from an unusable agent id.
+        Err(e) if e.starts_with(TAB_TITLE_ERR) => {
+            let (code, msg) = parse_tab_title_error(&e);
+            return Reply::err(id, code, msg);
+        }
         // The webview owns the "which agents are usable" answer, so its
         // message is the useful one; pass it through rather than flattening
         // it into a generic failure.
@@ -2923,6 +2949,76 @@ fn parse_tab_close_error(e: &str) -> (ErrorCode, String) {
 /// Unlike archive this is scoped to one tab, which is the entire point:
 /// an orchestrator cleaning up the tabs it opened must not take down the
 /// session it is driving from.
+/// Sentinel prefix for the webview's typed tab-title failures (GH #331),
+/// the `cli_tab_close:` scheme: `cli_tab_title:<code>: <message>`.
+const TAB_TITLE_ERR: &str = "cli_tab_title:";
+
+fn parse_tab_title_error(e: &str) -> (ErrorCode, String) {
+    let Some(rest) = e.strip_prefix(TAB_TITLE_ERR) else {
+        return (ErrorCode::Internal, format!("could not set the tab title ({e})"));
+    };
+    let (code, msg) = rest.split_once(':').unwrap_or(("", rest));
+    let code = match code {
+        // Another tab of the task already answers to that title.
+        "conflict" => ErrorCode::Conflict,
+        "invalid" => ErrorCode::BadRequest,
+        // The resolver's cache trailed a tab that closed underneath us.
+        "unknown_tab" => ErrorCode::NotFound,
+        "task_stopped" | "not_renamable" => ErrorCode::Unsupported,
+        _ => ErrorCode::Internal,
+    };
+    (code, msg.trim().to_string())
+}
+
+/// `termic tab --tab X --title Y` (GH #331): set or clear an open tab's
+/// title, the tab strip's double-click rename as a verb. Reaches every
+/// strip tab (renaming is not driving, the `tab close` reach). The
+/// webview owns the uniqueness check, since only it has the live strip.
+fn handle_tab_rename(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    tab: &str,
+    title: &str,
+    cwd: Option<&str>,
+) -> Reply {
+    if let Some(why) = proto::tab_title_problem(title) {
+        return Reply::err(id, ErrorCode::BadRequest, why);
+    }
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let rt = match resolve_tab_selector_with(host, &t, tab, TabReach::AnyStripTab) {
+        Ok(rt) => rt,
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let value = match host.rpc(
+        "rename_tab",
+        serde_json::json!({ "taskId": t.id, "tabId": rt.id, "title": title.trim() }),
+        OPEN_TIMEOUT,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let (code, msg) = parse_tab_title_error(&e);
+            return Reply::err(id, code, msg);
+        }
+    };
+    // The webview reports the title the tab ends up with, which after a
+    // reset is the automatic one the resolver's snapshot cannot know yet.
+    let title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| title.trim().to_string());
+    Reply::ok(
+        id,
+        ReplyData::Tab(proto::TabData { task_id: t.id, tab_id: rt.id, cli: rt.cli, title, prompt: None }),
+    )
+}
+
 fn handle_tab_close(
     id: &str,
     host: &dyn CliHost,
@@ -3525,17 +3621,27 @@ pub(crate) fn resolve_by_name<'a>(
 }
 
 fn canon(p: &str) -> String {
-    std::fs::canonicalize(p)
+    dunce::canonicalize(p)
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|_| p.to_string())
 }
 
 fn under(path: &str, base: &str) -> bool {
+    // Windows paths use `\`, may arrive with `/` from a POSIX-ish shell,
+    // and are case-insensitive: normalize both sides before the prefix test.
+    if cfg!(windows) {
+        let norm = |s: &str| s.replace('/', "\\").to_lowercase();
+        return under_sep(&norm(path), norm(base).trim_end_matches('\\'), b'\\');
+    }
+    under_sep(path, base, b'/')
+}
+
+fn under_sep(path: &str, base: &str, sep: u8) -> bool {
     !base.is_empty()
         && (path == base
             || (path.len() > base.len()
                 && path.starts_with(base)
-                && path.as_bytes()[base.len()] == b'/'))
+                && path.as_bytes()[base.len()] == sep))
 }
 
 /// cwd resolution, worktree first then longest project-path prefix
@@ -3642,27 +3748,47 @@ pub(crate) fn mint_token() -> String {
 
 pub(crate) fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     // Recreate rather than truncate so the 0600 mode is guaranteed even
-    // if an old file existed with different permissions.
+    // if an old file existed with different permissions. On Windows the
+    // file inherits the data dir's ACL (inside the user's profile: the
+    // user, SYSTEM and Administrators), the platform's equivalent.
     let _ = std::fs::remove_file(path);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
     f.write_all(token.as_bytes())?;
     f.flush()
 }
 
-fn peer_uid(stream: &UnixStream) -> Option<u32> {
+/// Unix: the peer's uid must be ours (root included, no exemption).
+#[cfg(unix)]
+fn peer_is_current_user(stream: &LocalStream) -> bool {
+    peer_uid(stream) == Some(unsafe { libc::geteuid() })
+}
+
+/// Windows: the listener is bound to 127.0.0.1, so a remote peer cannot
+/// reach it; refuse anything that is somehow not loopback anyway. There
+/// is no kernel peer-identity check on this transport, so the per-boot
+/// token is the credential (see termic_proto::local).
+#[cfg(windows)]
+fn peer_is_current_user(stream: &LocalStream) -> bool {
+    stream.peer_addr().map(|a| a.ip().is_loopback()).unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn peer_uid(stream: &LocalStream) -> Option<u32> {
     use std::os::fd::AsRawFd;
     let fd = stream.as_raw_fd();
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
     {
         let mut uid: libc::uid_t = 0;
         let mut gid: libc::gid_t = 0;
-        // SAFETY: valid fd from a live UnixStream; out-params are plain ints.
+        // SAFETY: valid fd from a live LocalStream; out-params are plain ints.
         if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } == 0 {
             Some(uid)
         } else {
@@ -3799,8 +3925,7 @@ impl CliHost for TauriHost {
         // and what `result` reads back. Termination is still guaranteed, so
         // the worktree removal downstream is as safe as it was.
         let manager = self.app.state::<crate::PtyManager>();
-        (crate::stop_task_ptys(&manager, task_id) + crate::stop_task_role_ptys(&manager, task_id))
-            as u32
+        crate::stop_every_task_pty(&manager, task_id) as u32
     }
     fn git_toplevel(&self, cwd: &str) -> Option<String> {
         let out = crate::git(&["rev-parse", "--show-toplevel"], Path::new(cwd)).ok()?;
@@ -4613,7 +4738,7 @@ pub fn cli_rpc_progress(id: String, payload: String) -> Result<(), String> {
 pub(crate) fn bundled_cli_path() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("app binary has no parent dir")?;
-    let p = dir.join("termic-cli");
+    let p = dir.join(format!("termic-cli{}", std::env::consts::EXE_SUFFIX));
     if p.is_file() {
         Ok(p)
     } else {
@@ -4712,11 +4837,30 @@ fn replaceable(link: &Path) -> Result<bool, String> {
     }
 }
 
+/// Installing `termic` onto PATH is unix-only for now: on Windows the
+/// right shape is a copy in a per-user bin dir plus an HKCU PATH entry,
+/// not a link (docs/ideas/windows.md, "Installing the CLI onto PATH").
+/// Agent terminals still get the CLI: pty_spawn puts the bundled binary's
+/// directory on their PATH and exports TERMIC_CLI.
+#[cfg(not(unix))]
+fn windows_unsupported() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "installing the termic command onto PATH is not supported on Windows yet",
+    )
+}
+
 fn symlink_replacing(src: &Path, link: &Path) -> std::io::Result<()> {
     if std::fs::symlink_metadata(link).is_ok() {
         std::fs::remove_file(link)?;
     }
-    std::os::unix::fs::symlink(src, link)
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(src, link);
+    #[cfg(not(unix))]
+    {
+        let _ = src;
+        Err(windows_unsupported())
+    }
 }
 
 /// Atomic replace: build the new link under a temp name in the SAME
@@ -4732,7 +4876,13 @@ fn symlink_atomic(src: &Path, link: &Path) -> std::io::Result<()> {
     let base = link.file_name().and_then(|n| n.to_str()).unwrap_or("termic");
     let tmp = link.with_file_name(format!(".{base}.{}.tmp", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
+    #[cfg(unix)]
     std::os::unix::fs::symlink(src, &tmp)?;
+    #[cfg(not(unix))]
+    {
+        let _ = src;
+        return Err(windows_unsupported());
+    }
     std::fs::rename(&tmp, link).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
@@ -4968,6 +5118,9 @@ pub async fn cli_add_to_path() -> Result<String, String> {
 }
 
 fn add_to_path_inner() -> Result<String, String> {
+    #[cfg(not(unix))]
+    return Err(windows_unsupported().to_string());
+    #[allow(unreachable_code)]
     let dir = user_bin().ok_or("no home directory")?;
     let shell = crate::shell_env::login_shell();
     let (rc, line) = shell_rc_and_line(&shell, &dir);
@@ -5101,7 +5254,7 @@ fn admin_symlink(src: &Path, name: &str) -> Result<(), String> {
         "do shell script \"{}\" with prompt \"Termic wants to install the {name} command.\" with administrator privileges",
         shell.replace('\\', "\\\\").replace('"', "\\\"")
     );
-    let ok = std::process::Command::new("osascript")
+    let ok = crate::proc_ctl::command("osascript")
         .args(["-e", &script])
         .output()
         .map(|o| o.status.success())
@@ -6353,6 +6506,7 @@ mod tests {
             wait: false,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         }
     }
@@ -7381,7 +7535,7 @@ mod tests {
             TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let (sock, _guard) = spawn_server(host);
-        let mut stream = UnixStream::connect(&sock).unwrap();
+        let mut stream = proto::local::connect(&sock).unwrap();
         proto::write_msg(&mut stream, &req(wait_cmd("solo", None), Some("tok"))).unwrap();
         let mut reader = BufReader::new(stream);
         let mut saw_state = false;
@@ -7478,6 +7632,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn token_file_is_0600() {
         use std::os::unix::fs::PermissionsExt;
@@ -7497,14 +7652,14 @@ mod tests {
     fn spawn_server(host: StubHost) -> (PathBuf, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join(proto::SOCKET_FILE);
-        let listener = UnixListener::bind(&sock).unwrap();
+        let listener = proto::local::bind(&sock).unwrap();
         let host: Arc<dyn CliHost> = Arc::new(host);
         std::thread::spawn(move || serve_listener(listener, host));
         (sock, dir)
     }
 
     fn roundtrip_on(sock: &Path, req: &Request) -> Reply {
-        let mut stream = UnixStream::connect(sock).unwrap();
+        let mut stream = proto::local::connect(sock).unwrap();
         proto::write_msg(&mut stream, req).unwrap();
         let mut reader = BufReader::new(stream);
         proto::read_msg::<_, Reply>(&mut reader).unwrap().unwrap()
@@ -7515,7 +7670,7 @@ mod tests {
     fn spawn_server_arc(host: StubHost) -> (PathBuf, tempfile::TempDir, Arc<StubHost>) {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join(proto::SOCKET_FILE);
-        let listener = UnixListener::bind(&sock).unwrap();
+        let listener = proto::local::bind(&sock).unwrap();
         let arc = Arc::new(host);
         let dynamic: Arc<dyn CliHost> = arc.clone();
         std::thread::spawn(move || serve_listener(listener, dynamic));
@@ -7583,7 +7738,7 @@ mod tests {
         // be mistaken for a live instance: connect() fails fast.
         let dir = tempfile::tempdir().unwrap();
         let stale = dir.path().join(proto::SOCKET_FILE);
-        let listener = UnixListener::bind(&stale).unwrap();
+        let listener = proto::local::bind(&stale).unwrap();
         drop(listener); // socket file may linger, but nothing listens
         assert!(!raise_existing(&stale, None));
     }
@@ -7602,7 +7757,7 @@ mod tests {
     #[test]
     fn socket_handles_multiple_requests_per_connection() {
         let (sock, _guard) = spawn_server(StubHost::default());
-        let mut stream = UnixStream::connect(&sock).unwrap();
+        let mut stream = proto::local::connect(&sock).unwrap();
         proto::write_msg(&mut stream, &req(Command::Hello, None)).unwrap();
         proto::write_msg(&mut stream, &req(Command::List { project: None, quiet: false }, Some("tok")))
             .unwrap();
@@ -7667,6 +7822,7 @@ mod tests {
 
     /// Appending twice is the failure this has to prevent, and "twice" has
     /// more spellings than our own.
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn an_rc_that_already_has_the_dir_is_left_alone() {
         let home = dirs::home_dir().unwrap_or_default();
@@ -7778,6 +7934,7 @@ mod tests {
         assert_eq!(reconcile_target("termic", Some(cur.clone()), &legacy), Some(cur));
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn symlink_atomic_replaces_without_a_gap() {
         let tmp = tempfile::tempdir().unwrap();
@@ -7801,6 +7958,7 @@ mod tests {
         assert!(strays.is_empty(), "left temp links behind: {strays:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn prune_legacy_links_leaves_foreign_files_alone() {
         // `replaceable` is the only thing standing between a prune and
@@ -7834,7 +7992,7 @@ mod tests {
     #[test]
     fn socket_survives_garbage_lines() {
         let (sock, _guard) = spawn_server(StubHost::default());
-        let mut stream = UnixStream::connect(&sock).unwrap();
+        let mut stream = proto::local::connect(&sock).unwrap();
         stream.write_all(b"this is not json\n").unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let reply: Reply = proto::read_msg(&mut reader).unwrap().unwrap();
@@ -7899,6 +8057,164 @@ mod tests {
 
     fn w3(host: &StubHost) -> Task {
         host.tasks.iter().find(|t| t.id == "w3").unwrap().clone()
+    }
+
+    // ── tab titles (GH #331) ─────────────────────────────────────────
+
+    fn titled_tab_cmd(title: Option<&str>) -> Command {
+        Command::Tab {
+            task: Some("w3".into()),
+            project: None,
+            kind: proto::TabKind::Agent { id: "claude".into() },
+            prompt: None,
+            prompt_ref: None,
+            wait: false,
+            timeout_ms: None,
+            resume: None,
+            title: title.map(str::to_string),
+            cwd: None,
+        }
+    }
+
+    fn rename_req(tab: &str, title: &str) -> Request {
+        req(
+            Command::TabRename {
+                task: Some("w3".into()),
+                project: None,
+                tab: tab.into(),
+                title: title.into(),
+                cwd: None,
+            },
+            Some("tok"),
+        )
+    }
+
+    fn rpc_params(host: &StubHost, method: &str) -> serde_json::Value {
+        let calls = host.rpc_calls.lock().unwrap();
+        calls.iter().find(|(m, _)| m == method).map(|(_, p)| p.clone())
+            .unwrap_or_else(|| panic!("{method} was not called"))
+    }
+
+    #[test]
+    fn tab_title_rides_new_tab_trimmed_and_only_when_real() {
+        for (given, sent) in [
+            (Some("  reviewer "), serde_json::json!("reviewer")),
+            (Some(""), serde_json::Value::Null),
+            (None, serde_json::Value::Null),
+        ] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc(
+                "new_tab",
+                Ok(serde_json::json!({ "tabId": "tab-new", "cli": "claude", "title": "reviewer" })),
+            );
+            let reply = handle(&req(titled_tab_cmd(given), Some("tok")), &host);
+            assert!(reply.ok, "{given:?}: {:?}", reply.error);
+            assert_eq!(rpc_params(&host, "new_tab")["title"], sent, "{given:?}");
+            let Some(ReplyData::Tab(t)) = reply.data else { panic!("expected tab") };
+            // The reply carries what the webview says the tab is called.
+            assert_eq!(t.title, "reviewer");
+        }
+    }
+
+    #[test]
+    fn tab_titles_a_selector_could_not_reach_are_refused_before_any_rpc() {
+        for bad in ["   ", "2"] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            let err = handle(&req(titled_tab_cmd(Some(bad)), Some("tok")), &host)
+                .error
+                .expect("refused");
+            assert_eq!(err.code, ErrorCode::BadRequest, "{bad:?}");
+            assert!(host.rpc_calls.lock().unwrap().is_empty(), "{bad:?} reached the webview");
+
+            let err = handle(&rename_req("1", bad), &host).error.expect("refused");
+            assert_eq!(err.code, ErrorCode::BadRequest, "rename {bad:?}");
+            assert!(host.rpc_calls.lock().unwrap().is_empty(), "rename {bad:?} reached the webview");
+        }
+    }
+
+    #[test]
+    fn tab_title_in_use_is_a_conflict_not_a_bad_agent() {
+        // Same code as a duplicate task name, so a script can tell "pick
+        // another title" from "that agent is not usable".
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.script_rpc(
+            "new_tab",
+            Err("cli_tab_title:conflict: tab [2] is already called \"fixing tests\"".into()),
+        );
+        let err = handle(&req(titled_tab_cmd(Some("Fixing Tests")), Some("tok")), &host)
+            .error
+            .expect("conflict");
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert!(err.message.contains("fixing tests"), "{}", err.message);
+        // Any other webview failure keeps the pre-title mapping.
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.script_rpc("new_tab", Err("unknown agent: nope".into()));
+        let err = handle(&req(titled_tab_cmd(Some("x")), Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    #[test]
+    fn tab_rename_resolves_every_selector_and_reaches_every_tab() {
+        // The tab-close reach: renaming is not driving, so the shell tab
+        // (write-only for send/attach) is renamable too.
+        for (sel, want) in [("2", "tab-b"), ("tab-b", "tab-b"), ("fixing tests", "tab-b"), ("3", "tab-c")] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc("rename_tab", Ok(serde_json::json!({ "title": "implementer" })));
+            let reply = handle(&rename_req(sel, " implementer "), &host);
+            assert!(reply.ok, "{sel:?}: {:?}", reply.error);
+            let p = rpc_params(&host, "rename_tab");
+            assert_eq!(p["taskId"], "w3");
+            assert_eq!(p["tabId"], want, "{sel:?}");
+            assert_eq!(p["title"], "implementer", "trimmed");
+            let Some(ReplyData::Tab(t)) = reply.data else { panic!("expected tab") };
+            assert_eq!(t.tab_id, want);
+            assert_eq!(t.title, "implementer");
+            assert!(t.prompt.is_none());
+            // A rename opens nothing.
+            assert!(host.rpc_calls.lock().unwrap().iter().all(|(m, _)| m == "rename_tab"));
+        }
+    }
+
+    #[test]
+    fn tab_rename_to_empty_is_the_reset_and_reports_the_automatic_title() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        // The webview answers with the title the tab went back to, which
+        // the resolver's snapshot (still the custom one) cannot know.
+        host.script_rpc("rename_tab", Ok(serde_json::json!({ "title": "Codex" })));
+        let reply = handle(&rename_req("fixing tests", ""), &host);
+        assert!(reply.ok, "{:?}", reply.error);
+        assert_eq!(rpc_params(&host, "rename_tab")["title"], "");
+        let Some(ReplyData::Tab(t)) = reply.data else { panic!("expected tab") };
+        assert_eq!(t.title, "Codex");
+    }
+
+    #[test]
+    fn tab_rename_maps_the_webviews_typed_failures() {
+        for (webview, code) in [
+            ("cli_tab_title:conflict: already called that", ErrorCode::Conflict),
+            ("cli_tab_title:unknown_tab: that tab no longer exists", ErrorCode::NotFound),
+            ("cli_tab_title:task_stopped: not open", ErrorCode::Unsupported),
+            ("cli_tab_title:not_renamable: split pane", ErrorCode::Unsupported),
+            ("webview gone", ErrorCode::Internal),
+        ] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc("rename_tab", Err(webview.into()));
+            let err = handle(&rename_req("2", "x"), &host).error.expect("error");
+            assert_eq!(err.code, code, "{webview}");
+            assert!(!err.message.starts_with("cli_tab_title"), "sentinel leaked: {}", err.message);
+        }
+        // An unknown selector never reaches the webview.
+        let host = StubHost::default();
+        seed_strip(&host);
+        assert!(handle(&rename_req("9", "x"), &host).error.is_some());
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
     }
 
     // ── tab close (GH #185) ──────────────────────────────────────────
@@ -8692,6 +9008,7 @@ mod tests {
             wait: false,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         };
         let reply = handle(&req(cmd, Some("tok")), &host);
@@ -8726,6 +9043,7 @@ mod tests {
             wait,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         };
         for cmd in [
@@ -8816,6 +9134,7 @@ mod tests {
             wait: false,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         };
         let err = handle(&req(cmd, Some("tok")), &host).error.expect("error");
@@ -9848,7 +10167,7 @@ mod tests {
     #[test]
     fn attach_session_streams_both_ways_and_detaches_cleanly() {
         let (sock, _guard, host) = spawn_server_arc(attach_host());
-        let mut stream = UnixStream::connect(&sock).unwrap();
+        let mut stream = proto::local::connect(&sock).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         proto::write_msg(&mut stream, &attach_req("solo")).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -9897,7 +10216,7 @@ mod tests {
         // thread holds a sender clone).
         for reason in ["archived", "exited"] {
             let (sock, _guard, host) = spawn_server_arc(attach_host());
-            let mut stream = UnixStream::connect(&sock).unwrap();
+            let mut stream = proto::local::connect(&sock).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             proto::write_msg(&mut stream, &attach_req("solo")).unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -9932,7 +10251,7 @@ mod tests {
         // No agent PTY registered: the attach errors as a normal Reply
         // and the SAME connection still serves requests.
         let (sock, _guard) = spawn_server(StubHost::default());
-        let mut stream = UnixStream::connect(&sock).unwrap();
+        let mut stream = proto::local::connect(&sock).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         proto::write_msg(&mut stream, &attach_req("solo")).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());

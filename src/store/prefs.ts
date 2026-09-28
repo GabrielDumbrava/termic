@@ -2,6 +2,7 @@
 // Persisted to localStorage so they survive launches. Currently just the mono
 // font, but built for future things (themes, terminal opacity, etc.).
 
+import { SEATBELT_AVAILABLE } from "@/lib/platform";
 import { create } from "zustand";
 import type { SandboxSelection } from "@/lib/types";
 import { setDiagnosticsEnabled } from "@/lib/lsp/diagnosticsPref";
@@ -36,6 +37,7 @@ import {
 import { scoped } from "@/lib/profileScope";
 import { encodeOpenWithPick, parseOpenWithPick } from "@/lib/openWith";
 import type { OpenWithPick } from "@/lib/types";
+import { applyLanguage, parseLanguagePref, LS_LANGUAGE, type LanguagePref } from "@/lib/i18n";
 
 /** The two readouts an agent's footer chip can carry. */
 export const AGENT_FOOTER_PARTS = ["usage", "context"] as const;
@@ -486,6 +488,9 @@ export function stackFor(id: string) {
 }
 
 interface PrefsState {
+  /** UI language: "system" follows the OS (Chinese -> zh-CN, else en), or an
+   *  explicit locale. Applies live via i18next; persisted to localStorage. */
+  language: LanguagePref;
   /** Send OS notifications when an inactive tab's agent settles (output
    *  stopped changing). OFF by default — too noisy for many users. */
   desktopNotifications: boolean;
@@ -836,6 +841,7 @@ interface PrefsState {
   splitPaneDimAmount: number;
 
   setEditorFontId:    (id: string) => void;
+  setLanguage:        (l: LanguagePref) => void;
   setEditorThemeIdDark:  (id: string) => void;
   setEditorThemeIdLight: (id: string) => void;
   setTerminalFontId:  (id: string) => void;
@@ -1095,6 +1101,8 @@ const initialFindInFilesMatchCase = lsGetBool(LS_FIND_IN_FILES_MATCH_CASE, false
 // to migrate: this was always a local-only pref, never persisted settings.
 function readInitialDefaultSandboxKind(): SandboxSelection {
   const stored = lsGet(LS_DEFAULT_SANDBOX_KIND, "");
+  // No Seatbelt on this OS: only off and docker are choices here.
+  if (!SEATBELT_AVAILABLE) return stored === "docker" ? "docker" : "off";
   if (stored === "off" || stored === "monitor" || stored === "enforce" || stored === "enforce-fs" || stored === "docker") {
     return stored;
   }
@@ -1141,6 +1149,7 @@ const initialOpenWith = parseOpenWithPick(lsGet(LS_OPEN_WITH, ""));
 const initialQueueMinInterval = Math.max(0, Math.min(120000, Math.round(lsGetNum(LS_QUEUE_MIN_INTERVAL, 10000))));
 
 export const usePrefs = create<PrefsState>(set => ({
+  language: parseLanguagePref(lsGet(LS_LANGUAGE, "system")),
   themeMode: initialTheme,
   customThemes: [],
   customThemeRev: 0,
@@ -1206,6 +1215,12 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_EDITOR_FONT, id); } catch {}
     applyEditorFont(id);
     set({ editorFontId: id });
+  },
+  setLanguage: (l) => {
+    if (usePrefs.getState().language === l) return;  // bear trap 8
+    try { localStorage.setItem(LS_LANGUAGE, l); } catch {}
+    applyLanguage(l);
+    set({ language: l });
   },
   setEditorThemeIdDark: (id) => {
     try { localStorage.setItem(LS_EDITOR_THEME, id); } catch {}

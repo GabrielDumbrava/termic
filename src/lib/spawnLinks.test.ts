@@ -34,6 +34,24 @@ describe("spawnMarkParent", () => {
     expect(spawnMarkParent(t("x"), [t("x")])).toBeNull();
     expect(spawnMarkParent(far, [orch, far])).toBeNull();
   });
+
+  // The dashboard's rule: it draws no group rail, so nothing else on that
+  // surface says who started whom and every spawned child is marked — the
+  // exact pair the sidebar suppresses.
+  it("marks a same-group child when the surface draws no rail", () => {
+    const orch = t("orch", { group: G("orch") });
+    const near = t("near", { group: G("orch"), spawned_by: "orch" });
+    expect(spawnMarkParent(near, [orch, near], { suppressInGroup: false })?.id).toBe("orch");
+    // The sidebar rule still suppresses the same pair.
+    expect(spawnMarkParent(near, [orch, near])).toBeNull();
+  });
+
+  it("with no rail, an unlinked task or an archived parent still draws nothing", () => {
+    const orch = t("orch", { archived: true });
+    const far = t("far", { project_id: "q", spawned_by: "orch" });
+    expect(spawnMarkParent(t("x"), [t("x")], { suppressInGroup: false })).toBeNull();
+    expect(spawnMarkParent(far, [orch, far], { suppressInGroup: false })).toBeNull();
+  });
 });
 
 describe("spawnLinkPairs", () => {

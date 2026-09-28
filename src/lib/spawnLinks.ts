@@ -6,15 +6,24 @@
 import type { Task } from "@/lib/types";
 
 /** The parent a row's "started by" mark points at, or null when it draws
- *  none: no live parent, or the two sit in one drawn group, whose rail
- *  already says it. A legacy group spanning projects (drawn as plain rows,
- *  `crossProjectStrays`) needs no special case: its parent is in another
- *  project, which already means a mark. */
-export function spawnMarkParent(task: Task, tasks: Task[]): Task | null {
+ *  none: no live parent, or — when `suppressInGroup` (the sidebar's rule,
+ *  the default) — the two sit in one drawn group, whose rail already says
+ *  it. A surface that draws NO rail (the dashboard's flat project cards)
+ *  passes `{ suppressInGroup: false }`: there nothing else explains the
+ *  pair, so suppressing the mark would hide the link on the one surface
+ *  that shows neither rail nor line. A legacy group spanning projects
+ *  (drawn as plain rows, `crossProjectStrays`) needs no special case
+ *  under either rule: its parent is in another project, which already
+ *  means a mark. */
+export function spawnMarkParent(
+  task: Task,
+  tasks: Task[],
+  { suppressInGroup = true }: { suppressInGroup?: boolean } = {},
+): Task | null {
   if (!task.spawned_by) return null;
   const parent = tasks.find(t => t.id === task.spawned_by && !t.archived);
   if (!parent) return null;
-  return inOneBlock(parent, task) ? null : parent;
+  return suppressInGroup && inOneBlock(parent, task) ? null : parent;
 }
 
 /** Both rows sit in one drawn group block, whose rail already links them. */

@@ -179,7 +179,10 @@ pub fn label_for(
 }
 
 /// Signals the monitor is allowed to send. Deliberately small: this is a
-/// process manager for OUR agents, not a general-purpose `kill`.
+/// process manager for OUR agents, not a general-purpose `kill`. Unix
+/// only: the monitor itself is (procmon_other.rs answers "unsupported"
+/// everywhere else).
+#[cfg(unix)]
 pub fn signal_from_name(name: &str) -> Option<libc::c_int> {
     match name {
         "TERM" => Some(libc::SIGTERM),
@@ -272,6 +275,7 @@ mod tests {
         assert_eq!(label_for(42, &HashMap::new(), &HashMap::new()), "?");
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_known_signals_are_allowed() {
         assert_eq!(signal_from_name("TERM"), Some(libc::SIGTERM));

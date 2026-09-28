@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, rmTree } from "../helpers";
 
 /** `execSync` for git against the shared fixture, retrying a moment on
  *  `index.lock`. The app runs its own git on this repo (the Git panel's status
@@ -887,8 +887,8 @@ describe("git history tab", () => {
 
   it("searches commit messages across the branch, not just the loaded rows", async () => {
     await openGraph();
-    const box = await $('input[placeholder="Search messages"]');
-    await box.setValue(subject.slice(0, 12));
+    const SEARCH = 'input[placeholder="Search messages"]';
+    await setInputValue(SEARCH, subject.slice(0, 12));
     await browser.waitUntil(
       async () => {
         const s = await commitSubjects();
@@ -899,12 +899,12 @@ describe("git history tab", () => {
     // A query nothing matches is an empty graph with an explanation, not the
     // unfiltered list and not an error (the box takes literal text, so an
     // unbalanced bracket is a query with no hits).
-    await box.setValue("[no-such-commit");
+    await setInputValue(SEARCH, "[no-such-commit");
     await browser.waitUntil(
       async () => (await commitSubjects()).length === 0,
       { timeout: 10_000, timeoutMsg: "a no-match search still listed commits" },
     );
-    await box.setValue("");
+    await setInputValue(SEARCH, "");
     await browser.waitUntil(
       async () => (await commitSubjects()).length > 1,
       { timeout: 10_000, timeoutMsg: "clearing the search did not restore the graph" },
@@ -1126,8 +1126,8 @@ describe("git compare mode", () => {
   it("narrows the list with the filter", async () => {
     // The filter is GitPanel's, on the branch row and shared by all three
     // sub-tabs, so it is outside the compare panel in the DOM.
-    const input = await $('input[placeholder="Filter"]');
-    await input.setValue("committed");
+    const FILTER = 'input[placeholder="Filter"]';
+    await setInputValue(FILTER, "committed");
     await browser.waitUntil(
       async () => {
         const r = await rows();
@@ -1135,7 +1135,7 @@ describe("git compare mode", () => {
       },
       { timeout: 8_000, timeoutMsg: "the filter never narrowed the compare list" },
     );
-    await input.setValue("");
+    await setInputValue(FILTER, "");
     await waitForRow("README.md", "clearing the filter did not restore the list");
   });
 
@@ -1485,7 +1485,7 @@ describe("git commit & push", () => {
       }
     }
     execGit(`git -C "${fixture}" clean -fd`);
-    rmSync(bare, { recursive: true, force: true });
+    rmTree(bare, { bestEffort: true });
   });
 
   it("commits and pushes to the remote", async () => {
@@ -1508,9 +1508,12 @@ describe("git commit & push", () => {
     }, taskId);
 
     // The bare remote received the commit.
-    const log = execSync(
-      `git -C "${bare}" log --oneline main 2>/dev/null || true`,
-    ).toString();
+    // No shell redirection: execSync runs cmd.exe on Windows, which has no
+    // /dev/null and no `true`.
+    let log = "";
+    try {
+      log = execSync(`git -C "${bare}" log --oneline main`, { stdio: ["ignore", "pipe", "ignore"] }).toString();
+    } catch { /* no main on the remote yet */ }
     expect(log).toContain("e2e push commit");
     await snap("commit-push.png");
   });
@@ -1719,7 +1722,7 @@ describe("git multi-repo panel", () => {
         await window.__termic!.useApp.getState().loadAll();
       }, projectId);
     }
-    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    rmTree(tmp, { bestEffort: true });
   });
 
   /** The repo pills, in render order. There is exactly one Git panel in the
@@ -2191,7 +2194,7 @@ describe("pr card (#21)", () => {
       status: "cli-missing",
       message: "",
       pr: null,
-    }, ["need the gh CLI", "brew install gh"]);
+    }, ["need the gh CLI", process.platform === "win32" ? "winget install GitHub.cli" : "brew install gh"]);
   });
 
   it("tells the user to sign in when the CLI is unauthenticated", async () => {
@@ -2204,19 +2207,37 @@ describe("pr card (#21)", () => {
     }, ["Sign in to GitLab", "glab auth login"]);
   });
 
+  const NO_PR = {
+    provider: "github",
+    remote_url: "https://github.com/acme/widgets.git",
+    status: "ok",
+    message: "",
+    pr: null,
+  };
+
+  // Held in place like the others (seedPrAndWaitForText): a real lookup, now
+  // also fired on window focus, answers "unsupported-remote" for the fixture
+  // and takes the card away between the seed and the assertion.
   it("offers to create one when the branch has no PR", async () => {
-    await seedPr({
-      provider: "github",
-      remote_url: "https://github.com/acme/widgets.git",
-      status: "ok",
-      message: "",
-      pr: null,
-    });
-    await waitForText("No pull request yet");
+    await seedPrAndWaitForText(NO_PR, ["No pull request yet"]);
   });
 
   it("opens the create dialog from the card, prefilled", async () => {
-    await clickByText("Create");
+    // Re-seed and click in one step, until the dialog is up: the card's
+    // Create button only exists while the seeded lookup does.
+    await browser.waitUntil(async () => {
+      await browser.execute((id, lk) => {
+        window.__termic!.usePr.setState((s: any) => ({
+          byTask: { ...s.byTask, [id!]: { lookup: lk, loading: false, fetchedAt: Date.now() } },
+        }));
+      }, taskId, NO_PR);
+      return browser.execute(() => {
+        if (document.body.innerText.includes("Create pull request")) return true;
+        const btn = [...document.querySelectorAll("button")].find(b => b.textContent?.trim() === "Create");
+        (btn as HTMLElement | undefined)?.click();
+        return false;
+      });
+    }, { timeout: 15_000, interval: 300, timeoutMsg: "the card's Create never opened the dialog" });
     await waitForText("Create pull request");
     // Seeded from the fixture's last commit subject, not left blank.
     const title = await browser.execute(

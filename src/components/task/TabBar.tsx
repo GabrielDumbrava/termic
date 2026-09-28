@@ -1,6 +1,7 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task, Tab, TerminalTab } from "@/lib/types";
 import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { getAllLeaves } from "@/lib/splitTree";
@@ -25,10 +26,12 @@ import { delegatedTitle } from "@/lib/delegatedWork";
 import { BackgroundRing } from "@/components/ui/BackgroundRing";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
+import { kbd } from "@/lib/platform";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
 export function TabBar({ task }: { task: Task }) {
+  const { t } = useTranslation("task");
   const allTabsRaw = useTaskTabs(task.id);
   // Main strip shows only non-pane tabs (split-pane tabs live in SplitView).
   const tabs = allTabsRaw.filter(t => !(t as import("@/lib/types").TerminalTab).paneId);
@@ -245,7 +248,7 @@ export function TabBar({ task }: { task: Task }) {
               onSpawnShell={spawnShellTab}
               onScratchpad={() => { setOpen(false); void newScratchTab(task.id); }}
               onResume={resumeAndFocus}
-              onMore={() => { setOpen(false); setView("history"); }}
+              onMore={() => { setOpen(false); setView("history", { projectId: task.project_id }); }}
             />
           </DropdownMenu>
         </DropdownRoot>
@@ -254,7 +257,7 @@ export function TabBar({ task }: { task: Task }) {
 
       {/* Fixed control cluster — never scrolls; always reachable on the right. */}
       <div className="flex shrink-0 items-center gap-1 pl-1 pr-2">
-        <Tip content="Broadcast a message to all agents from this task (⇧⌘B)" side="bottom">
+        <Tip content={t("tabBar.broadcastTip", { combo: kbd("⇧⌘B") })} side="bottom">
           <Button
             size="icon" variant="icon" className="h-8 w-8"
             onClick={() => openBroadcast(task.id)}
@@ -273,10 +276,11 @@ export function TabBar({ task }: { task: Task }) {
 
 /** Button that creates a new vertical split pane to the right (⌘D). */
 function SplitPaneToggle({ taskId }: { taskId: string }) {
+  const { t } = useTranslation("task");
   const hasSplit = useApp(s => !!s.splitTree[taskId]);
   const splitPane = useApp(s => s.splitPane);
   return (
-    <Tip content="Split right (⌘D)" side="bottom">
+    <Tip content={t("tabBar.splitRightTip", { combo: kbd("⌘D") })} side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
         onClick={() => splitPane(taskId, 'v')}
@@ -289,10 +293,11 @@ function SplitPaneToggle({ taskId }: { taskId: string }) {
 
 /** Split the focused pane below (horizontal divider, ⇧⌘D). */
 function SplitBelowToggle({ taskId }: { taskId: string }) {
+  const { t } = useTranslation("task");
   const hasSplit = useApp(s => !!s.splitTree[taskId]);
   const splitPane = useApp(s => s.splitPane);
   return (
-    <Tip content="Split below (⇧⌘D)" side="bottom">
+    <Tip content={t("tabBar.splitBelowTip", { combo: kbd("⇧⌘D") })} side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
         onClick={() => splitPane(taskId, 'h')}
@@ -335,6 +340,8 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
   // progress bar removed — too many false positives in real-world TUIs.)
   const reason = tab.unread?.reason;
   const workState = tab.type === "terminal" ? tab.workState : undefined;
+  const { t } = useTranslation("task");
+  const { t: tChrome } = useTranslation("chrome");
   const queueRunning = tab.type === "terminal" && !!tab.queueActive;
   const agents = useApp(s => s.agents);
   // Experimental work-in-progress spinner — opt-in (Settings → Notifications).
@@ -360,7 +367,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
   // model loop has STOPPED and the spinner is waiting on a subagent, not
   // thinking; with `done` it says the turn ended and left a shell running.
   const delegated = tab.type === "terminal" ? tab.delegatedWork : null;
-  const delegatedText = delegated ? delegatedTitle(delegated) : "";
+  const delegatedText = delegated ? delegatedTitle(delegated, tChrome) : "";
   // Some of it came back, the rest runs on. Outranks done (it is the more
   // accurate statement about the same moment) but never a bell.
   const showPartial = workingIndicator && partialDoneIndicator && !showFailed && !showBell && !!delegated?.partial;
@@ -489,7 +496,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
       )}
       {/* Running message queue (ralph loop) — subtle accent marker. */}
       {queueRunning && (
-        <Repeat className="h-3 w-3 shrink-0 text-[var(--color-accent)]" aria-label="Message queue running" />
+        <Repeat className="h-3 w-3 shrink-0 text-[var(--color-accent)]" aria-label={t("tabBar.queueRunningAria")} />
       )}
       {isRenaming ? (
         <input
@@ -549,13 +556,13 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
             {running ? (
               <>
                 <button
-                  title="Restart run"
+                  title={t("tabBar.restartRunTip")}
                   onClick={rerun}
                   className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
                 ><RotateCw className="h-3 w-3" /></button>
                 {/* Stop matches the footer toolbar's Stop: error-red. */}
                 <button
-                  title="Stop"
+                  title={t("tabBar.stopTip")}
                   onClick={(e) => {
                     e.stopPropagation();
                     const ptyId = (tab as TerminalTab).ptyId;
@@ -566,7 +573,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
               </>
             ) : (
               <button
-                title="Run"
+                title={t("tabBar.runTip")}
                 onClick={rerun}
                 className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
               ><Play className="h-3 w-3" /></button>
@@ -601,12 +608,12 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
               className="absolute inset-0 flex items-center justify-center transition-opacity group-hover:opacity-0 [transform:translate3d(0,0,0)]"
             >
               {showFailed && (
-                <span className="text-[var(--color-err)]" title="Exited with an error, click Restart to retry">
+                <span className="text-[var(--color-err)]" title={t("tabBar.failedTip")}>
                   <AlertTriangle className="h-3.5 w-3.5" />
                 </span>
               )}
               {showBell && (
-                <span className="text-[var(--color-warn)]" title="Agent needs your input">
+                <span className="text-[var(--color-warn)]" title={tChrome("taskWorkBadge.attention")}>
                   <Bell className="h-3.5 w-3.5" strokeWidth={2.5} />
                 </span>
               )}
@@ -624,9 +631,9 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
               {!showPartial && showDone && (
                 <span
                   title={delegatedText
-                    ? `Agent finished a turn, ${delegatedText} still running`
-                    : "Agent finished a turn"}
-                  aria-label="Work done"
+                    ? tChrome("taskWorkBadge.doneDelegatedRunning", { held: delegatedText })
+                    : tChrome("taskWorkBadge.done")}
+                  aria-label={tChrome("taskWorkBadge.doneAria")}
                 >
                   <span
                     className="block h-2 w-2 rounded-full"
@@ -646,8 +653,8 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
               {showWorking && !showPartial && (
                 <span
                   className="text-[var(--color-fg-faint)]"
-                  title={ringInsteadOfSpinner ? delegatedText : "Agent working"}
-                  aria-label={ringInsteadOfSpinner ? delegatedText : "Working"}
+                  title={ringInsteadOfSpinner ? delegatedText : tChrome("taskWorkBadge.working")}
+                  aria-label={ringInsteadOfSpinner ? delegatedText : tChrome("taskWorkBadge.workingAria")}
                 >
                   {/* The ring, not the spinner, whenever the model has stopped
                       and only delegated work is outstanding. A turn waiting on
@@ -664,15 +671,15 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
             // tab is shown.
             <span
               data-testid="pad-unseen"
-              title="Updated since you last looked"
-              aria-label="Updated since you last looked"
+              title={t("tabBar.unseenTip")}
+              aria-label={t("tabBar.unseenTip")}
               className="absolute block h-2 w-2 rounded-full border-[1.5px] transition-opacity group-hover:opacity-0"
               style={{ borderColor: "var(--color-info)" }}
             />
           ) : tab.dirty && (
             <span
               aria-hidden
-              title="Unsaved changes"
+              title={t("tabBar.dirtyTip")}
               className="absolute h-[7px] w-[7px] rounded-full bg-[var(--color-fg-dim)] transition-opacity group-hover:opacity-0"
             />
           )}
@@ -683,7 +690,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
             // always on show when nothing outranks it, so pinned state can
             // never hide behind a status badge.
             <button
-              title="Unpin tab"
+              title={t("tabBar.unpinTip")}
               className={cn(
                 "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
                 slotTaken && "opacity-0 group-hover:opacity-100",
@@ -692,7 +699,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
             ><Pin className="h-3 w-3" /></button>
           ) : (
             <button
-              title="Close tab"
+              title={t("tabBar.closeTip")}
               className={cn(
                 "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
                 (!active || slotTaken) && "opacity-0 group-hover:opacity-100",

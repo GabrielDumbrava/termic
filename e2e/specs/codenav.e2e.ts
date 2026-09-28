@@ -20,6 +20,21 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fakeServer = path.join(here, "..", "fixtures", "fake-lsp.mjs");
 
+/** Install the fake server at `dest` the way the platform runs a repo-local
+ *  server: the script itself (shebang + exec bit) on unix, a `.cmd` launcher
+ *  on Windows, which cannot execute an extensionless script (termic looks up
+ *  `<dest>.cmd` there, as it does npm's own shims). Returns what to delete. */
+function installFakeServer(dest: string): string {
+  if (process.platform === "win32") {
+    const cmd = `${dest}.cmd`;
+    writeFileSync(cmd, `@node "${fakeServer}" %*\r\n`);
+    return cmd;
+  }
+  copyFileSync(fakeServer, dest);
+  chmodSync(dest, 0o755);
+  return dest;
+}
+
 /** The checkout the task reads: a main-checkout task runs in the repo root. */
 const taskPath = (taskId: string) =>
   browser.execute(
@@ -52,7 +67,7 @@ const modClickWord = (taskId: string, word: string) =>
     const coords = view.coordsAtPos(at + 1);
     const content = dom.querySelector(".cm-content") as HTMLElement;
     content.dispatchEvent(new MouseEvent("mousedown", {
-      bubbles: true, cancelable: true, button: 0, metaKey: true,
+      bubbles: true, cancelable: true, button: 0, [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true,
       clientX: Math.round(coords.left + 1), clientY: Math.round((coords.top + coords.bottom) / 2),
     }));
   }, taskId, word);
@@ -83,6 +98,50 @@ const isArmed = (root: string, server = "typescript") =>
 
 const clearGrants = () =>
   browser.execute(() => window.__termic!.useCodeIntel.setState({ grants: {} }));
+
+/** The host's own account of a server, for a failure message.
+ *
+ *  A red underline that never arrives has three causes that look identical on
+ *  screen: the binary was never resolved, it was resolved and would not start,
+ *  or it started and answered nothing. `lspStatus` separates the last two
+ *  (host.ts writes `starting`, then `failed` with the process's own words),
+ *  `lsp_offer` says which executable the resolver found, and `lsp_list` says
+ *  whether anything is alive on this checkout. On a CI runner nobody can
+ *  attach to, the assertion message is the only place that answer can arrive:
+ *  the Windows job spent two runs on "never became visible" alone. */
+const lspWhy = (root: string, server: string) =>
+  browser.execute(async (r, sv) => {
+    const t = window.__termic!;
+    const { useLspStatus, statusKey } = t.lspStatus as {
+      useLspStatus: { getState(): { byKey: Record<string, unknown> } };
+      statusKey: (root: string, server: string) => string;
+    };
+    const said = async (fn: () => Promise<unknown>) => {
+      try { return await fn(); } catch (e) { return `threw: ${String(e)}`; }
+    };
+    const servers = await said(() => t.invoke("lsp_list") as Promise<unknown>);
+    return JSON.stringify({
+      status: useLspStatus.getState().byKey[statusKey(r, sv)] ?? null,
+      offer: await said(() => t.invoke("lsp_offer", { root: r, language: sv }) as Promise<unknown>),
+      here: Array.isArray(servers) ? servers.filter((s: { root: string }) => s.root === r) : servers,
+    });
+  }, root, server);
+
+/** Wait for a diagnostic in this task, and say WHY if none comes.
+ *
+ *  Longer than the 15s default on purpose. This waits on a PROCESS starting,
+ *  and the first `.cmd` shim around node on a Windows runner took 6.8s from
+ *  `sent initialize` to its first byte, against 0.24s for every spawn after it
+ *  (termic-debug.log, run 36390843154). wdio.conf.ts now warms that path
+ *  before the suite, but a cold image loader on a shared runner is not
+ *  something a spec should be betting a case on either way. */
+const waitLintRange = async (taskId: string, root: string, server: string) => {
+  try {
+    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`, 40_000);
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nhost says: ${await lspWhy(root, server)}`);
+  }
+};
 
 const openFile = (taskId: string, rel: string) =>
   browser.execute((id, p) => {
@@ -142,8 +201,7 @@ describe("Terraform code intelligence", () => {
     taskId = await openTask("lsp-terraform");
     root = await taskPath(taskId);
     mkdirSync(path.join(root, "bin"), { recursive: true });
-    copyFileSync(fakeServer, path.join(root, "bin/terraform-ls"));
-    chmodSync(path.join(root, "bin/terraform-ls"), 0o755);
+    installFakeServer(path.join(root, "bin", "terraform-ls"));
     writeFileSync(path.join(root, files[0]), 'variable "Store" {\n  default = "demo"\n}\n');
     writeFileSync(path.join(root, files[1]), 'Store = "demo"\n');
     writeFileSync(path.join(root, files[2]), 'locals {\n  store = "demo"\n}\n');
@@ -164,7 +222,7 @@ describe("Terraform code intelligence", () => {
         for (const s of servers.filter(s => s.root === r && s.language === "terraform"))
           await t.invoke("lsp_stop", { id: s.id });
       }, root);
-      for (const rel of [...files, "bin/terraform-ls", ".fake-lsp.json"])
+      for (const rel of [...files, "bin/terraform-ls", "bin/terraform-ls.cmd", ".fake-lsp.json"])
         rmSync(path.join(root, rel), { force: true });
     }
     await setTypeChecking(false);
@@ -179,14 +237,24 @@ describe("Terraform code intelligence", () => {
     const catalog = await browser.execute(async () => await window.__termic!.invoke("lsp_catalog")) as
       Array<{ language: string; servers: Array<{ name: string }> }>;
     expect(catalog.find(c => c.language === "terraform")?.servers[0].name).toBe("terraform-ls");
+    // The offer must name the FIXTURE's binary, not a download. The resolver
+    // looks for `bin/terraform-ls` in the checkout, which on Windows means
+    // `bin\terraform-ls.cmd` through PATHEXT; a miss there arms the grant
+    // anyway and then starts nothing, which reads on screen as a server that
+    // came up and said nothing. Asserted here so it says so instead.
+    const offer = await browser.execute(async (r) =>
+      await window.__termic!.invoke("lsp_offer", { root: r, language: "terraform" }),
+    root) as { exe: string | null };
+    if (!offer.exe?.includes("terraform-ls"))
+      throw new Error(`terraform-ls not resolved under ${root}: offer ${JSON.stringify(offer)}`);
   });
 
   it("serves .tf and .tfvars through one grant with their own protocol ids", async () => {
     await chipAction("code-intel-turn-on-for-this-task");
-    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`);
+    await waitLintRange(taskId, root, "terraform");
     expect(await isArmed(root, "terraform")).toBe(true);
     await openSettled(taskId, files[1], "HCL");
-    await waitVisible(`[data-task-id="${taskId}"] .cm-lintRange-error`);
+    await waitLintRange(taskId, root, "terraform");
     const seen = JSON.parse(readFileSync(path.join(root, ".fake-lsp.json"), "utf8"));
     expect(seen.opened).toEqual(expect.arrayContaining([
       expect.objectContaining({ uri: expect.stringContaining(files[0]), languageId: "terraform" }),
@@ -204,7 +272,13 @@ describe("Terraform code intelligence", () => {
     for (const [file, language] of [[files[2], "HCL"], [files[3], "JSON"]]) {
       await openSettled(taskId, file, language);
       await waitGone('[data-testid="code-intel-chip"]');
-      const seen = JSON.parse(readFileSync(path.join(root, ".fake-lsp.json"), "utf8"));
+      // The transcript only exists if the server ran. Without this the case
+      // reports `ENOENT .fake-lsp.json`, which names the symptom of the case
+      // before it and says nothing about this one.
+      const transcript = path.join(root, ".fake-lsp.json");
+      if (!existsSync(transcript))
+        throw new Error(`no server transcript, so nothing was sent anywhere: ${await lspWhy(root, "terraform")}`);
+      const seen = JSON.parse(readFileSync(transcript, "utf8"));
       expect(seen.opened.some((d: { uri: string }) => d.uri.endsWith(file))).toBe(false);
     }
   });
@@ -224,8 +298,7 @@ describe("code intelligence", () => {
     // this spec needs — no production build flag, no test-only language.
     const bin = path.join(root, "node_modules", ".bin");
     mkdirSync(bin, { recursive: true });
-    copyFileSync(fakeServer, path.join(bin, "tsgo"));
-    chmodSync(path.join(bin, "tsgo"), 0o755);
+    installFakeServer(path.join(bin, "tsgo"));
     writeFileSync(path.join(root, "navme.ts"), "export const answer = 42;\n");
     // A SECOND file with the same basename, which the fixture reports one
     // usage in: two files called navme.ts is what makes the popup's row
@@ -262,8 +335,8 @@ describe("code intelligence", () => {
     ]) {
       rmSync(path.join(root, rel), { force: true });
     }
-    rmSync(path.join(root, "nested"), { recursive: true, force: true });
-    rmSync(path.join(root, "node_modules"), { recursive: true, force: true });
+    rmSync(path.join(root, "nested"), { recursive: true, force: true, maxRetries: 10 });
+    rmSync(path.join(root, "node_modules"), { recursive: true, force: true, maxRetries: 10 });
     // Never hand the next spec file a standing confirm: one is on screen at a
     // time, and an unanswered one blocks the whole window.
     await browser.execute(() => window.__termic!.useUI.getState().resolveConfirm(false));
@@ -452,7 +525,7 @@ describe("code intelligence", () => {
     // 1. The handshake carried BOTH roots. The CM client sends only rootUri;
     //    a server that reads only workspaceFolders (ruby-lsp) would otherwise
     //    index nothing, silently.
-    expect(seen.initialize.workspaceFolders[0].uri).toContain(root.split("/").pop());
+    expect(seen.initialize.workspaceFolders[0].uri).toContain(root.split(/[\\/]/).pop());
     expect(seen.initialize.rootUri).toContain("file://");
     // 2. The server→client request was answered, with the right ARITY. This
     //    is the reply the CM client would have sent -32601 to, and the one ty
@@ -497,7 +570,8 @@ describe("code intelligence", () => {
     await ensureActiveTask(taskId);
   });
 
-  it("lists the server in Activity, where it can be stopped", async () => {
+  // The Activity monitor is macOS / Linux only (procmon_other.rs).
+  (process.platform === "win32" ? it.skip : it)("lists the server in Activity, where it can be stopped", async () => {
     // These are the first thing termic runs that can cost more than every
     // agent in the window combined, so they are sampled like everything else
     // rather than described in a settings pane.
@@ -655,7 +729,7 @@ describe("code intelligence", () => {
         const view = dom!.__cmView;
         const rect = view.coordsAtPos(at);
         view.contentDOM.dispatchEvent(new MouseEvent("mousedown", {
-          bubbles: true, cancelable: true, metaKey: true, button: 0,
+          bubbles: true, cancelable: true, [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true, button: 0,
           clientX: rect.left + 1, clientY: (rect.top + rect.bottom) / 2,
         }));
       }, taskId, offset);
@@ -765,14 +839,14 @@ describe("code intelligence", () => {
     // Back returns to the CALL SITE, not to the previous definition. ⌘[ is
     // IntelliJ's key; it is Previous Task app-wide and claimed CONDITIONALLY
     // here, the same way a folder listing already claims it (issue #151).
-    await pressInEditor("[", { metaKey: true });
+    await pressInEditor("[", { [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true });
     await browser.waitUntil(async () => Math.abs((await head()) - startedAt) <= 1, {
       timeout: 10_000,
       timeoutMsg: "Back did not return to where the jump started",
     });
 
     // And Forward retraces it.
-    await pressInEditor("]", { metaKey: true });
+    await pressInEditor("]", { [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true });
     await browser.waitUntil(async () => (await head()) === 13, {
       timeout: 10_000, timeoutMsg: "Forward did not retrace the jump",
     });
@@ -790,7 +864,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", metaKey: true, bubbles: true, cancelable: true,
+        key: "F12", [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 10_000);
@@ -1045,11 +1119,11 @@ describe("code intelligence", () => {
     const titles = await browser.execute((sel) =>
       [...document.querySelectorAll(`${sel} .cm-lsp-usages-row`)].map(el => (el as HTMLElement).title), popup) as string[];
     expect(titles.length).toBe(3);
-    for (const t of titles) expect(t).toMatch(/^\/.*navme\.ts:\d+$/);
-    expect(titles[2]).toContain("/nested/navme.ts:");
+    for (const t of titles) expect(t).toMatch(/^(\/|[A-Za-z]:\\).*navme\.ts:\d+$/);
+    expect(titles[2]).toMatch(/[\\/]nested[\\/]navme\.ts:/);
     const footerTitle = await browser.execute((sel) =>
       (document.querySelector(`${sel} .cm-lsp-usages-footer`) as HTMLElement).title, popup) as string;
-    expect(footerTitle).toMatch(/^\/.*navme\.ts$/);
+    expect(footerTitle).toMatch(/^(\/|[A-Za-z]:\\).*navme\.ts$/);
 
     // Height assertions are relative to the room actually below the popup.
     // CodeMirror already shrinks a tooltip to the space under its anchor, and
@@ -1170,7 +1244,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", metaKey: true, bubbles: true, cancelable: true,
+        key: "F12", [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 15_000);
@@ -1185,7 +1259,7 @@ describe("code intelligence", () => {
       const content = dom.querySelector(".cm-content") as HTMLElement;
       content.focus();
       content.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "F12", metaKey: true, bubbles: true, cancelable: true,
+        key: "F12", [/^(mac|darwin)/i.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true,
       }));
     }, taskId);
     await waitVisible(`[data-task-id="${taskId}"] .cm-lsp-outline`, 10_000);
@@ -1247,7 +1321,19 @@ describe("code intelligence", () => {
         app.closeTab(id, tab.id);
       }
     }, taskId);
-    await browser.pause(2_500);
+    // Wait for the reap to have HAPPENED rather than for the time it usually
+    // takes. The thing that has to happen is WEBVIEW-side: the entry holding
+    // the client for the dead process has to go, or arming below is handed
+    // that client and spawns nothing ("no server to reap"). The host's
+    // `lsp_list` is the wrong question, and asking it cost this case on both
+    // runners: the process was already gone while the entry was still there.
+    // `__termicLspClients` is that map, put on globalThis by lib/lsp/host.ts
+    // precisely so there is one of it.
+    await browser.waitUntil(
+      () => browser.execute(() =>
+        ((globalThis as unknown as { __termicLspClients?: Map<string, unknown> }).__termicLspClients?.size ?? 0) === 0),
+      { timeout: 15_000, timeoutMsg: "the idle reap never released the abandoned client" },
+    );
 
     await armGrant(root, taskId);
     await openSettled(taskId, "navme.ts", "TypeScript");

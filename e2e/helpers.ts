@@ -10,6 +10,15 @@ import { fileURLToPath } from "node:url";
 import { dataDir } from "../wdio.conf.js";
 
 const socketPath = path.join(dataDir, "termic.sock");
+
+/** Connect to the app's control plane. Unix: the socket file itself. Windows:
+ *  the file holds the loopback `host:port` the app listens on
+ *  (termic_proto::local). */
+export function controlConnect(file: string = socketPath): net.Socket {
+  if (process.platform !== "win32") return net.createConnection(file);
+  const [host, port] = fs.readFileSync(file, "utf8").trim().split(/:(?=\d+$)/);
+  return net.createConnection({ host, port: Number(port) });
+}
 /** Per-boot CLI token, read fresh: the app rewrites it on every launch. */
 const cliToken = () => fs.readFileSync(path.join(dataDir, "cli-token"), "utf8").trim();
 
@@ -31,7 +40,10 @@ export function artifact(name: string): string {
  * no display / Screen-Recording permission.
  */
 export async function snap(name: string): Promise<void> {
-  if (process.env.CI) return;
+  // Skipped in CI, unless TERMIC_E2E_SNAP (a regex on the name) asks for it:
+  // a CI job sets it to look at a UI no one has on their own machine.
+  const want = process.env.TERMIC_E2E_SNAP;
+  if (process.env.CI && !(want && new RegExp(want).test(name))) return;
   try {
     await browser.saveScreenshot(artifact(name));
   } catch {
@@ -73,6 +85,12 @@ export interface TermicApi {
   useUsageUnknownDismissed: { getState: () => any; setState: (p: any) => void };
   /** `termic scratchpad`'s webview handler (src/lib/scratchCli.ts). */
   padHandler: (params: any) => Promise<any>;
+  /** The live i18next instance, for `rawI18nKeysOnScreen` (i18n.e2e.ts). */
+  i18n: {
+    exists: (key: string, opts?: any) => boolean;
+    language: string;
+    options: { ns?: string | string[] };
+  };
   ipc: any;
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any>;
   runTabs: any;
@@ -336,6 +354,21 @@ export async function clickMenuItemUntil(
           dialogs: [...document.querySelectorAll('[role="dialog"]')].map(
             (d) => `${box(d)} state=${d.getAttribute("data-state")}`,
           ),
+          // Everything above can be empty for two opposite reasons, and the
+          // shape "no menu, no item, no prompt" has now cost two CI runs
+          // without saying which. So: did the click LAND (a task appeared,
+          // or some other inline row is up), and where did focus end up?
+          // A row that mounted and was cancelled leaves focus somewhere
+          // telling; a click that never landed leaves it on the trigger.
+          tasks: window.__termic?.useApp.getState().tasks.length ?? -1,
+          inlineInputs: [...document.querySelectorAll("aside input")].map(
+            (i) => `${box(i)} ph=${(i as HTMLInputElement).placeholder}`,
+          ),
+          focus: (() => {
+            const a = document.activeElement as HTMLElement | null;
+            if (!a) return "none";
+            return `${a.tagName}${a.dataset?.testid ? `#${a.dataset.testid}` : ""}`;
+          })(),
         };
       },
       text,
@@ -1184,7 +1217,7 @@ export async function workBadges(taskId: string): Promise<Array<WorkBadge | null
  */
 export function cliRpc(cmd: Record<string, unknown>): Promise<any> {
   return new Promise((resolve, reject) => {
-    const c = net.createConnection(socketPath);
+    const c = controlConnect();
     let buf = "";
     const to = setTimeout(() => {
       c.destroy();
@@ -1229,11 +1262,13 @@ export function cliRpc(cmd: Record<string, unknown>): Promise<any> {
  *  `npm run build:cli`". */
 export function cliBinary(): string {
   const dir = path.resolve("src-tauri/binaries");
-  const triple = process.platform === "darwin"
-    ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
-    : (process.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu");
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const triple = process.platform === "darwin" ? `${arch}-apple-darwin`
+    : process.platform === "win32" ? `${arch}-pc-windows-msvc`
+    : `${arch}-unknown-linux-gnu`;
   const candidates = process.platform === "darwin"
     ? [`termic-cli-universal-apple-darwin`, `termic-cli-${triple}`]
+    : process.platform === "win32" ? [`termic-cli-${triple}.exe`]
     : [`termic-cli-${triple}`];
   for (const name of candidates) {
     const full = path.join(dir, name);
@@ -1333,3 +1368,288 @@ export function flushEditorMeasure(): Promise<number> {
     return flushed;
   }) as Promise<number>;
 }
+
+/**
+ * `rmSync(dir, { recursive, force })`, retried, that says who is in the way
+ * when it still fails. On Windows a directory some process is inside (its
+ * working directory, or an open handle) cannot be removed, and EBUSY names
+ * no process. The failure message then lists every process whose command
+ * line mentions termic or git, with its parent, which is usually enough to
+ * name the one that outlived its task.
+ */
+export function rmTree(dir: string, opts: { bestEffort?: boolean } = {}): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 });
+  } catch (e) {
+    if (process.platform !== "win32") throw e;
+    let procs = "";
+    try {
+      procs = execFileSync("powershell.exe", ["-NoProfile", "-Command",
+        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'termic|git|pwsh|bash|node' } | "
+        + "ForEach-Object { \"$($_.ProcessId) <- $($_.ParentProcessId) $($_.Name): $($_.CommandLine)\" }"],
+      { encoding: "utf8", timeout: 20_000 });
+    } catch (le) { procs = `(could not list processes: ${String(le)})`; }
+    const msg = `${(e as Error).message}\nprocesses at the time:\n${procs}`;
+    // A temp dir in the OS temp folder that outlives its test is harmless;
+    // `bestEffort` is for a case whose subject is not the cleanup.
+    if (opts.bestEffort) { console.warn(`rmTree left ${dir} behind: ${msg}`); return; }
+    throw new Error(msg);
+  }
+}
+
+/** The system clipboard's text: `pbpaste` on macOS, `Get-Clipboard` on
+ *  Windows (line endings back to `\n`, which is what the app wrote), `xclip`
+ *  on Linux. */
+export function readClipboard(): string {
+  if (process.platform === "linux") {
+    return execFileSync("xclip", ["-o", "-selection", "clipboard"], { encoding: "utf8" });
+  }
+  if (process.platform === "win32") {
+    return execFileSync("powershell.exe", ["-NoProfile", "-Command", "Get-Clipboard -Raw"], { encoding: "utf8" })
+      .replace(/\r\n/g, "\n");
+  }
+  return execFileSync("pbpaste", { encoding: "utf8" });
+}
+
+/** What the app calls the OS file manager (`FILE_MANAGER` in
+ *  src/lib/openExternal.ts), for specs asserting on menu and notice copy. */
+export const FILE_MANAGER_NAME =
+  process.platform === "darwin" ? "Finder" : process.platform === "win32" ? "File Explorer" : "File Manager";
+
+/** Translation keys that reached the screen as text.
+ *
+ *  A `<Trans>` or `t()` that names a key the active namespace does not hold
+ *  renders the KEY, which is not a crash, not a type error and not something
+ *  a spec asserting on one specific string ever sees: the PR card shipped
+ *  "pr.cliMissingBody" to users, and the clone dialog lost its whole
+ *  destination line, because the element that carries it lives inside the
+ *  translation.
+ *
+ *  Precise rather than pattern-matched: every dotted token on screen is
+ *  handed to i18next's own `exists`, so "package.json" and "1.9.1" are not
+ *  keys and a real key cannot hide behind a regex nobody updated.
+ */
+export async function rawI18nKeysOnScreen(): Promise<string[]> {
+  return await browser.execute(() => {
+    const i18n = window.__termic!.i18n;
+    const text = (document.body as HTMLElement).innerText ?? "";
+    const seen = new Set<string>();
+    for (const token of text.split(/[\s(){}\[\],;"'`]+/)) {
+      // A key path: camelCase segments separated by dots, nothing else.
+      if (!/^[a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+$/.test(token)) continue;
+      if (seen.has(token)) continue;
+      // EVERY namespace, not the default one: a key that renders raw is
+      // precisely a key the element looked for in the wrong namespace, so
+      // asking only the default would miss the whole bug class.
+      const all = i18n.options.ns;
+      const namespaces = Array.isArray(all) ? all : all ? [all] : [];
+      if (namespaces.some(ns => i18n.exists(token, { ns }))) seen.add(token);
+    }
+    return [...seen];
+  }) as string[];
+}
+
+/** Wait until a stopped task has no terminal left in the DOM.
+ *
+ *  `stopTask` clears the store synchronously, but the PTYs die with the React
+ *  unmount that follows, so re-activating in the same tick can re-mount a task
+ *  whose processes were never killed and get no respawn at all. The unmounted
+ *  pane is the observable end of that, which is why this waits for an element
+ *  to go rather than for a guessed number of milliseconds.
+ */
+export async function waitTaskUnmounted(taskId: string, timeout = 10_000): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute((id) => !document.querySelector(`[data-task-id="${id}"] .xterm`), taskId),
+    { timeout, timeoutMsg: `task ${taskId} still had a terminal mounted after it was stopped` },
+  );
+}
+
+/** Wait until `tabId` is the tab at the front of `taskId`: the store says it
+ *  is active AND its pane has been laid out, which is what typing into "the
+ *  visible terminal" depends on. */
+export async function waitTabInFront(taskId: string, tabId: string, timeout = 10_000): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute((id, tb) => {
+      if (window.__termic!.useApp.getState().activeTab[id] !== tb) return false;
+      const pane = document.querySelector(`[data-task-id="${id}"] [data-tab-id="${tb}"]`);
+      const r = pane?.getBoundingClientRect();
+      return !!r && r.width > 0 && r.height > 0;
+    }, taskId, tabId),
+    { timeout, timeoutMsg: `tab ${tabId} never came to the front of task ${taskId}` },
+  );
+}
+
+/** Wait until `taskId`'s first tab has seen no PTY output for `quietMs`.
+ *
+ *  The loop runs IN THE PAGE. Measured afterwards, that is NOT where the time
+ *  was (an `execute` round trip is 4ms here, so the polling it replaced cost
+ *  9ms of a 24s case); the win is legibility, and one command cannot
+ *  interleave with another spec's reads mid-wait. The slow waits were the
+ *  ELEMENT-command ones, which `waitForAttr` covers.
+ *
+ *  Still a condition, not a sleep: the wait ends when the bytes stop, and the
+ *  `quietMs` a caller passes is the app threshold it has to outlast (byte-quiet
+ *  at 4s, the settle window at 6s) for a "no badge appeared" assertion to mean
+ *  anything.
+ */
+export async function waitPtyQuiet(taskId: string, quietMs: number, timeout = 30_000): Promise<void> {
+  const quiet = await browser.execute(async (id, ms, cap) => {
+    const started = Date.now();
+    const since = () => {
+      const tab = window.__termic!.useApp.getState().tabs[id]?.[0];
+      return Date.now() - (tab?.lastOutputAt ?? 0);
+    };
+    while (Date.now() - started < cap) {
+      if (since() > ms) return true;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    return false;
+  }, taskId, quietMs, timeout);
+  if (!quiet) throw new Error(`PTY never went quiet for ${quietMs}ms within ${timeout}ms`);
+}
+
+/** Wait until `selector`'s `attr` reads `value`, in ONE WebDriver command per
+ *  poll.
+ *
+ *  `browser.$(sel)` then `isExisting()` then `getAttribute()` is three
+ *  ELEMENT commands, which are the expensive kind here (~2s each on this
+ *  offscreen window, against 4ms for a plain `execute`: measured, see
+ *  docs/e2e-tests.md). One such loop spent 24s watching an attribute that had
+ *  been correct for 23.9 of them.
+ */
+export async function waitForAttr(
+  selector: string,
+  attr: string,
+  value: string,
+  timeout = 20_000,
+): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute(
+      (sel, a, v) => document.querySelector(sel)?.getAttribute(a) === v,
+      selector, attr, value,
+    ),
+    {
+      timeout,
+      timeoutMsg: `${selector} never reported ${attr}="${value}" (last: `
+        + `${await browser.execute((sel, a) => document.querySelector(sel)?.getAttribute(a) ?? "<no element>", selector, attr)})`,
+    },
+  );
+}
+
+/** Set a controlled input the way React sees it, then fire its input event.
+ *
+ *  The in-page path, not `$(sel).setValue()`: an ELEMENT command on this
+ *  offscreen window is seconds, and two `$(sel).click()` calls alone were 58s
+ *  of one 60s case (measured, docs/e2e-tests.md). React also ignores a plain
+ *  `input.value = x`, which is why this goes through the prototype setter.
+ */
+export async function setInputValue(selector: string, value: string): Promise<void> {
+  const ok = await browser.execute((sel, v) => {
+    const input = document.querySelector(sel) as HTMLInputElement | HTMLTextAreaElement | null;
+    if (!input) return false;
+    // FOCUS first: `$(sel).setValue()` focuses as a side effect, and specs
+    // lean on it (`setInputValue(...)` then `browser.keys("Enter")` to commit
+    // a rename). Without it the keys land on whatever had focus and the edit
+    // is never submitted, which is silent: the value is right on screen.
+    input.focus();
+    const proto = input instanceof HTMLTextAreaElement
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(input, v);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }, selector, value);
+  if (!ok) throw new Error(`no input to set: ${selector}`);
+}
+
+/** `innerText` of the first match, in one `execute`. */
+export async function textOf(selector: string): Promise<string> {
+  return await browser.execute((sel) =>
+    (document.querySelector(sel) as HTMLElement | null)?.innerText ?? "", selector);
+}
+
+/** Click an element that is PRESENT but may not be visible, in the page.
+ *
+ *  For controls that only paint on hover (`opacity-0 group-hover:opacity-100`,
+ *  e.g. the project filter toggle): `clickWhenVisible` gates on opacity and so
+ *  waits forever, and `$(sel).click()` costs seconds on this window. The click
+ *  itself is what the hover would enable, so dispatch it directly.
+ */
+export async function clickPresent(selector: string, timeout = 15_000): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute((sel) => !!document.querySelector(sel), selector),
+    { timeout, timeoutMsg: `never appeared in the DOM: ${selector}` },
+  );
+  await browser.execute((sel) => { (document.querySelector(sel) as HTMLElement).click(); }, selector);
+}
+
+/** Put the UI language back to "no pick", the way a fresh machine has it.
+ *
+ *  NOT `setLanguage("system")`: that WRITES `uiLanguage=system`, and a written
+ *  pref beats the English default an e2e build applies when nothing is stored
+ *  (src/lib/i18n.ts, GH #338). On a zh-CN machine the stored value then puts
+ *  every later spec back into Chinese, and it follows the contributor home:
+ *  the WebView's localStorage is keyed by the app identifier, so an e2e binary
+ *  and an installed Termic share it. Removing the key restores both.
+ *
+ *  `applyLanguage` is still called so the live window re-renders, since only
+ *  the STORED pref is being cleared, not the running one.
+ */
+export async function clearLanguagePref(): Promise<void> {
+  await browser.execute(() => {
+    try { localStorage.removeItem("uiLanguage"); } catch { /* private mode */ }
+    window.__termic!.usePrefs.getState().setLanguage("system");
+    try { localStorage.removeItem("uiLanguage"); } catch { /* private mode */ }
+  });
+}
+
+/** `clickMenuItemUntil` for a result no CSS selector describes.
+ *
+ *  Same race, same cure: Radix remounts a menu's content when what it renders
+ *  changes, and a click dispatched into that remount lands on a node React is
+ *  replacing, so it does nothing and the menu just stays open. The sibling
+ *  helper stops when a `doneSelector` appears; this one stops when `ready()`
+ *  says so, for results that live in the store (a tab was added) or in text
+ *  (a submenu's entries painted).
+ *
+ *  Costs one extra `execute` per poll, which is 4ms (docs/e2e-tests.md), and
+ *  buys the nine-case cascade `tabs-layout.e2e.ts` loses on Linux whenever the
+ *  first click is swallowed.
+ *
+ *  `reopen` is the other half, and it is not optional in practice: a swallowed
+ *  click sometimes leaves the menu OPEN and sometimes CLOSES it, and in the
+ *  second case retrying the item is retrying nothing. The loop then spends its
+ *  whole timeout clicking a menu that is not on screen and fails with "never
+ *  produced its result", which is what the Linux runner reported on a repeat
+ *  run with eight cases behind it. Pass the opener and the retry covers both.
+ */
+export async function clickMenuItemUntilReady(
+  text: string,
+  ready: () => Promise<boolean>,
+  opts: { timeout?: number; reopen?: () => Promise<void> } = {},
+): Promise<void> {
+  const { timeout = 15_000, reopen } = opts;
+  await browser.waitUntil(
+    async () => {
+      if (await ready()) return true;
+      // Nothing to click: the menu closed under the last attempt. Put it back
+      // before spending another poll on an empty document.
+      if (reopen && !(await browser.execute((t) =>
+        [...document.querySelectorAll("[role='menuitem']")].some(
+          (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
+        ), text))) {
+        await reopen().catch(() => { /* a half-open menu is the next poll's problem */ });
+        if (await ready()) return true;
+      }
+      await browser.execute((t) => {
+        const el = [...document.querySelectorAll("[role='menuitem']")].find(
+          (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
+        );
+        if (el) (el as HTMLElement).click();
+      }, text);
+      return await ready();
+    },
+    { timeout, timeoutMsg: `menu item "${text}" never produced its result` },
+  );
+}
+

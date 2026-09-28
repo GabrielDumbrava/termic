@@ -78,14 +78,17 @@ function staticImports(code: string): string[] {
 /** Every module statically reachable from `main.tsx`, plus the first path by
  *  which each was reached (so a failure names the chain, not just the file). */
 function walk(): Map<string, string[]> {
-  const seen = new Map<string, string[]>([[ENTRY, [ENTRY]]]);
+  // Keys use `/` on every OS: the assertions below match suffixes like
+  // `lib/languages.ts`, and a Windows path would silently never match,
+  // passing the forbidden-import checks without checking anything.
+  const seen = new Map<string, string[]>([[norm(ENTRY), [norm(ENTRY)]]]);
   const queue = [ENTRY];
   while (queue.length) {
     const file = queue.shift()!;
-    const trail = seen.get(file)!;
+    const trail = seen.get(norm(file))!;
     for (const spec of staticImports(readFileSync(file, "utf8"))) {
       const next = resolveLocal(spec, file);
-      const key = next ?? spec;
+      const key = next ? norm(next) : spec;
       if (seen.has(key)) continue;
       seen.set(key, [...trail, key]);
       if (next) queue.push(next);
@@ -94,8 +97,13 @@ function walk(): Map<string, string[]> {
   return seen;
 }
 
+function norm(p: string) {
+  return p.replaceAll("\\", "/");
+}
+
 function rel(p: string) {
-  return p.startsWith(src) ? p.slice(src.length + 1) : p;
+  const root = norm(src);
+  return p.startsWith(root) ? p.slice(root.length + 1) : p;
 }
 
 describe("main chunk", () => {

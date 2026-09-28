@@ -395,7 +395,21 @@ fn bound_emits(script: &str) -> String {
             "{func} \"$TERMIC_PTY\" || {func} /proc/1/fd/1 || {func} /dev/tty || true"
         );
         if !func.is_empty() && rest == chain {
-            let call = chain.trim_end_matches(" || true");
+            let unix_call = chain.trim_end_matches(" || true");
+            // Windows host: `$TERMIC_PTY` is a named pipe (hook_pipe.rs),
+            // which Git Bash cannot open with `>`. The bundled CLI opens it
+            // properly, so the report goes through it. TERMIC_PTY_PIPE is set
+            // only on Windows host PTYs, so the same script inside a Docker
+            // container (Linux) takes the ordinary chain.
+            let windows_call;
+            let call = if cfg!(windows) {
+                windows_call = format!(
+                    "if [ -n \"$TERMIC_PTY_PIPE\" ]; then {func} /dev/stdout | \"$TERMIC_CLI\" hook-emit \"$TERMIC_PTY\"; else {unix_call}; fi"
+                );
+                windows_call.as_str()
+            } else {
+                unix_call
+            };
             out.push_str(&format!(
                 "{indent}( {call} ) </dev/null >/dev/null 2>&1 &\n\
                  {indent}termic_w=$!\n\
@@ -543,7 +557,13 @@ if [ "$agent" = agy ]; then
           case "$v" in ''|*[!0-9]*) ;; *) r=$((now + v)) ;; esac ;;
         esac
         [ "$f" = '-' ] && return
-        pct=$(awk -v f="$f" 'BEGIN { p = (1 - f) * 100; if (p < 0) p = 0; printf "%.2f", p }')
+        # LC_ALL=C, because awk's printf follows the locale: on a machine set
+        # to a comma-decimal locale (ro_RO, de_DE, fr_FR...) this prints
+        # "1,60", and the usage body is parsed as a bare number with a DOT
+        # (lib/agentUsage parseUsageBody), so the reading silently vanishes for
+        # everyone in half of Europe. Found by the Rust test failing on a
+        # ro_RO.UTF-8 box while CI, on C, was green.
+        pct=$(LC_ALL=C awk -v f="$f" 'BEGIN { p = (1 - f) * 100; if (p < 0) p = 0; printf "%.2f", p }')
         echo "$pct $r" ;;
     esac
   }
@@ -1953,9 +1973,11 @@ fn settings_rel(agent: &str) -> &'static str {
 /// would not resolve inside the cage.
 pub fn command_prefix(target: &Target) -> Result<String, String> {
     Ok(match target {
+        // Forward slashes on Windows: the agent runs the hook command
+        // through Git Bash, which would read `C:\\Users\\u` as escapes.
         Target::Host(_) => format!(
             "{}/",
-            config_dir(target)?.join(SCRIPT_DIR).to_string_lossy()
+            config_dir(target)?.join(SCRIPT_DIR).to_string_lossy().replace('\\', "/")
         ),
         Target::Docker(agent_id) => format!(
             "{}/{}/{}/",
@@ -2852,7 +2874,19 @@ pub fn remove(target: &Target) -> Result<(), String> {
 /// that reaches termic; see `event_for` / `uses_terminal_sequence`.
 pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin", "pi", "copilot", "muse"];
 
+/// Which agents' hooks work on this OS. Windows: claude only. Its hooks run
+/// through Git Bash, which the `.sh` scripts need, and reach the app
+/// through the named pipe + `termic hook-emit` (hook_pipe.rs). Which shell
+/// the other agents run hooks in on Windows is unmeasured
+/// (docs/ideas/windows.md, M3), and a `.sh` path under cmd does nothing.
+fn hooks_work_for(base: &str) -> bool {
+    !cfg!(windows) || base == "claude"
+}
+
 fn check_supported(agent_id: &str) -> Result<(), String> {
+    if !hooks_work_for(&base_of(agent_id)) {
+        return Err(format!("hooks for {agent_id} are not available on Windows yet"));
+    }
     // A duplicated agent is supported when what it was cloned FROM is. It runs
     // the same binary and reads the same config shape, and the only reason it
     // was rejected before is that this list holds built-in names.
@@ -3044,7 +3078,7 @@ pub fn agent_hooks_plan(agent_id: String) -> Result<HookPlan, String> {
 #[tauri::command]
 pub fn agent_hooks_status(agent_id: String) -> AgentHookStatus {
     AgentHookStatus {
-        supported: SUPPORTED.contains(&base_of(&agent_id).as_str()),
+        supported: hooks_work_for(&base_of(&agent_id)) && SUPPORTED.contains(&base_of(&agent_id).as_str()),
         host: status(&Target::Host(agent_id.clone())),
         docker: status(&Target::Docker(agent_id.clone())),
         agent_id,
@@ -3747,6 +3781,30 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         assert_eq!(emitted, format!("\x1b]{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}21000 500000\x07"));
     }
 
+    /// Every `awk` in the hook body formats under LC_ALL=C.
+    ///
+    /// awk's printf follows the locale, so "%.2f" is "1,60" on a
+    /// comma-decimal machine (ro_RO, de_DE, fr_FR...). The usage body is
+    /// parsed as a bare dotted number (lib/agentUsage `parseUsageBody`), so
+    /// such a reading is dropped and the footer shows nothing, for the user
+    /// and never for CI, which runs on C. Source-level because the locales
+    /// needed to reproduce it are not installed on a runner.
+    #[test]
+    fn every_awk_in_the_hook_body_is_locale_pinned() {
+        for agent in ["claude", "agy", "codex", "grok"] {
+            let body = statusline_body_for(agent);
+            for line in body.lines() {
+                // The CALL, not the word: the block above it explains why the
+                // maths is in awk at all, and a comment is not a formatter.
+                let Some(at) = line.find("awk -v") else { continue };
+                assert!(
+                    line[..at].contains("LC_ALL=C"),
+                    "{agent}: awk without LC_ALL=C formats numbers in the user's locale: {line}",
+                );
+            }
+        }
+    }
+
     /// agy: claude-shaped context, plus a `quota` of REMAINING fractions per
     /// bucket, picked by model family. 0.984 remaining is 1.6% used.
     #[test]
@@ -3912,7 +3970,15 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     fn bound_emits_wraps_every_chain_and_nothing_else() {
         let src = "a\n  emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty || true\nexit 0\n";
         let out = bound_emits(src);
-        assert!(out.starts_with("a\n  ( emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty ) </dev/null >/dev/null 2>&1 &\n"), "{out}");
+        // Windows routes a host PTY's report through `termic hook-emit` and
+        // keeps the ordinary chain for a Docker container (hook_pipe.rs).
+        let chain = "emit \"$TERMIC_PTY\" || emit /proc/1/fd/1 || emit /dev/tty";
+        let call = if cfg!(windows) {
+            format!("if [ -n \"$TERMIC_PTY_PIPE\" ]; then emit /dev/stdout | \"$TERMIC_CLI\" hook-emit \"$TERMIC_PTY\"; else {chain}; fi")
+        } else {
+            chain.to_string()
+        };
+        assert!(out.starts_with(&format!("a\n  ( {call} ) </dev/null >/dev/null 2>&1 &\n")), "{out}");
         assert!(out.contains("  ( sleep 2; kill \"$termic_w\" )"));
         assert!(out.ends_with("exit 0\n"));
         // Every generated script is bounded: no bare chain survives.
@@ -4767,6 +4833,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
     /// `ready_output_for` with extra env for the hook process. The entrypoint
     /// is always cleared first: the test runner may itself be running under
     /// claude, whose value would otherwise decide the case.
+    #[cfg(unix)]
     fn ready_output_with_env(agent: &str, payload: &str, extra: &[(&str, &str)]) -> String {
         use std::io::Read;
         use std::process::{Command, Stdio};

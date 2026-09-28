@@ -64,8 +64,12 @@ Tests run **on a real Mac only** — they launch a GUI window.
 
 ## CI
 
-An `e2e` job in `.github/workflows/test.yml` runs the suite on `macos-14` for
-PRs and pushes to `main`. It is **not a required check yet** — it's there to
+The suite runs on all three platforms for PRs and pushes to `main`: `e2e`
+(`macos-14`) and `e2e-linux` (WebKitGTK under Xvfb, `ubuntu-22.04`) in
+`.github/workflows/test.yml`, and the Windows job (WebView2) in
+`.github/workflows/windows.yml`. Specs for a feature a platform does not have
+are excluded in `wdio.conf.ts` (Touch ID off macOS, the Activity monitor on
+Windows). None is a **required check yet**: they are there to
 surface flakiness under CI so we can harden it before gating merges. The
 gitignored `.e2e/` fixture profile is recreated by `node scripts/e2e-seed.mjs`
 (templates in `scripts/e2e-seed/`); screenshots are skipped when `CI` is set
@@ -87,6 +91,47 @@ left a worktree behind, and every later run then failed on `a worktree already
 lives at …` (or, once the directory was gone but the registration was not,
 `branch … is already checked out elsewhere`). `seed()` now wipes that directory
 and prunes the fixture repo's worktrees on every run.
+
+### The language: an e2e build defaults to English, and writes no pref
+
+The suites assert on English catalog text ("Dashboard", the open-with toast),
+and the app's language pref defaults to `system`, which follows
+`navigator.language`. On a zh-CN machine every user-visible string rendered in
+Chinese and those assertions failed in a way no code change caused — which is
+why `src/lib/i18n.ts` defaults the pref to `en` when `VITE_E2E` is set and
+nothing is stored. An explicit choice from the settings picker still wins, in
+both builds.
+
+It defaults rather than **writes** because the app data dir is not the only
+store an e2e run touches: the WebView's `localStorage` lives under the app
+identifier (`com.simion.termic`), shared by an installed build and an e2e
+binary on the same machine. A written pin would have switched the user's own
+app's language. Same reason a spec that flips a localStorage-backed pref
+should restore it afterwards — `recentTasks` is shared the same way.
+
+### Windows: the staged sidecar must be the DEBUG one, or every `runCli` dies
+
+`runCli` passes `TERMIC_DATA_DIR`, and the CLI honors it **only in a debug
+build** (`cfg!(debug_assertions)`, `termic-cli/src/client.rs`) — a release
+sidecar looks in the real app's data dir, finds no socket there, and every
+`--no-launch` call fails with "Termic must be open", taking down every
+describe that drives the CLI (task groups, spawn links) with cascading
+`undefined` failures after the first one. The app side is fine; only the CLI
+is misdirected.
+
+Which sidecar lands in `src-tauri/binaries/` is a race between two writers:
+`beforeBuildCommand` stages a **release** one (`scripts/build-cli.mjs`, right
+for bundling), and `src-tauri/build.rs` re-stages one matching the app's
+profile — debug for `npm run e2e:build` — but only when cargo actually reruns
+the build script. A FRESH checkout always reruns it and lands debug, which is
+why CI never sees this; an incremental machine can skip it and keep the
+release one `beforeBuildCommand` just wrote. Symptom check: the staged
+`termic-cli-<triple>.exe` is ~2.6MB (release), not ~4MB (debug). Fix:
+
+```sh
+cp src-tauri/target/debug/termic-cli.exe \
+   "src-tauri/binaries/termic-cli-x86_64-pc-windows-msvc.exe"
+```
 
 It also deletes every branch but `main` in the fixture and its bare origin
 (then `fetch --prune`), keeping any branch a worktree still has checked out.
@@ -141,7 +186,19 @@ fuzzy):
 
 1. **Never sleep.** No `setTimeout`/fixed waits. Use `browser.waitUntil(...)`
    or an auto-retrying `expect(...)`. Every wait is a *condition*, not a
-   duration.
+   duration. If you are about to write `browser.pause(n)`, name the thing you
+   are waiting for and poll THAT: the pane leaving the DOM
+   (`waitTaskUnmounted`), the tab reaching the front (`waitTabInFront`), the
+   host's own list emptying (`invoke("lsp_list")`). A duration that is long
+   enough on your Mac is a coin flip on a loaded CI runner, and it is slower
+   every run in exchange.
+
+   **The one legitimate `pause`** is a wait whose subject IS time: proving
+   something did NOT happen (a negative assertion needs a window for the
+   thing to fail to happen in), or outlasting a timer the app itself owns (a
+   500 ms debounce, `SURVIVE_MS`, a grace period). Those read as
+   `await browser.pause(GRACE_MS * 2)` next to a comment saying which clock
+   is being outlasted. Everything else is a condition you have not named yet.
 2. **Assert on state, not pixels.** Screenshots are for humans to eyeball, not
    for assertions. Assert DOM text/attributes, or app state.
 3. **Terminal content is NOT in the DOM.** xterm renders to a WebGL canvas —
@@ -296,12 +353,45 @@ Measured on `agent.e2e.ts`, 73 tests: **11 of them were 315s of 470s**, and
 
 Two causes, and only one of them is fixable:
 
-**A WebDriver command costs roughly two seconds here.** Not the app, the
-protocol round trip. A case that read one chip through fifteen
-`getAttribute` / `getText` calls took 50s; the same assertions read in a
-single `browser.execute` returning an object took 20s. Batch reads that
-belong to one moment. It is also more correct: fifteen round trips describe
-the DOM across fifteen seconds, which is a slideshow, not a snapshot.
+**ELEMENT commands cost seconds; `browser.execute` costs milliseconds.**
+Measured on this stack, not estimated: 50 sequential `browser.execute` calls
+ran in 201ms, **4ms each**, and one holding a 1s timer in the page took
+1015ms. So the protocol itself is not slow. What is slow is WebdriverIO's
+ELEMENT layer (`$`, `$$`, `getAttribute`, `isExisting`, `getText`,
+`waitForExist`, `waitForDisplayed`), which resolves elements over the wire
+and, on our offscreen window, drags in Tauri window-state calls; that is the
+same reason `waitVisible` here does its own visibility check inside a single
+`execute` instead of calling `isDisplayed`.
+
+An earlier version of this section said "a WebDriver command costs roughly
+two seconds", which read as ALL commands and sent one optimisation pass
+chasing `execute` polls that were never the problem (it moved a poll into
+the page and won 9ms of 24s). Read it as: batch element work into one
+`execute`, and poll with `execute` freely.
+
+The case that made the difference: a poll written as `browser.$(sel)` then
+`isExisting()` then `getAttribute()` spent **24s watching an attribute that
+had been correct for 23.9 of them** (in-page marks: store at 41ms, DOM at
+51ms, spec noticed at 23.9s). `waitForAttr` in helpers.ts is that poll in one
+`execute`. Converting five such loops took `agent.e2e.ts`'s notifications
+block from 3m27 to 1m20 and the file from 8m53 to 6m47.
+
+`waitForExist` on an element an earlier case ALREADY put on screen is worse
+than slow, it is wrong: it returns at once and the read after it races the
+update. Wait for the value (`waitForAttr`), not the node.
+
+**Tried and reverted: shortening the sticky-done window.** The three
+two-stage cases (~20-27s each) idle 16s in the fixture to let a premature
+done expire, so an override looked like the obvious win: `stickyDoneMs` in
+localStorage, read by the one function both the store's gate and the pane's
+token consult, fixture gap passed as `#stage <seconds>`. It does not pay.
+The 16s is not sized by the 8s sticky window alone: the settle is 2 samples
+of a 3s sampler, so the done it is waiting to take back lands up to ~9s
+after the idle title, and the gap has to clear THAT and then the window. At
+a 2s window and a 12s gap the title case failed outright ("the agent never
+went back to work") and the pair ran no faster than the 45.3s they take
+unmodified. The only remaining lever is the settle cadence itself, which is
+the work-done detector, and that is not worth 8 seconds of a 10-minute run.
 
 **The rest is the app's own timers, and it is not waste.** `SETTLE_MS` is
 5s, `STICKY_DONE_MS` 8s, byte-quiet 4s, and a case proving a badge does NOT

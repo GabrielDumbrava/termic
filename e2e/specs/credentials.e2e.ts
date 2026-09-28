@@ -4,6 +4,7 @@ import { dataDir } from "../../wdio.conf.js";
 import {
   clickWhenVisible, dismissOverlays, requireTermicApi, snap, waitForText,
   waitForAppShell, waitVisible, waitGone, submitToAgent, waitForAgentReady,
+  waitTaskUnmounted,
 } from "../helpers";
 
 // The account switcher (GH #278): several credential sets per agent, and a
@@ -164,7 +165,7 @@ async function respawn(taskId: string): Promise<void> {
     s.stopTask(id);
     s.setActiveTask(null);
   }, taskId);
-  await browser.pause(300);
+  await waitTaskUnmounted(taskId);
   await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
 }
 
@@ -194,7 +195,7 @@ function signIn(agent: string, name: string): void {
  *  an account the previous case had signed in. Untracked files a spec creates
  *  are the spec's to remove. */
 function signOutAll(agent: string): void {
-  rmSync(join(dataDir, "logins", agent), { recursive: true, force: true });
+  rmSync(join(dataDir, "logins", agent), { recursive: true, force: true, maxRetries: 10 });
 }
 
 /** Forget every usage reading. In-memory only, so this is the whole reset.
@@ -399,8 +400,8 @@ describe("agent credentials", () => {
           async () => (await loginEnvFor(taskId, envVar)) || false,
           { timeout: 30_000, timeoutMsg: `${agent}: the spawn never recorded ${envVar}` },
         );
-        expect(first).toContain("/logins/");
-        expect(first.endsWith(`/${agent}/work`)).toBe(true);
+        expect(first.replace(/\\/g, "/")).toContain("/logins/");
+        expect(first.replace(/\\/g, "/").endsWith(`/${agent}/work`)).toBe(true);
 
         // Switch to the other real store and respawn: the NEXT process gets a
         // DIFFERENT directory. A running process cannot have its environment
@@ -410,7 +411,7 @@ describe("agent credentials", () => {
         const second = await browser.waitUntil(
           async () => {
             const v = await loginEnvFor(taskId, envVar);
-            return v && v.endsWith("/client") ? v : false;
+            return v && v.replace(/\\/g, "/").endsWith("/client") ? v : false;
           },
           { timeout: 30_000, timeoutMsg: `${agent}: the respawn did not pick up the switch` },
         );
@@ -950,7 +951,8 @@ describe("agent credentials", () => {
   // puts in, and no plan usage at all. "Usage unknown" used to be gated on
   // usage alone, so this agent's footer was empty forever with nothing saying
   // that installing hooks is what fills it.
-  it("offers the hooks install for an agent whose only readout is the context window", async () => {
+  // A grok-based agent: agent hooks are claude-only on Windows (docs/windows.md).
+  (process.platform === "win32" ? it.skip : it)("offers the hooks install for an agent whose only readout is the context window", async () => {
     await resetUsage();
     await browser.execute(async (a) => {
       const t = window.__termic!;

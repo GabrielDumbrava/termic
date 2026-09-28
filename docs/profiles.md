@@ -224,14 +224,20 @@ every other profile's PTY bytes, setup logs, grep hits and CLI requests.
 Routing is derivable (task → project → profile → window), so nothing is tracked,
 but the derivation must not touch disk on a hot path:
 
-- **`pty://` and `pty-exit://` resolve at SPAWN.** `pty_spawn` already loads the
-  task for the Docker branch, so the hottest path in the app pays nothing per
-  chunk.
+- **`pty*://` resolves at SPAWN and `grep-*://` at search start.** Their
+  topics carry a PTY id and a per-keystroke search id, not a task id, so a
+  lookup by topic could never find them. `pty_spawn` and `task_grep_start`
+  already hold the task, take its label there and emit with `emit_to_window`,
+  so the hottest path in the app does no disk IO per chunk. Until this was
+  fixed every PTY flush missed and re-read every task file; see
+  [performance.md](performance.md) bear trap 12.
 - **Everything else goes through `emit_scoped`,** which parses the task id out
-  of the TOPIC (`setup-done://<id>`, `script-output://<id>:<member>:<kind>`,
-  `grep-done://<id>`) and looks it up in a memo. A task never changes profile,
-  so an entry is permanent; the memo is dropped when a task is deleted or the
-  registry changes, the only two ways a cached label goes stale.
+  of the TOPIC (`setup-done://<id>`, `script-output://<id>:<member>:<kind>`)
+  and looks it up in a memo. A task never changes profile, so an entry is
+  permanent. A miss is remembered too, and `save_task` seeds the entry for
+  every task it writes, so a task created after a miss still resolves. An entry
+  is dropped when its task is deleted, and the whole memo when the registry
+  changes.
 - **An unresolvable id BROADCASTS.** That is the pre-profiles behaviour, and a
   far better failure than an event reaching no window at all.
 - **`docker-build://` and `termic://windowless` stay broadcasts.** One image and

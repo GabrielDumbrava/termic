@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 // End-to-end config for the termic app. WebdriverIO drives the REAL macOS
 // WKWebView window via @wdio/tauri-service's embedded WebDriver provider
@@ -14,7 +15,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFile
 // invasive, flake-prone app-side port→datadir mapping. Stability wins.
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
-const appBinary = path.join(repoRoot, "src-tauri", "target", "debug", "termic");
+const appBinary = path.join(repoRoot, "src-tauri", "target", "debug", process.platform === "win32" ? "termic.exe" : "termic");
 /** Exported so specs that need the control socket agree with the launcher. */
 export const dataDir = path.join(repoRoot, ".e2e", "profile");
 /** Where `TERMIC_E2E_TIMING=1` writes per-test durations. */
@@ -26,6 +27,13 @@ export const config: WebdriverIO.Config = {
   tsConfigPath: path.join(repoRoot, "e2e", "tsconfig.json"),
 
   specs: [path.join(repoRoot, "e2e", "specs", "**", "*.e2e.ts")],
+  // Specs for features a platform does not have: Touch ID for sudo is
+  // macOS only, and the Activity monitor (procmon) is macOS / Linux, not
+  // Windows (docs/windows.md).
+  exclude: [
+    ...(process.platform === "darwin" ? [] : ["sudo-touchid"]),
+    ...(process.platform === "win32" ? ["activity"] : []),
+  ].map(n => path.join(repoRoot, "e2e", "specs", `${n}.e2e.ts`)),
   maxInstances: 1,
 
   // `tauri:options` is a VENDOR capability extension that the embedded
@@ -92,6 +100,7 @@ export const config: WebdriverIO.Config = {
     // each other's notes in a strip they expected to be empty.
     rmSync(path.join(dataDir, "scratch"), { recursive: true, force: true });
     seedArchive();
+    warmTheLoader();
     if (process.env.TERMIC_E2E_TIMING) rmSync(timingLog, { force: true });
   },
 
@@ -102,12 +111,47 @@ export const config: WebdriverIO.Config = {
    *  which case costs the minutes is how you end up optimising a 300ms
    *  sleep in a seven minute file. Off by default: it writes a file and
    *  nobody needs it on a normal run. */
-  afterTest(test, _context, result) {
+  async afterTest(test, _context, result) {
+    // Opt-in failure capture (`TERMIC_E2E_FAIL_CAPTURE=1`, set by the Windows
+    // workflow): a screenshot and the visible text of the window at the
+    // moment a case failed, into the artifacts dir CI uploads. On a runner
+    // nobody can look at, it is the only record of what the screen showed.
+    if (process.env.TERMIC_E2E_FAIL_CAPTURE && !(result as { passed?: boolean }).passed) {
+      const slug = `${test.parent} ${test.title}`.replace(/[^A-Za-z0-9]+/g, "-").slice(0, 120);
+      try { await browser.saveScreenshot(path.join(artifactsDir, `FAIL-${slug}.png`)); } catch { /* no display */ }
+      try {
+        const text = await browser.execute(() => document.body?.innerText?.slice(0, 20_000) ?? "");
+        writeFileSync(path.join(artifactsDir, `FAIL-${slug}.txt`), String(text));
+      } catch { /* app gone */ }
+    }
     if (!process.env.TERMIC_E2E_TIMING) return;
     const ms = (result as { duration?: number }).duration ?? 0;
     appendFileSync(timingLog, `${String(ms).padStart(7)}  ${test.parent} > ${test.title}\n`);
   },
 };
+
+/** Pay the cold-start cost of `cmd.exe` + `node` before anything is timed.
+ *
+ *  Windows only, and measured: the FIRST language server the suite starts is
+ *  a `.cmd` shim around node, and it took 6.8s from `sent initialize` to the
+ *  server's first byte (termic-debug.log, run 36390843154). Every later spawn
+ *  in the same run took 0.24s. Nothing about the second one is different
+ *  except that the image loader and Defender have already seen cmd.exe and
+ *  node.exe, so the first case to need a server pays for all of them and
+ *  races its own wait; the two Terraform cases have failed that race twice
+ *  and passed it twice.
+ *
+ *  Warming it here moves that one-off cost outside every timeout in the
+ *  suite. Best effort: a runner without node on PATH would not be running
+ *  this file at all, and if the probe fails the suite is no worse off. */
+function warmTheLoader(): void {
+  if (process.platform !== "win32") return;
+  try {
+    execFileSync("cmd.exe", ["/c", "node", "-e", "0"], { stdio: "ignore", timeout: 60_000 });
+  } catch {
+    /* the first real spawn pays it instead, exactly as before */
+  }
+}
 
 /** Archived task records, written straight to disk before the run.
  *

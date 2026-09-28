@@ -2,7 +2,13 @@
 // grouped into the same folders the sidebar shows. Designed so the empty state
 // and the populated state share the same shape — adding a project doesn't yank
 // you somewhere else.
+//
+// Task rows inside a project card render FLAT on purpose: the sidebar keeps
+// the task-group rail, collapse and the drag gestures, and each row carries
+// the spawned-by mark (`suppressInGroup={false}`) instead — on this surface
+// nothing else says who started whom.
 
+import { useTranslation, Trans } from "react-i18next";
 import { useApp, selectTaskTabs } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
@@ -11,6 +17,7 @@ import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "@/components/sidebar/GroupActionsMenuItems";
+import { SpawnedFromMark } from "@/components/sidebar/SpawnLinks";
 import { taskLabel } from "@/lib/taskLabel";
 import { taskWorkBadge, taskDelegatedWork } from "@/lib/taskWorkState";
 import { groupOf, projectSections, sortSectionsActiveFirst } from "@/lib/projectGroups";
@@ -45,6 +52,7 @@ import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/compo
 import { ProjectActionsMenuItems } from "@/components/sidebar/ProjectActionsMenuItems";
 
 export function Dashboard() {
+  const { t } = useTranslation("chrome");
   const projects     = useApp(s => s.projects);
   const tasks        = useApp(s => s.tasks);
   const setActive    = useApp(s => s.setActiveTask);
@@ -98,7 +106,7 @@ export function Dashboard() {
             return <TermicBlockmark cellSize={10} gap={2} animate={shouldAnimate} />;
           })()}
           <div className="text-[11.5px] uppercase tracking-[0.3em] text-[var(--color-fg-faint)]">
-            Home for your CLI coding agents
+            {t("dashboard.tagline")}
           </div>
         </header>
 
@@ -106,20 +114,20 @@ export function Dashboard() {
         <div className="mb-10 grid grid-cols-3 gap-3">
           <ActionCard
             icon={<FolderPlus className="h-5 w-5" />}
-            label="Add project"
-            hint="Pick a git repo on disk"
+            label={t("dashboard.addProject")}
+            hint={t("dashboard.addProjectHint")}
             onClick={openNewProject}
           />
           <ActionCard
             icon={<Compass className="h-5 w-5" />}
-            label="Discover repos"
-            hint="Scan your repos folder"
+            label={t("dashboard.discover")}
+            hint={t("dashboard.discoverHint")}
             onClick={openNewProject /* same dialog shows discovery */}
           />
           <ActionCard
             icon={<SettingsIcon className="h-5 w-5" />}
-            label="Settings"
-            hint="Fonts, agents, theme"
+            label={t("dashboard.settingsCard")}
+            hint={t("dashboard.settingsHint")}
             onClick={() => openSettings()}
           />
         </div>
@@ -129,7 +137,7 @@ export function Dashboard() {
             the screen. */}
         {recent.length > 0 && (
           <div className="mb-8" data-testid="dashboard-recents">
-            <h2 className="mb-3 text-[14px] font-semibold">Recent</h2>
+            <h2 className="mb-3 text-[14px] font-semibold">{t("dashboard.recent")}</h2>
             <div className="flex flex-wrap gap-2">
               {recent.map(w => (
                 <RecentChip
@@ -150,7 +158,7 @@ export function Dashboard() {
         ) : (
           <>
             <div className="mb-3 flex items-baseline justify-between">
-              <h2 className="text-[14px] font-semibold">Projects</h2>
+              <h2 className="text-[14px] font-semibold">{t("dashboard.projects")}</h2>
               <span className="text-[12px] text-[var(--color-fg-faint)]">{projects.length}</span>
             </div>
             <div className="flex flex-col gap-3">
@@ -274,12 +282,15 @@ function DashboardProjectCard({ project, tasks, ctx, onSettings }: {
   ctx: TaskRowContext;
   onSettings: () => void;
 }) {
+  const { t } = useTranslation("chrome");
   const taskList = tasks.filter(w => w.project_id === project.id && !w.archived);
   return (
     <ProjectCard projectId={project.id} name={project.name} onSettings={onSettings}>
       {taskList.length === 0 ? (
         <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
-          Nothing here yet. Click <b>+</b> to start a new worktree or open the <b>main checkout</b>.
+          {/* The source copy marks up "+" and "main checkout" in bold; Trans
+              keeps the tags in the locale string without dangerouslySetInnerHTML. */}
+          <Trans t={t} i18nKey="dashboard.emptyProject" components={{ b: <b /> }} />
         </div>
       ) : (
         <div className="flex flex-col">
@@ -299,6 +310,7 @@ function DashboardProjectCard({ project, tasks, ctx, onSettings }: {
 // (`selectTaskTabs`), the way the sidebar's TaskRow does. Selecting the whole
 // `tabs` record here would re-run this list on every keystroke in every task.
 function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext }) {
+  const { t } = useTranslation("chrome");
   const setActive = useApp(s => s.setActiveTask);
   const tabs      = useApp(selectTaskTabs(w.id));
   const { agents, useBranchAsTaskName } = ctx;
@@ -311,6 +323,9 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
   // it the same task reads as a plain spinner here and a ring there, which is
   // the drift `taskWorkBadge` exists to prevent.
   const held = taskDelegatedWork(tabs, ctx.workPrefs);
+  // The sidebar's `(n)` signal: MAIN terminal tabs only (a split pane is not
+  // a separate tab), shown from two up.
+  const mainTabCount = tabs.filter(t => t.type === "terminal" && !t.paneId).length;
 
   return (
     // A div with a button role, not a <button>: the PR chip is itself a button
@@ -351,12 +366,23 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
         <span className="min-w-0 shrink truncate font-mono text-[12.5px] font-medium">{w.branch}</span>
       ) : (
         <>
-          <span className="min-w-0 shrink truncate font-medium text-[13px]" title={taskLabel(w, useBranchAsTaskName) === w.name ? undefined : `Task name: ${w.name}`}>{taskLabel(w, useBranchAsTaskName)}</span>
-          <span className="shrink-0 text-[12.5px] text-[var(--color-fg-faint)]">on</span>
+          <span className="min-w-0 shrink truncate font-medium text-[13px]" title={taskLabel(w, useBranchAsTaskName) === w.name ? undefined : t("taskNameTitle", { name: w.name })}>{taskLabel(w, useBranchAsTaskName)}</span>
+          <span className="shrink-0 text-[12.5px] text-[var(--color-fg-faint)]">{t("unifiedBar.onBranch")}</span>
           <span className="min-w-0 shrink font-mono text-[12px] text-[var(--color-fg-dim)] truncate">{w.branch}</span>
         </>
       )}
       <TaskLocationIcon isMainCheckout={w.is_main_checkout} className="self-center" />
+      {/* No group rail here, so unlike the sidebar EVERY spawned child is
+          marked — the sidebar suppresses the mark for a child inside its
+          parent's drawn group, whose rail already says it. */}
+      {w.spawned_by && <SpawnedFromMark task={w} suppressInGroup={false} />}
+      {/* Multi-terminal count, same trigger and style as the sidebar's row:
+          a task with several terminals reads as one otherwise. */}
+      {mainTabCount > 1 && (
+        <span className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-fg-dim)]">
+          ({mainTabCount})
+        </span>
+      )}
       {/* Live signals, right-aligned so a row with none is unchanged. Both
           are read-only here: the PR chip renders what the poller already
           resolved and never kicks a fetch of its own. */}
@@ -424,6 +450,7 @@ function ProjectCard({ projectId, name, onSettings, children }: {
   onSettings: () => void;
   children: React.ReactNode;
 }) {
+  const { t } = useTranslation("chrome");
   return (
     <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]" data-dashboard-project-id={projectId}>
       <header className="flex items-center justify-between border-b border-[var(--color-border-soft)] px-3 py-2">
@@ -432,7 +459,7 @@ function ProjectCard({ projectId, name, onSettings, children }: {
         </div>
         <div className="flex items-center gap-1">
           <button
-            title="Project settings"
+            title={t("dashboard.projectSettingsTip")}
             onClick={onSettings}
             className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
           ><Cog className="h-4 w-4" /></button>
@@ -442,7 +469,7 @@ function ProjectCard({ projectId, name, onSettings, children }: {
           <DropdownRoot>
             <DropdownTrigger asChild>
               <button
-                title="New task"
+                title={t("dashboard.newTaskTip")}
                 className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] data-[state=open]:bg-[var(--color-bg-3)] data-[state=open]:text-[var(--color-fg)]"
               ><Plus className="h-4 w-4" /></button>
             </DropdownTrigger>
@@ -461,6 +488,7 @@ function ProjectCard({ projectId, name, onSettings, children }: {
 // actionable, so it IS actionable: same `openNewProject` the "Add project"
 // card and both sidebar "+" buttons call.
 function EmptyProjectsCard({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation("chrome");
   return (
     <button
       data-testid="empty-projects-card"
@@ -469,9 +497,9 @@ function EmptyProjectsCard({ onClick }: { onClick: () => void }) {
     >
       <Boxes className="h-8 w-8 text-[var(--color-fg-faint)]" />
       <div>
-        <div className="text-[14px] font-semibold">No projects yet</div>
+        <div className="text-[14px] font-semibold">{t("dashboard.emptyTitle")}</div>
         <div className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
-          Add a git repo from disk to spawn agent tasks in.
+          {t("dashboard.emptyBody")}
         </div>
       </div>
     </button>
