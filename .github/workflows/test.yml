@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual, for hunting flakes: the only honest way to tell a flaky case from
+  # a broken one is to run the same commit several times, and without this the
+  # alternative is empty commits. windows.yml already carries it.
+  workflow_dispatch:
 
 # A newer push supersedes the run still going for the same branch or PR:
 # its results would be stale on arrival, and the three e2e jobs hold a
