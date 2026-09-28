@@ -1600,15 +1600,32 @@ export async function clearLanguagePref(): Promise<void> {
  *  Costs one extra `execute` per poll, which is 4ms (docs/e2e-tests.md), and
  *  buys the nine-case cascade `tabs-layout.e2e.ts` loses on Linux whenever the
  *  first click is swallowed.
+ *
+ *  `reopen` is the other half, and it is not optional in practice: a swallowed
+ *  click sometimes leaves the menu OPEN and sometimes CLOSES it, and in the
+ *  second case retrying the item is retrying nothing. The loop then spends its
+ *  whole timeout clicking a menu that is not on screen and fails with "never
+ *  produced its result", which is what the Linux runner reported on a repeat
+ *  run with eight cases behind it. Pass the opener and the retry covers both.
  */
 export async function clickMenuItemUntilReady(
   text: string,
   ready: () => Promise<boolean>,
-  timeout = 15_000,
+  opts: { timeout?: number; reopen?: () => Promise<void> } = {},
 ): Promise<void> {
+  const { timeout = 15_000, reopen } = opts;
   await browser.waitUntil(
     async () => {
       if (await ready()) return true;
+      // Nothing to click: the menu closed under the last attempt. Put it back
+      // before spending another poll on an empty document.
+      if (reopen && !(await browser.execute((t) =>
+        [...document.querySelectorAll("[role='menuitem']")].some(
+          (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
+        ), text))) {
+        await reopen().catch(() => { /* a half-open menu is the next poll's problem */ });
+        if (await ready()) return true;
+      }
       await browser.execute((t) => {
         const el = [...document.querySelectorAll("[role='menuitem']")].find(
           (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,

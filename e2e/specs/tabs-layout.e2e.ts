@@ -90,7 +90,8 @@ describe("tab management", () => {
     // Retried until the tab EXISTS: a click into Radix's remount does
     // nothing and leaves the menu open, which is how this case (and the eight
     // built on its tab) fails on the Linux runner.
-    await clickMenuItemUntilReady("Terminal", async () => (await tabCount()) === 2);
+    await clickMenuItemUntilReady("Terminal", async () => (await tabCount()) === 2,
+      { reopen: openPlusMenu });
     expect(await activeTab()).not.toBe(agentTabId);
 
     // Switch back to the agent tab with a real click.
@@ -216,7 +217,7 @@ describe("sidebar task menu: New submenu", () => {
   }
 
   /** Open the "New" submenu and return the entries it offers. */
-  async function openNewSubmenu(): Promise<string[]> {
+  async function openNewSubmenu(rowId: string): Promise<string[]> {
     // Radix opens a SubTrigger on hover OR click; click is the deterministic
     // one under WebDriver (no pointer position involved).
     // Retried: the submenu's entries are the result, and a swallowed click
@@ -224,7 +225,10 @@ describe("sidebar task menu: New submenu", () => {
     await clickMenuItemUntilReady("New", () => browser.execute(() =>
       [...document.querySelectorAll("[role='menuitem']")].some(
         (e) => e.textContent?.trim() === "Terminal",
-      )) as Promise<boolean>);
+      )) as Promise<boolean>,
+    // The parent menu is what closes under a swallowed click here, and the
+    // submenu cannot be reopened without it.
+    { reopen: () => openTaskRowMenu(rowId) });
     await browser.waitUntil(
       () =>
         browser.execute(() =>
@@ -255,9 +259,10 @@ describe("sidebar task menu: New submenu", () => {
     await waitVisible(`[data-sidebar-task-id="${taskId}"]`);
 
     await openTaskRowMenu(taskId);
-    await openNewSubmenu();
+    await openNewSubmenu(taskId);
     await clickMenuItemUntilReady("Terminal", async () =>
-      (await tabsOf(taskId!)).includes("shell"));
+      (await tabsOf(taskId!)).includes("shell"),
+    { reopen: async () => { await openTaskRowMenu(taskId!); await openNewSubmenu(taskId!); } });
 
     // The row's task is now the active one and holds BOTH its seeded agent tab
     // and the new shell — picking "Terminal" on a cold task must not cost the
@@ -297,7 +302,7 @@ describe("sidebar task menu: New submenu", () => {
     await ensureActiveTask(taskId!);
 
     await openTaskRowMenu(taskId!);
-    const fromSidebar = await openNewSubmenu();
+    const fromSidebar = await openNewSubmenu(taskId!);
     await dismissOverlays();
 
     // Same list from the "+" button on the active task's strip. Radix opens on
