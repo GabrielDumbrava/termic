@@ -19,7 +19,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import os from "node:os";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, cliRpc as rpc, openTask, requireTermicApi, runCli, waitForAppShell, waitForClisDetected, rmTemp } from "../helpers.js";
+import { archiveTask, cliRpc as rpc, openTask, requireTermicApi, runCli, waitForAppShell, waitForClisDetected, rmTree } from "../helpers.js";
 
 /**
  * Poll a tab's live PTY (spawn is async), through BOTH sides that have to
@@ -743,7 +743,7 @@ describe("termic new --from: adopt an existing worktree (GH #169)", () => {
       expect(r.error.code).toBe("bad_request");
       expect(r.error.message).toContain("not a git worktree");
     } finally {
-      rmTemp(plain);
+      rmTree(plain, { bestEffort: true });
     }
   });
 

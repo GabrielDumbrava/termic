@@ -1621,25 +1621,3 @@ export async function clickMenuItemUntilReady(
   );
 }
 
-/** Remove a throwaway directory in teardown, Windows included.
- *
- *  `rmSync(..., { maxRetries: 10 })` retries for one second, which is not
- *  enough on Windows: a git worktree the app touched, or a watcher that has
- *  not let go, keeps the handle open and the `after all` hook dies with
- *  `EBUSY: resource busy or locked, rmdir`. That failed a whole spec file on
- *  the WebView2 runner while every case in it passed.
- *
- *  Retries for ~5s, and if the directory still will not go, says so and moves
- *  on: this is an OS temp directory, the run is over, and failing a green file
- *  over a locked handle reports a problem the product does not have. A leak
- *  that matters shows up as the warning, repeatedly, which is a better signal
- *  than a red suite nobody can act on.
- */
-export function rmTemp(dir: string | null | undefined): void {
-  if (!dir) return;
-  try {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-  } catch (e) {
-    console.warn(`[e2e] could not remove ${dir}: ${(e as Error).message}`);
-  }
-}
