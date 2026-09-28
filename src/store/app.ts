@@ -86,6 +86,12 @@ interface View {
    *  toggle it changed). Consumed and cleared by the section itself on
    *  mount, so a later manual visit to the same tab doesn't re-trigger it. */
   settingsHighlight?: string;
+  /** History only: the page's project filter (undefined = All projects).
+   *  Seeded by setView (sidebar Resume › More…), changed by the page's
+   *  dropdown. Any other setView drops it, so the plain History entry
+   *  points always open on All projects; the Settings overlay spreads the
+   *  view, so it survives opening Settings over History. */
+  projectId?: string;
 }
 
 export interface AppState {
@@ -228,7 +234,8 @@ export interface AppState {
    *  so opening the task again respawns the agents with their conversations
    *  resumed. */
   stopTask: (taskId: string) => void;
-  setView: (page: View["page"]) => void;
+  setView: (page: View["page"], opts?: { projectId?: string }) => void;
+  setHistoryProject: (projectId: string | undefined) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
   clearSettingsHighlight: () => void;
@@ -1040,7 +1047,8 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
-  setView: (page) => set({ view: { page }, activeTaskId: null }),
+  setView: (page, opts) => set({ view: { page, projectId: opts?.projectId }, activeTaskId: null }),
+  setHistoryProject: (projectId) => set(s => ({ view: { ...s.view, projectId } })),
   // Opening Settings does NOT clear `activeTaskId` or change `view.page`
   // away from whatever the user was on — Settings renders as a fixed
   // z-40 overlay (App.tsx). Preserving the underlying state means closing

@@ -206,6 +206,13 @@ export default {
     daysAgo: "{{count}} days ago",
     lastWeek: "Last week",
     weeksAgo: "{{count}} weeks ago",
+    allProjects: "All projects",
+    projectFilterTip: "Filter by project",
+    emptyArchiveTipProject: "Permanently delete every archived task in {{project}}",
+    noArchivedInProject: "No archived tasks in {{project}}.",
+    confirmTitleProject: "Empty the {{project}} archive?",
+    confirmMessageOneProject: "This permanently deletes {{count}} archived task in {{project}}. It cannot be undone.",
+    confirmMessageManyProject: "This permanently deletes {{count}} archived tasks in {{project}}. It cannot be undone.",
   },
   activity: {
     windowTitle: "Activity",

@@ -3069,7 +3069,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                       resumeClosedTab(w.id, entryId);
                       setMenuOpen(false);
                     }}
-                    onMore={() => { setMenuOpen(false); setView("history"); }}
+                    onMore={() => { setMenuOpen(false); setView("history", { projectId: w.project_id }); }}
                   />
                 </DropdownSubContent>
               </DropdownSub>

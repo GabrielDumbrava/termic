@@ -248,7 +248,7 @@ export function TabBar({ task }: { task: Task }) {
               onSpawnShell={spawnShellTab}
               onScratchpad={() => { setOpen(false); void newScratchTab(task.id); }}
               onResume={resumeAndFocus}
-              onMore={() => { setOpen(false); setView("history"); }}
+              onMore={() => { setOpen(false); setView("history", { projectId: task.project_id }); }}
             />
           </DropdownMenu>
         </DropdownRoot>

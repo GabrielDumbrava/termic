@@ -206,6 +206,13 @@ export default {
     daysAgo: "{{count}} 天前",
     lastWeek: "上周",
     weeksAgo: "{{count}} 周前",
+    allProjects: "所有项目",
+    projectFilterTip: "按项目筛选",
+    emptyArchiveTipProject: "永久删除 {{project}} 中所有已归档任务",
+    noArchivedInProject: "{{project}} 中没有已归档的任务。",
+    confirmTitleProject: "清空 {{project}} 的归档？",
+    confirmMessageOneProject: "将永久删除 {{project}} 中 {{count}} 个已归档任务，且无法撤销。",
+    confirmMessageManyProject: "将永久删除 {{project}} 中 {{count}} 个已归档任务，且无法撤销。",
   },
   activity: {
     windowTitle: "活动",
