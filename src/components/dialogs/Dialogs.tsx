@@ -6,6 +6,7 @@ import { useUI } from "@/store/ui";
 import { settingsLoad } from "@/lib/ipc";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { NewTaskDialog } from "./NewTaskDialog";
+import { EditTaskDialog } from "./EditTaskDialog";
 import { CustomCommandDialog } from "./CustomCommandDialog";
 import { EditCommandDialog } from "./EditCommandDialog";
 import { RunCommandsDialog } from "./RunCommandsDialog";
@@ -49,6 +50,7 @@ export function Dialogs() {
     <>
       <NewProjectDialog />
       <NewTaskDialog />
+      <EditTaskDialog />
       <CustomCommandDialog />
       <EditCommandDialog />
       <RunCommandsDialog />

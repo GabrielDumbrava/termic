@@ -439,7 +439,9 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
             <span className="truncate">Advanced…</span>
             <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">
               {mode === "worktree"
-                ? "Base branch, sandbox, import…"
+                ? isMulti
+                  ? "Members, branches, sandbox…"
+                  : "Base branch, sandbox, import…"
                 : "More options and settings…"}
             </span>
           </div>

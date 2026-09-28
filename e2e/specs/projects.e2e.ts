@@ -1560,14 +1560,15 @@ describe("multi member modes (New Task dialog)", () => {
   let tmp = "";
   let projectId = "";
 
-  /** Member rows as `{ name, mode }`, from the row's own state attributes. */
+  /** Member rows as `{ name, mode, included }`, from the row's own state attributes. */
   const rowModes = () =>
     browser.execute(() =>
       [...document.querySelectorAll('[data-testid="member-mode-row"]')].map((e) => ({
         name: e.getAttribute("data-member-name"),
         mode: e.getAttribute("data-member-mode"),
+        included: e.getAttribute("data-member-included"),
       })),
-    ) as Promise<Array<{ name: string | null; mode: string | null }>>;
+    ) as Promise<Array<{ name: string | null; mode: string | null; included: string | null }>>;
 
   const openDialog = async () => {
     await browser.execute((id) => window.__termic!.useUI.getState().openNewTask(id), projectId);
@@ -1600,6 +1601,13 @@ describe("multi member modes (New Task dialog)", () => {
       label,
     );
 
+  /** Click one row's include checkbox by member name. */
+  const clickRowInclude = (name: string) =>
+    browser.execute((n) => {
+      const row = document.querySelector(`[data-testid="member-mode-row"][data-member-name="${n}"]`)!;
+      (row.querySelector('[data-testid="member-include"]') as HTMLInputElement).click();
+    }, name);
+
   before(() => {
     tmp = mkdtempSync(path.join(os.tmpdir(), "e2e-member-modes-"));
     mkdirSync(path.join(tmp, "host"));
@@ -1614,7 +1622,10 @@ describe("multi member modes (New Task dialog)", () => {
   after(async () => {
     await closeDialog();
     await browser.execute(async (id) => {
-      try { localStorage.removeItem("newTaskMemberModes"); } catch { /* fine */ }
+      try {
+        localStorage.removeItem("newTaskMemberModes");
+        localStorage.removeItem("newTaskMemberSets");
+      } catch { /* fine */ }
       if (id) {
         await window.__termic!.ipc.projectRemove(id);
         await window.__termic!.useApp.getState().loadAll();
@@ -1631,6 +1642,7 @@ describe("multi member modes (New Task dialog)", () => {
         const t = window.__termic!;
         try {
           localStorage.removeItem("newTaskMemberModes");
+          localStorage.removeItem("newTaskMemberSets");
           // The member rows only render in the Worktree host shape (the
           // host-level toggle is remembered app-wide), so pin it here; the
           // main-checkout describe below restores whatever it finds.
@@ -1664,8 +1676,8 @@ describe("multi member modes (New Task dialog)", () => {
     );
     await openDialog();
     expect(await rowModes()).toEqual([
-      { name: "alpha", mode: "worktree" },
-      { name: "beta", mode: "worktree" },
+      { name: "alpha", mode: "worktree", included: "true" },
+      { name: "beta", mode: "worktree", included: "true" },
     ]);
   });
 
@@ -1689,8 +1701,8 @@ describe("multi member modes (New Task dialog)", () => {
     await closeDialog();
     await openDialog();
     expect(await rowModes()).toEqual([
-      { name: "alpha", mode: "worktree" },
-      { name: "beta", mode: "repo_root" },
+      { name: "alpha", mode: "worktree", included: "true" },
+      { name: "beta", mode: "repo_root", included: "true" },
     ]);
   });
 
@@ -1704,6 +1716,57 @@ describe("multi member modes (New Task dialog)", () => {
     await openDialog();
     expect((await rowModes()).every((r) => r.mode === "worktree")).toBe(true);
   });
+
+  it("unchecking a member drops it out of the count and dims its row", async () => {
+    await clickRowInclude("beta");
+    await browser.waitUntil(
+      async () => (await rowModes()).find((r) => r.name === "beta")?.included === "false",
+      { timeout: 5_000, timeoutMsg: "the beta row never unchecked" },
+    );
+    await waitForText("Members (1 of 2)");
+  });
+
+  it("None clears every checkbox, All restores them", async () => {
+    await clickWhenVisible('[data-testid="members-none-include"]');
+    await waitForText("Members (0 of 2)");
+    await clickWhenVisible('[data-testid="members-all-include"]');
+    await waitForText("Members (2 of 2)");
+  });
+
+  it("saves a member subset, reapplies it after a reset and a reopen, then deletes it", async () => {
+    // Leave only beta checked, then save that as "just-beta".
+    await clickRowInclude("alpha");
+    await waitForText("Members (1 of 2)");
+    await clickWhenVisible('[data-testid="member-set-save"]');
+    await waitVisible('[data-testid="member-set-name"]');
+    await browser.execute(() => {
+      const input = document.querySelector('[data-testid="member-set-name"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "just-beta");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await waitForText("just-beta");
+
+    // Reset to all, then apply the chip: only beta survives.
+    await clickWhenVisible('[data-testid="members-all-include"]');
+    await browser.execute(() => {
+      ([...document.querySelectorAll('[data-testid="member-set-apply"]')]
+        .find((b) => b.textContent?.trim() === "just-beta") as HTMLElement).click();
+    });
+    await waitForText("Members (1 of 2)");
+    expect((await rowModes()).find((r) => r.name === "alpha")?.included).toBe("false");
+
+    // The set lives in localStorage, so a freshly opened dialog offers it too.
+    await closeDialog();
+    await openDialog();
+    await waitForText("just-beta");
+
+    await browser.execute(() => {
+      (document.querySelector('[aria-label="Delete set just-beta"]') as HTMLElement).click();
+    });
+    await waitForTextGone("just-beta");
+  });
 });
 
 // The host-level Main checkout shape of the multi New Task dialog.
@@ -1716,9 +1779,48 @@ describe("multi member modes (New Task dialog)", () => {
 describe("multi main checkout (New Task dialog)", () => {
   let tmp = "";
   let projectId = "";
-  let taskId = "";
+  const taskIds: string[] = [];
   /** The app-wide task-type memory this spec drives; restored in teardown. */
   let savedMode: string | null = null;
+
+  /** Fill the dialog's Name field (native setter so React sees it). */
+  const typeName = (value: string) =>
+    browser.execute((v) => {
+      const input = document.querySelector(
+        '[role="dialog"] input[placeholder="fix login bug"]',
+      ) as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+
+  /** Click a button by exact label, scoped to the multi dialog. */
+  const clickInDialog = (label: string) =>
+    browser.execute((l) => {
+      const dlg = [...document.querySelectorAll('[role="dialog"]')].find((d) =>
+        d.textContent?.includes("New multi-repo task"),
+      )!;
+      const btn = [...dlg.querySelectorAll("button")].find((b) => b.textContent?.trim() === l) as HTMLButtonElement;
+      btn.click();
+    }, label);
+
+  /** Wait for the created task to land in the store; returns it. */
+  const waitForTask = (name: string) =>
+    browser.waitUntil(
+      async () => {
+        const t = await browser.execute((n) =>
+          window.__termic!.useApp.getState().tasks.find((w: any) => w.name === n), name);
+        return t ?? false;
+      },
+      { timeout: 15_000, timeoutMsg: `task "${name}" never appeared` },
+    ) as Promise<any>;
+
+  /** Uncheck a member's include box by member name. */
+  const uncheckMember = (name: string) =>
+    browser.execute((n) => {
+      const row = document.querySelector(`[data-testid="member-mode-row"][data-member-name="${n}"]`)!;
+      (row.querySelector('[data-testid="member-include"]') as HTMLInputElement).click();
+    }, name);
 
   before(() => {
     tmp = mkdtempSync(path.join(os.tmpdir(), "e2e-multi-main-"));
@@ -1733,7 +1835,7 @@ describe("multi main checkout (New Task dialog)", () => {
 
   after(async () => {
     await browser.execute(() => window.__termic!.useUI.getState().closeNewTask());
-    if (taskId) await archiveTask(taskId);
+    for (const id of taskIds) await archiveTask(id);
     await browser.execute(async (id, mode) => {
       try {
         if (mode === null) localStorage.removeItem("newTaskLastMode");
@@ -1792,45 +1894,27 @@ describe("multi main checkout (New Task dialog)", () => {
 
     // Worktree shape: one row per member, host toggle present.
     await waitVisible('[data-testid="task-type-main"]');
-    await waitForText("Members (2)");
+    await waitForText("Members (2 of 2)");
 
     await clickWhenVisible('[data-testid="task-type-main"]');
     await waitVisible('[data-testid="members-live-note"]');
-    await waitForText("All 2 members run live");
-    const rows = await browser.execute(() => document.body.textContent?.includes("Members (2)"));
-    expect(rows).toBe(false);
+    await waitForText("2 of 2 members run live");
+    // Main checkout still shows the member list — as a plain checklist now,
+    // since unchecking a member keeps it out of the task entirely.
+    const rows = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="member-mode-row"]')].map(
+        (e) => e.getAttribute("data-member-mode"),
+      ));
+    expect(rows).toEqual(["repo_root", "repo_root"]);
   });
 
   it("Create opens the live host checkout with every member linked in, no wrapper", async () => {
-    await browser.execute(() => {
-      const input = document.querySelector(
-        '[role="dialog"] input[placeholder="fix login bug"]',
-      ) as HTMLInputElement;
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
-      setter.call(input, "e2e-mm-live");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    await typeName("e2e-mm-live");
     // Terminal (shell) is token-free; both clicks scoped to THIS dialog.
-    for (const label of ["Terminal", "Create"]) {
-      await browser.execute((l) => {
-        const dlg = [...document.querySelectorAll('[role="dialog"]')].find((d) =>
-          d.textContent?.includes("New multi-repo task in the main checkout"),
-        )!;
-        const btn = [...dlg.querySelectorAll("button")].find((b) => b.textContent?.trim() === l) as HTMLButtonElement;
-        btn.click();
-      }, label);
-    }
+    for (const label of ["Terminal", "Create"]) await clickInDialog(label);
 
-    const task = await browser.waitUntil(
-      async () => {
-        const t = await browser.execute(() =>
-          window.__termic!.useApp.getState().tasks.find((w: any) => w.name === "e2e-mm-live"),
-        );
-        return t ?? false;
-      },
-      { timeout: 15_000, timeoutMsg: "the main-checkout multi task never appeared" },
-    ) as any;
-    taskId = task.id;
+    const task = await waitForTask("e2e-mm-live");
+    taskIds.push(task.id);
     const hostRoot = await browser.execute(
       (id) => window.__termic!.useApp.getState().projects.find((p: any) => p.id === id).root_path,
       projectId,
@@ -1841,6 +1925,184 @@ describe("multi main checkout (New Task dialog)", () => {
       ["alpha", "repo_root"],
       ["beta", "repo_root"],
     ]);
+  });
+
+  it("unchecking a member links only the checked ones into the live checkout", async () => {
+    // Reopen — the previous create closed the dialog. Main-checkout mode is
+    // remembered app-wide, so the checklist is already up.
+    await browser.execute((id) => window.__termic!.useUI.getState().openNewTask(id), projectId);
+    await waitVisible('[data-testid="member-mode-row"]');
+    await uncheckMember("beta");
+    await waitForText("1 of 2 members run live");
+
+    await typeName("e2e-mm-subset");
+    for (const label of ["Terminal", "Create"]) await clickInDialog(label);
+
+    const task = await waitForTask("e2e-mm-subset");
+    taskIds.push(task.id);
+    expect(task.composition.map((m: any) => [m.dir_name, m.mode])).toEqual([
+      ["alpha", "repo_root"],
+    ]);
+
+    // The host's managed .gitignore block must keep covering the LIVE
+    // sibling's ("e2e-mm-live") links too — a subset open rewriting it
+    // with only its own dirs would un-ignore /beta under that task.
+    const hostRoot = await browser.execute(
+      (id) => window.__termic!.useApp.getState().projects.find((p: any) => p.id === id).root_path,
+      projectId,
+    );
+    const gitignore = readFileSync(path.join(hostRoot, ".gitignore"), "utf8");
+    expect(gitignore).toContain("\n/alpha\n");
+    expect(gitignore).toContain("\n/beta\n");
+  });
+
+  it("worktree mode mounts only the checked members", async () => {
+    await browser.execute((id) => window.__termic!.useUI.getState().openNewTask(id), projectId);
+    await waitVisible('[data-testid="task-type-worktree"]');
+    await clickWhenVisible('[data-testid="task-type-worktree"]');
+    await waitVisible('[data-testid="member-include"]');
+    await uncheckMember("alpha");
+    await waitForText("Members (1 of 2)");
+
+    await typeName("e2e-mm-subset-wt");
+    for (const label of ["Terminal", "Create"]) await clickInDialog(label);
+
+    const task = await waitForTask("e2e-mm-subset-wt");
+    taskIds.push(task.id);
+    const hostRoot = await browser.execute(
+      (id) => window.__termic!.useApp.getState().projects.find((p: any) => p.id === id).root_path,
+      projectId,
+    );
+    // A worktree task lives in the wrapper dir, not the host checkout.
+    expect(task.path).not.toBe(hostRoot);
+    expect(task.composition.map((m: any) => [m.dir_name, m.mode])).toEqual([
+      ["beta", "worktree"],
+    ]);
+  });
+
+  it("Duplicate worktree seeds the source task's member subset", async () => {
+    // "e2e-mm-subset-wt" included only beta — duplicating it must reopen the
+    // dialog with beta in and alpha out, not the all-in default.
+    const taskId = await browser.execute(
+      () => window.__termic!.useApp.getState().tasks.find((w: any) => w.name === "e2e-mm-subset-wt")?.id,
+    ) as string;
+    const row = `[data-sidebar-task-id="${taskId}"]`;
+    await waitVisible(row);
+    // WebDriver's right-click doesn't reach Radix's onContextMenu in this
+    // WKWebView; the dispatched event does (task.e2e.ts measured it).
+    // The menu item's onSelect defers openNewTask through
+    // requestAnimationFrame — and rAF is permanently frozen in the
+    // occluded harness window (document.hidden the whole suite), so the
+    // callback never runs. Stub rAF synchronous for the gesture only —
+    // the seed path, not the frame defer, is what's under test.
+    await browser.execute(() => {
+      const w = window as any;
+      w.__origRAF = w.requestAnimationFrame;
+      w.requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 0; };
+    });
+    try {
+      await browser.execute((s) => {
+        const el = document.querySelector(s) as HTMLElement;
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent("contextmenu", {
+          bubbles: true, cancelable: true, button: 2, clientX: r.left + 20, clientY: r.top + 5,
+        }));
+      }, row);
+      await waitVisible('[role="menu"]');
+      // Click straight away in one round-trip: clickMenuItemUntil's poll loop
+      // can straddle the menu's open/close and end up watching nothing.
+      await browser.execute(() => {
+        const el = [...document.querySelectorAll("[role='menuitem']")].find(
+          e => e.textContent?.trim() === "Duplicate worktree",
+        ) as HTMLElement | undefined;
+        if (!el) throw new Error("no Duplicate worktree menuitem");
+        el.click();
+      });
+    } finally {
+      await browser.execute(() => {
+        const w = window as any;
+        w.requestAnimationFrame = w.__origRAF;
+      });
+    }
+    await waitForText("Members (1 of 2)");
+    const included = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="member-mode-row"]')].map(
+        (e) => [e.getAttribute("data-member-name"), e.getAttribute("data-member-included")],
+      ));
+    expect(included).toEqual([["alpha", "false"], ["beta", "true"]]);
+    await dismissOverlays();
+  });
+
+  it("Edit task adds a missing member, removes one, and renames", async () => {
+    // "e2e-mm-subset-wt" is beta-only. The edit flips it to alpha-only,
+    // deletes beta's worktree, and renames — all in one save.
+    const taskId = await browser.execute(
+      () => window.__termic!.useApp.getState().tasks.find((w: any) => w.name === "e2e-mm-subset-wt")?.id,
+    ) as string;
+    const before = await browser.execute((id) =>
+      window.__termic!.useApp.getState().tasks.find((w: any) => w.id === id), taskId) as any;
+    await browser.execute((id) => window.__termic!.useUI.getState().openEditTask(id), taskId);
+    await waitVisible('[data-testid="edit-member-row"]');
+    const initial = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="edit-member-row"]')].map((e) => [
+        e.getAttribute("data-member-name"),
+        e.getAttribute("data-member-existing"),
+        e.getAttribute("data-member-checked"),
+      ]));
+    expect(initial).toEqual([["beta", "true", "true"], ["alpha", "false", "false"]]);
+
+    const clickRow = (name: string) => browser.execute((n) => {
+      const row = document.querySelector(`[data-testid="edit-member-row"][data-member-name="${n}"]`)!;
+      (row.querySelector('[data-testid="edit-member-include"]') as HTMLElement).click();
+    }, name);
+    await clickRow("alpha");
+    // Pin the add's mode explicitly — the app-wide member-mode memory is
+    // order-dependent across the spec, so force Worktree either way.
+    await browser.execute(() => {
+      const row = document.querySelector('[data-testid="edit-member-row"][data-member-name="alpha"]')!;
+      const btn = [...row.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Worktree",
+      ) as HTMLButtonElement;
+      btn.click();
+    });
+    await clickRow("beta");
+    await waitForText("Will be removed — its worktree is deleted on save.");
+
+    // Rename in the same save — name is the dialog's first input.
+    await browser.execute((v) => {
+      const dlg = [...document.querySelectorAll('[role="dialog"]')].find(
+        (d) => d.textContent?.includes("Edit task"),
+      )!;
+      const input = dlg.querySelector("input") as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, "e2e-mm-edited");
+
+    await browser.execute(() => {
+      const dlg = [...document.querySelectorAll('[role="dialog"]')].find(
+        (d) => d.textContent?.includes("Edit task"),
+      )!;
+      const btn = [...dlg.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Save",
+      ) as HTMLButtonElement;
+      btn.click();
+    });
+    // Removing a worktree member is destructive — the confirm must gate it.
+    await waitVisible('[data-testid="confirm-ok"]');
+    await clickWhenVisible('[data-testid="confirm-ok"]');
+
+    const task = await waitForTask("e2e-mm-edited");
+    // Same id as "e2e-mm-subset-wt" — already in taskIds; pushing it again
+    // would archive it twice and the second teardown hits the gone worktree.
+    expect(task.id).toBe(taskId);
+    expect(task.composition.map((m: any) => [m.dir_name, m.mode])).toEqual([
+      ["alpha", "worktree"],
+    ]);
+    // The wrapper now holds alpha's worktree; beta's dir is gone.
+    expect(existsSync(path.join(before.path, "alpha"))).toBe(true);
+    expect(existsSync(path.join(before.path, "beta"))).toBe(false);
+    await waitGone('[data-testid="edit-member-row"]');
   });
 });
 

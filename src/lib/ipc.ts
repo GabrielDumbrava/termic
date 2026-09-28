@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AgentUsage, StatusLineOwner } from "@/lib/agentUsage";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
+  Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary, CliInstallStatus, McpStatus, BranchContext, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
   ForgeCliStatus, PrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
@@ -138,6 +138,12 @@ export const taskGroupUpdate = (groupId: string, name: string | null, color: str
 export const taskGroupDissolve = (groupId: string) => invoke<void>("task_group_dissolve", { groupId });
 export const taskCreate   = (args: CreateTaskArgs) => invoke<Task>("task_create", { args });
 export const taskCreateMulti = (args: CreateMultiArgs) => invoke<Task>("task_create_multi", { args });
+/** Add/remove members on an existing multi-repo task. `remove` lists
+ *  member dir_names; `add` is the same spec shape as task_create_multi.
+ *  Per-member best-effort — resolves with the updated Task on full
+ *  success, rejects with every member failure joined. */
+export const taskUpdateMembers = (taskId: string, add: CreateMultiMember[], remove: string[]) =>
+  invoke<Task>("task_update_members", { taskId, add, remove });
 /** Open a task in the repo's main checkout. Sandbox args mirror task_create /
  *  task_import_worktree: when omitted, Rust falls back to sandbox off (the
  *  main checkout's uncaged default). The seatbelt + proxy cage it identically
@@ -162,6 +168,9 @@ export const taskOpenRepo = (
   agentArgs?: string[],
   /** Per-task YOLO from the first spawn. Unset = off (no default in Rust). */
   yolo?: boolean,
+  /** Multi-repo only: member root_paths to link in. Unset = every member
+   *  (the quick-create shape). */
+  memberPaths?: string[],
 ) =>
   invoke<Task>("task_open_repo", {
     projectId, cli, name, command,
@@ -172,6 +181,7 @@ export const taskOpenRepo = (
     dockerSandboxEnabled: sandbox?.docker,
     dockerExtraMounts: sandbox?.dockerExtraMounts,
     resumeSessionId, resumeOverride, agentArgs, yolo,
+    members: memberPaths,
   });
 /** List a project's git worktrees not yet open as tasks (issue #5). */
 export const taskImportableWorktrees = (projectId: string) =>
@@ -210,7 +220,7 @@ export const taskImportWorktree = (
 export const taskArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("task_archive", { id, deleteBranch });
 export const taskRestore  = (id: string) => invoke<Task>("task_restore", { id });
 export const taskDelete   = (id: string) => invoke<void>("task_delete", { id });
-export const taskSetCli   = (id: string, cli: string) => invoke<void>("task_set_cli", { id, cli });
+export const taskSetCli   = (id: string, cli: string) => invoke<Task>("task_set_cli", { id, cli });
 /** Update a custom-command task's launch command (multiline bash
  *  script). Only valid for cli==="custom" tasks. Persists and
  *  returns the updated task; live PTYs keep running until the user

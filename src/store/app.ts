@@ -24,6 +24,7 @@ import { hydrateScheduled, scheduledOf } from "@/lib/scheduledQueue";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName, STICKY_DONE_MS } from "@/lib/agents";
 import { scoped } from "@/lib/profileScope";
+import { pruneMemberSets } from "@/components/dialogs/memberModes";
 
 /** An agent tab closed via the "X", snapshotted just before its session
  *  becomes unreachable. Powers the "+" menu's Resume section — in-memory
@@ -763,6 +764,9 @@ export const useApp = create<AppState>((set, get) => ({
       recentTasks = recentTasks.filter(id => openTaskIds.has(id));
       try { localStorage.setItem(LS_RECENT_TASKS, JSON.stringify(recentTasks)); } catch {}
     }
+    // Named member subsets (New Task dialog) are keyed by projectId — a
+    // removed project's can never come back, so they prune with it.
+    pruneMemberSets(new Set(projects.map(p => p.id)));
     // Task groups likewise: a group whose last live member left takes its
     // collapse entry with it.
     const liveTaskGroups = new Set(tasks.filter(t => !t.archived && t.group).map(t => t.group!.id));
