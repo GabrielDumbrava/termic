@@ -436,15 +436,31 @@ describe("inline images", () => {
     );
     let previousOpaquePixels = 0;
     let settledFrames = 0;
-    await browser.waitUntil(
-      async () => {
-        const opaquePixels = await opaquePixelCount();
-        settledFrames = opaquePixels > 0 && opaquePixels === previousOpaquePixels ? settledFrames + 1 : 0;
-        previousOpaquePixels = opaquePixels;
-        return settledFrames >= 3;
-      },
-      { timeout: 10_000, timeoutMsg: "Pi's redraw erased the inline image after rendering settled" },
-    );
+    // The samples, so a failure says WHICH of the two shapes it was: all
+    // zeroes (the image never decoded, or there is no image layer to read)
+    // and a count that keeps moving (still painting, or being erased) fail
+    // the same wait and want opposite fixes.
+    const samples: number[] = [];
+    try {
+      await browser.waitUntil(
+        async () => {
+          const opaquePixels = await opaquePixelCount();
+          samples.push(opaquePixels);
+          settledFrames = opaquePixels > 0 && opaquePixels === previousOpaquePixels ? settledFrames + 1 : 0;
+          previousOpaquePixels = opaquePixels;
+          return settledFrames >= 3;
+        },
+        { timeout: 10_000, timeoutMsg: "Pi's redraw erased the inline image after rendering settled" },
+      );
+    } catch (e) {
+      const layer = await browser.execute((id) => {
+        const el = document.querySelector(`[data-terminal-host="${id}"] .xterm-image-layer`);
+        return el instanceof HTMLCanvasElement
+          ? `canvas ${el.width}x${el.height}`
+          : el ? `not a canvas: ${el.nodeName}` : "no .xterm-image-layer in this terminal";
+      }, tabId);
+      throw new Error(`${(e as Error).message}\nopaque pixels seen: ${samples.join(", ")}\nimage layer: ${layer}`);
+    }
     // A negative, so it needs a window: the redraw that used to erase the image
     // came AFTER the frames settled, and an instant re-read would miss it.
     await browser.pause(500);
