@@ -253,8 +253,10 @@ grouped or not (`src/lib/spawnLinks.ts`, `SpawnLinks.tsx`). Two things
 draw it:
 
 - A ↳ mark after the child's name, titled "Started by <parent> (<project>)";
-  a click goes to the parent. Only where the group rail does not already say
-  it: a child in another project, or one dragged out of its parent's group.
+  a click goes to the parent. On the sidebar, only where the group rail does
+  not already say it: a child in another project, or one dragged out of its
+  parent's group. The dashboard draws no rail, so there EVERY spawned child
+  is marked, same-group ones included (`spawnMarkParent`'s `suppressInGroup`).
 - Lines, ONLY while a row is hovered: an elbow from the hovered task to its
   parent and to each task it spawned, one level each way, down a faint 1px
   trunk 12px in (the accent, at the very edge, read as a loud border). Always-on lines between rows that sit far apart, across
@@ -1016,6 +1018,14 @@ own components (`TaskWorkBadge`, `TaskPrBadge`), fed by the same
 `src/lib/taskWorkState.ts` predicates and the same precedence
 (attention > done > working). The PR chip renders what the poller already
 resolved and never starts a lookup, so listing every task costs nothing.
+
+**Task rows are flat, and the spawned-by mark fills in for the rail.** The
+sidebar's task-group rail, collapse and drag stay there; a dashboard card
+lists its tasks as plain rows. Since nothing on this surface says who started
+whom, every spawned child carries the ↳ mark, including the same-group
+children the sidebar suppresses (`suppressInGroup={false}` in
+`Dashboard.tsx`). A row with more than one main terminal tab also carries the
+sidebar's `(n)` count.
 
 ### `work-badge` is no longer a unique testid
 

@@ -3498,6 +3498,35 @@ describe("spawn links across projects", () => {
     });
   });
 
+  it("the dashboard's flat rows mark every spawned child, grouped or not", async () => {
+    // Real click, the way the user gets there (app.e2e.ts's nav case). The
+    // dashboard draws no group rail, so its rule is the sidebar's inverted:
+    // every spawned child is marked, `near` included — the pair the sidebar
+    // suppresses because its rail already says it.
+    await clickByText("Dashboard");
+    await waitForText("HOME FOR YOUR CLI CODING AGENTS");
+    // Scoped through `data-dashboard-task-id` for the same reason as
+    // `dashboardBadge()`: the sidebar row for the same task renders the same
+    // `task-spawned-from-*` testid, and a bare query returns whichever came
+    // first in document order.
+    const dashMark = (id: string) =>
+      `[data-dashboard-task-id="${id}"] [data-testid="task-spawned-from-${id}"]`;
+    await waitVisible(dashMark(far));
+    const title = await browser.execute((s) => document.querySelector(s)!.getAttribute("title"), dashMark(far));
+    expect(title).toContain("Started by spawn-orchestrator (fixture-repo)");
+    // Same project, same group: the sidebar draws no mark here; the dashboard does.
+    await waitVisible(dashMark(near));
+    // Captured on the dashboard itself: the snap after the click would show
+    // the task view the click navigates to.
+    await snap("spawn-links-03-dashboard.png");
+    // The mark is a way to the parent from here too.
+    await browser.execute((s) => (document.querySelector(s) as HTMLElement).click(), dashMark(far));
+    await browser.waitUntil(
+      () => browser.execute((id) => window.__termic!.useApp.getState().activeTaskId === id, orch),
+      { timeout: 5_000, timeoutMsg: "clicking the dashboard mark did not go to the parent" },
+    );
+  });
+
   it("a group left spanning projects by an older build draws as plain rows", async () => {
     // Store-driven on purpose: Rust now refuses to write such a group, and
     // this is how the sidebar draws the ones already on disk.
