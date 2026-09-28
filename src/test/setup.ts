@@ -31,3 +31,23 @@ try {
   // node-environment files have no localStorage; navigator above covers
   // them (and "en" is i18n's own default when it sees no navigator).
 }
+
+// Warm Intl BEFORE any test's clock starts.
+//
+// `formatReset` renders through `toLocaleTimeString`/`toLocaleDateString`, and
+// the FIRST such call in a fresh process loads ICU data. On the Windows runner
+// that took 19.7s, which blew the 5s per-test limit and failed
+// "treats the reset as epoch SECONDS, not milliseconds" with a timeout: a test
+// about epoch units, failing for a reason that has nothing to do with epochs,
+// and only on Windows.
+//
+// Paying it here puts the cost in setup, which is where a one-off belongs, and
+// leaves the per-test ceiling tight enough to still mean something.
+try {
+  const probe = new Date(0);
+  probe.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  probe.toLocaleDateString(undefined, { weekday: "short" });
+} catch {
+  // A build without ICU: the formatters fall back on their own, and the test
+  // that needed this is about the epoch unit, not the rendering.
+}

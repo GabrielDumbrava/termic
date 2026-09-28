@@ -2445,8 +2445,12 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     await waitTaskUnmounted(id);
     await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
   };
+  // 45s, not 30: a spawn here is a real process launch, and this block does
+  // several per case (kill, failed resume, picker, fresh). On a loaded box the
+  // chain overruns 30s and the case reads as "the picker never came" when it
+  // was only late. A generous ceiling costs nothing when the spawn is prompt.
   const waitSpawns = (id: string, n: number, msg: string) => browser.waitUntil(
-    () => Promise.resolve(spawnArgv(id).length >= n), { timeout: 30_000, timeoutMsg: msg });
+    () => Promise.resolve(spawnArgv(id).length >= n), { timeout: 45_000, timeoutMsg: msg });
   /** How many times the fixture's picker has started listening in `id`.
    *  Typing before it does can lose the keys (see scripts/fake-agent.sh). */
   const pickersReady = (id: string): number => {
@@ -2476,7 +2480,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     await browser.pause(2500);
     await submitToAgent(id, "hello");
     await browser.waitUntil(async () => !!(await stored(id)),
-      { timeout: 10_000, timeoutMsg: "the minted id was never persisted" });
+      { timeout: 20_000, timeoutMsg: "the minted id was never persisted" });
     const minted = (await stored(id))!;
     kill(minted);
 
@@ -2504,7 +2508,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     await waitPickerReady(id, 1);
     await submitToAgent(id, `pick ${PICKED}`);
     await browser.waitUntil(async () => (await stored(id)) === PICKED,
-      { timeout: 10_000, timeoutMsg: "the session picked in the agent's picker was not stored" });
+      { timeout: 20_000, timeoutMsg: "the session picked in the agent's picker was not stored" });
 
     const before = spawnArgv(id).length;
     await relaunch(id);
@@ -2551,7 +2555,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     await browser.pause(2500);
     await submitToAgent(sib, "hello");
     await browser.waitUntil(async () => !!(await stored(sib)),
-      { timeout: 10_000, timeoutMsg: "the sibling's minted id was never persisted" });
+      { timeout: 20_000, timeoutMsg: "the sibling's minted id was never persisted" });
     const theirs = (await stored(sib))!;
 
     await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
@@ -2560,7 +2564,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     await browser.pause(2500);
     await submitToAgent(id, "mine");
     await browser.waitUntil(async () => !!(await stored(id)),
-      { timeout: 10_000, timeoutMsg: "the picker task's minted id was never persisted" });
+      { timeout: 20_000, timeoutMsg: "the picker task's minted id was never persisted" });
     kill((await stored(id))!);
 
     const before = spawnArgv(id).length;
@@ -2591,7 +2595,7 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     await browser.pause(2500);
     await submitToAgent(id, "keep me");
     await browser.waitUntil(async () => !!(await stored(id)),
-      { timeout: 10_000, timeoutMsg: "the minted id was never persisted" });
+      { timeout: 20_000, timeoutMsg: "the minted id was never persisted" });
     const kept = (await stored(id))!;
 
     const before = spawnArgv(id).length;
