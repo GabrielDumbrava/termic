@@ -346,6 +346,35 @@ export async function clickMenuItemUntil(
   doneSelector: string,
   timeout = 15_000,
 ): Promise<void> {
+  // Record every time the expected result enters or leaves the DOM, with the
+  // focus at that instant. The end-state dump below cannot tell "the click
+  // never landed" from "the row mounted and was cancelled a frame later", and
+  // those have opposite fixes. A MutationObserver can, and it is test-side, so
+  // nothing about the app's timing changes by asking.
+  await browser.execute((sel) => {
+    const w = window as unknown as { __menuTrace?: string[]; __menuObs?: MutationObserver };
+    w.__menuObs?.disconnect();
+    w.__menuTrace = [];
+    const seen = new Set<Element>();
+    const focus = () => {
+      const a = document.activeElement as HTMLElement | null;
+      return a ? `${a.tagName}${a.id ? `#${a.id}` : ""}${a.getAttribute("placeholder") ? `[${a.getAttribute("placeholder")}]` : ""}` : "none";
+    };
+    const t0 = Date.now();
+    const scan = () => {
+      const now = [...document.querySelectorAll(sel)];
+      for (const el of now) {
+        if (!seen.has(el)) { seen.add(el); w.__menuTrace!.push(`+${Date.now() - t0}ms focus=${focus()}`); }
+      }
+      for (const el of [...seen]) {
+        if (!now.includes(el)) { seen.delete(el); w.__menuTrace!.push(`-${Date.now() - t0}ms focus=${focus()}`); }
+      }
+    };
+    scan();
+    const obs = new MutationObserver(scan);
+    obs.observe(document.body, { childList: true, subtree: true });
+    w.__menuObs = obs;
+  }, doneSelector);
   try {
     await browser.waitUntil(
       () =>
@@ -407,12 +436,25 @@ export async function clickMenuItemUntil(
             if (!a) return "none";
             return `${a.tagName}${a.dataset?.testid ? `#${a.dataset.testid}` : ""}`;
           })(),
+          // "+12ms focus=INPUT[Task name]" then "-31ms focus=BUTTON#…" means
+          // the click DID land and the row was cancelled when focus went back
+          // to the menu's trigger. An empty trace means it never mounted at all.
+          trace: (window as unknown as { __menuTrace?: string[] }).__menuTrace ?? [],
         };
       },
       text,
       doneSelector,
     );
     throw new Error(`${(e as Error).message}\n  DOM at timeout: ${JSON.stringify(state)}`);
+  } finally {
+    // Never leave it running. A subtree observer on <body> outliving this call
+    // would watch every mutation for the rest of the spec FILE, which is both a
+    // cost and a way for a diagnostic to change the timing it is measuring.
+    await browser.execute(() => {
+      const w = window as unknown as { __menuObs?: MutationObserver };
+      w.__menuObs?.disconnect();
+      w.__menuObs = undefined;
+    }).catch(() => { /* the window is gone; nothing to disconnect */ });
   }
 }
 

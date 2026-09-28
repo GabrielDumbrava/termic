@@ -1832,6 +1832,16 @@ describe("default tasks path", () => {
       });
 
     // The saved path is the field's VALUE. Nothing is hidden in a placeholder.
+    //
+    // Waited for, not read once: `setDefaultPath` writes through the settings
+    // IPC and the page renders from the store's copy, so the first paint after
+    // `openSettings` can still hold the previous value. Alone that gap closes
+    // before the read; in a full sweep this case failed on it, comparing
+    // against whatever an earlier describe had saved.
+    await browser.waitUntil(
+      async () => ((await field()) as { value: string }).value === absRoot,
+      { timeout: 8_000, timeoutMsg: "the tasks path field never showed the saved value" },
+    );
     const initial = (await field()) as { value: string; placeholder: string };
     expect(initial.value).toBe(absRoot);
     expect(initial.placeholder).toBe("");
