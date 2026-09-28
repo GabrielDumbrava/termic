@@ -71,9 +71,12 @@ export function HistoryView() {
   // restored or deleted, or the project was removed) falls back to All, so
   // the page never sits on an empty list the dropdown can't even name.
   const activeProject = projectOptions.find(p => p.id === projectFilter);
+  // `setHistoryProject` is in the deps because the effect calls it. It is a
+  // Zustand action defined in the store creator (store/app.ts), so its
+  // identity never changes and listing it cannot re-run this effect.
   useEffect(() => {
     if (projectFilter && !activeProject) setHistoryProject(undefined);
-  }, [projectFilter, activeProject]);
+  }, [projectFilter, activeProject, setHistoryProject]);
 
   const archived = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -311,7 +314,11 @@ export function HistoryView() {
 
 function ProjectItem({ label, count, active, onSelect }: { label: string; count: number; active: boolean; onSelect: () => void }) {
   return (
-    <DropdownItem onSelect={onSelect} className="items-center">
+    // The row's text is the name AND a trailing count, so a spec matching the
+    // rendered text has to parse it, and "Website" would match "Website
+    // Redesign" on any leading-text comparison. The name is carried here
+    // exactly, which is a comparison instead of a guess.
+    <DropdownItem onSelect={onSelect} className="items-center" data-project-name={label}>
       <Check className={cn("h-3.5 w-3.5 shrink-0", !active && "opacity-0")} />
       <span className="min-w-0 flex-1 truncate text-[13px]">{label}</span>
       <span className="shrink-0 pl-3 text-[11px] tabular-nums text-[var(--color-fg-faint)]">{count}</span>

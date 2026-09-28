@@ -67,13 +67,20 @@ describe("history project filter", () => {
     await waitVisible('[role="menu"]');
   };
 
-  // Menu rows carry a trailing count, so match on the label's leading text.
+  // Matched on `data-project-name`, not on the row's text.
+  //
+  // The row renders the name plus a trailing count, so matching the row's
+  // leading text also matches every name the target is a prefix of. That is
+  // unreachable today, and only by luck: the options are sorted by name, a
+  // prefix always sorts before its extensions, so `find` happens to reach the
+  // right row first. This does not depend on that, and it drops the text
+  // parsing along with it. There is deliberately no case for the collision,
+  // because no gesture through this UI can produce one.
   const pickFilter = async (label: string) => {
     await pressOpen("[data-history-project-filter]");
     await browser.execute((l) => {
-      const row = [...document.querySelectorAll('[role="menuitem"]')].find(
-        (e) => (e as HTMLElement).innerText.trim().startsWith(l),
-      ) as HTMLElement | undefined;
+      const row = [...document.querySelectorAll('[role="menuitem"][data-project-name]')]
+        .find((e) => e.getAttribute("data-project-name") === l) as HTMLElement | undefined;
       if (!row) throw new Error(`no filter row: ${l}`);
       row.click();
     }, label);
