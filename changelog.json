@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.10.0",
+      "date": "2026-09-28",
+      "summary": "Termic now speaks Simplified Chinese, and idles much lighter with many live tasks."
+    },
+    {
       "version": "1.9.1",
       "date": "2026-09-25",
       "summary": "Termic now runs on Windows, and tasks show which agent started them."

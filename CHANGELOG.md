@@ -4,6 +4,51 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.10.0] - 2026-09-28
+
+Termic now speaks Simplified Chinese, and idles much lighter with many live
+tasks.
+
+### Features
+- **Simplified Chinese, and a language setting.** Every screen in the app is
+  translated, and Settings, General, Language picks between System, English
+  and 简体中文. The switch applies immediately, with no restart.
+- **History filters by project.** A project picker at the top of History
+  narrows the list, and combines with the search box. The sidebar's Resume,
+  More... lands pre-filtered to that project, and "Empty archive" under a
+  filter deletes only that project's archive. Thanks to
+  [@earthpyy](https://github.com/earthpyy).
+- **Name a tab from the CLI.** `termic tab --title <name>` opens a tab under a
+  name you choose, for every kind of tab, and
+  `termic tab --tab <tab> --title <name>` renames one that is already open
+  (`--title ""` gives it its automatic title back). The name counts as a
+  rename you made, so the agent cannot replace it and it survives a relaunch,
+  which makes it something a script can address: two tabs of the same agent
+  used to be reachable only by id. MCP's `task_tab` takes the same `title` and
+  `tab` parameters.
+
+### Improvements
+- **A much quieter app while agents stream.** Two things were costing a busy
+  main thread and whole percents of a core per task. The sidebar re-rendered
+  every row on each terminal's output stamp (one per 500ms per streaming
+  terminal), and PTY output was routed through a lookup that never matched, so
+  every flush re-read every task file in every profile: about 50 full scans a
+  second with 7 streaming terminals.
+- **Spawn marks reach the dashboard.** A task an agent started in another
+  project shows the mark naming its parent on the dashboard's rows too, not
+  only in the sidebar, and a row with more than one terminal tab carries the
+  tab count.
+
+### Bug fixes
+- The sidebar and right-panel dividers can be grabbed. The band that lit up on
+  hover was wider than the area that actually took the drag, which was one
+  pixel.
+- The usage chip is no longer blank on a machine whose locale writes decimals
+  with a comma (ro_RO, de_DE, fr_FR and the rest): the reading was parsed as a
+  dotted number and dropped.
+- Windows: an account you have never signed into no longer reads as signed in
+  when Developer Mode is off.
+
 ## [1.9.1] - 2026-09-25
 
 Termic now runs on Windows, and tasks show which agent started them.
