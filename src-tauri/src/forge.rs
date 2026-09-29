@@ -442,7 +442,28 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
 
 /// Collapse gh's statusCheckRollup array (a mix of CheckRun objects with
 /// status/conclusion and StatusContext objects with state) to one word.
-/// Any failure wins; otherwise any still-running check; otherwise green.
+/// Any failure wins; otherwise any check with no verdict yet; otherwise green.
+///
+/// CANCELLED and ACTION_REQUIRED are deliberately NOT failures, which they
+/// were until a maintainer reported PRs reading red while their pipelines were
+/// fine. Neither means the code is broken:
+///
+/// - `ACTION_REQUIRED` is how every fork PR's checks sit until a maintainer
+///   approves the workflow run. Painting that red says "your contributor broke
+///   something" when it means "you have not pressed the button".
+/// - `CANCELLED` is what `concurrency: cancel-in-progress` does to the run a
+///   later push supersedes, and what a manual cancel leaves behind. This repo's
+///   own workflows cancel constantly for that reason.
+///
+/// Both map to `pending` instead, the only one of the four words that means
+/// "no verdict". It costs a spinner on a state nothing is working toward, which
+/// is the lesser wrong: `passing` would be a false green on a run that never
+/// finished, and `failing` is the false red this fixes. A fifth word
+/// ("cancelled", rendered grey and settled) is the real answer and needs
+/// types.ts, PrCard and two locales to agree.
+///
+/// The GitLab arm of this file already got this right: `gitlab_mr_status` maps
+/// only `failed` to failing and lets `canceled` fall through.
 fn rollup_to_checks(rollup: &serde_json::Value) -> String {
     let items = match rollup.as_array() {
         Some(a) if !a.is_empty() => a,
@@ -453,13 +474,14 @@ fn rollup_to_checks(rollup: &serde_json::Value) -> String {
         let conclusion = it["conclusion"].as_str().unwrap_or("");
         let status = it["status"].as_str().unwrap_or("");
         let state = it["state"].as_str().unwrap_or("");
-        if matches!(conclusion, "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE")
+        if matches!(conclusion, "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE")
             || matches!(state, "FAILURE" | "ERROR")
         {
             return "failing".into();
         }
         if matches!(status, "QUEUED" | "IN_PROGRESS" | "WAITING" | "PENDING" | "REQUESTED")
             || matches!(state, "PENDING" | "EXPECTED")
+            || matches!(conclusion, "CANCELLED" | "ACTION_REQUIRED")
         {
             pending = true;
         }
@@ -1130,6 +1152,39 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(rollup_to_checks(&j(r#"[{"state":"SUCCESS"}]"#)), "passing");
         assert_eq!(rollup_to_checks(&j(r#"[{"state":"PENDING"}]"#)), "pending");
         assert_eq!(rollup_to_checks(&j(r#"[{"state":"FAILURE"}]"#)), "failing");
+
+        // Neither of these is a broken build, and both used to read "failing":
+        // a fork PR waiting on workflow approval, and the run a later push
+        // superseded under `cancel-in-progress`. Reported as PRs showing red
+        // while their pipelines were fine.
+        assert_eq!(
+            rollup_to_checks(&j(r#"[{"status":"COMPLETED","conclusion":"ACTION_REQUIRED"}]"#)),
+            "pending"
+        );
+        assert_eq!(
+            rollup_to_checks(&j(r#"[{"status":"COMPLETED","conclusion":"CANCELLED"}]"#)),
+            "pending"
+        );
+        // The mixed shape this actually shows up as: everything green but the
+        // one job a newer push killed. Not red.
+        assert_eq!(
+            rollup_to_checks(&j(r#"[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"CANCELLED"}]"#)),
+            "pending"
+        );
+        // A real failure still wins over both, in either order.
+        assert_eq!(
+            rollup_to_checks(&j(r#"[{"status":"COMPLETED","conclusion":"CANCELLED"},{"status":"COMPLETED","conclusion":"FAILURE"}]"#)),
+            "failing"
+        );
+        assert_eq!(
+            rollup_to_checks(&j(r#"[{"status":"COMPLETED","conclusion":"FAILURE"},{"status":"COMPLETED","conclusion":"ACTION_REQUIRED"}]"#)),
+            "failing"
+        );
+        // SKIPPED and NEUTRAL were never failures and still are not.
+        assert_eq!(
+            rollup_to_checks(&j(r#"[{"status":"COMPLETED","conclusion":"SKIPPED"},{"status":"COMPLETED","conclusion":"NEUTRAL"}]"#)),
+            "passing"
+        );
     }
 
     #[test]
