@@ -3172,7 +3172,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   onSelect={() => requestAnimationFrame(() => useUI.getState().openEditTask(w.id))}
                 >
                   <Layers className="h-4 w-4" />
-                  <span>Edit task…</span>
+                  <span>{t("editTask")}</span>
                 </DropdownItem>
               )}
               {/* Resume override: only for agent tasks (shell / custom

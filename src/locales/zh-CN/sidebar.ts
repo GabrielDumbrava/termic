@@ -70,6 +70,7 @@ export default {
   yoloOn: "YOLO：开",
   yoloOff: "YOLO：关",
   editCommand: "编辑命令",
+  editTask: "编辑任务…",
   resumeOverride: "恢复参数覆盖",
   resumeOverrideOn: "恢复参数覆盖：开",
   copyBranch: "复制分支名",

@@ -11,6 +11,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -49,6 +50,11 @@ type Row = {
 };
 
 export function EditTaskDialog() {
+  // Two namespaces: this dialog's own copy plus the create dialog's, which it
+  // deliberately reuses rather than restating (Task type, Main checkout, the
+  // sandbox field labels), and `tc` for the shared Cancel/Save/Close/Remove.
+  const { t } = useTranslation("dialogs");
+  const { t: tc } = useTranslation("common");
   const taskId = useUI(s => s.editTaskId);
   const close = useUI(s => s.closeEditTask);
   const task = useApp(s => s.tasks.find(w => w.id === taskId) ?? null);
@@ -264,9 +270,13 @@ export function EditTaskDialog() {
     if (wtRemoved.length > 0) {
       const names = wtRemoved.map(r => r.dir_name).join(", ");
       const ok = await useUI.getState().askConfirm({
-        title: wtRemoved.length === 1 ? "Remove member worktree?" : `Remove ${wtRemoved.length} member worktrees?`,
-        message: `${names}: the member worktree${wtRemoved.length === 1 ? "" : "s"} will be deleted and unregistered from git. Branches are kept, but uncommitted changes inside are lost.`,
-        confirmLabel: "Remove",
+        title: wtRemoved.length === 1
+          ? t("editTask.removeWorktreeTitleOne")
+          : t("editTask.removeWorktreeTitleMany", { count: wtRemoved.length }),
+        message: wtRemoved.length === 1
+          ? t("editTask.removeWorktreeBodyOne", { names })
+          : t("editTask.removeWorktreeBodyMany", { names }),
+        confirmLabel: tc("remove"),
         destructive: true,
       });
       if (ok !== true) return;
@@ -278,11 +288,11 @@ export function EditTaskDialog() {
     // action offered after instead of a forced inline choice.
     if (dockerDirty && mounted) {
       const ok = await useUI.getState().askConfirm({
-        title: "Restart running agents?",
+        title: t("editTask.restartTitle"),
         message: selDocker
           ? dockerToggleMessage(true)
           : leaveDockerMessage(selMode === "off" ? "off" : "seatbelt"),
-        confirmLabel: "Save & restart",
+        confirmLabel: t("editTask.restartConfirm"),
       });
       if (ok !== true) return;
     }
@@ -319,8 +329,8 @@ export function EditTaskDialog() {
           } else if (mounted) {
             // Seatbelt→seatbelt only — a docker transition already killed
             // and auto-respawned the agents, so no restart is owed.
-            useUI.getState().pushToast(`Sandbox saved — running agents keep the old profile until restarted`, "success", {
-              action: { label: "Restart agents", onClick: () => useApp.getState().stopTask(task.id) },
+            useUI.getState().pushToast(t("editTask.sandboxSavedToast"), "success", {
+              action: { label: t("editTask.restartAgents"), onClick: () => useApp.getState().stopTask(task.id) },
             });
           }
         }
@@ -346,7 +356,7 @@ export function EditTaskDialog() {
             setupDoneUnlisten.current?.();
             setupDoneUnlisten.current = null;
             if (ev.payload.success === false) {
-              useUI.getState().pushToast("A member's setup script failed — run it manually inside the member dir", "error");
+              useUI.getState().pushToast(t("editTask.setupFailedToast"), "error");
             }
           });
         }
@@ -414,7 +424,7 @@ export function EditTaskDialog() {
           (opts.disabled || opts.worktreeDisabled) && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
         )}
       >
-        <GitBranch className="h-3 w-3" /> Worktree
+        <GitBranch className="h-3 w-3" /> {t("newTask.worktree")}
       </button>
     </div>
   );
@@ -423,7 +433,7 @@ export function EditTaskDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={task ? `Edit task · ${task.name}` : "Edit task"}
+      title={task ? t("editTask.titleNamed", { name: task.name }) : t("editTask.title")}
       // Same width math as the multi New Task dialog: 3xl base for the
       // form column, widening to the two-column size while the sandbox
       // config pane is showing (see NewTaskDialog for the rem formula).
@@ -438,17 +448,17 @@ export function EditTaskDialog() {
                 <>
                   <AlertTriangle className="h-3 w-3" />
                   {[
-                    adding.length > 0 ? `adding ${adding.length}` : "",
-                    removing.length > 0 ? `removing ${removing.length}` : "",
+                    adding.length > 0 ? t("editTask.pendingAdding", { count: adding.length }) : "",
+                    removing.length > 0 ? t("editTask.pendingRemoving", { count: removing.length }) : "",
                   ].filter(Boolean).join(", ")}
                 </>
               )}
             </span>
             <div className="flex gap-2">
-              <Button variant="ghost" type="button" onClick={close} disabled={busy}>Cancel</Button>
+              <Button variant="ghost" type="button" onClick={close} disabled={busy}>{tc("cancel")}</Button>
               <Button variant="primary" type="submit" form="edit-task-form" disabled={busy || !dirty || !name.trim()}>
                 {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-                Save
+                {tc("save")}
               </Button>
             </div>
           </div>
@@ -470,14 +480,14 @@ export function EditTaskDialog() {
               so the toggle is informational. */}
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between gap-3">
-              <label className="text-[13px] font-medium text-[var(--color-fg)]">Task type</label>
+              <label className="text-[13px] font-medium text-[var(--color-fg)]">{t("newTask.taskType")}</label>
               <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
                 {(["repo_root", "worktree"] as const).map(m => (
                   <button
                     key={m}
                     type="button"
                     disabled
-                    title="Fixed once the task exists — archive and recreate to switch."
+                    title={t("editTask.taskTypeFrozen")}
                     className={cn(
                       "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px]",
                       (isLive ? "repo_root" : "worktree") === m
@@ -486,15 +496,15 @@ export function EditTaskDialog() {
                     )}
                   >
                     {m === "repo_root" ? <Link2 className="h-3.5 w-3.5" /> : <GitBranch className="h-3.5 w-3.5" />}
-                    {m === "repo_root" ? "Main checkout" : "Worktree"}
+                    {m === "repo_root" ? t("newTask.mainCheckout") : t("newTask.worktree")}
                   </button>
                 ))}
               </div>
             </div>
             <p className="text-[12px] text-[var(--color-fg-faint)]">
               {isLive
-                ? "Runs in the host's live checkout, members linked in. Edits land on your real files."
-                : "Members run in their own worktree directories under this task."}
+                ? t("editTask.liveHint")
+                : t("editTask.worktreeHint")}
             </p>
           </div>
 
@@ -503,7 +513,7 @@ export function EditTaskDialog() {
               than dropped so the task's shape is fully visible. Name stays
               the dialog's FIRST input (e2e types into it positionally). */}
           <div className="flex flex-col gap-2">
-            <Field label="Name">
+            <Field label={t("newTask.nameLabel")}>
               <Input
                 value={name}
                 onChange={e => setName(e.target.value)}
@@ -512,18 +522,18 @@ export function EditTaskDialog() {
               />
             </Field>
             {!isLive && task.branch && (
-              <FieldInline label="Branch name" hint="Cut when the task was created.">
+              <FieldInline label={t("newTask.branchName")} hint={t("editTask.branchCutHint")}>
                 <Input value={task.branch} disabled className="opacity-60" />
               </FieldInline>
             )}
             {!isLive && task.base_branch && (
-              <FieldInline label="Host branch from">
+              <FieldInline label={t("newTask.hostBranchFrom")}>
                 <Input value={task.base_branch} disabled className="opacity-60" />
               </FieldInline>
             )}
           </div>
 
-          <Field label="Default CLI">
+          <Field label={t("newTask.defaultCli")}>
             <div className="inline-flex flex-wrap items-stretch gap-y-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
               {cliChoices.map(a => (
                 <button
@@ -548,13 +558,13 @@ export function EditTaskDialog() {
               collapsed toggle until set (or asked for), then the input. */}
           {canResumeOverride && (resumeOpen ? (
             <Field
-              label="Resume args override (optional)"
-              hint="Replaces the agent's default resume arguments. {WORKSPACE_NAME}, {WORKSPACE_SLUG} and {BRANCH} expand at launch; takes effect on the next spawn."
+              label={t("newTask.resumeOverrideLabel")}
+              hint={t("editTask.resumeOverrideHint")}
             >
               <Input
                 value={resume}
                 onChange={e => setResume(e.target.value)}
-                placeholder="--resume {WORKSPACE_NAME}"
+                placeholder={t("newTask.resumeOverridePlaceholder")}
                 className="font-mono"
                 autoFocus
               />
@@ -567,7 +577,7 @@ export function EditTaskDialog() {
               className="-mb-1 inline-flex items-center gap-1.5 self-start text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)]"
             >
               <History className="h-3.5 w-3.5" />
-              Override resume args
+              {t("newTask.overrideResumeToggle")}
             </button>
           ))}
 
@@ -581,10 +591,10 @@ export function EditTaskDialog() {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <label className="text-[13px] font-medium text-[var(--color-fg)]">
-                  Members ({kept} of {rows.length})
+                  {t("editTask.membersLabel", { kept, total: rows.length })}
                 </label>
                 <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                  Linked live into the host
+                  {t("editTask.membersLinkedHint")}
                 </span>
               </div>
               <div className="flex flex-col gap-1.5">
@@ -603,7 +613,7 @@ export function EditTaskDialog() {
                   >
                     <Checkbox
                       data-testid="edit-member-include"
-                      aria-label={r.existing ? `Keep ${r.name} in this task` : `Add ${r.name} to this task`}
+                      aria-label={r.existing ? t("editTask.memberKeep", { name: r.name }) : t("editTask.memberAdd", { name: r.name })}
                       checked={r.checked}
                       onChange={v => update(r.key, { checked: v })}
                     />
@@ -612,7 +622,7 @@ export function EditTaskDialog() {
                       <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{r.root_path || r.dir_name}</div>
                     </div>
                     {r.existing && !r.checked && (
-                      <span className="text-[11.5px] text-[var(--color-err)]">unlinked on save</span>
+                      <span className="text-[11.5px] text-[var(--color-err)]">{t("editTask.memberUnlinkedOnSave")}</span>
                     )}
                   </label>
                 ))}
@@ -623,17 +633,16 @@ export function EditTaskDialog() {
                   className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]"
                 >
                   <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                  {kept} of {rows.length} members run live, linked into the host
-                  checkout. The agent can directly modify
-                  {kept === rows.length ? " every repo." : " those repos."}
-                  {" "}No worktree isolation.
+                  {kept === rows.length
+                    ? t("editTask.membersLiveNoteEvery", { kept, total: rows.length })
+                    : t("editTask.membersLiveNoteThose", { kept, total: rows.length })}
                 </div>
               ) : (
                 <div
                   data-testid="members-live-note"
                   className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-2 text-[12px] text-[var(--color-fg-faint)]"
                 >
-                  No members linked in. The task runs in the host checkout alone.
+                  {t("editTask.membersLiveNoteNone")}
                 </div>
               )}
             </div>
@@ -641,10 +650,10 @@ export function EditTaskDialog() {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <label className="text-[13px] font-medium text-[var(--color-fg)]">
-                  Members ({kept} of {rows.length})
+                  {t("editTask.membersLabel", { kept, total: rows.length })}
                 </label>
                 <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                  Per-repo mode + branch
+                  {t("newTask.perRepo")}
                 </span>
               </div>
               <div className="flex flex-col gap-2">
@@ -691,19 +700,19 @@ export function EditTaskDialog() {
                       </div>
                       {r.existing && r.checked && r.existing.mode === "worktree" && (
                         <div className="mt-2">
-                          <Input value={r.existing.branch} disabled className="opacity-60" title="Branch frozen at create" />
+                          <Input value={r.existing.branch} disabled className="opacity-60" title={t("editTask.branchFrozen")} />
                         </div>
                       )}
                       {r.existing && r.checked && r.existing.mode === "repo_root" && (
                         <div className="mt-2 text-[11.5px] text-[var(--color-warn)]">
-                          Live symlink. Agent edits land directly on your real checkout.
+                          {t("newTask.liveSymlinkWarn")}
                         </div>
                       )}
                       {r.existing && !r.checked && (
                         <div className="mt-2 text-[11.5px] text-[var(--color-err)]">
                           {r.existing.mode === "worktree"
-                            ? "Will be removed — its worktree is deleted on save."
-                            : "Will be removed — its link is unlinked on save."}
+                            ? t("editTask.willRemoveWorktree")
+                            : t("editTask.willRemoveLink")}
                         </div>
                       )}
                       {!r.existing && r.checked && (r.mode === "worktree" ? (
@@ -711,17 +720,17 @@ export function EditTaskDialog() {
                           <Input
                             value={r.branch}
                             onChange={e => update(r.key, { branch: e.target.value })}
-                            placeholder={task.branch ? `${task.branch} (default)` : "branch…"}
+                            placeholder={task.branch ? t("editTask.memberBranchDefault", { branch: task.branch }) : t("editTask.memberBranchPlaceholder")}
                           />
                           <Input
                             value={r.base_branch}
                             onChange={e => update(r.key, { base_branch: e.target.value })}
-                            placeholder="branch from…"
+                            placeholder={t("newTask.memberBasePlaceholder")}
                           />
                         </div>
                       ) : (
                         <div className="mt-2 text-[11.5px] text-[var(--color-warn)]">
-                          Live symlink. Agent edits land directly on your real checkout.
+                          {t("newTask.liveSymlinkWarn")}
                         </div>
                       ))}
                     </div>
@@ -730,14 +739,13 @@ export function EditTaskDialog() {
               </div>
               {rows.length === 0 && (
                 <div className="text-[12px] text-[var(--color-fg-faint)]">
-                  This project has no members.
+                  {t("editTask.noMembers")}
                 </div>
               )}
               {rows.some(r => r.checked && (r.existing ? r.existing.mode : r.mode) === "repo_root") && (
                 <div className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]">
                   <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                  One or more members are linked to live checkouts. The agent
-                  can directly modify those repos. No worktree isolation.
+                  {t("newTask.someLiveWarn")}
                 </div>
               )}
             </div>
@@ -746,7 +754,7 @@ export function EditTaskDialog() {
           {/* Same Sandbox field as create — the picker is the single
               control; Docker's extra mounts ride under it, the seatbelt
               lists live in the right-hand config column. */}
-          <Field label="Sandbox" hint="Cage the agent's filesystem + network access.">
+          <Field label={t("newTask.sandboxLabel")} hint={t("editTask.sandboxHint")}>
             <SandboxPicker
               onEnableDocker={() => { close(); useApp.getState().openSettings("docker"); }}
               value={sel}
@@ -759,7 +767,7 @@ export function EditTaskDialog() {
               <div className="mt-2 flex flex-col gap-2">
                 <DockerEngineNote compact />
                 <ListField
-                  label="Extra mounts"
+                  label={t("newTask.extraMounts")}
                   placeholder={"$HOME/mcp-data:/data/mcp"}
                   value={dockerMounts}
                   onChange={setDockerMounts}
@@ -770,12 +778,12 @@ export function EditTaskDialog() {
 
           {yoloApplies && (
             <Field
-              label="YOLO"
+              label={t("newTask.yoloLabel")}
               hint={yoloCaged
-                ? "Auto-on: the sandbox is the boundary, so the agent's own prompts are skipped."
+                ? t("editTask.yoloHintCaged")
                 : yolo
-                  ? "Nothing cages the agent: it runs every command without asking."
-                  : "The agent asks before running commands."}
+                  ? t("editTask.yoloHintOn")
+                  : t("editTask.yoloHintOff")}
             >
               <label
                 data-testid="edit-task-yolo"
@@ -796,7 +804,7 @@ export function EditTaskDialog() {
                   className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0 disabled:cursor-default"
                 />
                 <Zap className="h-3.5 w-3.5 shrink-0" fill={yoloCaged || yolo ? "currentColor" : "none"} />
-                {yoloCaged ? "Auto-on inside the sandbox" : "Skip permission prompts"}
+                {yoloCaged ? t("newTask.yoloAutoCaged") : t("newTask.yoloSkipPrompts")}
               </label>
             </Field>
           )}
@@ -807,10 +815,10 @@ export function EditTaskDialog() {
         {sandboxPane && (
           <div className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6">
             <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-              Sandbox config for this task
+              {t("editTask.sandboxPaneTitle")}
             </div>
             <div className="flex flex-wrap items-center gap-2 text-[12px]">
-              <span className="text-[var(--color-fg-faint)]">Preset:</span>
+              <span className="text-[var(--color-fg-faint)]">{t("newTask.presetLabel")}</span>
               {SANDBOX_PRESETS.map(p => (
                 <button
                   key={p.id} type="button"
@@ -825,7 +833,7 @@ export function EditTaskDialog() {
                 </button>
               ))}
             </div>
-            <Field label="Allowed paths" hint="One per line. Task + agent state + caches + TMPDIR are always allowed. Add extras here.">
+            <Field label={t("newTask.allowedPathsLabel")} hint={t("editTask.allowedPathsHint")}>
               <textarea
                 value={sbRw}
                 onChange={e => setSbRw(e.target.value)}
@@ -837,7 +845,7 @@ export function EditTaskDialog() {
             {/* ENFORCING (FS) disables the network sandbox, so the host
                 allow-list is irrelevant — hide it in that mode. */}
             {selMode !== "enforce-fs" && (
-              <Field label="Allowed hosts" hint="One per line. Use * as a wildcard. Per-CLI vendor + github + npm/pypi/crates are always allowed; these are extras.">
+              <Field label={t("newTask.allowedHostsLabel")} hint={t("editTask.allowedHostsHint")}>
                 <textarea
                   value={sbHosts}
                   onChange={e => setSbHosts(e.target.value)}
@@ -849,8 +857,7 @@ export function EditTaskDialog() {
             )}
             {selMode === "enforce-fs" && (
               <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
-                Network is unrestricted in this mode (filesystem cage only). The
-                agent reaches any host directly, with no proxy or host allow-list.
+                {t("editTask.networkUnrestricted")}
               </p>
             )}
           </div>
@@ -864,10 +871,10 @@ export function EditTaskDialog() {
         // indistinguishable until it arrives, so don't call it gone).
         <div className="flex flex-col gap-4">
           <p className="text-[13.5px] text-[var(--color-fg-dim)]">
-            {task ? "Loading project…" : "This task no longer exists."}
+            {task ? t("editTask.loadingProject") : t("editTask.gone")}
           </p>
           <div className="flex justify-end">
-            <Button variant="ghost" onClick={close}>Close</Button>
+            <Button variant="ghost" onClick={close}>{tc("close")}</Button>
           </div>
         </div>
       )}

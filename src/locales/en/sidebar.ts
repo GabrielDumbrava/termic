@@ -70,6 +70,7 @@ export default {
   yoloOn: "YOLO: on",
   yoloOff: "YOLO: off",
   editCommand: "Edit command",
+  editTask: "Edit task…",
   resumeOverride: "Resume args override",
   resumeOverrideOn: "Resume args override: on",
   copyBranch: "Copy branch name",

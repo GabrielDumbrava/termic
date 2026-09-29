@@ -2072,7 +2072,9 @@ describe("multi main checkout (New Task dialog)", () => {
       btn.click();
     });
     await clickRow("beta");
-    await waitForText("Will be removed — its worktree is deleted on save.");
+    // Colon, not an em dash: CLAUDE.md bans em dashes in user-visible text,
+    // and this string arrived with one.
+    await waitForText("Will be removed: its worktree is deleted on save.");
 
     // Rename in the same save — name is the dialog's first input.
     await browser.execute((v) => {
