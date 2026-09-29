@@ -19,6 +19,7 @@ import { cleanLines } from "@/lib/utils";
 import {
   PORT_RANGE_DEFAULT, PORT_RANGE_FLOOR, portRangeError, resolvePortRange, tasksThatFit,
 } from "@/lib/portRange";
+import { type BoardArchiveLimitMode } from "@/lib/taskBoardState";
 
 /** Drop trailing slashes so the "where tasks go" preview never reads
  *  `~/work//<project>`. Keeps a bare `/` intact. */
@@ -66,6 +67,10 @@ export function TasksSection() {
   const setConfirmBeforeArchiveTask = usePrefs(s => s.setConfirmBeforeArchiveTask);
   const archiveDeleteBranch = usePrefs(s => s.archiveDeleteBranch);
   const setArchiveDeleteBranch = usePrefs(s => s.setArchiveDeleteBranch);
+  const boardArchiveLimitMode = usePrefs(s => s.boardArchiveLimitMode);
+  const setBoardArchiveLimitMode = usePrefs(s => s.setBoardArchiveLimitMode);
+  const boardArchiveLimit = usePrefs(s => s.boardArchiveLimit);
+  const setBoardArchiveLimit = usePrefs(s => s.setBoardArchiveLimit);
 
   const hydrated = useRef(false);
   useEffect(() => {
@@ -396,6 +401,37 @@ export function TasksSection() {
           value={archiveDeleteBranch}
           onChange={setArchiveDeleteBranch}
         />
+      </Block>
+
+      {/* A render cap for the board's Archived column, not a data one:
+          History lists everything and the column badge keeps the full
+          count, so "unlimited" is safe to offer. */}
+      <Block>
+        <div className="text-[14px] font-medium">{t("tasks.boardArchive.title")}</div>
+        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+          {t("tasks.boardArchive.hint")}
+        </div>
+        <div className="mt-2 flex max-w-sm items-center gap-2">
+          <select
+            value={boardArchiveLimitMode}
+            onChange={(e) => setBoardArchiveLimitMode(e.target.value as BoardArchiveLimitMode)}
+            className="h-9 shrink-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
+            data-testid="board-archive-limit-select"
+          >
+            <option value="default">{t("tasks.boardArchive.default")}</option>
+            <option value="unlimited">{t("tasks.boardArchive.unlimited")}</option>
+            <option value="custom">{t("tasks.boardArchive.custom")}</option>
+          </select>
+          {boardArchiveLimitMode === "custom" && (
+            <Input
+              type="number"
+              value={boardArchiveLimit}
+              onChange={(e) => setBoardArchiveLimit(Number(e.target.value))}
+              className="w-24 font-mono"
+              data-testid="board-archive-limit-input"
+            />
+          )}
+        </div>
       </Block>
     </div>
   );

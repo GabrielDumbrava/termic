@@ -82,6 +82,40 @@ export function taskBoardColumn(
   return "settled";
 }
 
+/** The Archived column's render list, most recent first. History and the
+ *  sidebar's Resume submenu sort the same way (`archived_at ?? created`,
+ *  latest wins); the board adds a cap because the column renders every card
+ *  at full height with no virtualization, and a few hundred archived tasks
+ *  would cost the board its open time. The badge keeps the full count, so
+ *  the cap bounds the DOM, never the truth. */
+export function recentArchived(tasks: Task[], limit: number): Task[] {
+  return tasks
+    .filter(w => w.archived)
+    .sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created))
+    .slice(0, Number.isFinite(limit) ? Math.max(0, limit) : 0);
+}
+
+export type BoardArchiveLimitMode = "default" | "unlimited" | "custom";
+export const BOARD_ARCHIVE_LIMIT_DEFAULT = 25;
+
+/** Storage strings are untyped; anything unknown reads as the default
+ *  (same contract as `parseLanguagePref` for the language pref). */
+export function parseBoardArchiveLimitMode(v: string): BoardArchiveLimitMode {
+  return v === "unlimited" || v === "custom" ? v : "default";
+}
+
+/** The Archived column's effective cap: the factory default, everything
+ *  (Infinity passes straight through `recentArchived`'s slice), or the
+ *  number the user typed, taken as-is. Not a clamp: the custom value has
+ *  no bounds by design. recentArchived makes nonsense well-defined
+ *  (anything below one renders nothing) without ever second-guessing a
+ *  number the user actually entered. */
+export function resolveBoardArchiveLimit(mode: BoardArchiveLimitMode, custom: number): number {
+  if (mode === "unlimited") return Number.POSITIVE_INFINITY;
+  if (mode === "custom") return Number.isFinite(custom) ? custom : 0;
+  return BOARD_ARCHIVE_LIMIT_DEFAULT;
+}
+
 // ── Drop commands ("drag as command") ────────────────────────────────────
 //
 // Columns are derived and never stored, so a drag onto a column cannot SET a

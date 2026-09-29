@@ -132,6 +132,13 @@ export default {
       hint: "Minimum delay between consecutive queued messages sent to an agent (the \"ralph loop\"). Even if the agent finishes faster, or a false \"done\" fires, the next message waits this long. Set to 0 to disable. \"Send now\" ignores this and sends immediately.",
       seconds: "seconds",
     },
+    boardArchive: {
+      title: "Kanban archived column limit",
+      hint: "How many archived tasks the board's Archived column renders, most recent first. A display limit only: the column badge shows the full count, and History always lists everything.",
+      default: "Default (25)",
+      unlimited: "Unlimited",
+      custom: "Custom",
+    },
     confirmClose: {
       label: "Confirm before closing an agent tab",
       hint: "Ask before closing a non-shell terminal or agent tab. Turning this off (or unchecking it once from the close dialog) closes tabs immediately; a toast then points back to the '+' menu's Resume section to bring one back.",

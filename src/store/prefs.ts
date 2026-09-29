@@ -38,6 +38,11 @@ import { scoped } from "@/lib/profileScope";
 import { encodeOpenWithPick, parseOpenWithPick } from "@/lib/openWith";
 import type { OpenWithPick } from "@/lib/types";
 import { applyLanguage, parseLanguagePref, LS_LANGUAGE, type LanguagePref } from "@/lib/i18n";
+import {
+  BOARD_ARCHIVE_LIMIT_DEFAULT,
+  parseBoardArchiveLimitMode,
+  type BoardArchiveLimitMode,
+} from "@/lib/taskBoardState";
 
 /** The two readouts an agent's footer chip can carry. */
 export const AGENT_FOOTER_PARTS = ["usage", "context"] as const;
@@ -83,6 +88,8 @@ const LS_TERMINAL_RENDERER       = "terminalRenderer";
 const LS_TERMINAL_COPY_ON_SELECT = "terminalCopyOnSelect";
 const LS_TASK_EXPAND_MODE = scoped("taskExpandMode");
 const LS_HIDE_INACTIVE_PROJECTS = scoped("hideInactiveProjects");
+const LS_BOARD_ARCHIVE_LIMIT_MODE = scoped("boardArchiveLimitMode");
+const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
 const LS_BRANCH_AS_TASK_NAME = "useBranchAsTaskName";
 const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
 const LS_CTRL_TAB_MODE = "ctrlTabMode";
@@ -763,6 +770,14 @@ interface PrefsState {
    *  Keeps a long project list (repos you've added but aren't actively
    *  working in) from crowding out the projects that have live agents. */
   hideInactiveProjects: boolean;
+  /** How many archived tasks the board's Archived column renders, most
+   *  recent first: the factory default, everything, or a custom number.
+   *  A render cap only: the column badge always shows the full count, and
+   *  History still lists every archived task. */
+  boardArchiveLimitMode: BoardArchiveLimitMode;
+  /** The custom cap, used only while boardArchiveLimitMode is "custom";
+   *  taken as-is (no bounds by design). */
+  boardArchiveLimit: number;
   /** When true (GH #260), a WORKTREE task is labelled by its branch
    *  everywhere it is named in the UI, instead of by the title typed at
    *  creation. A week-old task's typed name goes stale; the branch is what
@@ -905,6 +920,8 @@ interface PrefsState {
   setAllowScope: (s: "agent" | "project" | "repo") => void;
   setTaskExpandMode: (m: "chevron" | "click" | "always") => void;
   setHideInactiveProjects: (v: boolean) => void;
+  setBoardArchiveLimitMode: (m: BoardArchiveLimitMode) => void;
+  setBoardArchiveLimit: (n: number) => void;
   setUseBranchAsTaskName: (v: boolean) => void;
   setDoubleShiftMode: (v: DoubleShiftMode) => void;
   setCtrlTabMode: (v: CtrlTabMode) => void;
@@ -1122,6 +1139,11 @@ const initialTaskExpandMode: "chevron" | "click" | "always" = (() => {
   return raw === "click" || raw === "always" ? raw : "chevron";
 })();
 const initialHideInactiveProjects = lsGet(LS_HIDE_INACTIVE_PROJECTS, "") === "1";
+const initialBoardArchiveLimitMode = parseBoardArchiveLimitMode(lsGet(LS_BOARD_ARCHIVE_LIMIT_MODE, "default"));
+const initialBoardArchiveLimit = (() => {
+  const n = lsGetNum(LS_BOARD_ARCHIVE_LIMIT, BOARD_ARCHIVE_LIMIT_DEFAULT);
+  return Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
+})();
 const initialUseBranchAsTaskName = lsGet(LS_BRANCH_AS_TASK_NAME, "") === "1";
 // Absent means never set, and the gesture ships on, left-Shift only.
 const initialDoubleShiftMode: DoubleShiftMode = (() => {
@@ -1199,6 +1221,8 @@ export const usePrefs = create<PrefsState>(set => ({
   showAllInstalledFonts: initialShowAllFonts,
   taskExpandMode: initialTaskExpandMode,
   hideInactiveProjects: initialHideInactiveProjects,
+  boardArchiveLimitMode: initialBoardArchiveLimitMode,
+  boardArchiveLimit: initialBoardArchiveLimit,
   useBranchAsTaskName: initialUseBranchAsTaskName,
   doubleShiftMode: initialDoubleShiftMode,
   ctrlTabMode: initialCtrlTabMode,
@@ -1517,6 +1541,18 @@ export const usePrefs = create<PrefsState>(set => ({
   setHideInactiveProjects: (v) => {
     try { localStorage.setItem(LS_HIDE_INACTIVE_PROJECTS, v ? "1" : "0"); } catch {}
     set({ hideInactiveProjects: v });
+  },
+  setBoardArchiveLimitMode: (m) => {
+    try { localStorage.setItem(LS_BOARD_ARCHIVE_LIMIT_MODE, m); } catch {}
+    set({ boardArchiveLimitMode: m });
+  },
+  setBoardArchiveLimit: (n) => {
+    // Taken as-is on purpose: the custom value has no bounds. A non-finite
+    // (never producible by the number input, guarded anyway) falls back to
+    // the factory default instead of landing in LS.
+    const v = Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
+    try { localStorage.setItem(LS_BOARD_ARCHIVE_LIMIT, String(v)); } catch {}
+    set({ boardArchiveLimit: v });
   },
   setUseBranchAsTaskName: (v) => {
     try { localStorage.setItem(LS_BRANCH_AS_TASK_NAME, v ? "1" : "0"); } catch {}

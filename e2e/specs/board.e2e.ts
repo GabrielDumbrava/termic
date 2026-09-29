@@ -50,11 +50,18 @@ describe("board view", () => {
   let t2 = "";
   let t3 = "";
   let t4 = "";
+  // Tasks the archive-cap case creates and archives; the after hook treats
+  // them like t2-t4 so a throw half way still leaves nothing live behind.
+  let cap: string[] = [];
 
   after(async () => {
+    // The cap case drives the limit pref through the store as setup; put it
+    // back whichever way the case ended.
+    await browser.execute(() =>
+      window.__termic!.usePrefs.getState().setBoardArchiveLimitMode("default"));
     // t1 is archived by its own case; archive what survived. Deleting by id
     // is enough here: each openTask either returned or threw before creating.
-    for (const id of [t2, t3, t4]) {
+    for (const id of [t2, t3, t4, ...cap]) {
       if (!id) continue;
       const archived = await browser.execute(
         i => !!window.__termic!.useApp.getState().tasks.find((w: any) => w.id === i)?.archived,
@@ -63,6 +70,15 @@ describe("board view", () => {
       if (!archived) await archiveTask(id);
     }
   });
+
+  /** Card ids rendered in the Archived column, in DOM order. */
+  const archivedCardIds = () =>
+    browser.execute(
+      sel =>
+        [...document.querySelectorAll<HTMLElement>(`${sel} [data-board-task-id]`)]
+          .map(el => el.dataset.boardTaskId),
+      "[data-board-archive]",
+    );
 
   it("opens from the sidebar nav and places untouched tasks in Not started, one lane per agent", async () => {
     await waitForAppShell();
@@ -223,5 +239,51 @@ describe("board view", () => {
       { timeout: 10_000, timeoutMsg: "task never landed as archived in the store" },
     );
     await snap("board-after-archive.png");
+  });
+
+  it("caps the Archived column to the limit, newest first, badge showing the full count", async () => {
+    // The pref is SETUP here, driven through the store; the control that
+    // edits it is covered in settings.e2e.ts. t1, archived by the case
+    // above, is older than everything archived below, so the cap has to
+    // push it off the column's far end too, not just bound new arrivals.
+    await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      p.setBoardArchiveLimitMode("custom");
+      p.setBoardArchiveLimit(5);
+    });
+    const baseArchived = await browser.execute(
+      () => window.__termic!.useApp.getState().tasks.filter((w: any) => w.archived).length,
+    ) as number;
+
+    cap = [];
+    for (const name of ["board-cap-1", "board-cap-2", "board-cap-3", "board-cap-4", "board-cap-5", "board-cap-6", "board-cap-7"]) {
+      cap.push(await openTask(name, false, "fakeagent"));
+    }
+    // Archive in creation order, so archived_at ascends with the index and
+    // the column must render the exact reverse.
+    for (const id of cap) await archiveTask(id);
+
+    await clickByText("Kanban");
+    await waitVisible('[data-testid="board-view"]');
+
+    // Exactly the five most recent, newest first. waitUntil rather than a
+    // bare expect: two archives landing in the same millisecond sort in
+    // store order for a tick, and each round-trip only just missed it.
+    await browser.waitUntil(
+      async () =>
+        JSON.stringify(await archivedCardIds()) === JSON.stringify(cap.slice(2).reverse()),
+      { timeout: 5_000, timeoutMsg: "Archived column never showed the capped, newest-first slice" },
+    );
+    await waitGone(`[data-board-archive] ${CARD(t1)}`);
+
+    // The badge keeps the truth: every archived task, rendered or not.
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(
+          () => document.querySelector('[data-testid="board-archive-count"]')?.textContent ?? "",
+        )) === String(baseArchived + cap.length),
+      { timeout: 5_000, timeoutMsg: "badge never showed the full archived count" },
+    );
+    await snap("board-capped-archive.png");
   });
 });

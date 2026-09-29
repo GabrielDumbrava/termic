@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOARD_ARCHIVE_LIMIT_DEFAULT,
   BOARD_STATE_COLUMNS,
   boardCellGroups,
   boardDropCommand,
   boardLanes,
+  recentArchived,
+  resolveBoardArchiveLimit,
   taskBoardColumn,
   taskHasClearableWork,
 } from "./taskBoardState";
@@ -237,5 +240,63 @@ describe("taskHasClearableWork", () => {
       .toBe(false);
     expect(taskHasClearableWork([tab({ workState: "idle" }), tab({})], {})).toBe(false);
     expect(taskHasClearableWork([], {})).toBe(false);
+  });
+});
+
+describe("recentArchived", () => {
+  it("sorts by archived_at, most recent first, and drops live tasks", () => {
+    const old = task({ archived: true, archived_at: "2026-09-01T10:00:00Z" });
+    const live = task({ archived: false });
+    const mid = task({ archived: true, archived_at: "2026-09-02T10:00:00Z" });
+    const fresh = task({ archived: true, archived_at: "2026-09-03T10:00:00Z" });
+    expect(recentArchived([old, live, mid, fresh], 25).map(w => w.id)).toEqual([fresh.id, mid.id, old.id]);
+  });
+
+  it("falls back to created when archived_at is missing", () => {
+    // Same rule History sorts by: an old task archived by a code path that
+    // never wrote archived_at still lands by its created date.
+    const olderCreated = task({ archived: true, created: "2026-08-01T00:00:00Z" });
+    const newerCreated = task({ archived: true, created: "2026-09-01T00:00:00Z" });
+    const stamped = task({ archived: true, archived_at: "2026-08-15T00:00:00Z" });
+    expect(recentArchived([olderCreated, stamped, newerCreated], 25).map(w => w.id))
+      .toEqual([newerCreated.id, stamped.id, olderCreated.id]);
+  });
+
+  it("caps to the limit, keeping the most recent", () => {
+    const tasks = Array.from({ length: 10 }, (_, i) =>
+      task({ archived: true, archived_at: `2026-09-${String(i + 1).padStart(2, "0")}T00:00:00Z` }));
+    const capped = recentArchived(tasks, 3);
+    expect(capped.map(w => w.archived_at)).toEqual([
+      "2026-09-10T00:00:00Z", "2026-09-09T00:00:00Z", "2026-09-08T00:00:00Z",
+    ]);
+  });
+
+  it("does not mutate the caller's array", () => {
+    const input = [task({ archived: true, archived_at: "2026-09-01T00:00:00Z" }),
+      task({ archived: true, archived_at: "2026-09-02T00:00:00Z" })];
+    const order = input.map(w => w.id);
+    recentArchived(input, 25);
+    expect(input.map(w => w.id)).toEqual(order);
+  });
+
+  it("a limit below one yields an empty list, not a crash", () => {
+    const tasks = [task({ archived: true, archived_at: "2026-09-01T00:00:00Z" })];
+    expect(recentArchived(tasks, 0)).toEqual([]);
+    expect(recentArchived(tasks, -5)).toEqual([]);
+  });
+});
+
+describe("resolveBoardArchiveLimit", () => {
+  it("default is the factory number, unlimited is everything, custom is taken as-is", () => {
+    expect(resolveBoardArchiveLimit("default", 0)).toBe(BOARD_ARCHIVE_LIMIT_DEFAULT);
+    expect(resolveBoardArchiveLimit("unlimited", 0)).toBe(Number.POSITIVE_INFINITY);
+    // No bounds by design: whatever was typed is what the column uses, and
+    // an over-tall number is just unlimited in effect.
+    expect(resolveBoardArchiveLimit("custom", 3)).toBe(3);
+    expect(resolveBoardArchiveLimit("custom", 1000)).toBe(1000);
+    expect(resolveBoardArchiveLimit("custom", 0)).toBe(0);
+    // NaN cannot reach the store (the setter guards it), but the resolver
+    // still owes recentArchived a finite number.
+    expect(resolveBoardArchiveLimit("custom", Number.NaN)).toBe(0);
   });
 });

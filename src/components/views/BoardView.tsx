@@ -49,6 +49,8 @@ import {
   boardCellGroups,
   boardDropCommand,
   boardLanes,
+  recentArchived,
+  resolveBoardArchiveLimit,
   taskBoardColumn,
   type BoardColumn,
   type BoardStateColumn,
@@ -138,6 +140,8 @@ export function BoardView() {
   // under the same toggle that gates the bell everywhere else.
   const attentionIndicator = usePrefs(s => s.attentionIndicator);
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
+  const boardArchiveLimitMode = usePrefs(s => s.boardArchiveLimitMode);
+  const boardArchiveLimitCustom = usePrefs(s => s.boardArchiveLimit);
   const workPrefs: WorkStatePrefs = { settledHighlight, workingIndicator, attentionIndicator };
 
   // Re-render trigger for PR polls, nothing more. The pr store lives outside
@@ -170,7 +174,13 @@ export function BoardView() {
   };
 
   const liveTasks = useMemo(() => tasks.filter(w => !w.archived), [tasks]);
-  const archivedTasks = useMemo(() => tasks.filter(w => w.archived), [tasks]);
+  // The full archived list feeds the badge and the empty state; the column
+  // renders the capped, most-recent-first slice (Tasks > archive limit).
+  const archivedAll = useMemo(() => tasks.filter(w => w.archived), [tasks]);
+  const archivedTasks = useMemo(
+    () => recentArchived(archivedAll, resolveBoardArchiveLimit(boardArchiveLimitMode, boardArchiveLimitCustom)),
+    [archivedAll, boardArchiveLimitMode, boardArchiveLimitCustom],
+  );
   const colTasks = useMemo(() => {
     const cols: Record<BoardStateColumn, Task[]> = { backlog: [], attention: [], working: [], review: [], settled: [] };
     for (const w of liveTasks) {
@@ -366,7 +376,7 @@ export function BoardView() {
   };
 
   const dragTask = drag ? tasks.find(w => w.id === drag.taskId) : undefined;
-  const boardEmpty = liveTasks.length === 0 && archivedTasks.length === 0;
+  const boardEmpty = liveTasks.length === 0 && archivedAll.length === 0;
   const ctx: CardContext = { agents, useBranchAsTaskName, workPrefs };
 
   return (
@@ -416,10 +426,11 @@ export function BoardView() {
                 <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-fg-faint)]" />
                 <span className="text-[12.5px] font-semibold text-[var(--color-fg-dim)]">{t("board.colArchived")}</span>
                 <span
+                  data-testid="board-archive-count"
                   className="ml-auto rounded px-2 py-0.5 text-[11px] font-medium tabular-nums text-[var(--color-fg-faint)]"
-                  style={archivedTasks.length > 0 ? { backgroundColor: "var(--color-hover)" } : undefined}
+                  style={archivedAll.length > 0 ? { backgroundColor: "var(--color-hover)" } : undefined}
                 >
-                  {archivedTasks.length}
+                  {archivedAll.length}
                 </span>
               </header>
               <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pb-2.5">
@@ -432,7 +443,7 @@ export function BoardView() {
                   <ArchivedCard key={w.id} task={w} project={projectById.get(w.project_id)} ctx={ctx} />
                 ))}
               </div>
-              {archivedTasks.length > 0 && (
+              {archivedAll.length > 0 && (
                 <button
                   onClick={() => setView("history")}
                   className="shrink-0 px-2.5 pb-2.5 pt-1 text-left text-[11.5px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"

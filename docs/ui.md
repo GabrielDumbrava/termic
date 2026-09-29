@@ -316,6 +316,16 @@ whose Rust contract is same-project ids) and drop on the Archived column
 open-PR warning and spinner come with it). Every other drop snaps back with
 no write. Restore stays in History; the Archived column links there.
 
+The Archived column renders a CAPPED slice, not the whole archive: the most
+recent entries first (the same `archived_at ?? created` sort History uses),
+limited by Settings -> Tasks' "Kanban archived column limit" — the factory
+default 25, unlimited, or a custom number taken as-is (no bounds; anything
+below one renders an empty column). The cap bounds the DOM only: the column
+badge always shows the full count, and History still lists everything.
+`recentArchived()` in
+[src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts) is the one sort +
+cap; the badge reads the uncapped filter.
+
 ## What a task is called (name vs branch)
 
 A task's label is decided in ONE place, `taskLabel()` in
