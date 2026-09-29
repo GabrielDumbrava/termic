@@ -22,7 +22,7 @@ import { defaultCliFirst, visibleCliIds, isTerminalCli } from "@/lib/agents";
 import { taskRename, taskSetCli, taskSetYolo, taskSetResumeOverride, taskSetSandbox, taskSetDocker, taskUpdateMembers, sandboxAvailable, settingsLoad, dockerImageStatus, type DockerImageStatus } from "@/lib/ipc";
 import { readMemberModes, seedMemberMode, persistMemberMode } from "./memberModes";
 import { cn } from "@/lib/utils";
-import { effectiveSandboxMode, isTaskCaged, selectionFor, selectionToFields, type CreateMultiMember, type MemberMode, type Project, type SandboxSelection, type Task, type TaskMember } from "@/lib/types";
+import { effectiveSandboxMode, isTaskCaged, selectionFor, selectionToFields, type CreateMultiMember, type MemberMode, type Project, type SandboxSelection, type Settings, type Task, type TaskMember } from "@/lib/types";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { memberSandboxUnion } from "@/lib/projectSandboxDefault";
 import { ListField } from "@/components/settings/Controls";
@@ -79,7 +79,7 @@ export function EditTaskDialog() {
   const [osSandboxOk, setOsSandboxOk] = useState<boolean | null>(null);
   const [dockerSettings, setDockerSettings] = useState<{ docker_sandbox_enabled?: boolean } | null>(null);
   const [dockerImage, setDockerImage] = useState<DockerImageStatus | null>(null);
-  const sbGlobals = useRef<{ rw: string[]; hosts: string[] } | null>(null);
+  const sbGlobals = useRef<Settings | null>(null);
   useEffect(() => {
     if (!open) return;
     // Reset BEFORE re-probing — stale non-null values from the previous
@@ -93,10 +93,7 @@ export function EditTaskDialog() {
       // The globals layer of the seatbelt auto-union — a member toggle
       // re-derives the lists and needs it to not drop lines it can't
       // rebuild.
-      sbGlobals.current = {
-        rw: s.sandbox_default_rw_paths ?? [],
-        hosts: s.sandbox_default_allowed_hosts ?? [],
-      };
+      sbGlobals.current = s;
       setDockerSettings(s);
     }).catch(() => {});
     dockerImageStatus().then(setDockerImage).catch(() => {});

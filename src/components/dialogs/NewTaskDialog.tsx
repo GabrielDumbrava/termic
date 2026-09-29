@@ -27,7 +27,7 @@ import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
 import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
-import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext } from "@/lib/types";
+import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext, type Settings } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
@@ -223,7 +223,7 @@ export function NewTaskDialog() {
   // seed's settingsLoad lands. Null until then — toggles before that
   // keep the textarea untouched rather than dropping lines it can't
   // yet reconstruct.
-  const sbGlobals = useRef<{ rw: string[]; hosts: string[] } | null>(null);
+  const sbGlobals = useRef<Settings | null>(null);
   const sbLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
   const sbEq = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
   // An include toggle re-syncs the seatbelt lists only while they still
@@ -626,10 +626,7 @@ export function NewTaskDialog() {
       // included, so the all-members union IS the checked-members union.
       // Later include toggles re-derive it (setIncluded), so an excluded
       // member's lines stop being pinned.
-      sbGlobals.current = {
-        rw: s.sandbox_default_rw_paths ?? [],
-        hosts: s.sandbox_default_allowed_hosts ?? [],
-      };
+      sbGlobals.current = s;
       const multi = (p?.type ?? "single") === "multi";
       const u = memberSandboxUnion(s, p, multi ? p?.members ?? [] : []);
       setSbRw(u.rw.join("\n"));
