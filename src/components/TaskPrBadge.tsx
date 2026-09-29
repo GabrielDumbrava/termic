@@ -13,6 +13,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { usePr } from "@/store/pr";
 import { prBadgeAppearance } from "@/lib/prBadgeAppearance";
 import { openPath } from "@/lib/ipc";
+import { forgeName, prNounShort, prRef } from "@/lib/forge";
 import type { Task } from "@/lib/types";
 
 export function TaskPrBadge({ task }: { task: Task }) {
@@ -20,7 +21,8 @@ export function TaskPrBadge({ task }: { task: Task }) {
   const pr = usePr(s => s.byTask[task.id]?.lookup?.pr ?? null);
   const url = pr?.url ?? task.pr_url ?? null;
   if (!url) return null;
-  const noun = (pr?.provider ?? task.pr_provider) === "gitlab" ? "MR" : "PR";
+  const provider = pr?.provider ?? task.pr_provider;
+  const noun = prNounShort(provider);
   const num = pr?.number ?? task.pr_number;
   const state = pr?.state ?? null;
   // Colour comes from prBadgeAppearance, where the rules live and are
@@ -40,8 +42,8 @@ export function TaskPrBadge({ task }: { task: Task }) {
     state === "draft"  ? { Icon: GitPullRequestDraft, label: t("taskPrBadge.stateDraft") + failingSuffix } :
     state === "open"   ? { Icon: GitPullRequest, label: t("taskPrBadge.stateOpen") + failingSuffix } :
     { Icon: GitPullRequest, label: "" };
-  const id = `${noun}${num ? ` ${noun === "MR" ? "!" : "#"}${num}` : ""}`;
-  const forge = noun === "MR" ? "GitLab" : "GitHub";
+  const id = `${noun}${num ? ` ${prRef(provider, num)}` : ""}`;
+  const forge = forgeName(provider);
   return (
     <Tip content={`${id}${label ? ` · ${label}` : ""}. ${t("taskPrBadge.openOn", { forge })}`} delay={0}>
       <button

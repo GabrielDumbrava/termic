@@ -45,4 +45,8 @@ export default {
   showMore: "Show more",
   showLess: "Show less",
   learnMore: "Learn more",
+  // Appended after a forge's sign-in command when PAT auth also works.
+  forgePatHint: "(or <code>{{cmd}}</code> for a PAT)",
+  // Appended to "needs the az CLI" copy: az is a CLI AND an extension.
+  azureCliSuffix: " + the azure-devops extension",
 };

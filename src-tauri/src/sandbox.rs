@@ -1719,6 +1719,18 @@ pub fn render_filter_for(task: &Task, agent_override: Option<&str>) -> String {
         // glab API access from inside the cage just like github ones).
         r"^gitlab\.com$".into(),
         r"^.+\.gitlab\.com$".into(),
+        // Azure DevOps (same parity): dev.azure.com covers the org APIs
+        // incl. *.vssps.dev.azure.com, *.visualstudio.com covers legacy orgs
+        // and the vssps/vsaex services az's devops extension calls, and
+        // login.microsoftonline.com is the Entra token endpoint `az login`
+        // refreshes through. management.azure.com is ARM, which `az login`
+        // hits listing subscriptions - without it the login token works but
+        // the CLI never finishes.
+        r"^dev\.azure\.com$".into(),
+        r"^.+\.dev\.azure\.com$".into(),
+        r"^.+\.visualstudio\.com$".into(),
+        r"^login\.microsoftonline\.com$".into(),
+        r"^management\.azure\.com$".into(),
         // Package registries.
         r"^registry\.npmjs\.org$".into(),
         r"^.+\.npmjs\.org$".into(),

@@ -1,13 +1,21 @@
-//! GitHub / GitLab forge integration, built ENTIRELY on the official CLIs
-//! (`gh`, `glab`).
+//! GitHub / GitLab / Azure DevOps forge integration, built ENTIRELY on the
+//! official CLIs (`gh`, `glab`, `az` + the `azure-devops` extension).
 //!
 //! Why CLIs and not the REST APIs: termic is local-only — no backend, no
 //! OAuth app, no stored tokens (see CLAUDE.md "What NOT to do"). The CLIs
-//! own authentication (`gh auth login` / `glab auth login`), keep working
-//! for GitHub Enterprise / self-hosted GitLab via their own host config,
-//! and turn every auth problem into "run the login command" instead of a
-//! termic bug. This is also what Conductor does (its onboarding checks
-//! `gh auth status`); Crystal tells the agent to run `gh pr create`.
+//! own authentication (`gh auth login` / `glab auth login` / `az login` or
+//! `az devops login`), keep working for GitHub Enterprise / self-hosted
+//! GitLab via their own host config, and turn every auth problem into "run
+//! the login command" instead of a termic bug. This is also what Conductor
+//! does (its onboarding checks `gh auth status`); Crystal tells the agent
+//! to run `gh pr create`.
+//!
+//! Azure DevOps is cloud-only here BY the CLI's own constraint: the
+//! azure-devops extension refuses Azure DevOps Server (on-prem) orgs, so a
+//! self-hosted instance has no hosts to learn anyway — host-name matching
+//! (`dev.azure.com`, `*.visualstudio.com`) is the complete answer, not a
+//! fallback. `--detect` inside a repo resolves org/project/repo the same
+//! way gh/glab pick up the repo, so most commands take no repo arguments.
 //!
 //! Everything here is BLOCKING (subprocess spawns, 100ms-1s against the
 //! network) — callers must wrap in `tauri::async_runtime::spawn_blocking`
@@ -17,6 +25,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -24,6 +33,7 @@ use crate::shell_env;
 
 pub const GITHUB: &str = "github";
 pub const GITLAB: &str = "gitlab";
+pub const AZURE: &str = "azure";
 
 /// The hostname of a git remote, for both URL shapes git uses:
 ///   https://host/owner/repo.git   ssh://git@host:22/owner/repo.git
@@ -39,7 +49,12 @@ pub fn host_of_remote(url: &str) -> Option<String> {
         // scp-like: everything before the first ':' after an optional user@
         None => u,
     };
-    let rest = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
+    // Userinfo's '@' lives only inside the authority - before the first
+    // '/' for scheme URLs, the first ':' for scp-like. Stripping it across
+    // the whole remainder would eat a literal '@' in a path segment.
+    let sep = if u.contains("://") { '/' } else { ':' };
+    let auth = &rest[..rest.find(sep).unwrap_or(rest.len())];
+    let rest = auth.rsplit('@').next().unwrap_or(auth);
     let host = rest
         .split(['/', ':'])
         .next()
@@ -78,6 +93,14 @@ fn host_map() -> &'static Mutex<Option<HashMap<String, &'static str>>> {
 /// way to talk to it either.
 pub fn provider_for_remote(url: &str) -> Option<&'static str> {
     if let Some(host) = host_of_remote(url) {
+        // Azure DevOps is cloud-only (the az extension rejects on-prem
+        // Server URLs), so its hostnames are a fixed known set rather than
+        // something auth-status can teach us. Check BEFORE the lazy probe:
+        // a cold cache would otherwise pay two `auth status` subprocesses
+        // for an answer no self-hosted forge can give anyway.
+        if host == "dev.azure.com" || host == "ssh.dev.azure.com" || host.ends_with(".visualstudio.com") {
+            return Some(AZURE);
+        }
         // Lazily probe on first use: a PR poll can land before the app's
         // startup detect() has finished, and a self-hosted host would
         // otherwise be misread as "unsupported" until the next refresh.
@@ -106,7 +129,8 @@ pub fn provider_for_remote(url: &str) -> Option<&'static str> {
     None
 }
 
-/// Run `auth status` for both CLIs and collect the hosts they report.
+/// Run `auth status` for the CLIs that have one (gh, glab) and collect the
+/// hosts they report. az answers differently - its probe is detect_azure.
 fn probe_authed_hosts() -> HashMap<String, &'static str> {
     let mut out = HashMap::new();
     for (bin, provider) in [("gh", GITHUB), ("glab", GITLAB)] {
@@ -150,7 +174,7 @@ fn parse_auth_hosts(text: &str) -> Vec<String> {
 
 /// The CLI binary that speaks for a provider.
 pub fn cli_for_provider(provider: &str) -> &'static str {
-    if provider == GITLAB { "glab" } else { "gh" }
+    if provider == GITLAB { "glab" } else if provider == AZURE { "az" } else { "gh" }
 }
 
 // ───────────────────────── binary resolution ─────────────────────────
@@ -208,6 +232,12 @@ fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::pro
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("GH_PAGER", "cat")
         .env("GLAB_CHECK_UPDATE", "false")
+        // `az repos`/`az devops` need the azure-devops extension. Without
+        // this, a missing extension triggers an interactive "install it
+        // now?" prompt that has no business in a detached spawn - a clean
+        // "unknown command" failure is what classify_failure can read.
+        .env("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no")
+        .env("AZURE_CORE_COLLECT_TELEMETRY", "false")
         .env("NO_COLOR", "1");
     if let Some(d) = cwd {
         cmd.current_dir(d);
@@ -222,17 +252,20 @@ fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::pro
 /// the user MUST be able to see why nothing is happening.
 #[derive(Clone, Debug, Serialize)]
 pub struct ForgeCliStatus {
-    /// "gh" | "glab".
+    /// "gh" | "glab" | "az".
     pub id: String,
-    /// "github" | "gitlab".
+    /// "github" | "gitlab" | "azure".
     pub provider: String,
     pub found: bool,
     pub path: String,
     /// First line of `--version`, "" when not found.
     pub version: String,
-    /// `gh auth status` / `glab auth status` exited 0.
+    /// `gh auth status` / `glab auth status` passed, or the az equivalents
+    /// (Entra `az account show`, or a stored PAT) prove a login exists.
     pub authed: bool,
-    /// Best-effort account name parsed from auth status output.
+    /// Best-effort account name — gh/glab parse it from auth status; for
+    /// az it is the UPN (Entra) or the PAT profile's email, matching the
+    /// `uniqueName` ADO puts on comment authors.
     pub account: String,
     /// Instances this CLI is signed in to. More than one for anyone using
     /// both gitlab.com and a self-hosted instance; this is what teaches
@@ -240,11 +273,13 @@ pub struct ForgeCliStatus {
     pub hosts: Vec<String>,
 }
 
-/// Probe both CLIs. Each probe = resolve + `--version` + `auth status`,
-/// a few hundred ms against the keychain but NO network. Re-resolves the
-/// binaries so a mid-session `brew install gh` is picked up.
+/// Probe all three CLIs. Each probe = resolve + `--version` + `auth status`
+/// (gh/glab) or the az equivalents (extension dir + account show + stored
+/// PATs). A few hundred ms against the keychain and NO network - except the
+/// PAT-only `profiles/me` fallback in detect_azure, which needs one call.
+/// Re-resolves the binaries so a mid-session `brew install gh` is picked up.
 pub fn detect() -> Vec<ForgeCliStatus> {
-    let statuses = [("gh", GITHUB), ("glab", GITLAB)]
+    let mut statuses: Vec<ForgeCliStatus> = [("gh", GITHUB), ("glab", GITLAB)]
         .into_iter()
         .map(|(bin, provider)| {
             let path = reprobe_bin(bin);
@@ -310,6 +345,7 @@ pub fn detect() -> Vec<ForgeCliStatus> {
             }
         })
         .collect::<Vec<_>>();
+    statuses.push(detect_azure());
     // Publish what we just learned, so provider_for_remote resolves
     // self-hosted instances without re-probing. detect() runs at startup,
     // on every Settings visit, and whenever the PR card sits on a blocked
@@ -317,7 +353,16 @@ pub fn detect() -> Vec<ForgeCliStatus> {
     // picked up without a restart.
     let mut map = HashMap::new();
     for f in &statuses {
-        let provider = if f.provider == GITLAB { GITLAB } else { GITHUB };
+        let provider: &'static str = match f.provider.as_str() {
+            GITLAB => GITLAB,
+            // Azure's hosts are fixed and checked BEFORE this map in
+            // provider_for_remote, so inserting PAT-org hosts here only
+            // lets a stray `azdevops-cli:` entry in organization_list
+            // (e.g. a typo'd `az devops login --org https://gitlab.corp.com`)
+            // shadow a real signed-in gh/glab host.
+            AZURE => continue,
+            _ => GITHUB,
+        };
         for h in &f.hosts {
             map.insert(h.clone(), provider);
         }
@@ -327,6 +372,196 @@ pub fn detect() -> Vec<ForgeCliStatus> {
     // answers computed against the old host set are no longer trustworthy.
     invalidate_provider_cache();
     statuses
+}
+
+/// The `az` probe. `az` has no `auth status` and Azure DevOps auth comes in
+/// two independent shapes (an Entra `az login` OR a PAT stored by
+/// `az devops login`), so the fields assemble differently:
+///
+///   found:   `az` resolvable AND the azure-devops extension installed. The
+///            extension IS the forge CLI here — `az repos`/`az boards`
+///            without it is just an "unknown command" error — so a bare
+///            `az` reports as not installed (the UI's install hint covers
+///            both pieces). Presence is a directory check under
+///            $AZURE_EXTENSION_DIR (default ~/.azure/cliextensions); an
+///            `az extension list` subprocess pays ~1s of Python startup
+///            for the same answer.
+///   authed:  `az account show` succeeds (Entra login — reads the cached
+///            profile, no network) OR a PAT is in play:
+///            AZURE_DEVOPS_EXT_PAT, or a non-empty `organization_list` under
+///            the extension's config dir — `az devops login` appends the org
+///            there on every platform, even when the PAT itself lands in the
+///            OS keyring.
+///   hosts:   the PAT orgs' hosts, so the Settings row can name them.
+///   account: `az account show`'s UPN for Entra users; for PAT-only users
+///            (who have no Entra account to read) a `profile/profiles/me`
+///            invoke — the ONE network call in this probe, made only when
+///            the PAT file proves a login exists — so the comment watcher's
+///            self-exclusion has an identity to compare against (comments
+///            carry `author.uniqueName`, which is the same email).
+fn detect_azure() -> ForgeCliStatus {
+    let path = reprobe_bin("az");
+    let found = path.is_some() && azure_devops_extension_installed();
+    let mut version = String::new();
+    let mut authed = false;
+    let mut account = String::new();
+    let mut hosts: Vec<String> = Vec::new();
+    if found {
+        let bin = path.as_deref().unwrap();
+        if let Ok(o) = run(bin, &["--version"], None) {
+            // First line is `azure-cli    2.77.0` - or `2.77.0 *` when a
+            // newer CLI exists, so the version is the first token that
+            // starts with a digit, not the last one (`*`).
+            version = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .find(|t| t.starts_with(|c: char| c.is_ascii_digit()))
+                .unwrap_or("")
+                .to_string();
+        }
+        if std::env::var_os("AZURE_DEVOPS_EXT_PAT").is_some_and(|v| !v.is_empty()) {
+            authed = true;
+        }
+        let pat_orgs = azure_pat_orgs();
+        if !pat_orgs.is_empty() {
+            authed = true;
+            // Only real org URLs name hosts - "default" (a bare `az devops
+            // login`) proves auth but must not surface as a hostname.
+            hosts = pat_orgs.iter()
+                .filter(|u| u.starts_with("http"))
+                .filter_map(|u| host_of_remote(u))
+                .collect();
+            hosts.sort();
+            hosts.dedup();
+        }
+        if let Ok(o) = run(bin, &["account", "show", "--output", "json"], None) {
+            if o.status.success() {
+                authed = true;
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) {
+                    account = v["user"]["name"].as_str().unwrap_or("").to_string();
+                }
+            }
+        }
+        // PAT-only login leaves no local trace of WHO the user is, and the
+        // watcher's self-exclusion compares against this field — without it
+        // the agent's own replies would re-trigger it in a loop. And when
+        // BOTH creds exist, `az devops`/`az repos` authenticate as the PAT
+        // (the extension consults its PAT store before the Entra token), so
+        // the identity comments get stamped with is the PAT's, not the
+        // `az account` UPN — prefer whoami whenever a PAT is in play.
+        if authed && (account.is_empty() || !pat_orgs.is_empty()) {
+            // Multi-org PAT users can hold a dead PAT on the first listed
+            // org — walk them until one resolves an identity. An empty list
+            // (env-PAT or "default" login) invokes without --org and lets the
+            // extension's configured default org resolve it.
+            let who = std::iter::once("")
+                .chain(pat_orgs.iter().filter(|o| o.starts_with("http")).map(String::as_str))
+                .map(|org| azure_whoami(bin, org))
+                .find(|who| !who.is_empty());
+            if let Some(who) = who {
+                account = who;
+            }
+        }
+    }
+    ForgeCliStatus {
+        id: "az".into(),
+        provider: AZURE.into(),
+        found,
+        path: path.unwrap_or_default(),
+        version,
+        authed,
+        account,
+        hosts,
+    }
+}
+
+/// An env var that names a directory. az treats an empty value as unset —
+/// without the guard, AZURE_CONFIG_DIR="" would redirect the check to a
+/// relative path and report a present extension as missing.
+fn non_empty_env_dir(k: &str) -> Option<PathBuf> {
+    std::env::var_os(k).map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+}
+
+/// Where the azure-devops extension lands: $AZURE_EXTENSION_DIR when set,
+/// else $AZURE_CONFIG_DIR/cliextensions (az's config root relocates), else
+/// ~/.azure/cliextensions (the CLI's own default on every platform).
+fn azure_devops_extension_installed() -> bool {
+    let env_dir = non_empty_env_dir;
+    let dir = env_dir("AZURE_EXTENSION_DIR")
+        .or_else(|| env_dir("AZURE_CONFIG_DIR").map(|d| d.join("cliextensions")))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".azure").join("cliextensions")));
+    dir.map(|d| d.join("azure-devops").is_dir()).unwrap_or(false)
+}
+
+/// The extension's own config dir: $AZURE_DEVOPS_EXT_CONFIG_DIR when set,
+/// else $AZURE_CONFIG_DIR/azuredevops (az's config root relocates), else
+/// the stock ~/.azure/azuredevops.
+fn azure_devops_config_dir() -> Option<PathBuf> {
+    let env_dir = non_empty_env_dir;
+    if let Some(d) = env_dir("AZURE_DEVOPS_EXT_CONFIG_DIR") {
+        return Some(d);
+    }
+    let root = env_dir("AZURE_CONFIG_DIR")
+        .or_else(|| dirs::home_dir().map(|h| h.join(".azure")))?;
+    Some(root.join("azuredevops"))
+}
+
+/// Org URLs a PAT was stored for. `az devops login` writes each org as an
+/// `azdevops-cli:<org-url>` line in `organization_list`, on every platform
+/// and even when the PAT itself lands in the OS keyring (the file is the
+/// index, not the secret). A bare `az devops login` (no --org) records
+/// `azdevops-cli: default` — that line proves a login but names no org.
+fn azure_pat_orgs() -> Vec<String> {
+    let Some(dir) = azure_devops_config_dir() else { return Vec::new() };
+    let Ok(list) = std::fs::read_to_string(dir.join("organization_list")) else {
+        return Vec::new();
+    };
+    parse_org_list(&list)
+}
+
+/// The `organization_list` file's payload: one `azdevops-cli:<org-url>`
+/// line per PAT stored (the org index — the secret itself may live in the
+/// OS keyring). Deduped, order preserved.
+fn parse_org_list(list: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in list.lines() {
+        let Some(org) = line.trim().strip_prefix("azdevops-cli:") else { continue };
+        let org = org.trim();
+        if !org.is_empty() && !out.iter().any(|o| o == org) {
+            out.push(org.to_string());
+        }
+    }
+    out
+}
+
+/// Who the authenticated `az devops` user is, via the profile REST route
+/// (the only "whoami" the extension exposes — there is no
+/// `az devops user show me`). `emailAddress` matches the `uniqueName`
+/// field ADO stamps on comment authors, which is what the frontend
+/// self-exclusion compares. Best-effort: any failure yields "".
+fn azure_whoami(bin: &str, org: &str) -> String {
+    let mut args = vec![
+        "devops", "invoke", "--area", "profile", "--resource", "profiles",
+        "--route-parameters", "id=me", "--output", "json",
+    ];
+    if !org.is_empty() {
+        args.extend(["--org", org]);
+    }
+    let Ok(o) = run(bin, &args, None) else {
+        return String::new();
+    };
+    if !o.status.success() {
+        return String::new();
+    }
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) else {
+        return String::new();
+    };
+    v["emailAddress"].as_str()
+        .or_else(|| v["displayName"].as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 // ───────────────────────── PR status ─────────────────────────
@@ -352,6 +587,7 @@ pub struct PrStatus {
     pub head: String,
 }
 
+#[derive(Debug)]
 pub enum ForgeError {
     /// The provider's CLI binary isn't installed / resolvable.
     CliMissing(&'static str),
@@ -368,18 +604,46 @@ fn stderr_of(o: &std::process::Output) -> String {
 /// Classify a failed CLI invocation: auth problems get their own arm so
 /// the UI can say "run gh auth login" instead of dumping stderr.
 fn classify_failure(provider: &str, o: &std::process::Output) -> ForgeError {
-    let err = stderr_of(o);
+    classify_stderr(provider, &stderr_of(o))
+}
+
+/// The pure half of classify_failure — a stderr string in, a ForgeError out
+/// (Output isn't constructible portably, so the tests exercise this).
+fn classify_stderr(provider: &str, err: &str) -> ForgeError {
     let lower = err.to_lowercase();
+    // `az` without the extension fails "az: 'repos' is not in the 'az'
+    // command group" (dynamic install is pinned off in run()) - same user
+    // remedy as a missing binary, so it reports as CliMissing.
+    // Deliberately NOT a broad "azure-devops" substring match: az prints an
+    // `Extension Name: azure-devops` footer on every extension crash, which
+    // would misreport real errors as a missing extension.
+    if provider == AZURE && lower.contains("command group") {
+        return ForgeError::CliMissing("az");
+    }
     if lower.contains("auth login")
         || lower.contains("not logged in")
         || lower.contains("authentication")
         || lower.contains("401")
         || lower.contains("could not prompt")
+        // az's credential-less error is "you need to run the login command
+        // (az login ... else az devops login ...)" - no "auth" substring.
+        || lower.contains("login command")
+        || lower.contains("az login")
+        // ADO's routine auth failures name none of the above: PATs expire
+        // on org policy, so this is the common case, not the edge.
+        || lower.contains("personal access token")
+        || lower.contains("failed to authenticate")
+        || lower.contains("tf400813")
     {
         let cli = cli_for_provider(provider);
-        return ForgeError::Auth(format!("{cli} is not authenticated. Run `{cli} auth login` in a terminal."));
+        let hint = if provider == AZURE {
+            "Run `az login` (or `az devops login` for a PAT) in a terminal.".to_string()
+        } else {
+            format!("Run `{cli} auth login` in a terminal.")
+        };
+        return ForgeError::Auth(format!("{cli} is not authenticated. {hint}"));
     }
-    ForgeError::Other(if err.is_empty() { "command failed".into() } else { err })
+    ForgeError::Other(if err.is_empty() { "command failed".into() } else { err.trim().to_string() })
 }
 
 /// Fetch the PR/MR for `cwd`'s current branch (or by `number` when the
@@ -390,6 +654,7 @@ pub fn pr_status(provider: &str, cwd: &Path, number: Option<u64>) -> Result<Opti
     let bin = resolve_bin(cli_for_provider(provider)).ok_or(ForgeError::CliMissing(cli_for_provider(provider)))?;
     match provider {
         GITLAB => gitlab_mr_status(&bin, cwd, number),
+        AZURE => azure_pr_status(&bin, cwd, number),
         _ => github_pr_status(&bin, cwd, number),
     }
 }
@@ -595,7 +860,270 @@ fn gitlab_approvals_to_review(a: &serde_json::Value) -> String {
     if approved_by > 0 { "approved".into() } else { "none".into() }
 }
 
-// ───────────────────────── PR comments (watcher) ─────────────────────────
+/// `(org_url, project, repo)` parsed from an Azure DevOps remote, for the
+/// `az devops invoke` calls that take them as `--org` + route parameters
+/// (PR comment threads, work-item fetch). URL shapes:
+///   https://dev.azure.com/{org}/{project}/_git/{repo}
+///   https://{org}@dev.azure.com/{org}/{project}/_git/{repo}
+///   https://{org}.visualstudio.com[/{collection}]/{project}/_git/{repo}
+///   git@ssh.dev.azure.com:v3/{org}/{project}/{repo}
+///   {org}@vs-ssh.visualstudio.com:v3/{org}/{project}/{repo}
+/// Segments come back DECODED (a remote percent-encodes a project named
+/// "My Project" as My%20Project) - invoke's --route-parameters encodes
+/// again, so handing it the raw segment would double-encode to a 404.
+fn azure_remote_info(url: &str) -> Option<(String, String, String)> {
+    let host = host_of_remote(url)?;
+    // Path part: after the host "/" for scheme URLs, after the host ":" for
+    // the scp-like SSH shape (host:path).
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    // No userinfo strip needed: the first '/' (scheme URLs) or ':' (scp-
+    // like) IS the authority/path boundary, and userinfo can never contain
+    // either - so `u:PAT@dev.azure.com/o/...` splits the same as a bare
+    // host. Splitting on '@' would instead eat a literal '@' in a path
+    // segment (a repo named `proj@x` is legal).
+    let path = if url.contains("://") {
+        rest.split_once('/').map(|(_, p)| p).unwrap_or("")
+    } else {
+        rest.split_once(':').map(|(_, p)| p).unwrap_or("")
+    };
+    let dec = |s: &str| {
+        percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned()
+    };
+    let segs: Vec<String> = path.split('/').filter(|s| !s.is_empty()).map(|s| dec(s)).collect();
+    if segs.is_empty() {
+        return None;
+    }
+    if segs[0] == "v3" && (host == "ssh.dev.azure.com" || host == "vs-ssh.visualstudio.com") {
+        // v3/{org}/{project}/{repo} - ssh.dev.azure.com and vs-ssh both.
+        let (org, project, repo) = (segs.get(1)?, segs.get(2)?, segs.get(3)?);
+        let org_url = if host == "ssh.dev.azure.com" {
+            format!("https://dev.azure.com/{org}")
+        } else {
+            format!("https://{org}.visualstudio.com")
+        };
+        return Some((org_url, project.clone(), strip_git_suffix(repo)));
+    }
+    // HTTPS: project is the segment before _git, repo the one after.
+    let git_at = segs.iter().position(|s| s == "_git")?;
+    // dev.azure.com carries the org as a PATH segment, so _git needs an
+    // org AND a project before it; *.visualstudio.com carries the org in
+    // the host, so _git only needs the project. Without the floor a
+    // malformed dev.azure.com/{org}/_git/{repo} silently reads the org
+    // back as the project.
+    if git_at < if host == "dev.azure.com" { 2 } else { 1 } {
+        return None;
+    }
+    let project = segs.get(git_at - 1)?;
+    let repo = strip_git_suffix(segs.get(git_at + 1)?);
+    let org_url = if host == "dev.azure.com" {
+        format!("https://dev.azure.com/{}", segs[0])
+    } else {
+        // {org}.visualstudio.com — anything before the project segment is
+        // the (rare, legacy) collection name.
+        let extra = &segs[..git_at - 1];
+        if extra.is_empty() {
+            format!("https://{host}")
+        } else {
+            format!("https://{host}/{}", extra.join("/"))
+        }
+    };
+    Some((org_url, project.clone(), repo))
+}
+
+/// ADO clone URLs don't carry a `.git` suffix, but a hand-built remote
+/// might - a `repositoryId=repo.git` route param 404s, so drop it.
+fn strip_git_suffix(s: &str) -> String {
+    s.strip_suffix(".git").unwrap_or(s).to_string()
+}
+
+/// Is `err` (already lowercased) ADO's "no such PR" error? Kept a helper so
+/// the TF401180 string lives in one tested place.
+fn azure_missing_pr(err: &str) -> bool {
+    err.contains("not found") || err.contains("does not exist")
+}
+
+/// Remote text for an error message, with any embedded `user:PAT@`
+/// userinfo stripped - an ADO HTTPS remote carrying a PAT would otherwise
+/// leak it into UI error copy. The `@` is only userinfo inside the
+/// authority segment; a literal `@` in the PATH (`/org/proj@x/_git/r`)
+/// is not credentials and must not be cut.
+pub(crate) fn remote_for_display(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let host = auth.rsplit('@').next().unwrap_or(auth);
+            let sep = if path.is_empty() { "" } else { "/" };
+            format!("{scheme}://{host}{sep}{path}")
+        }
+        // scp-like `user@host:path` - userinfo ends at the first `:`.
+        None => match url.split_once(':') {
+            Some((auth, path)) => format!("{}:{path}", auth.rsplit('@').next().unwrap_or(auth)),
+            None => url.to_string(),
+        },
+    }
+}
+
+fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
+    let v: serde_json::Value = if let Some(n) = number {
+        let o = run(bin, &["repos", "pr", "show", "--id", &n.to_string(), "--output", "json"], Some(cwd))
+            .map_err(|e| ForgeError::Other(e.to_string()))?;
+        if !o.status.success() {
+            // "TF401180: The requested pull request was not found." — a real
+            // "no PR" (deleted or never existed), same exit-nonzero shape as
+            // gh's by-branch miss.
+            if azure_missing_pr(&stderr_of(&o).to_lowercase()) {
+                return Ok(None);
+            }
+            return Err(classify_failure(AZURE, &o));
+        }
+        serde_json::from_slice(&o.stdout)
+            .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?
+    } else {
+        // No by-branch view on az: resolve the branch ourselves, then list
+        // its PRs. --detect (default on) resolves org/project/repo from
+        // the cwd remote, same convenience gh/glab get from git context.
+        let branch = crate::git(&["branch", "--show-current"], cwd)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if branch.is_empty() {
+            return Ok(None);
+        }
+        let o = run(
+            bin,
+            &["repos", "pr", "list", "--source-branch", &branch, "--status", "all", "--output", "json"],
+            Some(cwd),
+        )
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
+        if !o.status.success() {
+            return Err(classify_failure(AZURE, &o));
+        }
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout)
+            .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?;
+        // Prefer the live one; a branch with only settled PRs reports the
+        // NEWEST one (list order isn't documented - a recycled branch name
+        // could surface an old abandoned PR ahead of the recent completed).
+        match pick_azure_branch_pr(&list) {
+            Some(p) => p,
+            None => return Ok(None),
+        }
+    };
+    let state = match v["status"].as_str().unwrap_or("") {
+        "completed" => "merged",
+        "abandoned" => "closed",
+        _ if v["isDraft"].as_bool().unwrap_or(false) => "draft",
+        _ => "open",
+    };
+    let id = v["pullRequestId"].as_u64().unwrap_or(0);
+    let url = azure_pr_web_url(&v).unwrap_or_default();
+    // Policy evaluations are a second call; only an in-flight PR has a
+    // verdict worth it (same cheapening as gitlab_review_decision).
+    let checks = if state == "open" || state == "draft" {
+        azure_pr_checks(bin, cwd, id)
+    } else {
+        "none".to_string()
+    };
+    Ok(Some(PrStatus {
+        provider: AZURE.into(),
+        number: id,
+        url,
+        title: v["title"].as_str().unwrap_or("").to_string(),
+        state: state.into(),
+        checks,
+        review: azure_votes_to_review(&v["reviewers"]),
+        base: azure_ref_name(&v["targetRefName"]),
+        head: azure_ref_name(&v["sourceRefName"]),
+    }))
+}
+
+/// "refs/heads/main" -> "main"; the PR payload always carries the full ref.
+fn azure_ref_name(v: &serde_json::Value) -> String {
+    v.as_str()
+        .unwrap_or("")
+        .strip_prefix("refs/heads/")
+        .unwrap_or_else(|| v.as_str().unwrap_or(""))
+        .to_string()
+}
+
+/// Azure's reviewer votes onto the shared review vocabulary. vote is
+/// 10 approved / 5 approved-with-suggestions / 0 no vote / -5 waiting for
+/// author / -10 rejected. The GitLab mapping order applies: a negative
+/// vote beats everything, an unvoted REQUIRED reviewer means
+/// review_required, any positive vote counts as an approval.
+fn azure_votes_to_review(reviewers: &serde_json::Value) -> String {
+    let Some(list) = reviewers.as_array() else { return "none".into() };
+    let mut positive = false;
+    let mut required_pending = false;
+    for r in list {
+        let vote = r["vote"].as_i64().unwrap_or(0);
+        if vote < 0 {
+            return "changes_requested".into();
+        }
+        if r["isRequired"].as_bool().unwrap_or(false) && vote <= 0 {
+            required_pending = true;
+        }
+        if vote > 0 {
+            positive = true;
+        }
+    }
+    if required_pending {
+        "review_required".into()
+    } else if positive {
+        "approved".into()
+    } else {
+        "none".into()
+    }
+}
+
+/// CI rollup from `az repos pr policy list`. Only Build and Status policy
+/// kinds read as CI — a rejected "Minimum number of reviewers" or
+/// "Work item linking" evaluation is a review/label state, not a check.
+/// Best-effort: a failed call (no policies, old server) is "none".
+fn azure_pr_checks(bin: &str, cwd: &Path, number: u64) -> String {
+    let Ok(o) = run(
+        bin,
+        &["repos", "pr", "policy", "list", "--id", &number.to_string(), "--output", "json"],
+        Some(cwd),
+    ) else {
+        return "none".into();
+    };
+    if !o.status.success() {
+        return "none".into();
+    }
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) else {
+        return "none".into();
+    };
+    azure_policies_to_checks(&v)
+}
+
+fn azure_policies_to_checks(v: &serde_json::Value) -> String {
+    let Some(policies) = v.as_array() else { return "none".into() };
+    let mut pending = false;
+    let mut any = false;
+    for p in policies {
+        if p["configuration"]["isEnabled"].as_bool() == Some(false) {
+            continue;
+        }
+        let kind = p["configuration"]["type"]["displayName"].as_str().unwrap_or("");
+        if kind != "Build" && kind != "Status" {
+            continue;
+        }
+        any = true;
+        // PolicyEvaluationStatus: queued/running/notStarted are pending;
+        // rejected/broken are failing; approved/notApplicable fall through.
+        match p["status"].as_str().unwrap_or("") {
+            "rejected" | "broken" => return "failing".into(),
+            "queued" | "running" | "notStarted" | "inProgress" => pending = true,
+            _ => {}
+        }
+    }
+    if !any {
+        "none".into()
+    } else if pending {
+        "pending".into()
+    } else {
+        "passing".into()
+    }
+}
 
 /// One PR/MR comment, normalized across providers and comment kinds
 /// (discussion comments, review summaries, inline review comments).
@@ -645,6 +1173,7 @@ pub fn pr_comments(provider: &str, cwd: &Path, number: u64) -> Result<Vec<PrComm
     let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     let mut out = match provider {
         GITLAB => gitlab_mr_comments(&bin, cwd, number)?,
+        AZURE => azure_pr_comments(&bin, cwd, number)?,
         _ => github_pr_comments(&bin, cwd, number)?,
     };
     out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
@@ -840,6 +1369,149 @@ fn parse_gitlab_notes(v: &serde_json::Value, members: &HashSet<String>) -> Vec<P
         .collect()
 }
 
+/// ADO PR comments live in "threads", which no `az repos pr` subcommand
+/// covers - `az devops invoke` hits the REST route directly, with
+/// org/project/repo spelled out because invoke's --detect only fills org.
+fn azure_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrComment>, ForgeError> {
+    // Parse the remote before spawning anything - a remote this can't read
+    // fails the ~1s subprocess anyway, so check the cheap thing first.
+    let (_, remote_url) = provider_for_repo(cwd, &crate::detect_default_remote(cwd));
+    let Some((org, project, repo)) = azure_remote_info(&remote_url) else {
+        return Err(ForgeError::Other(format!(
+            "cannot parse Azure DevOps remote {}",
+            remote_for_display(&remote_url)
+        )));
+    };
+    // Trusted identities for the comment author check: the PR's creator
+    // and reviewers all have real repo standing (the comment-watcher trust
+    // gate needs SOME membership signal; ADO notes carry none of their own).
+    let trusted = azure_pr_identities(bin, cwd, number);
+    let n = number.to_string();
+    let o = run(
+        bin,
+        &[
+            "devops", "invoke", "--area", "git", "--resource", "pullRequestThreads",
+            "--route-parameters", &format!("project={project}"), &format!("repositoryId={repo}"),
+            &format!("pullRequestId={n}"),
+            "--org", &org,
+            // Pin 7.x: the default 5.0 serialization can omit isDeleted /
+            // threadContext, which would leak deleted comments into the
+            // watcher stream and lose inline file paths.
+            "--api-version", "7.1",
+            "--output", "json",
+        ],
+        Some(cwd),
+    )
+    .map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        return Err(classify_failure(AZURE, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?;
+    Ok(parse_azure_threads(&v, &trusted))
+}
+
+/// Identity ids + uniqueNames of the PR's creator and reviewers - the set
+/// of people we already know have standing on this PR. Cached like the
+/// GitLab members list: the watcher runs this every tick and reviewer
+/// churn is rare, so the same TTL applies.
+fn azure_pr_identities(bin: &str, cwd: &Path, number: u64) -> HashSet<String> {
+    let key = format!("{}\0{number}", cwd.to_string_lossy());
+    if let Some(hit) = azure_identities_cache().lock().unwrap().get(&key) {
+        if hit.at.elapsed() < MEMBERS_TTL {
+            return hit.usernames.clone();
+        }
+    }
+    let out: HashSet<String> = run(bin, &["repos", "pr", "show", "--id", &number.to_string(), "--output", "json"], Some(cwd))
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .map(|v| {
+            std::iter::once(&v["createdBy"])
+                .chain(v["reviewers"].as_array().unwrap_or(&Vec::new()).iter())
+                .flat_map(|person| ["id", "uniqueName"].into_iter().filter_map(|k| person[k].as_str()))
+                .map(|s| s.to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+    azure_identities_cache().lock().unwrap().insert(
+        key,
+        MembersHit { usernames: out.clone(), at: std::time::Instant::now() },
+    );
+    out
+}
+
+fn azure_identities_cache() -> &'static Mutex<HashMap<String, MembersHit>> {
+    static C: OnceLock<Mutex<HashMap<String, MembersHit>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The PR a branch query should surface: the active one when there is one,
+/// else the most recently CREATED (ADO's list order isn't documented, and
+/// a branch name recycled after an abandoned PR would otherwise resolve to
+/// the stale record).
+fn pick_azure_branch_pr(list: &[serde_json::Value]) -> Option<serde_json::Value> {
+    list.iter()
+        .find(|p| p["status"].as_str() == Some("active"))
+        .or_else(|| list.iter().max_by_key(|p| p["creationDate"].as_str().unwrap_or("")))
+        .cloned()
+}
+
+fn parse_azure_threads(v: &serde_json::Value, trusted: &HashSet<String>) -> Vec<PrComment> {
+    let mut out = Vec::new();
+    for t in v["value"].as_array().unwrap_or(&Vec::new()) {
+        if t["isDeleted"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        // A thread pinned to a file region is an inline review comment.
+        // ADO prefixes the repo path with "/" ("/src/x.rs"); strip it so the
+        // field matches GitLab's bare `new_path` shape.
+        let path = t["threadContext"]["filePath"]
+            .as_str()
+            .map(|p| p.trim_start_matches('/').to_string());
+        for c in t["comments"].as_array().unwrap_or(&Vec::new()) {
+            // "system"/"codeChange" comments are activity noise ("approved
+            // the pull request", "reset votes"), same class as GitLab's
+            // system notes. Anything else - text, markdown, html - is a
+            // real user comment.
+            if c["isDeleted"].as_bool().unwrap_or(false)
+                || matches!(c["commentType"].as_str(), Some("system") | Some("codeChange"))
+            {
+                continue;
+            }
+            let body = c["content"].as_str().unwrap_or("").trim().to_string();
+            if body.is_empty() {
+                continue;
+            }
+            let author = &c["author"];
+            let tid = t["id"].as_u64().unwrap_or(0);
+            let cid = c["id"].as_u64().unwrap_or(0);
+            let name = author["uniqueName"].as_str()
+                .or_else(|| author["displayName"].as_str())
+                .unwrap_or("")
+                .to_string();
+            out.push(PrComment {
+                id: format!("t{tid}c{cid}"),
+                trusted: trusted.contains(&author["id"].as_str().unwrap_or("").to_lowercase())
+                    || trusted.contains(&name.to_lowercase()),
+                author: name,
+                body,
+                // publishedDate is the sort/filter key downstream — an
+                // empty one never satisfies `created_at > seen` and would
+                // hide the comment from the watcher forever.
+                created_at: norm_time(
+                    c["publishedDate"].as_str()
+                        .or_else(|| c["lastUpdatedDate"].as_str())
+                        .unwrap_or(""),
+                ),
+                kind: if path.is_some() { "inline".into() } else { "comment".into() },
+                path: path.clone(),
+            });
+        }
+    }
+    out
+}
+
 // ───────────────────────── per-repo provider cache ─────────────────────────
 
 /// Resolved provider for a repo path, so the "is this a forge repo?" answer
@@ -874,8 +1546,13 @@ pub fn provider_for_repo(cwd: &Path, remote: &str) -> (Option<&'static str>, Str
             return (hit.provider, hit.remote_url.clone());
         }
     }
+    // The remote ships over IPC verbatim (PrLookup/IssueLookup), and ADO's
+    // documented PAT-clone pattern is `https://{PAT}@dev.azure.com/...` -
+    // so the returned string is the DISPLAY form, not the raw remote. No
+    // consumer needs userinfo: host_of_remote/azure_remote_info only read
+    // host + path, and `az` resolves credentials from its own store.
     let remote_url = crate::git(&["remote", "get-url", remote], cwd)
-        .map(|s| s.trim().to_string())
+        .map(|s| remote_for_display(s.trim()))
         .unwrap_or_default();
     let provider = if remote_url.is_empty() { None } else { provider_for_remote(&remote_url) };
     provider_cache().lock().unwrap().insert(
@@ -895,8 +1572,9 @@ fn invalidate_provider_cache() {
 // ───────────────────────── issues ─────────────────────────
 
 /// One open issue, normalized across providers. `body` is carried in the
-/// list payload (both CLIs return it) so picking an issue in the New Task
-/// dialog needs no second round-trip before the agent gets its prompt.
+/// list payload (each CLI's list call returns it) so picking an issue in
+/// the New Task dialog needs no second round-trip before the agent gets
+/// its prompt.
 #[derive(Clone, Debug, Serialize)]
 pub struct ForgeIssue {
     pub provider: String,
@@ -920,6 +1598,7 @@ pub fn issue_list(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIss
     let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     match provider {
         GITLAB => gitlab_issue_list(&bin, cwd, limit),
+        AZURE => azure_issue_list(&bin, cwd, limit),
         _ => github_issue_list(&bin, cwd, limit),
     }
 }
@@ -1009,6 +1688,9 @@ pub fn pr_list_mine(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeP
         GITLAB => Err(ForgeError::Other(
             "Picking a merge request is not wired up for GitLab yet. Paste the number instead.".into(),
         )),
+        AZURE => Err(ForgeError::Other(
+            "Picking a pull request is not wired up for Azure DevOps yet. Paste the number instead.".into(),
+        )),
         _ => {
             let n = limit.to_string();
             let o = run(
@@ -1037,6 +1719,11 @@ pub fn pr_by_number(provider: &str, cwd: &Path, number: u64) -> Result<Option<Fo
     if provider == GITLAB {
         return Err(ForgeError::Other(
             "Opening a merge request by number is not wired up for GitLab yet.".into(),
+        ));
+    }
+    if provider == AZURE {
+        return Err(ForgeError::Other(
+            "Opening a pull request by number is not wired up for Azure DevOps yet.".into(),
         ));
     }
     let n = number.to_string();
@@ -1118,7 +1805,129 @@ fn parse_gitlab_issues(v: &serde_json::Value) -> Vec<ForgeIssue> {
         .collect()
 }
 
-// ───────────────────────── PR creation ─────────────────────────
+/// "Issues" on Azure DevOps are work items. One call: `az boards query`
+/// runs the WIQL AND hydrates the matched items itself (the extension
+/// batches a get_work_items with the SELECT's columns), so the fields the
+/// list renders must be named in the SELECT. Two things are NOT optional
+/// in the WIQL: the state-group filter (process templates name their
+/// closed states differently - Done/Closed/Resolved - the categories are
+/// uniform) and TeamProject (query_by_wiql runs at ORG scope; without it
+/// this lists every project's work items).
+///
+/// ponytail: `az boards query` hydrates EVERY match (batched, ~200 per
+/// call) - WIQL has no TOP and the command exposes no --top. A project
+/// with thousands of open items pays the round-trips so the picker can
+/// take its `limit`. If that ever bites, the escape hatch is
+/// `az devops invoke --area wit --resource wiql` ($top) + a ids-only
+/// workitems batch.
+fn azure_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
+    // The WIQL needs the project name spelled out; resolve it before the
+    // spawn so an unparseable remote fails cheap.
+    let (_, remote_url) = provider_for_repo(cwd, &crate::detect_default_remote(cwd));
+    let Some((_, project, _)) = azure_remote_info(&remote_url) else {
+        return Err(ForgeError::Other(format!(
+            "cannot parse Azure DevOps remote {}",
+            remote_for_display(&remote_url)
+        )));
+    };
+    // Single quotes in the project name are escaped by doubling.
+    let project = project.replace('\'', "''");
+    let wiql = format!(
+        "SELECT [System.Id], [System.Title], [System.Description], \
+                [System.ChangedDate], [System.CommentCount], [System.Tags], \
+                [System.CreatedBy] \
+         FROM workitems \
+         WHERE [System.TeamProject] = '{project}' \
+           AND [System.State] NOT IN GROUP 'Completed' \
+           AND [System.State] NOT IN GROUP 'Removed' \
+         ORDER BY [System.ChangedDate] DESC"
+    );
+    let o = run(bin, &["boards", "query", "--wiql", &wiql, "--output", "json"], Some(cwd))
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        return Err(classify_failure(AZURE, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?;
+    Ok(parse_azure_workitems(&v, limit as usize))
+}
+
+fn parse_azure_workitems(v: &serde_json::Value, limit: usize) -> Vec<ForgeIssue> {
+    // `az boards query` prints a top-level ARRAY of hydrated work items,
+    // already in WIQL order (the extension re-sorts the fetched batch back
+    // into query order).
+    v.as_array().unwrap_or(&Vec::new())
+        .iter()
+        .map(|w| {
+            let f = &w["fields"];
+            ForgeIssue {
+                provider: AZURE.into(),
+                number: w["id"].as_u64().unwrap_or(0),
+                title: f["System.Title"].as_str().unwrap_or("").trim().to_string(),
+                // The API url is .../_apis/wit/workItems/N; the web page is
+                // the same prefix with _workitems/edit/N.
+                url: w["url"].as_str().unwrap_or("")
+                    .replace("/_apis/wit/workItems/", "/_workitems/edit/"),
+                body: html_to_text(f["System.Description"].as_str().unwrap_or("")),
+                author: f["System.CreatedBy"]["uniqueName"].as_str()
+                    .or_else(|| f["System.CreatedBy"]["displayName"].as_str())
+                    .or_else(|| f["System.CreatedBy"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                comments: f["System.CommentCount"].as_u64().unwrap_or(0),
+                labels: f["System.Tags"].as_str().unwrap_or("")
+                    .split(';')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                updated_at: norm_time(f["System.ChangedDate"].as_str().unwrap_or("")),
+            }
+        })
+        .filter(|i| i.number > 0)
+        .take(limit)
+        .collect()
+}
+
+/// Work item descriptions come back as HTML; the picker prompt wants text.
+/// Cheap tag stripper - enough for the one-line-first-paragraph reality of
+/// issue bodies, not a sanitizer.
+fn html_to_text(html: &str) -> String {
+    const BREAK: &[&str] = &["br", "p", "div", "li", "tr", "ul", "ol", "h1", "h2", "h3", "h4", "blockquote", "pre"];
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find('<') {
+        // The '>' must come AFTER the '<' - a literal '>' in prose
+        // ("Menu > Settings", "x >= 1") is not a tag boundary, and a '<'
+        // with no '>' after it means the tail is literal text.
+        let Some(j) = rest[i + 1..].find('>').map(|d| i + 1 + d) else { break };
+        out.push_str(&rest[..i]);
+        let tag = rest[i + 1..j]
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        if BREAK.contains(&tag.as_str()) {
+            out.push('\n');
+        }
+        rest = &rest[j + 1..];
+    }
+    out.push_str(rest);
+    // The common entities only, and &amp; LAST so "&amp;lt;" decodes to the
+    // literal "&lt;" instead of "<".
+    let out = out
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&");
+    out.split('\n')
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Create a PR/MR for `cwd`'s current branch (the caller pushes first).
 /// Returns the PR URL. Idempotent-ish: "already exists" failures that
@@ -1133,6 +1942,9 @@ pub fn pr_create(
 ) -> Result<String, ForgeError> {
     let cli = cli_for_provider(provider);
     let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    if provider == AZURE {
+        return azure_pr_create(&bin, cwd, title, body, base, draft);
+    }
     let mut args: Vec<&str> = match provider {
         GITLAB => vec!["mr", "create", "--title", title, "--description", body, "--target-branch", base, "--yes"],
         _ => vec!["pr", "create", "--title", title, "--body", body, "--base", base],
@@ -1157,10 +1969,70 @@ pub fn pr_create(
     Err(classify_failure(provider, &o))
 }
 
-/// First http(s) URL that looks like a PR/MR link in CLI output.
+/// `az repos pr create` needs the source branch named explicitly, its
+/// draft flag is a bool value, and the PR URL comes back inside the JSON
+/// payload rather than as a printed link.
+fn azure_pr_create(
+    bin: &str,
+    cwd: &Path,
+    title: &str,
+    body: &str,
+    base: &str,
+    draft: bool,
+) -> Result<String, ForgeError> {
+    let branch = crate::git(&["branch", "--show-current"], cwd)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if branch.is_empty() {
+        return Err(ForgeError::Other("cannot create a PR from a detached HEAD".into()));
+    }
+    let mut args = vec![
+        "repos", "pr", "create",
+        "--title", title, "--description", body,
+        "--source-branch", &branch, "--target-branch", base,
+        "--output", "json",
+    ];
+    if draft {
+        args.extend(["--draft", "true"]);
+    }
+    let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    if o.status.success() {
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+            .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?;
+        return azure_pr_web_url(&v)
+            .ok_or_else(|| ForgeError::Other(format!("created, but no URL in output:\n{}", String::from_utf8_lossy(&o.stdout))));
+    }
+    let stderr = stderr_of(&o);
+    // "TF401179: An active pull request for the source and target branch
+    // already exists" — carries no URL, so resolve the existing one.
+    if stderr.to_lowercase().contains("already exists") {
+        if let Ok(Some(pr)) = azure_pr_status(bin, cwd, None) {
+            if !pr.url.is_empty() {
+                return Ok(pr.url);
+            }
+        }
+    }
+    Err(classify_failure(AZURE, &o))
+}
+
+/// Browser URL for an az PR payload: repo webUrl + the pullrequest route.
+/// `_links.web.href` is only the last resort — on real payloads it is the
+/// `_apis`-shaped API URL (or the `/website` redirector), which opens raw
+/// JSON in a browser rather than the PR page.
+fn azure_pr_web_url(v: &serde_json::Value) -> Option<String> {
+    if let (Some(base), Some(id)) = (v["repository"]["webUrl"].as_str(), v["pullRequestId"].as_u64()) {
+        return Some(format!("{}/pullrequest/{id}", base.trim_end_matches('/')));
+    }
+    v["_links"]["web"]["href"].as_str().map(str::to_string)
+}
+
+/// First http(s) URL that looks like a PR/MR link in CLI output. Azure is
+/// absent from the patterns on purpose - `az repos pr create` answers in
+/// JSON, so the grep path only ever meets gh/glab text.
 fn extract_pr_url(text: &str) -> Option<String> {
     text.split_whitespace()
-        .find(|t| t.starts_with("https://") && (t.contains("/pull/") || t.contains("/merge_requests/")))
+        .find(|t| t.starts_with("https://")
+            && (t.contains("/pull/") || t.contains("/merge_requests/")))
         .map(|s| s.trim_end_matches(['.', ',']).to_string())
 }
 
@@ -1498,5 +2370,347 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(extract_pr_url("no url here"), None);
         assert_eq!(pr_number_from_url("https://github.com/foo/bar/pull/12"), Some(12));
         assert_eq!(pr_number_from_url("https://gitlab.com/g/p/-/merge_requests/42"), Some(42));
+        assert_eq!(pr_number_from_url("https://dev.azure.com/o/p/_git/r/pullrequest/7"), Some(7));
+    }
+
+    #[test]
+    fn azure_provider_detection() {
+        assert_eq!(provider_for_remote("https://dev.azure.com/org/proj/_git/repo"), Some(AZURE));
+        assert_eq!(provider_for_remote("git@ssh.dev.azure.com:v3/org/proj/repo"), Some(AZURE));
+        assert_eq!(provider_for_remote("https://org.visualstudio.com/proj/_git/repo"), Some(AZURE));
+        assert_eq!(provider_for_remote("org@vs-ssh.visualstudio.com:v3/org/proj/repo"), Some(AZURE));
+        assert_eq!(cli_for_provider(AZURE), "az");
+    }
+
+    #[test]
+    fn azure_remote_parsing() {
+        // (org url, project, repo) out of each ADO remote shape.
+        let r = |u: &str| azure_remote_info(u);
+        assert_eq!(
+            r("https://dev.azure.com/myorg/proj/_git/repo"),
+            Some(("https://dev.azure.com/myorg".into(), "proj".into(), "repo".into()))
+        );
+        assert_eq!(
+            r("https://myorg@dev.azure.com/myorg/proj/_git/repo"),
+            Some(("https://dev.azure.com/myorg".into(), "proj".into(), "repo".into()))
+        );
+        assert_eq!(
+            r("https://myorg.visualstudio.com/proj/_git/repo"),
+            Some(("https://myorg.visualstudio.com".into(), "proj".into(), "repo".into()))
+        );
+        assert_eq!(
+            r("git@ssh.dev.azure.com:v3/myorg/proj/repo"),
+            Some(("https://dev.azure.com/myorg".into(), "proj".into(), "repo".into()))
+        );
+        assert_eq!(
+            r("myorg@vs-ssh.visualstudio.com:v3/myorg/proj/repo"),
+            Some(("https://myorg.visualstudio.com".into(), "proj".into(), "repo".into()))
+        );
+        // ssh:// with an explicit port keeps the v3 path.
+        assert_eq!(
+            r("ssh://git@ssh.dev.azure.com:22/v3/myorg/proj/repo"),
+            Some(("https://dev.azure.com/myorg".into(), "proj".into(), "repo".into()))
+        );
+        // A legacy collection segment on visualstudio.com stays part of the
+        // org URL rather than being mistaken for the project.
+        assert_eq!(
+            r("https://myorg.visualstudio.com/DefaultCollection/proj/_git/repo"),
+            Some(("https://myorg.visualstudio.com/DefaultCollection".into(), "proj".into(), "repo".into()))
+        );
+        assert_eq!(r("https://github.com/foo/bar"), None);
+        assert_eq!(r(""), None);
+        // A .git suffix on the repo segment is stripped - ADO clone URLs
+        // don't carry one, but a hand-built remote can.
+        assert_eq!(
+            r("https://dev.azure.com/myorg/proj/_git/repo.git"),
+            Some(("https://dev.azure.com/myorg".into(), "proj".into(), "repo".into()))
+        );
+        // Missing project on dev.azure.com: _git needs org AND project in
+        // front of it, so the org is not silently read back as the project.
+        assert_eq!(r("https://dev.azure.com/myorg/_git/repo"), None);
+        // Segments come back decoded - a "My Project" remote encodes to
+        // My%20Project, and invoke's --route-parameters encodes AGAIN, so
+        // returning the raw segment would double-encode to a 404.
+        assert_eq!(
+            r("https://dev.azure.com/myorg/My%20Project/_git/My%20Repo"),
+            Some(("https://dev.azure.com/myorg".into(), "My Project".into(), "My Repo".into()))
+        );
+        // A v3 path on an HTTPS host is not the SSH layout.
+        assert_eq!(r("https://dev.azure.com/v3/myorg/proj/repo"), None);
+        // A PAT in the userinfo (ADO's documented clone pattern) must not
+        // reach path parsing - and must not leak into IPC either
+        // (provider_for_repo stores only remote_for_display's output).
+        assert_eq!(
+            r("https://myPAT@dev.azure.com/myorg/proj/_git/repo"),
+            Some(("https://dev.azure.com/myorg".into(), "proj".into(), "repo".into()))
+        );
+        // A literal '@' in a path segment is not userinfo.
+        assert_eq!(
+            r("https://dev.azure.com/myorg/proj@x/_git/repo"),
+            Some(("https://dev.azure.com/myorg".into(), "proj@x".into(), "repo".into()))
+        );
+        assert_eq!(host_of_remote("https://dev.azure.com/o/proj@x/_git/r").as_deref(), Some("dev.azure.com"));
+        assert_eq!(host_of_remote("https://u:P@dev.azure.com/o/p/_git/r").as_deref(), Some("dev.azure.com"));
+    }
+
+    #[test]
+    fn remote_for_display_strips_userinfo() {
+        // An embedded `user:PAT@` must never reach UI error copy.
+        assert_eq!(
+            remote_for_display("https://user:SECRET@dev.azure.com/o/p/_git/r"),
+            "https://dev.azure.com/o/p/_git/r"
+        );
+        assert_eq!(remote_for_display("git@ssh.dev.azure.com:v3/o/p/r"), "ssh.dev.azure.com:v3/o/p/r");
+        assert_eq!(remote_for_display("https://dev.azure.com/o/p/_git/r"), "https://dev.azure.com/o/p/_git/r");
+        // A literal `@` in the PATH is not userinfo - only the authority
+        // segment's is stripped.
+        assert_eq!(
+            remote_for_display("https://dev.azure.com/o/p@x/_git/r"),
+            "https://dev.azure.com/o/p@x/_git/r"
+        );
+    }
+
+    #[test]
+    fn azure_ref_and_vote_mapping() {
+        let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        assert_eq!(azure_ref_name(&j(r#""refs/heads/main""#)), "main");
+        assert_eq!(azure_ref_name(&j(r#""main""#)), "main");
+        assert_eq!(azure_ref_name(&serde_json::Value::Null), "");
+        // 10 approved / 5 suggestions / 0 none / -5 waiting / -10 rejected.
+        assert_eq!(azure_votes_to_review(&j(r#"[{"vote":10}]"#)), "approved");
+        assert_eq!(azure_votes_to_review(&j(r#"[{"vote":5}]"#)), "approved");
+        assert_eq!(azure_votes_to_review(&j(r#"[{"vote":0}]"#)), "none");
+        // A negative vote beats an approval sitting next to it.
+        assert_eq!(azure_votes_to_review(&j(r#"[{"vote":10},{"vote":-5}]"#)), "changes_requested");
+        assert_eq!(azure_votes_to_review(&j(r#"[{"vote":-10}]"#)), "changes_requested");
+        // A required reviewer who has not voted blocks the merge.
+        assert_eq!(azure_votes_to_review(&j(r#"[{"vote":0,"isRequired":true}]"#)), "review_required");
+        // Required + unvoted, but somebody else approved: still required.
+        assert_eq!(azure_votes_to_review(&j(r#"[{"vote":0,"isRequired":true},{"vote":10}]"#)), "review_required");
+        assert_eq!(azure_votes_to_review(&j("[]")), "none");
+    }
+
+    #[test]
+    fn azure_policy_mapping() {
+        let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        let build = |status: &str| format!(
+            r#"[{{"status":"{status}","configuration":{{"isEnabled":true,"type":{{"displayName":"Build"}}}}}}]"#);
+        assert_eq!(azure_policies_to_checks(&j(&build("approved"))), "passing");
+        assert_eq!(azure_policies_to_checks(&j(&build("running"))), "pending");
+        assert_eq!(azure_policies_to_checks(&j(&build("rejected"))), "failing");
+        assert_eq!(azure_policies_to_checks(&j(&build("broken"))), "failing");
+        // Queued-but-not-run is pending, not the passing default.
+        assert_eq!(azure_policies_to_checks(&j(&build("notStarted"))), "pending");
+        assert_eq!(azure_policies_to_checks(&j(&build("queued"))), "pending");
+        // Non-CI policies (reviewer counts, work-item linking) are ignored.
+        let reviewer = r#"[{"status":"rejected","configuration":{"isEnabled":true,"type":{"displayName":"Minimum number of reviewers"}}}]"#;
+        assert_eq!(azure_policies_to_checks(&j(reviewer)), "none");
+        assert_eq!(azure_policies_to_checks(&j("[]")), "none");
+        // A disabled failing check is not a failure.
+        let disabled = r#"[{"status":"rejected","configuration":{"isEnabled":false,"type":{"displayName":"Build"}}}]"#;
+        assert_eq!(azure_policies_to_checks(&j(disabled)), "none");
+        // Mixed: one failing beats one pending.
+        let mixed = r#"[
+            {"status":"running","configuration":{"isEnabled":true,"type":{"displayName":"Build"}}},
+            {"status":"broken","configuration":{"isEnabled":true,"type":{"displayName":"Status"}}}
+        ]"#;
+        assert_eq!(azure_policies_to_checks(&j(mixed)), "failing");
+    }
+
+    #[test]
+    fn azure_thread_parsing() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"value": [
+            {"id": 10, "isDeleted": false,
+             "comments": [
+                {"id": 1, "commentType": "text", "isDeleted": false, "content": " looks wrong ",
+                 "publishedDate": "2026-06-11T10:00:00Z",
+                 "author": {"id": "u1", "uniqueName": "alice@x.io", "displayName": "Alice"}},
+                {"id": 2, "commentType": "system", "content": "Alice voted 10",
+                 "publishedDate": "2026-06-11T10:01:00Z",
+                 "author": {"id": "sys"}}
+             ]},
+            {"id": 11, "isDeleted": false, "threadContext": {"filePath": "/src/x.rs"},
+             "comments": [
+                {"id": 3, "commentType": "text", "content": "inline nit",
+                 "publishedDate": "2026-06-11T10:02:00+02:00",
+                 "author": {"id": "u9", "uniqueName": "mallory@x.io"}}
+             ]},
+            {"id": 12, "isDeleted": true,
+             "comments": [{"id": 4, "commentType": "text", "content": "gone",
+                          "author": {"id": "u1"}}]}
+        ]}"#).unwrap();
+        let trusted: HashSet<String> = ["u1".to_string(), "alice@x.io".to_string()].into_iter().collect();
+        let out = parse_azure_threads(&v, &trusted);
+        // System comment dropped, deleted thread dropped, inline keeps its path.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "t10c1");
+        assert_eq!(out[0].author, "alice@x.io");
+        assert_eq!(out[0].body, "looks wrong");
+        assert_eq!(out[0].kind, "comment");
+        assert!(out[0].trusted);
+        assert_eq!(out[1].kind, "inline");
+        // ADO's leading "/" is stripped to match GitLab's bare new_path.
+        assert_eq!(out[1].path.as_deref(), Some("src/x.rs"));
+        // u9 is neither the PR creator nor a reviewer.
+        assert!(!out[1].trusted);
+        assert_eq!(out[1].created_at, "2026-06-11T08:02:00Z");
+    }
+
+    #[test]
+    fn azure_workitem_parsing() {
+        // `az boards query` prints a top-level array (the extension fetches
+        // full items, not id refs).
+        let v: serde_json::Value = serde_json::from_str(r#"[
+            {"id": 42, "url": "https://dev.azure.com/o/_apis/wit/workItems/42",
+             "fields": {"System.Title": " Broken importer ",
+                "System.Description": "<div>It breaks.<br>Hard.</div>",
+                "System.Tags": "bug; p1",
+                "System.CommentCount": 3,
+                "System.CreatedBy": {"uniqueName": "bob@x.io"},
+                "System.ChangedDate": "2026-07-01T10:00:00Z"}},
+            {"id": 0, "fields": {}}
+        ]"#).unwrap();
+        let out = parse_azure_workitems(&v, 50);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].number, 42);
+        assert_eq!(out[0].title, "Broken importer");
+        // The API URL is rewritten to the browser page.
+        assert_eq!(out[0].url, "https://dev.azure.com/o/_workitems/edit/42");
+        assert_eq!(out[0].body, "It breaks.\nHard.");
+        assert_eq!(out[0].author, "bob@x.io");
+        assert_eq!(out[0].comments, 3);
+        assert_eq!(out[0].labels, vec!["bug".to_string(), "p1".to_string()]);
+        assert_eq!(out[0].updated_at, "2026-07-01T10:00:00Z");
+    }
+
+    #[test]
+    fn azure_html_to_text() {
+        assert_eq!(html_to_text("<p>one</p><p>two</p>"), "one\ntwo");
+        assert_eq!(html_to_text("a<br>b"), "a\nb");
+        assert_eq!(html_to_text("a &amp; b &lt;c&gt;"), "a & b <c>");
+        assert_eq!(html_to_text("&amp;lt; stays"), "&lt; stays");
+        assert_eq!(html_to_text(""), "");
+        // A literal '>' before a '<' is prose, not a tag - and must not
+        // panic (the tag hunt starts AFTER the '<').
+        assert_eq!(html_to_text("x > y <br>"), "x > y");
+        assert_eq!(html_to_text("Menu &gt; Settings"), "Menu > Settings");
+        // A '<' with no closing '>' is literal text, kept whole.
+        assert_eq!(html_to_text("a < b"), "a < b");
+    }
+
+    #[test]
+    fn azure_missing_pr_error_text() {
+        // Real ADO output: "TF401180: The requested pull request was not
+        // found." (already lowercased at the call site).
+        assert!(azure_missing_pr("tf401180: the requested pull request was not found."));
+        assert!(!azure_missing_pr("vs403125: ...conflict..."));
+    }
+
+    #[test]
+    fn azure_pr_web_url_mapping() {
+        let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        // repository.webUrl wins even when _links is present - the real
+        // _links.web.href is an _apis API URL, not a browser page.
+        assert_eq!(
+            azure_pr_web_url(&j(r#"{
+                "pullRequestId": 7,
+                "repository": {"webUrl": "https://dev.azure.com/o/p/_git/r"},
+                "_links": {"web": {"href": "https://dev.azure.com/o/p/_apis/git/repositories/rid/pullRequests/7"}}
+            }"#)).as_deref(),
+            Some("https://dev.azure.com/o/p/_git/r/pullrequest/7")
+        );
+        // _links.web.href is the fallback for payloads with no repository.
+        assert_eq!(
+            azure_pr_web_url(&j(r#"{"_links":{"web":{"href":"https://dev.azure.com/o/p/_git/r/pullrequest/7"}}}"#)).as_deref(),
+            Some("https://dev.azure.com/o/p/_git/r/pullrequest/7")
+        );
+        assert_eq!(azure_pr_web_url(&j("{}")), None);
+    }
+
+    #[test]
+    fn azure_failure_classification() {
+        // The routine ADO auth failures — PATs expire on org policy, so
+        // these must reach the Auth arm (the "sign in" hint), not Other.
+        for stderr in [
+            "Access Denied: The Personal Access Token used has expired.",
+            "Failed to authenticate using the supplied token.",
+            "TF400813: The user 'x' is not authorized to access this resource.",
+            "You need to run the login command (az login or az devops login)",
+        ] {
+            match classify_stderr(AZURE, stderr) {
+                ForgeError::Auth(m) => assert!(m.contains("az"), "{stderr}"),
+                other => panic!("{stderr} should classify as auth, got {other:?}"),
+            }
+        }
+        // Missing extension reads as a missing CLI, not an auth error.
+        match classify_stderr(AZURE, "az: 'repos' is not in the 'az' command group") {
+            ForgeError::CliMissing(c) => assert_eq!(c, "az"),
+            other => panic!("expected CliMissing, got {other:?}"),
+        }
+        // A plain failure stays Other, trimmed.
+        match classify_stderr(AZURE, "  weird networking blip  \n") {
+            ForgeError::Other(m) => assert_eq!(m, "weird networking blip"),
+            other => panic!("expected Other, got {other:?}"),
+        }
+        // The footer az prints on EVERY extension crash must not trip the
+        // command-group rule.
+        match classify_stderr(AZURE, "Extension Name: azure-devops\nsocket hang up") {
+            ForgeError::Other(_) => {}
+            other => panic!("extension crash should stay Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn azure_org_list_parsing() {
+        assert_eq!(
+            parse_org_list(
+                "azdevops-cli: https://dev.azure.com/myorg\n\
+                 unrelated-line\n\
+                 azdevops-cli:\n\
+                 azdevops-cli: https://dev.azure.com/myorg\n\
+                 azdevops-cli: https://myorg.visualstudio.com\n"
+            ),
+            vec![
+                "https://dev.azure.com/myorg".to_string(),
+                "https://myorg.visualstudio.com".to_string(),
+            ]
+        );
+        assert_eq!(parse_org_list(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn azure_branch_pr_pick() {
+        let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        let active = j(r#"{"status":"active","creationDate":"2024-01-01"}"#);
+        let old_abandoned = j(r#"{"status":"abandoned","creationDate":"2024-01-01"}"#);
+        let new_completed = j(r#"{"status":"completed","creationDate":"2025-06-01"}"#);
+        // Active beats newer settled.
+        assert_eq!(pick_azure_branch_pr(&[new_completed.clone(), active.clone()]), Some(active));
+        // No active: the newest settled PR wins, whatever the list order.
+        assert_eq!(
+            pick_azure_branch_pr(&[new_completed.clone(), old_abandoned.clone()]),
+            Some(new_completed.clone())
+        );
+        assert_eq!(
+            pick_azure_branch_pr(&[old_abandoned, new_completed.clone()]),
+            Some(new_completed)
+        );
+        assert_eq!(pick_azure_branch_pr(&[]), None);
+    }
+
+    #[test]
+    fn azure_thread_missing_published_date() {
+        // A comment with no publishedDate falls back to lastUpdatedDate —
+        // an empty created_at never satisfies `created_at > seen` and would
+        // hide the comment from the watcher forever.
+        let v: serde_json::Value = serde_json::from_str(r#"{"value": [
+            {"id": 10, "comments": [
+                {"id": 1, "commentType": "text", "content": "no date",
+                 "lastUpdatedDate": "2026-06-12T09:00:00Z",
+                 "author": {"id": "u1", "uniqueName": "a@x.io"}}
+            ]}
+        ]}"#).unwrap();
+        let out = parse_azure_threads(&v, &HashSet::new());
+        assert_eq!(out[0].created_at, "2026-06-12T09:00:00Z");
     }
 }

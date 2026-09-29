@@ -31,10 +31,11 @@ import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext, type Settings, type PrPickList, type ForgePr } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
-import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
+import { buildIssuePrompt, issueBranch, issueRef, issueTaskName } from "@/lib/issuePrompt";
+import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, issueNoun } from "@/lib/forge";
 import { readMemberModes, persistMemberMode, seedMemberMode, readMemberSets, saveMemberSet, deleteMemberSet, type MemberSet } from "@/components/dialogs/memberModes";
 import { scoped } from "@/lib/profileScope";
-import { installCommand } from "@/lib/platform";
+
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
@@ -400,12 +401,13 @@ export function NewTaskDialog() {
   const [importList, setImportList] = useState<ImportableWorktree[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [importSelected, setImportSelected] = useState<string | null>(null);
-  // Issue mode: seed the task from a GitHub issue / GitLab issue. Same shape
-  // as import mode (a picker replacing the name+branch fields), but it is
-  // orthogonal to worktree-vs-main-checkout - picking an issue only prefills
-  // the name and branch and arms the prompt. Loading is deferred to the
-  // moment the user asks for it: this is a network call through gh/glab, and
-  // most New Task opens have nothing to do with issues.
+  // Issue mode: seed the task from a GitHub issue / GitLab issue / Azure
+  // DevOps work item. Same shape as import mode (a picker replacing the
+  // name+branch fields), but it is orthogonal to worktree-vs-main-checkout -
+  // picking an issue only prefills the name and branch and arms the prompt.
+  // Loading is deferred to the moment the user asks for it: this is a
+  // network call through gh/glab/az, and most New Task opens have nothing
+  // to do with issues.
   const canIssues = !isMulti && !project?.non_git;
   const [issueMode, setIssueMode] = useState(false);
   const [issueLookup, setIssueLookup] = useState<IssueLookup | null>(null);
@@ -680,6 +682,10 @@ export function NewTaskDialog() {
     setIssueMode(false);
     setIssueSelected(null);
     setIssueLookup(null);
+    // The filter text is per-open too: a query typed against one project's
+    // list must not silently carry into the next project's picker.
+    setIssueQuery("");
+    setIssueLoading(false);
     // Existing-branch mode is per-open too, like issue mode beside it: a
     // branch picked for one project must not survive into the next open.
     setCheckoutMode(false);
@@ -903,7 +909,7 @@ export function NewTaskDialog() {
    *  for anything else, which the caller reports rather than guessing at. */
   function parsePrQuery(raw: string): number {
     const t = raw.trim();
-    const fromUrl = t.match(/\/pull\/(\d+)/) ?? t.match(/\/merge_requests\/(\d+)/);
+    const fromUrl = t.match(/\/pull\/(\d+)/) ?? t.match(/\/merge_requests\/(\d+)/) ?? t.match(/\/pullrequest\/(\d+)/i);
     const n = Number(fromUrl ? fromUrl[1] : t.replace(/^#/, ""));
     return Number.isInteger(n) && n > 0 ? n : 0;
   }
@@ -981,12 +987,16 @@ export function NewTaskDialog() {
     setErr(null);
     if (!projectId) return;
     setIssueLoading(true);
+    // The fetch outlives a close: a stale lookup landing in a re-opened
+    // dialog would seed the wrong project's issues (and its provider into
+    // the pane copy and prompts). Same guard as projectBranchContext above.
+    const stale = () => useUI.getState().newTaskProjectId !== projectId;
     projectForgeIssues(projectId, 50)
-      .then(setIssueLookup)
-      .catch(e => setIssueLookup({
+      .then(l => { if (!stale()) setIssueLookup(l); })
+      .catch(e => { if (!stale()) setIssueLookup({
         provider: null, remote_url: "", status: "error", message: String(e), issues: [],
-      }))
-      .finally(() => setIssueLoading(false));
+      }); })
+      .finally(() => { if (!stale()) setIssueLoading(false); });
   }
 
   // Resolve the project's forge up front. Backed by a cached, network-free
@@ -998,8 +1008,9 @@ export function NewTaskDialog() {
   }, [projectId]);
   const forgeProvider = usePr(s => (projectId ? s.providerByProject[projectId] ?? null : null));
   const forges = usePr(s => s.forges);
-  const forgeCli = forgeProvider === "gitlab" ? "glab" : "gh";
-  const forgeCliReady = !!forges?.find(f => f.provider === forgeProvider)?.authed;
+  const cliBin = forgeCli(forgeProvider);
+  const forgeRow = forges?.find(f => f.provider === forgeProvider);
+  const forgeCliReady = !!forgeRow?.authed;
 
   // Client-side filter over the already-fetched list: no extra round-trip
   // for typing, and 50 issues is small enough to scan in the renderer.
@@ -1066,7 +1077,7 @@ export function NewTaskDialog() {
     // Overwrites whatever is in there - same as the name and branch beside it,
     // and picking a second issue has to replace the first one's prompt or the
     // agent gets handed two.
-    setPrompt(buildIssuePrompt(issue, MAX_PROMPT_CHARS));
+    setPrompt(buildIssuePrompt(issue, MAX_PROMPT_CHARS, issueLookup?.remote_url ?? ""));
     // The issue's author wrote that prompt, so a YOLO default steps back
     // (see `yoloHeld`). A box the user ticked themselves steps back too: the
     // text it was ticked for has just been replaced. One already held for a
@@ -1434,7 +1445,11 @@ export function NewTaskDialog() {
               ["branch", "checkout-branch-toggle", t("newTask.sourceBranch"), mode === "worktree" && canImport],
               ["import", "source-import", t("newTask.sourceImport", { count: importList.length }),
                 mode === "worktree" && canImport && importList.length > 0],
-              ["issue", "source-issue", t("newTask.sourceIssue"), canIssues && !!forgeProvider],
+              ["issue", "source-issue",
+                forgeProvider === "azure"
+                  ? t("newTask.fromWorkItem", { forge: forgeName(forgeProvider) })
+                  : t("newTask.sourceIssue"),
+                canIssues && !!forgeProvider],
               ["pr", "from-pr-toggle", t("newTask.sourcePr"), canIssues && !!forgeProvider],
             ] as const).map(([sv, testid, label, shown]) => shown ? (
               <button
@@ -1454,9 +1469,15 @@ export function NewTaskDialog() {
                 {label}
               </button>
             ) : null)}
-            {(source === "issue" || source === "pr") && !forgeCliReady && (
+            {(source === "issue" || source === "pr") && forges && !forgeCliReady && (
               <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                {t("newTask.needsCli", { cli: forgeCli })}
+                {/* `found` covers the CLI AND, for az, the extension — so
+                    "needs az" is right only when the tool itself is absent;
+                    while the probe is in flight (forges === null) show
+                    nothing rather than a wrong "sign in needed". */}
+                {forgeRow && !forgeRow.found
+                  ? t("newTask.needsCli", { cli: cliBin + (forgeProvider === "azure" ? t("common:azureCliSuffix") : "") })
+                  : t("newTask.needsSignIn")}
               </span>
             )}
           </div>
@@ -1700,8 +1721,11 @@ export function NewTaskDialog() {
             grows it on attach and as the user types, so the hint that used to explain
             "typed once ready, nothing sent until Create" isn't needed to
             justify the extra height; the placeholder carries that now. */}
+        {/* The selected issue's own provider names the noun - the
+            project-level `noun` above reads providerByProject, which can
+            be null/stale while issueSelected is already in hand. */}
         {canPrompt && (
-          <Field label={issueSelected ? t("newTask.initialPromptFromIssue") : t("newTask.initialPrompt")}>
+          <Field label={issueSelected ? t("newTask.initialPromptFromIssue", { noun: issueNoun(issueSelected.provider) }) : t("newTask.initialPrompt")}>
             <div className="flex flex-col gap-1">
               <textarea
                 ref={attachPrompt}
@@ -2138,38 +2162,60 @@ export function NewTaskDialog() {
         </div>
       )}
 
-      {issueMode && (
+      {issueMode && (() => {
+        // The lookup's provider wins over the cached project map: when
+        // resolveProvider failed but project_forge_issues still resolved
+        // one, the copy must name the CLI that actually failed, not the
+        // stale/null guess.
+        const paneProvider = issueLookup?.provider ?? forgeProvider;
+        const paneNoun = issueNoun(paneProvider);
+        const paneCli = forgeCli(paneProvider);
+        // Noun morphology for the parameterized newTask.issue* keys:
+        // issue/issues/Issue/Issues vs work item/work items/…
+        const paneNouns = {
+          noun: paneNoun,
+          nouns: `${paneNoun}s`,
+          cap: paneNoun[0].toUpperCase() + paneNoun.slice(1),
+          caps: `${paneNoun[0].toUpperCase()}${paneNoun.slice(1)}s`,
+        };
+        // az is two installs (CLI + extension) - the suffix carries the
+        // second requirement so mono styling stays on the binary name.
+        const cliSuffix = paneProvider === "azure" ? t("common:azureCliSuffix") : "";
+        return (
         <div
           data-testid="issue-column"
           data-issue-picked={issueSelected ? String(issueSelected.number) : undefined}
           className="flex min-w-0 flex-col gap-3"
         >
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-            {t("newTask.issueColumnTitle")}
+            {t("newTask.issueColumnTitle", { noun: paneNouns.cap })}
           </div>
           <p className="-mt-1 text-[12px] leading-snug text-[var(--color-fg-dim)]">
-            {t("newTask.issueColumnIntro")}
+            {t("newTask.issueColumnIntro", { noun: paneNouns.noun, nouns: paneNouns.nouns })}
           </p>
           {issueLoading ? (
             <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-              <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingIssues")}
+              <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingIssues", { nouns: paneNouns.nouns })}
             </div>
           ) : issueLookup && issueLookup.status !== "ok" ? (
             <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
               {issueLookup.status === "cli-missing" ? (
                 <>
                   <div className="text-[var(--color-fg)]">
-                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCli" values={{ cli: forgeCli }} components={{ mono: <span className="mono" /> }} />
+                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCli" values={{ nouns: paneNouns.caps, cli: paneCli, suffix: cliSuffix }} components={{ mono: <span className="mono" /> }} />
                   </div>
                   <div className="mt-1">
-                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCliBody" values={{ cli: forgeCli, install: installCommand(forgeCli) }} components={{ code: <code className="mono" /> }} />
+                    <Trans ns="dialogs" i18nKey="newTask.issuesNeedCliBody" values={{ install: forgeInstallCmd(paneProvider), auth: forgeLoginCmd(paneProvider) }} components={{ code: <code className="mono" /> }} />
                   </div>
                 </>
               ) : issueLookup.status === "cli-unauthed" ? (
                 <>
-                  <div className="text-[var(--color-fg)]">{t("newTask.signInTitle")}</div>
+                  <div className="text-[var(--color-fg)]">{t("newTask.signInTitle", { nouns: paneNouns.nouns })}</div>
                   <div className="mt-1">
-                    <Trans ns="dialogs" i18nKey="newTask.signInBody" values={{ cli: forgeCli }} components={{ code: <code className="mono" /> }} />
+                    <Trans ns="dialogs"
+                      i18nKey={paneProvider === "azure" ? "newTask.signInBodyAzure" : "newTask.signInBody"}
+                      values={{ auth: forgeLoginCmd(paneProvider), alt: azurePatLoginCmd }}
+                      components={{ code: <code className="mono" /> }} />
                   </div>
                 </>
               ) : (
@@ -2178,14 +2224,14 @@ export function NewTaskDialog() {
             </div>
           ) : (issueLookup?.issues.length ?? 0) === 0 ? (
             <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-              {t("newTask.noOpenIssues")}
+              {t("newTask.noOpenIssues", { nouns: paneNouns.nouns })}
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
               <input
                 value={issueQuery}
                 onChange={e => setIssueQuery(e.target.value)}
-                placeholder={t("newTask.filterIssues")}
+                placeholder={t("newTask.filterIssues", { field: paneProvider === "azure" ? "tag" : "label" })}
                 spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
                 className="mb-1.5 h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
               />
@@ -2207,7 +2253,7 @@ export function NewTaskDialog() {
                     )} />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[13px] text-[var(--color-fg)]">
-                        <span className="text-[var(--color-fg-faint)]">#{issue.number}</span> {issue.title}
+                        <span className="text-[var(--color-fg-faint)]">{issueRef(issue)}</span> {issue.title}
                       </div>
                       <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--color-fg-faint)]">
                         {issue.author && <span className="truncate">{issue.author}</span>}
@@ -2239,11 +2285,12 @@ export function NewTaskDialog() {
               was chosen, rather than letting Create silently drop it. */}
           {issueSelected && !canPrompt && (
             <p className="text-[12px] leading-snug text-[var(--color-warn)]">
-              {t("newTask.noPromptBoxWarn", { agent: agentLabel })}
+              {t("newTask.noPromptBoxWarn", { agent: agentLabel, noun: paneNouns.noun })}
             </p>
           )}
         </div>
-      )}
+        );
+      })()}
       {/* Right column: sandbox config, an equal-width second pane (flex-1, so
           it matches the left; the dialog is sized to 2x base). Rendered ONLY
           when a cage is enabled, so there's no ghost width/height when off. */}

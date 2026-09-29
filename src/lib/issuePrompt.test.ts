@@ -45,14 +45,26 @@ describe("issue naming", () => {
     expect(b).toBe("issue-21-one-two-three-four-five-six");
   });
 
-  it("uses # for both providers (GitLab reserves ! for merge requests)", () => {
+  it("uses # for all providers (GitLab and ADO reserve ! for PRs)", () => {
     expect(issueRef(issue())).toBe("#21");
     expect(issueRef(issue({ provider: "gitlab" }))).toBe("#21");
+    expect(issueRef(issue({ provider: "azure" }))).toBe("#21");
   });
 
   it("picks the right CLI for the fetch command", () => {
     expect(issueFetchCommand(issue())).toBe("gh issue view 21 --comments");
     expect(issueFetchCommand(issue({ provider: "gitlab" }))).toBe("glab issue view 21 --comments");
+    // `az boards work-item show` cannot return comments - the agent needs
+    // the wit/comments invoke route, project spelled out from the remote.
+    const azureCmd = issueFetchCommand(issue({ provider: "azure" }), "https://dev.azure.com/o/proj/_git/repo");
+    expect(azureCmd).toContain("--area wit");
+    expect(azureCmd).toContain("workItemId=21");
+    expect(azureCmd).toContain("project=proj");
+    // No remote to parse: the --detect placeholder stands in.
+    const noRemote = issueFetchCommand(issue({ provider: "azure" }));
+    expect(noRemote).toContain("project=PROJECT");
+    expect(noRemote).toContain("--detect");
+    expect(noRemote).toContain("7.1-preview.4");
   });
 });
 
@@ -95,6 +107,21 @@ describe("issueContext", () => {
 
   it("uses GitLab wording for a GitLab issue", () => {
     expect(issueContext(issue({ provider: "gitlab" }))).toContain("GitLab issue #21");
+  });
+
+  it("uses work item + tag wording for Azure DevOps", () => {
+    const c = issueContext(issue({ provider: "azure", labels: ["bug"] }), 4000, "https://dev.azure.com/o/proj/_git/repo");
+    expect(c).toContain("Azure DevOps work item #21");
+    expect(c).toContain("Tags: bug");
+    expect(c).toContain("workItemId=21");
+    expect(c).toContain("--org 'https://dev.azure.com/o'");
+  });
+
+  it("points a truncated azure body at work-item show, not the comments route", () => {
+    // The wit/comments invoke returns only comments - a truncated
+    // description must name the command that can actually return it.
+    const c = issueContext(issue({ provider: "azure", body: "y".repeat(9000) }));
+    expect(c).toContain("body truncated, read the rest with `az boards work-item show --id 21 --detect`");
   });
 });
 

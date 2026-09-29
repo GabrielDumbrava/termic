@@ -1,8 +1,10 @@
-// Create a PR (GitHub) / MR (GitLab) for the active task's branch.
+// Create a PR (GitHub / Azure DevOps) / MR (GitLab) for the active task's
+// branch.
 //
 // Two paths out of this dialog (the Conductor-inspired split):
 //   - Create: termic pushes the branch and shells out to `gh pr create` /
-//     `glab mr create` directly. Fast, no agent involved.
+//     `glab mr create` / `az repos pr create` directly. Fast, no agent
+//     involved.
 //   - Draft with agent: types a prompt into the task's agent tab
 //     asking IT to write the title/description and run the create command
 //     itself (same flow as ReviewDialog's auto-typed prompt). Best when
@@ -20,6 +22,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { ptyWrite, taskGitStatus, taskPrCreate, openPath } from "@/lib/ipc";
 import { agentDisplayName } from "@/lib/agents";
+import { forgeCli, prNoun, prNounShort, prRef } from "@/lib/forge";
 import type { TerminalTab } from "@/lib/types";
 import { Sparkles } from "lucide-react";
 
@@ -38,17 +41,22 @@ export function CreatePrDialog() {
   const [err, setErr] = useState<string | null>(null);
 
   const lookup = usePr(s => taskId ? s.byTask[taskId]?.lookup ?? null : null);
-  const provider = lookup?.provider ?? task?.pr_provider ?? "github";
+  const projectProvider = usePr(s => task ? s.providerByProject[task.project_id] : undefined);
+  const provider = lookup?.provider ?? task?.pr_provider ?? projectProvider ?? "github";
   const noun = provider === "gitlab" ? t("createPr.nounMr") : t("createPr.nounPr");
   // The prompt typed into the agent's terminal is an instruction for the CLI,
   // not UI copy, so it stays English regardless of the UI language.
-  const promptNoun = provider === "gitlab" ? "merge request" : "pull request";
-  const cliName = provider === "gitlab" ? "glab" : "gh";
+  const promptNoun = prNoun(provider);
+  const cliName = forgeCli(provider);
 
   // (Re-)seed the form whenever the dialog opens: title from the last
   // commit subject, base from the task (sans remote prefix).
   useEffect(() => {
     if (!taskId || !task) return;
+    // A task with no PR yet has no lookup/pr_provider to read the forge
+    // off - resolve it from the project's remote so the copy and the
+    // draft-with-agent command name the right CLI.
+    usePr.getState().resolveProvider(task.project_id);
     setErr(null); setBusy(false); setDraft(false); setBody("");
     setBase((task.base_branch || "main").replace(/^origin\//, ""));
     setTitle(task.name);
@@ -65,11 +73,15 @@ export function CreatePrDialog() {
     try {
       const fresh = await taskPrCreate(task.id, title, body, base, draft);
       usePr.getState().setLookup(task.id, fresh);
+      // Toast vocabulary comes from the JUST-RESOLVED provider, not the
+      // pre-resolution guess - a stale pr_provider or a map that never
+      // landed would print #N for an ADO PR (!N).
+      const p = fresh.provider ?? provider;
       const url = fresh.pr?.url ?? "";
       pushToast(
         t("createPr.created", {
-          kind: provider === "gitlab" ? "MR" : "PR",
-          ref: fresh.pr ? `: ${provider === "gitlab" ? "!" : "#"}${fresh.pr.number}` : "",
+          kind: prNounShort(p),
+          ref: fresh.pr ? `: ${prRef(p, fresh.pr.number)}` : "",
         }),
         "success",
         url ? { action: { label: t("common:open"), onClick: () => { openPath(url).catch(() => {}); } } } : undefined,
@@ -96,12 +108,18 @@ export function CreatePrDialog() {
       setErr(t("createPr.errNoAgent"));
       return;
     }
+    // `base` is user-editable and this command lands in a shell typed by
+    // the agent - a branch named `x;rm` or with a backtick would otherwise
+    // execute. Single-quote with the standard `'\''` escape.
+    const b = `'${base.replace(/'/g, `'\\''`)}'`;
     const createCmd = provider === "gitlab"
-      ? `glab mr create --target-branch ${base} --title <title> --description <description>${draft ? " --draft" : ""}`
-      : `gh pr create --base ${base} --title <title> --body <body>${draft ? " --draft" : ""}`;
+      ? `glab mr create --target-branch ${b} --title <title> --description <description>${draft ? " --draft" : ""}`
+      : provider === "azure"
+        ? `az repos pr create --target-branch ${b} --title <title> --description <description> --detect${draft ? " --draft true" : ""}`
+        : `gh pr create --base ${b} --title <title> --body <body>${draft ? " --draft" : ""}`;
     const prompt =
       `Create a ${promptNoun} for the current branch. ` +
-      `First review everything the branch changes (e.g. \`git diff $(git merge-base ${base} HEAD)\` plus untracked files), ` +
+      `First review everything the branch changes (e.g. \`git diff $(git merge-base ${b} HEAD)\` plus untracked files), ` +
       `commit anything that should ship, and push. ` +
       `Then create it with \`${createCmd}\`, writing a concise title and a reviewer-friendly description: what changed, why, and how to verify. ` +
       `Do not merge anything.`;

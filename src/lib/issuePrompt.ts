@@ -9,6 +9,7 @@
 // text or re-derive it per provider.
 
 import type { ForgeIssue } from "@/lib/types";
+import { forgeName, issueNoun, azureWorkItemCommentsCommand } from "@/lib/forge";
 import { usePromptLibrary } from "@/store/prompts";
 import { WORK_ISSUE_PROMPT } from "@/lib/builtinPrompts";
 import { slugify, branchify } from "@/lib/utils";
@@ -19,19 +20,41 @@ import { slugify, branchify } from "@/lib/utils";
  *  first part is where the actual ask lives. */
 const BODY_MAX = 4000;
 
-/** `#123` on GitHub, `#123` on GitLab too (GitLab writes issues as #, and
- *  reserves ! for merge requests - unlike the MR case this is NOT a
- *  per-provider difference). */
+/** `#123` everywhere: GitHub, GitLab (issues are #; ! is reserved for merge
+ *  requests) and Azure DevOps (work items are #; ! is the PR marker there).
+ *  Unlike the MR/PR case this is NOT a per-provider difference. */
 export function issueRef(issue: Pick<ForgeIssue, "number">): string {
   return `#${issue.number}`;
 }
 
 /** The CLI command that dumps the issue with its full comment thread. The
- *  agent runs this itself rather than us shipping the thread in the prompt. */
-export function issueFetchCommand(issue: Pick<ForgeIssue, "provider" | "number">): string {
-  return issue.provider === "gitlab"
-    ? `glab issue view ${issue.number} --comments`
-    : `gh issue view ${issue.number} --comments`;
+ *  agent runs this itself rather than us shipping the thread in the prompt.
+ *  Azure's `az boards work-item show` cannot return comments, so it hands
+ *  over the `wit/workItems/{id}/comments` invoke route - which needs the
+ *  project spelled out, hence `remoteUrl` (a --detect fallback with a
+ *  placeholder stands in when it is missing). */
+export function issueFetchCommand(
+  issue: Pick<ForgeIssue, "provider" | "number">,
+  remoteUrl = "",
+): string {
+  if (issue.provider === "gitlab") return `glab issue view ${issue.number} --comments`;
+  if (issue.provider === "azure") {
+    return azureWorkItemCommentsCommand(remoteUrl, issue.number)
+      ?? `az devops invoke --detect --area wit --resource comments --route-parameters 'project=PROJECT' workItemId=${issue.number} --api-version 7.1-preview.4`;
+  }
+  return `gh issue view ${issue.number} --comments`;
+}
+
+/** The "read the rest" pointer appended to a truncated body. For azure the
+ *  comments route returns ONLY comments - the body needs
+ *  `az boards work-item show` instead. gh/glab's fetch command carries
+ *  both, so it doubles as the body command. */
+function truncationNote(issue: Pick<ForgeIssue, "provider" | "number">, remoteUrl: string): string {
+  const bodyCmd = issue.provider === "azure"
+    // --id is required (no positional arg).
+    ? `az boards work-item show --id ${issue.number} --detect`
+    : issueFetchCommand(issue, remoteUrl);
+  return `\n\n[body truncated, read the rest with \`${bodyCmd}\`]`;
 }
 
 /** Task name: `#123 Fix the thing`, trimmed to something a sidebar row can
@@ -61,23 +84,34 @@ export function issueBranch(
 /** The issue half of the prompt: identity, link, body, and how to read the
  *  discussion. Exported separately so tests can assert it without depending
  *  on the prompt library's state. */
-export function issueContext(issue: ForgeIssue, bodyMax = BODY_MAX): string {
-  const host = issue.provider === "gitlab" ? "GitLab" : "GitHub";
+export function issueContext(issue: ForgeIssue, bodyMax = BODY_MAX, remoteUrl = ""): string {
+  const host = forgeName(issue.provider);
+  const noun = issueNoun(issue.provider);
   const body = issue.body.trim();
   const truncated = body.length > bodyMax;
-  const shown = truncated ? `${body.slice(0, bodyMax).trimEnd()}\n\n[body truncated, read the rest with the command below]` : body;
+  const fetchCmd = issueFetchCommand(issue, remoteUrl);
+  // The no-remote fallback embeds a project=PROJECT placeholder the agent
+  // must fill from `git remote get-url origin` - say so or it reads as
+  // literal syntax. Keyed on the FALLBACK actually being taken, not a
+  // substring - a project literally named "PROJECT" would otherwise earn
+  // the hint on a complete command.
+  const cmdNote = issue.provider === "azure"
+      && azureWorkItemCommentsCommand(remoteUrl, issue.number) === null
+    ? " (replace `PROJECT` with this repo's Azure DevOps project - `git remote get-url origin` names it)"
+    : "";
+  const shown = truncated ? `${body.slice(0, bodyMax).trimEnd()}${truncationNote(issue, remoteUrl)}` : body;
   const lines = [
-    `${host} issue ${issueRef(issue)}: ${issue.title.trim()}`,
+    `${host} ${noun} ${issueRef(issue)}: ${issue.title.trim()}`,
     issue.url,
   ];
-  if (issue.labels.length) lines.push(`Labels: ${issue.labels.join(", ")}`);
+  if (issue.labels.length) lines.push(`${issue.provider === "azure" ? "Tags" : "Labels"}: ${issue.labels.join(", ")}`);
   lines.push("");
-  lines.push(shown || "(The issue has no description. The discussion is all there is.)");
+  lines.push(shown || `(The ${noun} has no description. The discussion is all there is.)`);
   lines.push("");
   lines.push(
     issue.comments > 0
-      ? `This issue has ${issue.comments} comment${issue.comments === 1 ? "" : "s"}, which are NOT included above. Read them with \`${issueFetchCommand(issue)}\`.`
-      : `It has no comments yet. Confirm with \`${issueFetchCommand(issue)}\` before assuming the description is the whole story.`,
+      ? `This ${noun} has ${issue.comments} comment${issue.comments === 1 ? "" : "s"}, which are NOT included above. Read them with \`${fetchCmd}\`${cmdNote}.`
+      : `It has no comments yet. Confirm with \`${fetchCmd}\`${cmdNote} before assuming the description is the whole story.`,
   );
   return lines.join("\n");
 }
@@ -87,7 +121,7 @@ export function issueContext(issue: ForgeIssue, bodyMax = BODY_MAX): string {
  *  live so an edited or disabled builtin is respected; falls back to the
  *  shipped text if the user deleted it outright, because a task created from
  *  an issue with no instructions at all would just be a wall of context. */
-export function buildIssuePrompt(issue: ForgeIssue, maxChars?: number): string {
+export function buildIssuePrompt(issue: ForgeIssue, maxChars?: number, remoteUrl = ""): string {
   const prompt = usePromptLibrary.getState().prompts.find(p => p.id === "builtin:work-issue");
   const instructions = (prompt?.body ?? WORK_ISSUE_PROMPT).trim();
   const tail = `\n\n---\n\n${instructions}`;
@@ -102,8 +136,13 @@ export function buildIssuePrompt(issue: ForgeIssue, maxChars?: number): string {
     // Overhead measured with an empty body, which substitutes the longer
     // "no description" placeholder - so this errs on the side of a shorter
     // body rather than overshooting the cap.
-    const overhead = issueContext({ ...issue, body: "" }).length + tail.length;
+    const overhead = issueContext({ ...issue, body: "" }, BODY_MAX, remoteUrl).length + tail.length;
     bodyMax = Math.max(0, Math.min(BODY_MAX, maxChars - overhead));
+    // A body that still overflows gets the "read the rest" note appended
+    // (a real command for azure, ~80 chars) - count it, then re-fit.
+    if (issue.body.trim().length > bodyMax) {
+      bodyMax = Math.max(0, Math.min(BODY_MAX, maxChars - overhead - truncationNote(issue, remoteUrl).length));
+    }
   }
-  return `${issueContext(issue, bodyMax)}${tail}`;
+  return `${issueContext(issue, bodyMax, remoteUrl)}${tail}`;
 }

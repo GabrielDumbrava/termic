@@ -9,7 +9,7 @@ import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
-  ForgeCliStatus, PrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
+  ForgeCliStatus, ForgeProvider, PrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
@@ -888,8 +888,8 @@ export const taskCommit  = (id: string, dirName: string, subject: string, body: 
 export const taskDiscard = (id: string, dirName: string, paths: string[]) =>
   invoke<void>("task_discard", { id, dirName, paths });
 // ── forge (PRs / MRs) ──
-/** Install + auth status for the forge CLIs (gh / glab). Subprocess
- *  probes only, no network. */
+/** Install + auth status for the forge CLIs (gh / glab / az). Subprocess
+ *  probes only, no network (except az's PAT-only profile lookup). */
 export const detectForges = () =>
   invoke<ForgeCliStatus[]>("detect_forges");
 /** Live PR/MR lookup for the task's branch. Hits the network via
@@ -899,7 +899,7 @@ export const taskPrStatus = (id: string) =>
 /** Which forge a project's repo is hosted on, or null. Cached in Rust and
  *  network-free, so callers may treat it as cheap. */
 export const projectForgeProvider = (projectId: string) =>
-  invoke<{ provider: "github" | "gitlab" | null; remote_url: string }>(
+  invoke<{ provider: ForgeProvider | null; remote_url: string }>(
     "project_forge_provider", { projectId });
 /** Open issues for a PROJECT's repo (the New Task dialog runs before any
  *  task exists). Network-bound via the forge CLI. */

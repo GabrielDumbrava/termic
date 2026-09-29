@@ -288,10 +288,11 @@ pub struct Project {
     pub watch_pr_comments: bool,
     /// Let the comment watcher act on comments from commenters with no
     /// verified standing on the repo (GitHub: no OWNER/MEMBER/COLLABORATOR
-    /// association; GitLab: not a project member) - see forge.rs's
-    /// `PrComment.trusted`. Off by default: those comments get fed
-    /// straight into an agent's PTY, and anyone who can see a PR/MR can
-    /// usually comment on it regardless of repo access.
+    /// association; GitLab: not a project member; Azure DevOps: not the
+    /// PR's creator or a reviewer) - see forge.rs's `PrComment.trusted`.
+    /// Off by default: those comments get fed straight into an agent's
+    /// PTY, and anyone who can see a PR/MR can usually comment on it
+    /// regardless of repo access.
     #[serde(default)]
     pub watch_untrusted_comments: bool,
     /// Personal extra named ports (GH #196), the projects.json layer.
@@ -640,7 +641,7 @@ pub struct Task {
     pub pr_url: Option<String>,
     #[serde(default)]
     pub pr_number: Option<u64>,
-    /// "github" | "gitlab" - which forge the cached PR lives on.
+    /// "github" | "gitlab" | "azure" - which forge the cached PR lives on.
     #[serde(default)]
     pub pr_provider: Option<String>,
     /// Comment watcher opt-in for this task (the bell on the PR
@@ -13109,8 +13110,8 @@ async fn task_commit(
 
 // ─────────────────────────── forge (PRs / MRs) ───────────────────────────
 
-/// Install + auth status for the forge CLIs (gh / glab). Drives the PR
-/// card's "install / sign in" hints and the Settings badges. async +
+/// Install + auth status for the forge CLIs (gh / glab / az). Drives the
+/// PR card's "install / sign in" hints and the Settings badges. async +
 /// spawn_blocking: each probe spawns subprocesses (version + auth status).
 #[tauri::command]
 async fn detect_forges() -> Vec<forge::ForgeCliStatus> {
@@ -13126,7 +13127,7 @@ async fn detect_forges() -> Vec<forge::ForgeCliStatus> {
 /// empty (no remote / unsupported host / CLI missing / not signed in).
 #[derive(Clone, Debug, Serialize)]
 pub struct PrLookup {
-    /// "github" | "gitlab" | null (no/unsupported remote).
+    /// "github" | "gitlab" | "azure" | null (no/unsupported remote).
     pub provider: Option<String>,
     pub remote_url: String,
     /// "ok" | "no-remote" | "unsupported-remote" | "cli-missing"
@@ -13150,7 +13151,7 @@ fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
             provider: None,
             remote_url,
             status: "no-remote".into(),
-            message: "No git remote configured. Push the repo to GitHub or GitLab first.".into(),
+            message: "No git remote configured. Push the repo to GitHub, GitLab, or Azure DevOps first.".into(),
             pr: None,
         });
     }
@@ -13159,7 +13160,7 @@ fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
             provider: None,
             remote_url: remote_url.clone(),
             status: "unsupported-remote".into(),
-            message: format!("Remote {remote_url} is not a GitHub or GitLab host."),
+            message: format!("Remote {} is not a GitHub, GitLab, or Azure DevOps host.", forge::remote_for_display(&remote_url)),
             pr: None,
         });
     };
@@ -13176,7 +13177,12 @@ fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
     // resolving on GitLab. That is exactly when the branch lookup returns
     // None, so it is the fallback rather than the default. Normal polls stay
     // at one CLI call; only the deleted-branch case pays for a second.
-    let known_number = if w.pr_provider.as_deref() == Some(provider) { w.pr_number } else { None };
+    //
+    // `pr_provider` unset is a legacy task that predates the field - trust
+    // its stored number under the CURRENT provider (a stale cross-forge
+    // number just comes back "not found" and degrades to None).
+    let known_number = w.pr_number
+        .filter(|_| w.pr_provider.as_deref().map_or(true, |p| p == provider));
     let by_branch = forge::pr_status(provider, &cwd, None);
     let resolved = match by_branch {
         Ok(Some(pr)) => Ok(Some(pr)),
@@ -13210,8 +13216,10 @@ fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
             provider: Some(provider.to_string()),
             remote_url,
             status: "cli-missing".into(),
-            message: format!("The {cli} CLI is not installed. Install it (e.g. `brew install {cli}`) to see and create {}.",
-                if provider == forge::GITLAB { "merge requests" } else { "pull requests" }),
+            message: cli_missing_message(provider, &cli, &format!(
+                "see and create {}",
+                if provider == forge::GITLAB { "merge requests" } else { "pull requests" }
+            )),
             pr: None,
         }),
         Err(forge::ForgeError::Auth(msg)) => Ok(PrLookup {
@@ -13244,6 +13252,21 @@ struct IssueLookup {
     issues: Vec<forge::ForgeIssue>,
 }
 
+/// The "CLI missing" hint, per forge: az is two installs (CLI + the
+/// azure-devops extension), `brew install az` alone gets a CLI that
+/// cannot reach `az repos`. `purpose` is the verb phrase naming what the
+/// CLI would buy ("see and create pull requests" / "start a task from a
+/// work item").
+fn cli_missing_message(provider: &str, cli: &str, purpose: &str) -> String {
+    // No literal package-manager command: the right one differs per OS
+    // (brew vs winget) and the UI's install hint is the authoritative copy.
+    if provider == forge::AZURE {
+        format!("The Azure CLI + azure-devops extension are required to {purpose}. Install the CLI, then `az extension add --name azure-devops`.")
+    } else {
+        format!("The {cli} CLI is not installed. Install it to {purpose}.")
+    }
+}
+
 fn issue_lookup_blocking(project_id: &str, limit: u32) -> Result<IssueLookup, String> {
     let p = load_projects_all()
         .into_iter()
@@ -13267,7 +13290,7 @@ fn issue_lookup_blocking(project_id: &str, limit: u32) -> Result<IssueLookup, St
     let Some(provider) = provider else {
         return Ok(none(
             "unsupported-remote",
-            format!("Remote {remote_url} is not a GitHub or GitLab host."),
+            format!("Remote {} is not a GitHub, GitLab, or Azure DevOps host.", forge::remote_for_display(&remote_url)),
         ));
     };
     let with = |status: &str, message: String, issues: Vec<forge::ForgeIssue>| IssueLookup {
@@ -13281,7 +13304,10 @@ fn issue_lookup_blocking(project_id: &str, limit: u32) -> Result<IssueLookup, St
         Ok(issues) => Ok(with("ok", String::new(), issues)),
         Err(forge::ForgeError::CliMissing(cli)) => Ok(with(
             "cli-missing",
-            format!("The {cli} CLI is not installed. Install it (e.g. `brew install {cli}`) to start a task from an issue."),
+            cli_missing_message(provider, &cli, &format!(
+                "start a task from {}",
+                if provider == forge::AZURE { "a work item" } else { "an issue" }
+            )),
             Vec::new(),
         )),
         Err(forge::ForgeError::Auth(msg)) => Ok(with("cli-unauthed", msg, Vec::new())),
@@ -13482,7 +13508,7 @@ async fn task_pr_create(
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let provider = forge::provider_for_remote(&remote_url)
-            .ok_or_else(|| format!("remote {remote_url} is not a GitHub or GitLab host"))?;
+            .ok_or_else(|| format!("remote {} is not a GitHub, GitLab, or Azure DevOps host", forge::remote_for_display(&remote_url)))?;
         let base = base.trim();
         // Strip THIS repo's remote-tracking prefix - tasks created off
         // "origin/main" store that verbatim, but the forge wants "main".
@@ -13518,7 +13544,10 @@ async fn task_pr_create(
         let url = match forge::pr_create(provider, &cwd, title, body.trim(), base, draft) {
             Ok(u) => u,
             Err(forge::ForgeError::CliMissing(cli)) => {
-                return Err(format!("the {cli} CLI is not installed"))
+                return Err(cli_missing_message(provider, &cli, &format!(
+                    "create {}",
+                    if provider == forge::GITLAB { "a merge request" } else { "a pull request" }
+                )))
             }
             Err(forge::ForgeError::Auth(m)) | Err(forge::ForgeError::Other(m)) => return Err(m),
         };
@@ -13551,7 +13580,10 @@ async fn task_pr_comments(id: String) -> Result<Vec<forge::PrComment>, String> {
         let number = w.pr_number.ok_or("no PR known for this task yet")?;
         let cwd = PathBuf::from(&w.path);
         forge::pr_comments(&provider, &cwd, number).map_err(|e| match e {
-            forge::ForgeError::CliMissing(cli) => format!("the {cli} CLI is not installed"),
+            forge::ForgeError::CliMissing(cli) => cli_missing_message(&provider, &cli, &format!(
+                "read {} comments",
+                if provider == forge::GITLAB { "merge request" } else { "pull request" }
+            )),
             forge::ForgeError::Auth(m) | forge::ForgeError::Other(m) => m,
         })
     })
@@ -20483,6 +20515,13 @@ fn legacy_worktree_symlink_paths_v1_3() -> Vec<String> {
     vec![".claude".into(), ".gemini".into(), ".codex".into(), ".mcp.json".into()]
 }
 
+/// The `docker_shared_config_dirs` default before `.azure` joined it. Same
+/// equality rule as the worktree-symlink legacy lists above: a stored list
+/// equal to this one was never edited, so the upgrade may replace it.
+fn legacy_shared_config_dirs_pre_azure() -> Vec<String> {
+    vec![".config/gh".into(), ".config/glab-cli".into()]
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
@@ -21710,6 +21749,14 @@ pub(crate) fn load_settings_in(id: &ProfileId) -> Settings {
         || s.worktree_symlink_paths == legacy_worktree_symlink_paths_v1_3()
     {
         s.worktree_symlink_paths = default_worktree_symlink_paths();
+        migrated = true;
+    }
+    // Migration (Azure DevOps forge): `.azure` joined the shared config
+    // dirs. A stored list that still exactly equals the previous default
+    // is the pre-filled value, not a user choice - upgrade it so an
+    // existing install's `az login` inside a container persists too.
+    if s.docker_shared_config_dirs == legacy_shared_config_dirs_pre_azure() {
+        s.docker_shared_config_dirs = docker::default_shared_config_dirs();
         migrated = true;
     }
     for def in default_agents() {
@@ -28360,6 +28407,33 @@ mod tests {
         let mut expected = legacy_worktree_symlink_paths_v1_3();
         expected.push(".devin".into());
         assert_eq!(default_worktree_symlink_paths(), expected);
+    }
+
+    #[test]
+    fn azure_config_dir_joins_only_an_unedited_shared_list() {
+        with_scratch_data_dir(|_data| {
+            // A stored list equal to the pre-Azure default is the pre-filled
+            // value, not a user choice: the loader swaps in the new default.
+            let mut s = crate::load_settings_in(&ProfileId::Root);
+            s.docker_shared_config_dirs = crate::legacy_shared_config_dirs_pre_azure();
+            crate::save_settings_in(&ProfileId::Root, &s).unwrap();
+            let loaded = crate::load_settings_in(&ProfileId::Root);
+            assert_eq!(loaded.docker_shared_config_dirs, crate::docker::default_shared_config_dirs());
+            assert!(loaded.docker_shared_config_dirs.iter().any(|d| d == ".azure"));
+
+            // Anything the user shaped is theirs: a list missing an entry,
+            // a custom entry, and a cleared list all survive untouched.
+            for dirs in [
+                vec![".config/gh".to_string()],
+                vec![".config/gh".into(), ".config/glab-cli".into(), ".kube".into()],
+                vec![],
+            ] {
+                let mut s = crate::load_settings_in(&ProfileId::Root);
+                s.docker_shared_config_dirs = dirs.clone();
+                crate::save_settings_in(&ProfileId::Root, &s).unwrap();
+                assert_eq!(crate::load_settings_in(&ProfileId::Root).docker_shared_config_dirs, dirs);
+            }
+        });
     }
 
     #[test]

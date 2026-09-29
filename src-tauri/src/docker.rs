@@ -456,7 +456,7 @@ pub fn agent_config_host_dir(agent_id: &str) -> PathBuf {
 }
 
 /// Root of the SHARED config dirs (`Settings.docker_shared_config_dirs`,
-/// seeded with gh + glab). Sibling of `docker-agents/`, not a child of it:
+/// seeded with gh + glab + az). Sibling of `docker-agents/`, not a child of it:
 /// what lives here belongs to the user and is used by whichever agent
 /// happens to be running, so it is keyed on nothing. Each entry sits at its
 /// mirrored container path underneath (`/root/.config/gh` ->
@@ -471,18 +471,21 @@ pub fn forge_config_host_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/termic-docker-forge"))
 }
 
-/// The shared config dirs a fresh install starts with. Both are forge CLIs
-/// (`assets/Dockerfile.default` installs them), and both fall back to a
-/// plaintext token file inside their own config dir when no OS keyring is
-/// reachable, which is the case inside the image (no dbus, no keyring), so a
-/// login performed in one container is readable by the next one.
+/// The shared config dirs a fresh install starts with. gh and glab are the
+/// forge CLIs `assets/Dockerfile.default` installs; `.azure` is there for
+/// the user who adds `az` via the Dockerfile's editable region (the CLI is
+/// a heavyweight Python install, kept out of the shipped image). All three
+/// fall back to plaintext credentials inside their own config dir when no
+/// OS keyring is reachable, which is the case inside the image (no dbus,
+/// no keyring), so a login performed in one container is readable by the
+/// next one.
 ///
 /// This is a DEFAULT, not the whole list: `Settings.docker_shared_config_dirs`
 /// is what `build_spec` actually reads, and a user can add anything else that
 /// should be shared by every agent rather than copied per agent
 /// (`.config/nvim`, a cloud CLI's config dir, and so on).
 pub fn default_shared_config_dirs() -> Vec<String> {
-    vec![".config/gh".to_string(), ".config/glab-cli".to_string()]
+    vec![".config/gh".to_string(), ".config/glab-cli".to_string(), ".azure".to_string()]
 }
 
 /// The config-dir env var for a shared dir, when its CLI has one. Keyed on
@@ -494,6 +497,7 @@ fn shared_config_relocation_env(container: &str) -> Option<&'static str> {
     match container.rsplit('/').next()? {
         "gh" => Some("GH_CONFIG_DIR"),
         "glab-cli" => Some("GLAB_CONFIG_DIR"),
+        ".azure" => Some("AZURE_CONFIG_DIR"),
         _ => None,
     }
 }
@@ -903,8 +907,8 @@ pub fn build_spec(
     // 4b. SHARED config dirs: mounted into every container, for every agent,
     //    from one host directory each. `Settings.docker_shared_config_dirs`
     //    (Settings → Docker Sandbox → "Shared config dirs") owns the list;
-    //    `default_shared_config_dirs` seeds it with `.config/gh` and
-    //    `.config/glab-cli`.
+    //    `default_shared_config_dirs` seeds it with `.config/gh`,
+    //    `.config/glab-cli`, and `.azure`.
     //
     //    Shared rather than per-agent because the thing being persisted here
     //    belongs to the USER, not to an agent vendor: a GitHub token is the
@@ -2625,7 +2629,7 @@ mod tests {
         // of one of these is that the host path exists on disk by then.
         with_scratch_data_dir(|| {
         let spec = build_spec(&task, "claude", "img", &task.path, vec![], &env, &[], false, &[], &[], "pty-forge001", "claude", &default_shared_config_dirs(), None);
-        for (container, var) in [("/root/.config/gh", "GH_CONFIG_DIR"), ("/root/.config/glab-cli", "GLAB_CONFIG_DIR")] {
+        for (container, var) in [("/root/.config/gh", "GH_CONFIG_DIR"), ("/root/.config/glab-cli", "GLAB_CONFIG_DIR"), ("/root/.azure", "AZURE_CONFIG_DIR")] {
             let m = spec.mounts.iter().find(|m| m.container == container)
                 .unwrap_or_else(|| panic!("{container} should be mounted"));
             assert!(!m.read_only, "a login has to be WRITTEN inside the container");
@@ -2739,8 +2743,8 @@ mod tests {
                 "no relocation env should be invented for a CLI this module knows nothing about");
             // The three junk entries never became mounts.
             assert!(!spec.mounts.iter().any(|m| m.container.contains("escape") || m.container == "/etc"));
-            // And an empty list is a real answer: gh/glab are a DEFAULT, not
-            // a floor, so a user who clears the field gets no shared mounts.
+            // And an empty list is a real answer: the config dirs are a
+            // DEFAULT, not a floor - a cleared field means no shared mounts.
             let none = build_spec(&task, "claude", "img", &task.path, vec![], &env, &[], false, &[], &[], "pty-shared02", "claude", &[], None);
             // The git identity file (step 4d) also lands under `/root/.config`
             // and is not a shared config dir: it is mounted for every task

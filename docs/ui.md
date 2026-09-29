@@ -7,7 +7,7 @@
 - `CliIcon cli={...}` + `CLI_BRAND_COLOR[cli]` for claude/gemini/codex (orange/blue/green).
 - Tooltips default `delay: 0`. Override per-call.
 - `cn()` from `@/lib/utils` for class composition.
-- **Dialog mode switches ride the TITLE line** (`titleAction` on `AppDialog`, spread `dialogTitleAction` onto the control). "Import a worktree", "From a GitHub issue", "Blank task instead" and "New worktree instead" change what KIND of thing the dialog is making, which is chrome, not a field, and as form rows they cost a `gap-4` row each on every open of a dialog most of whose opens have nothing to do with them. The title line is mostly empty, so they are free there. Two rules for anything you put in that slot: it is inside the window drag region, so it must carry the `data-tauri-drag-region="false"` + `WebkitAppRegion: "no-drag"` opt-out that `dialogTitleAction` provides (without it the control is not clickable at all), and the labels stay SHORT because worktree mode can show two switches at once. The row wraps rather than truncating, so the pathological case degrades to the row it used to cost instead of clipping.
+- **Dialog mode switches ride the TITLE line** (`titleAction` on `AppDialog`, spread `dialogTitleAction` onto the control). "Import a worktree", "From a GitHub issue" (named per-forge: GitLab issue, Azure DevOps work item), "Blank task instead" and "New worktree instead" change what KIND of thing the dialog is making, which is chrome, not a field, and as form rows they cost a `gap-4` row each on every open of a dialog most of whose opens have nothing to do with them. The title line is mostly empty, so they are free there. Two rules for anything you put in that slot: it is inside the window drag region, so it must carry the `data-tauri-drag-region="false"` + `WebkitAppRegion: "no-drag"` opt-out that `dialogTitleAction` provides (without it the control is not clickable at all), and the labels stay SHORT because worktree mode can show two switches at once. The row wraps rather than truncating, so the pathological case degrades to the row it used to cost instead of clipping.
 - **Focus indicator: one rule, `src/index.css`, `@layer base`.** A single `:where(a[href], button, summary, input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible` gives every control a 2px `--color-accent-soft` outline at `outline-offset: -2px`. The negative offset draws it INSIDE the border box, so a control sitting flush against a container edge cannot have it clipped (the sandbox picker's first card, which its dialog autofocuses, was the case that forced this). `:where()` makes it zero-specificity, so any component overrides it just by saying so. Do NOT add a per-component `focus-visible:ring-*`: `src/lib/focusRing.test.ts` fails if one appears. Text fields opt out with `outline-none` and signal focus with a border instead, as do Radix menu items (`data-highlighted`) and dialog containers (Radix focuses the content on open).
 - **A resize divider is a 9px grab strip, not the line it paints** (`components/ui/ResizeHandle.tsx`). The element IS the strip: 3px on the panel's side, the border pixel, 5px on the neighbour's, with `anchor` saying which edge of the parent it straddles. The painted 1px line is a child, so what lights up under the cursor and what takes the press are the same region. Do NOT go back to a thin element with a wider hit-area child hanging out of it: hit testing respects an ancestor's clip, and the sidebar's `overflow-hidden` reduced that arrangement to one grabbable pixel (measured, `tabs-layout.e2e.ts` "gives both dividers a grab strip"). For the same reason the sidebar's handle is a SIBLING of its `<aside>`, not a child. The suite's `mouseDrag` dispatches straight at the handle element and so cannot see any of this; the grab strip is measured with `elementFromPoint`.
 - All `<input>` and `<textarea>` get `spellCheck={false}` + `autoCorrect="off"` + `autoCapitalize="off"` + `autoComplete="off"`. Developer tool — paths and commands are never English words.
@@ -536,8 +536,10 @@ One flow, two doors, and the SAME `NewTaskDialog` behind both:
 - **Command palette → "New task from an issue…"** → the shared project picker
   (`openProjectPicker("issue")`; the placeholder tells you which question you
   are answering) → `openNewTask(projectId, { issueMode: true })`.
-- **Inside the dialog**, the "From a GitHub/GitLab issue" switch on the title
-  line, which is the same `enterIssues()` the seed triggers.
+- **Inside the dialog**, the "From a <forge> issue" switch on the title
+  line ("work item" on Azure DevOps — provider name and noun both come
+  from `src/lib/forge.ts`), which is the same `enterIssues()` the seed
+  triggers.
 
 It is deliberately not a dialog of its own. "Which project" is the first
 question either way, and everything after the issue is picked (task type,
@@ -600,7 +602,9 @@ two Enters.
 `buildIssuePrompt(issue, maxChars?)` takes a budget because the box caps what it
 will send (`MAX_PROMPT_CHARS`). What gives is the issue BODY, never the tail:
 the instructions are the ask, and the body is context the agent can re-read in
-full with the `gh/glab issue view --comments` command already in the prompt.
+full with the forge's own view command already in the prompt (`gh issue
+view --comments` / `glab issue view --comments` / `az boards work-item
+show`, picked by provider in `issuePrompt.ts`).
 
 The prompt's instruction half is `builtin:work-issue` from the prompt library,
 read live, so editing it there changes every future issue task

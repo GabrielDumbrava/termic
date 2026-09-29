@@ -254,12 +254,14 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   (so a match ten pages back still comes up first), and **Compare**, every
   path that differs between any ref and your working tree in one tree, with
   mark-as-viewed and inline comments still live.
-- **Pull requests.** Open a GitHub PR or GitLab MR from the task you built
-  it in, then watch it from the right panel: checks, review state, and
-  comments handed to the agent working in that worktree. Or start a task
-  FROM an issue, with the composed prompt dropped into the first-message box
-  for you to read before anything is sent. Self-hosted GitHub Enterprise and
-  GitLab work too, via `gh` / `glab`.
+- **Pull requests.** Open a GitHub PR, GitLab MR, or Azure DevOps PR from
+  the task you built it in, then watch it from the right panel: checks,
+  review state, and comments handed to the agent working in that worktree.
+  Or start a task FROM an issue or Azure Boards work item, with the
+  composed prompt dropped into the first-message box for you to read
+  before anything is sent. Self-hosted GitHub Enterprise and GitLab work
+  too; Azure DevOps needs `az` with the `azure-devops` extension (cloud
+  only, not Server). All three ride their official CLI's login.
 - **Agent races.** Fire one prompt at several agents at once, each in its own
   fresh worktree, then compare their diffs N-up when they finish and adopt
   the winner into your main checkout.

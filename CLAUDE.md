@@ -21,7 +21,7 @@ src/
     ├── sidebar/ / settings/ / dialogs/ / ui/ / views/
     └── UnifiedBar.tsx
 src-tauri/src/lib.rs   ← ALL Rust (PTY, project/task IO, settings, scripts, git, sandbox, proxy)
-src-tauri/src/forge.rs ← GitHub/GitLab PR-MR integration via the gh / glab CLIs (detection, status, create)
+src-tauri/src/forge.rs ← GitHub/GitLab/Azure DevOps PR-MR integration via the gh / glab / az CLIs (detection, status, create)
 ```
 
 ## Run / build

@@ -419,7 +419,7 @@ export interface Task {
    *  it's re-fetched and kept in the pr store. */
   pr_url?: string | null;
   pr_number?: number | null;
-  pr_provider?: "github" | "gitlab" | null;
+  pr_provider?: ForgeProvider | null;
   /** Comment-watcher opt-in (the PR card bell). Watching only runs while
    *  the task has a LIVE agent - there's nobody to tell otherwise. */
   pr_watch?: boolean;
@@ -1133,11 +1133,16 @@ export interface UpdateInfo {
 
 // ───────────────────────────── forge (PRs / MRs) ─────────────────────────────
 
-/** Install + auth status for one forge CLI (gh / glab). Mirrors
+/** The forges termic talks to. "azure" is Azure DevOps Services (cloud only
+ *  - the `az` devops extension has no self-hosted discovery like `gh`/`glab`
+ *  host lists). */
+export type ForgeProvider = "github" | "gitlab" | "azure";
+
+/** Install + auth status for one forge CLI (gh / glab / az). Mirrors
  *  `ForgeCliStatus` in src-tauri/src/forge.rs. */
 export interface ForgeCliStatus {
-  id: "gh" | "glab";
-  provider: "github" | "gitlab";
+  id: "gh" | "glab" | "az";
+  provider: ForgeProvider;
   found: boolean;
   path: string;
   version: string;
@@ -1150,7 +1155,7 @@ export interface ForgeCliStatus {
 
 /** Normalized PR/MR snapshot. Mirrors `PrStatus` in forge.rs. */
 export interface PrStatus {
-  provider: "github" | "gitlab";
+  provider: ForgeProvider;
   number: number;
   url: string;
   title: string;
@@ -1173,16 +1178,17 @@ export interface PrComment {
   path?: string | null;
   /** Whether the author has verified standing on the repo (GitHub: an
    *  authorAssociation of OWNER/MEMBER/COLLABORATOR; GitLab: current
-   *  project membership). False for anyone else - seeing a PR/MR and
-   *  commenting on it don't require repo access. */
+   *  project membership; Azure DevOps: the PR's creator or a reviewer).
+   *  False for anyone else - seeing a PR/MR and commenting on it don't
+   *  require repo access. */
   trusted: boolean;
 }
 
-/** One open issue, normalized across providers. Mirrors `ForgeIssue` in
- *  src-tauri/src/forge.rs. `body` rides along in the list so picking one in
- *  the New Task dialog needs no second round-trip. */
+/** One open issue/work item, normalized across providers. Mirrors
+ *  `ForgeIssue` in src-tauri/src/forge.rs. `body` rides along in the list
+ *  so picking one in the New Task dialog needs no second round-trip. */
 export interface ForgeIssue {
-  provider: "github" | "gitlab";
+  provider: ForgeProvider;
   number: number;
   title: string;
   url: string;
@@ -1198,7 +1204,7 @@ export interface ForgeIssue {
  *  picker reuses the PR card's explain-yourself copy. Mirrors `IssueLookup`
  *  in src-tauri/src/lib.rs. */
 export interface IssueLookup {
-  provider: "github" | "gitlab" | null;
+  provider: ForgeProvider | null;
   remote_url: string;
   status: "ok" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
   message: string;
@@ -1243,7 +1249,7 @@ export interface PrPickList {
  *  reason there isn't one (drives the PR card's hint copy). Mirrors
  *  `PrLookup` in src-tauri/src/lib.rs. */
 export interface PrLookup {
-  provider: "github" | "gitlab" | null;
+  provider: ForgeProvider | null;
   remote_url: string;
   status: "ok" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
   message: string;

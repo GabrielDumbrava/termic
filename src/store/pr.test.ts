@@ -39,13 +39,17 @@ import * as ipc from "@/lib/ipc";
 import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
 import type { PrLookup, Task, Project } from "@/lib/types";
 
-const lookupWith = (state: "open" | "merged" | "closed" | "draft" | null): PrLookup => ({
-  provider: "github",
+const lookupWith = (
+  state: "open" | "merged" | "closed" | "draft" | null,
+  number = 7,
+  provider: PrLookup["provider"] = "github",
+): PrLookup => ({
+  provider,
   remote_url: "git@github.com:foo/bar.git",
   status: "ok",
   message: "",
   pr: state ? {
-    provider: "github", number: 7, url: "https://github.com/foo/bar/pull/7",
+    provider, number, url: `https://github.com/foo/bar/pull/${number}`,
     title: "Add thing", state, checks: "passing", review: "none", base: "main", head: "feat",
   } : null,
 });
@@ -150,6 +154,39 @@ describe("merged-PR lifecycle (issue #21)", () => {
     await usePr.getState().refresh("ws-once", true);
     await usePr.getState().refresh("ws-once", true);
     expect(useUI.getState().toasts).toHaveLength(1);
+  });
+
+  it("a second PR on the same task announces its own merge", async () => {
+    // The handled marker keys on task+provider+number: after PR #7's merge
+    // toast, a NEW PR #8 on the same task is a different merge, not a repeat.
+    seedApp(undefined, { id: "ws-two-prs" });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 7));
+    await usePr.getState().refresh("ws-two-prs", true);
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 7));
+    await usePr.getState().refresh("ws-two-prs", true);
+    expect(useUI.getState().toasts).toHaveLength(1);
+
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 8));
+    await usePr.getState().refresh("ws-two-prs", true);
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 8));
+    await usePr.getState().refresh("ws-two-prs", true);
+    expect(useUI.getState().toasts).toHaveLength(2);
+  });
+
+  it("a same-numbered PR on a different provider is a different merge", async () => {
+    // Remote retarget: GitHub #7 merging must not suppress ADO !7's merge.
+    seedApp(undefined, { id: "ws-cross" });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 7));
+    await usePr.getState().refresh("ws-cross", true);
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 7));
+    await usePr.getState().refresh("ws-cross", true);
+    expect(useUI.getState().toasts).toHaveLength(1);
+
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open", 7, "azure"));
+    await usePr.getState().refresh("ws-cross", true);
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged", 7, "azure"));
+    await usePr.getState().refresh("ws-cross", true);
+    expect(useUI.getState().toasts).toHaveLength(2);
   });
 
   it("auto: archives immediately, WITHOUT deleting the branch", async () => {
@@ -289,6 +326,19 @@ describe("commentPromptFor", () => {
     const gl = commentPromptFor("gitlab", 9, fresh.slice(0, 1));
     expect(gl).toContain("merge request !9");
     expect(gl).toContain("glab mr view 9 --comments");
+  });
+
+  it("uses ADO's ! ref and the pullRequestThreads route for azure", () => {
+    const c = [comment({ author: "bob", body: "x" })];
+    const az = commentPromptFor("azure", 12, c, "https://dev.azure.com/org/proj/_git/repo");
+    expect(az).toContain("pull request !12");
+    expect(az).toContain("pullRequestThreads");
+    expect(az).toContain("pullRequestId=12");
+    expect(az).toContain("--org 'https://dev.azure.com/org'");
+    expect(az).toContain("repositoryId=repo");
+    expect(az).not.toContain("\n");
+    // No remote known: still names the resource, agent fills the routes.
+    expect(commentPromptFor("azure", 12, c)).toContain("--detect --area git");
   });
 
   it("frames the comment text as data, not instructions (injection defense)", () => {
@@ -510,6 +560,16 @@ describe("openPrArchiveWarning (#21)", () => {
     const msg = openPrArchiveWarning("ws1");
     expect(msg).toContain("Merge request !12");
     expect(msg).toContain("GitLab");
+  });
+
+  it("uses pull-request wording, ! numbering and the ADO name for azure", () => {
+    // In ADO ! is the pull request marker and # the work item - the copy
+    // must not accidentally write "#12".
+    seedApp("ask", { pr_number: 12, pr_provider: "azure" });
+    usePr.setState({ byTask: {} });
+    const msg = openPrArchiveWarning("ws1");
+    expect(msg).toContain("Pull request !12");
+    expect(msg).toContain("Azure DevOps");
   });
 });
 
