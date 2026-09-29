@@ -1477,7 +1477,33 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                 ><Plus className="h-4 w-4" /></button>
                               </DropdownTrigger>
                             </Tip>
-                            <DropdownMenu side="right" align="start" sideOffset={4} className="w-[276px]">
+                            {/* Don't hand focus back to the "+" on close, the
+                                same decline the list-options and task-row menus
+                                already make. Here it is not cosmetic: every item
+                                in this menu either arms the inline quick-create
+                                row or opens a dialog, and BOTH take focus of
+                                their own. The row cancels on blur, so Radix
+                                returning focus to this trigger after the row has
+                                focused its input cancels the row the user just
+                                asked for, and the whole gesture silently does
+                                nothing.
+
+                                The row hedges against that with a two-frame
+                                delay ("matches the Radix dropdown close timing"),
+                                but two frames is a bet on ordering, not a
+                                barrier: a CI run with 125 tasks in the store lost
+                                it, three whole-gesture retries in a row, leaving
+                                no menu, no row and focus parked on this button
+                                (projects.e2e "applies the YOLO default to a
+                                quick-created agent task"). Declining the return
+                                removes the race rather than out-running it. */}
+                            <DropdownMenu
+                              side="right"
+                              align="start"
+                              sideOffset={4}
+                              className="w-[276px]"
+                              onCloseAutoFocus={(e) => e.preventDefault()}
+                            >
                               <ProjectActionsMenuItems
                                 projectId={p.id}
                                 onPick={(cli, mode) => {
