@@ -368,6 +368,8 @@ export default {
     titleMulti: "New multi-repo task",
     titleImport: "Import existing worktree",
     titleCheckout: "Check out an existing branch",
+    checkoutToggle: "Existing branch",
+    checkoutExit: "New branch instead",
     titleRoot: "New task in the main checkout",
     titleWorktree: "New task in a worktree",
     importAction: "Import a worktree",

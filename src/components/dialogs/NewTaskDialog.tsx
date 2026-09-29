@@ -1168,13 +1168,13 @@ export function NewTaskDialog() {
           {canImport && !importMode && !checkoutMode && mode === "worktree" && (
             <button type="button" data-testid="checkout-branch-toggle" onClick={enterCheckout} {...dialogTitleAction}>
               <GitBranch className="h-3.5 w-3.5" />
-              Existing branch
+              {t("newTask.checkoutToggle")}
             </button>
           )}
           {checkoutMode && (
             <button type="button" data-testid="checkout-branch-exit" onClick={exitCheckout} {...dialogTitleAction}>
               <Plus className="h-3.5 w-3.5" />
-              New branch instead
+              {t("newTask.checkoutExit")}
             </button>
           )}
           {/* Start from an issue. Only for repos actually hosted on a forge

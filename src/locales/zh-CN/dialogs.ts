@@ -367,6 +367,8 @@ export default {
     titleMulti: "新建多仓库任务",
     titleImport: "导入现有工作树",
     titleCheckout: "检出已有分支",
+    checkoutToggle: "已有分支",
+    checkoutExit: "改为新建分支",
     titleRoot: "在主检出中新建任务",
     titleWorktree: "在工作树中新建任务",
     importAction: "导入工作树",
