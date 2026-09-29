@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setWindowPresence, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible  } from "../helpers";
 
+// Seatbelt is macOS only: elsewhere a Seatbelt default reads as Off and the
+// picker's cages aren't offered, so tests that need the fields skip.
+const seatbeltIt = process.platform === "darwin" ? it : it.skip;
+
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
 // cleans it up.
@@ -1664,6 +1668,10 @@ describe("multi member modes (New Task dialog)", () => {
           setup_script: "",
           run_script: "",
           archive_script: "",
+          // Per-member seatbelt lists so the sandbox unions visibly shrink
+          // when the row's include box flips off.
+          sandbox_rw_paths: [`/${name}-rw`],
+          sandbox_allowed_hosts: [`${name}.local`],
         });
         const proj = await t.ipc.projectAddMulti(
           host,
@@ -1771,6 +1779,71 @@ describe("multi member modes (New Task dialog)", () => {
     });
     await waitForTextGone("just-beta");
   });
+
+  // The Seatbelt fields are macOS-only; the textarea itself is what's under
+  // test, so Linux/Windows skip. This is the GH #343 regression net: a
+  // checkbox must shrink an untouched union but never rewrite a hand edit.
+  seatbeltIt(
+    "include toggles re-derive the seatbelt lists, but a hand edit owns them",
+    async () => {
+      // Close first — the previous test left the dialog open, and seeding
+      // (all members included) only runs on a fresh open.
+      await closeDialog();
+      await openDialog();
+      await browser.execute(() => {
+        const dlg = document.querySelector('[data-testid="member-include"]')!.closest('[role="dialog"]')!;
+        const btn = [...dlg.querySelectorAll("button")].find(
+          (b) => b.querySelector("span")?.textContent?.trim() === "ENFORCING (filesystem + network)",
+        ) as HTMLButtonElement;
+        btn.click();
+      });
+      const rw = '[data-testid="sandbox-rw-paths"]';
+      const hosts = '[data-testid="sandbox-allowed-hosts"]';
+      const field = (sel: string) => browser.execute(
+        (s) => (document.querySelector(s) as HTMLTextAreaElement).value, sel);
+      await waitVisible(rw);
+      // Poll: the settings probe fills the unions a tick after the textareas mount.
+      await browser.waitUntil(async () => (await field(rw)) === "/alpha-rw\n/beta-rw"
+        && (await field(hosts)) === "alpha.local\nbeta.local",
+        { timeout: 5_000, timeoutMsg: "the seatbelt lists never seeded the member union" });
+
+      // Untouched union → unchecking beta drops its lines. (Worktree rows
+      // resync through the row updater.)
+      await clickRowInclude("beta");
+      await waitForText("Members (1 of 2)");
+      expect(await field(rw)).toBe("/alpha-rw");
+      expect(await field(hosts)).toBe("alpha.local");
+
+      // The main-checkout checklist is the OTHER toggle path — its boxes
+      // funnel through setIncluded, not the worktree row updater.
+      await clickWhenVisible('[data-testid="task-type-main"]');
+      await waitForText("1 of 2 members run live");
+      await clickRowInclude("beta"); // check → grows
+      await waitForText("2 of 2 members run live");
+      expect(await field(rw)).toBe("/alpha-rw\n/beta-rw");
+      await clickRowInclude("beta"); // uncheck → shrinks
+      await waitForText("1 of 2 members run live");
+      expect(await field(rw)).toBe("/alpha-rw");
+
+      // Hand-edited rw → the next toggle must leave it alone — while the
+      // still-auto hosts list DOES resync (the fields decide independently).
+      await browser.execute((s) => {
+        const ta = document.querySelector(s) as HTMLTextAreaElement;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(ta, "/alpha-rw\n/keep-me");
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }, rw);
+      await clickRowInclude("alpha");
+      // The all-unchecked note is the flush marker (the "N of M" note only
+      // renders while at least one member is included).
+      await waitForText("No members selected");
+      expect(await field(rw)).toBe("/alpha-rw\n/keep-me");
+      expect(await field(hosts)).toBe("");
+      // The task-type choice persists on click — put it back on Worktree.
+      await clickWhenVisible('[data-testid="task-type-worktree"]');
+      await closeDialog();
+    },
+  );
 });
 
 // The host-level Main checkout shape of the multi New Task dialog.
@@ -1838,7 +1911,12 @@ describe("multi main checkout (New Task dialog)", () => {
   });
 
   after(async () => {
-    await browser.execute(() => window.__termic!.useUI.getState().closeNewTask());
+    // A mid-test failure can leave either dialog open; close both.
+    await browser.execute(() => {
+      const ui = window.__termic!.useUI.getState();
+      ui.closeNewTask();
+      ui.closeEditTask();
+    });
     for (const id of taskIds) await archiveTask(id);
     await browser.execute(async (id, mode) => {
       try {
@@ -1880,6 +1958,10 @@ describe("multi main checkout (New Task dialog)", () => {
           setup_script: "",
           run_script: "",
           archive_script: "",
+          // Per-member seatbelt lists so the Edit-task sandbox test below
+          // has a union to shrink.
+          sandbox_rw_paths: [`/${name}-rw`],
+          sandbox_allowed_hosts: [`${name}.local`],
         });
         const proj = await t.ipc.projectAddMulti(
           host,
@@ -2036,6 +2118,24 @@ describe("multi main checkout (New Task dialog)", () => {
         (e) => [e.getAttribute("data-member-name"), e.getAttribute("data-member-included")],
       ));
     expect(included).toEqual([["alpha", "false"], ["beta", "true"]]);
+    // A subset seed must union only the CHECKED members' sandbox lists —
+    // seeding the all-members union would pin alpha's paths into a beta-only
+    // task (and resync would never fix it: the textarea wouldn't equal the
+    // checked-set union).
+    if (process.platform === "darwin") {
+      await browser.execute(() => {
+        const dlg = document.querySelector('[data-testid="member-include"]')!.closest('[role="dialog"]')!;
+        const btn = [...dlg.querySelectorAll("button")].find(
+          (b) => b.querySelector("span")?.textContent?.trim() === "ENFORCING (filesystem + network)",
+        ) as HTMLButtonElement;
+        btn.click();
+      });
+      const rw = '[data-testid="sandbox-rw-paths"]';
+      await waitVisible(rw);
+      await browser.waitUntil(async () => (await browser.execute(
+        (s) => (document.querySelector(s) as HTMLTextAreaElement).value, rw)) === "/beta-rw",
+        { timeout: 5_000, timeoutMsg: "the subset seed pinned the all-members union" });
+    }
     await dismissOverlays();
   });
 
@@ -2112,6 +2212,105 @@ describe("multi main checkout (New Task dialog)", () => {
     expect(existsSync(path.join(before.path, "beta"))).toBe(false);
     await waitGone('[data-testid="edit-member-row"]');
   });
+
+  // The stored-list side of the same rule (the GH #343 follow-up): a task
+  // whose seatbelt lists still equal the auto union gets them re-derived on
+  // a toggle; a hand-edited textarea is the user's and stays put.
+  // macOS-only — the Seatbelt fields don't render elsewhere.
+  seatbeltIt(
+    "Edit task re-derives stored seatbelt lists on a member toggle, keeps hand edits",
+    async () => {
+      const rw = '[data-testid="sandbox-rw-paths"]';
+      const hosts = '[data-testid="sandbox-allowed-hosts"]';
+      const field = (sel: string) => browser.execute(
+        (s) => (document.querySelector(s) as HTMLTextAreaElement).value, sel);
+      const clickRow = (name: string) => browser.execute((n) => {
+        const row = document.querySelector(`[data-testid="edit-member-row"][data-member-name="${n}"]`)!;
+        (row.querySelector('[data-testid="edit-member-include"]') as HTMLElement).click();
+      }, name);
+      /** A Seatbelt task over the first `count` members, storing the
+       *  all-members union as if create had auto-pinned it. */
+      const createSandboxed = (name: string, count: number) =>
+        browser.execute(async (pid, n, c) => {
+          const t = window.__termic!;
+          // Member root_paths must be the canonical ones Rust stored — the
+          // raw tmp path differs under macOS's /var → /private/var.
+          const proj = t.useApp.getState().projects.find((p: any) => p.id === pid)!;
+          const created = await t.ipc.taskCreateMulti({
+            project_id: pid,
+            name: n,
+            cli: "shell",
+            members: proj.members.slice(0, c).map((m: any) => ({ root_path: m.root_path, mode: "worktree" })),
+            sandbox_enabled: true,
+            sandbox_mode: "enforce",
+            // Stored == the all-members union, so it reads as auto.
+            sandbox_rw_paths: ["/alpha-rw", "/beta-rw"],
+            sandbox_allowed_hosts: ["alpha.local", "beta.local"],
+          });
+          await t.useApp.getState().loadAll();
+          return created;
+        }, projectId, name, count) as Promise<any>;
+      const removalNotes = () => browser.execute(() =>
+        [...document.querySelectorAll('[data-testid="edit-member-row"]')]
+          .filter((r) => r.textContent?.includes("Will be removed")).length);
+
+      const task = await createSandboxed("e2e-mm-sandbox", 2);
+      taskIds.push(task.id);
+      await browser.execute((id) => window.__termic!.useUI.getState().openEditTask(id), task.id);
+      await waitVisible(rw);
+      expect(await field(rw)).toBe("/alpha-rw\n/beta-rw");
+      expect(await field(hosts)).toBe("alpha.local\nbeta.local");
+
+      // Stored is the auto union → unchecking beta shrinks both lists.
+      await clickRow("beta");
+      await browser.waitUntil(async () => (await field(rw)) === "/alpha-rw"
+        && (await field(hosts)) === "alpha.local", {
+        timeout: 5_000, timeoutMsg: "the stored auto union did not shrink on uncheck",
+      });
+
+      // Re-checking beta grows it back — textarea == prevAuto while
+      // stored ≠ prevAuto, so only the arrEq(now, prevAuto) arm can fire.
+      await clickRow("beta");
+      await browser.waitUntil(async () => (await field(rw)) === "/alpha-rw\n/beta-rw", {
+        timeout: 5_000, timeoutMsg: "the resynced union did not grow back on re-check",
+      });
+
+      // Hand-edited rw → the next toggle must not rewrite it (the still-auto
+      // hosts list resyncs independently — to beta's alone).
+      await browser.execute((s) => {
+        const ta = document.querySelector(s) as HTMLTextAreaElement;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(ta, "/alpha-rw\n/keep-me");
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }, rw);
+      await clickRow("alpha");
+      // Alpha's removal note is the flush marker for the uncheck commit.
+      await browser.waitUntil(async () => (await removalNotes()) === 1,
+        { timeout: 5_000, timeoutMsg: "alpha never marked for removal" });
+      expect(await field(rw)).toBe("/alpha-rw\n/keep-me");
+      expect(await field(hosts)).toBe("beta.local");
+      await browser.execute(() => window.__termic!.useUI.getState().closeEditTask());
+      await waitGone('[data-testid="edit-member-row"]');
+
+      // The stored-auto arm the first task can't reach: a task whose
+      // composition is a SUBSET of the project but whose stored lists are
+      // the all-members union (pinned before subsets, or by the pre-#343
+      // union). Only the stored==allAuto check treats it as untouched —
+      // without it, unchecking the last member leaves the pinned union.
+      const subTask = await createSandboxed("e2e-mm-sandbox-sub", 1);
+      taskIds.push(subTask.id);
+      await browser.execute((id) => window.__termic!.useUI.getState().openEditTask(id), subTask.id);
+      await waitVisible(rw);
+      expect(await field(rw)).toBe("/alpha-rw\n/beta-rw");
+      await clickRow("alpha");
+      await browser.waitUntil(async () => (await field(rw)) === ""
+        && (await field(hosts)) === "", {
+        timeout: 5_000, timeoutMsg: "the stored all-members union did not clear on uncheck",
+      });
+      await browser.execute(() => window.__termic!.useUI.getState().closeEditTask());
+      await waitGone('[data-testid="edit-member-row"]');
+    },
+  );
 });
 
 
@@ -2544,10 +2743,6 @@ describe("quick-create sandbox note", () => {
     await browser.keys("Escape");
     if (saved) await setDefault(saved);
   });
-
-  // Seatbelt is macOS only: elsewhere a Seatbelt default reads as Off, and
-  // the note says nothing (see the Windows case below).
-  const seatbeltIt = process.platform === "darwin" ? it : it.skip;
 
   it("names Docker, with its icon, when the project defaults to it", async () => {
     await setDefault({ default_sandbox: false, default_sandbox_mode: null, default_docker: true });

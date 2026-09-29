@@ -621,14 +621,18 @@ export function NewTaskDialog() {
         }
         return out.join("\n");
       };
-      // For multi-repo: union globals + host + every member's own
-      // sandbox lists (carried inline on the member) — everything starts
-      // included, so the all-members union IS the checked-members union.
-      // Later include toggles re-derive it (setIncluded), so an excluded
-      // member's lines stop being pinned.
+      // For multi-repo: union globals + host + every INCLUDED member's
+      // sandbox lists (carried inline on the member). A subset seed
+      // (Duplicate) leaves unchecked members' lines out — unioning all
+      // members would pin them, and since the textarea wouldn't equal the
+      // checked-set union, resyncSandbox would never fix it either.
       sbGlobals.current = s;
       const multi = (p?.type ?? "single") === "multi";
-      const u = memberSandboxUnion(s, p, multi ? p?.members ?? [] : []);
+      const wanted = seed?.memberPaths ? new Set(seed.memberPaths) : null;
+      const incl = multi
+        ? (p?.members ?? []).filter(pm => !wanted || wanted.has(pm.root_path))
+        : [];
+      const u = memberSandboxUnion(s, p, incl);
       setSbRw(u.rw.join("\n"));
       setSbHosts(u.hosts.join("\n"));
       setDockerMounts(merge(s.docker_default_extra_mounts));
@@ -2026,6 +2030,7 @@ export function NewTaskDialog() {
           </div>
           <Field label={t("newTask.allowedPathsLabel")} hint={t("newTask.allowedPathsHint")}>
             <textarea
+              data-testid="sandbox-rw-paths"
               value={sbRw}
               onChange={e => setSbRw(e.target.value)}
               rows={3}
@@ -2038,6 +2043,7 @@ export function NewTaskDialog() {
           {sandboxMode !== "enforce-fs" && (
             <Field label={t("newTask.allowedHostsLabel")} hint={t("newTask.allowedHostsHint")}>
               <textarea
+                data-testid="sandbox-allowed-hosts"
                 value={sbHosts}
                 onChange={e => setSbHosts(e.target.value)}
                 rows={3}
