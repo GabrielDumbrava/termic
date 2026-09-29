@@ -485,8 +485,17 @@ describe("scratchpads from the CLI", () => {
     await browser.waitUntil(async () => (await editorText(pad.id)) === "replaced\n", {
       timeout: 5_000, timeoutMsg: "a replace did not reach the open editor",
     });
-    const onDisk = await browser.execute((id, sid) => window.__termic!.ipc.scratchRead(id, sid), taskId, pad.scratchId);
-    expect(onDisk).toBe("replaced\n");
+    // Waited for, not read once. A write to an OPEN pad does not touch the
+    // file: scratchCli's writePad hands the text to the live editor and
+    // returns, and the disk copy is that editor's own debounced flush
+    // (SCRATCH_FLUSH_MS, 500ms, in EditorPane). So the CLI reply and the
+    // editor showing the text say nothing about the file yet, and reading it
+    // immediately is a race this spec won on a Mac and lost on a Windows
+    // runner, where it read back the text from before the replace.
+    await browser.waitUntil(
+      async () => (await browser.execute((id, sid) => window.__termic!.ipc.scratchRead(id, sid), taskId, pad.scratchId)) === "replaced\n",
+      { timeout: 8_000, timeoutMsg: "the replace never reached the file behind the open editor" },
+    );
   });
 
   // Picking Markdown swaps EditorPane for MarkdownPane, which mounts a new
