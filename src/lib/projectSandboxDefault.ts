@@ -8,7 +8,7 @@
 // quick-create note, and the task the quick path actually creates all come
 // through here.
 
-import { isTaskCaged, selectionToFields, type Project, type SandboxSelection } from "@/lib/types";
+import { isTaskCaged, selectionToFields, type Project, type ProjectMember, type SandboxSelection, type Settings } from "@/lib/types";
 import { SEATBELT_AVAILABLE } from "@/lib/platform";
 
 /** The project's default engine in the picker's own vocabulary. */
@@ -47,13 +47,30 @@ export function yoloForCreate(checked: boolean, selection: SandboxSelection, isA
   return !isTaskCaged({ sandbox_mode: mode, docker_sandbox_enabled: docker });
 }
 
-/** Union two lists preserving order, first occurrence wins. The same merge
+/** Union lists preserving order, first occurrence wins. The same merge
  *  the New Task dialog does when it seeds its allow-lists. */
-export function mergeLists(a: string[] = [], b: string[] = []): string[] {
+export function mergeLists(...lists: (readonly string[] | undefined)[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const v of [...a, ...b]) {
+  for (const l of lists) for (const v of l ?? []) {
     if (v && !seen.has(v)) { seen.add(v); out.push(v); }
   }
   return out;
+}
+
+/** The seatbelt lists a multi-repo task pins for itself: globals → host →
+ *  members, in project order — the same sequence the backend's
+ *  `multi_sandbox_base` derives, so a dialog showing this union and a
+ *  record storing it both read as "untouched" when membership changes. */
+export function memberSandboxUnion(
+  globals: Pick<Settings, "sandbox_default_rw_paths" | "sandbox_default_allowed_hosts"> | null | undefined,
+  project: Pick<Project, "sandbox_rw_paths" | "sandbox_allowed_hosts"> | null | undefined,
+  members: readonly Pick<ProjectMember, "sandbox_rw_paths" | "sandbox_allowed_hosts">[],
+): { rw: string[]; hosts: string[] } {
+  return {
+    rw: mergeLists(globals?.sandbox_default_rw_paths, project?.sandbox_rw_paths,
+      ...members.map(m => m.sandbox_rw_paths)),
+    hosts: mergeLists(globals?.sandbox_default_allowed_hosts, project?.sandbox_allowed_hosts,
+      ...members.map(m => m.sandbox_allowed_hosts)),
+  };
 }

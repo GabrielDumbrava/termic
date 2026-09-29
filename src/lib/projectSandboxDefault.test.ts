@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from "vitest";
 import { setSeatbeltAvailableForTests } from "@/lib/platform";
-import { projectSandboxDefault, projectYoloDefault, yoloForCreate, mergeLists } from "./projectSandboxDefault";
-import type { Project } from "@/lib/types";
+import { projectSandboxDefault, projectYoloDefault, yoloForCreate, mergeLists, memberSandboxUnion } from "./projectSandboxDefault";
+import type { Project, ProjectMember } from "@/lib/types";
 
 const proj = (over: Partial<Project> = {}) => ({ id: "p", name: "p", ...over }) as Project;
 
@@ -81,6 +81,30 @@ describe("mergeLists", () => {
   it("drops blanks and handles absent sides", () => {
     expect(mergeLists(undefined, ["a", "", "a"])).toEqual(["a"]);
     expect(mergeLists()).toEqual([]);
+  });
+});
+
+describe("memberSandboxUnion", () => {
+  const member = (rw?: string[], hosts?: string[]) =>
+    ({ sandbox_rw_paths: rw, sandbox_allowed_hosts: hosts }) as ProjectMember;
+
+  it("unions globals → host → members in that order, deduped", () => {
+    const u = memberSandboxUnion(
+      { sandbox_default_rw_paths: ["$G"], sandbox_default_allowed_hosts: ["gh"] },
+      proj({ sandbox_rw_paths: ["$H"], sandbox_allowed_hosts: ["hh"] }),
+      [member(["$A", "$G"], ["ah"]), member(["$B"], ["ah", "bh"])],
+    );
+    expect(u.rw).toEqual(["$G", "$H", "$A", "$B"]);
+    expect(u.hosts).toEqual(["gh", "hh", "ah", "bh"]);
+  });
+
+  it("an unchecked member's lines are not in the union", () => {
+    const u = memberSandboxUnion(
+      { sandbox_default_rw_paths: ["$G"] },
+      proj(),
+      [member(["$A"])],
+    );
+    expect(u.rw).toEqual(["$G", "$A"]);
   });
 });
 

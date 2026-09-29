@@ -25,9 +25,9 @@ import { cn } from "@/lib/utils";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X } from "lucide-react";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
-import { projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
+import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
-import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext } from "@/lib/types";
+import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext, type Settings } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
@@ -219,9 +219,34 @@ export function NewTaskDialog() {
   const [setSaveOpen, setSetSaveOpen] = useState(false);
   const [setSaveName, setSetSaveName] = useState("");
   const includedMembers = useMemo(() => members.filter(m => m.included), [members]);
+  // The globals layer of the seatbelt auto-union, captured when the
+  // seed's settingsLoad lands. Null until then — toggles before that
+  // keep the textarea untouched rather than dropping lines it can't
+  // yet reconstruct.
+  const sbGlobals = useRef<Settings | null>(null);
+  const sbLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
+  const sbEq = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+  // An include toggle re-syncs the seatbelt lists only while they still
+  // hold the auto-union for the PREVIOUS checked set — a hand edit owns
+  // the list from then on (the backend's "untouched" rule), and an
+  // unchecked member's lines stop being pinned.
+  const resyncSandbox = (before: MemberSpec[], after: MemberSpec[]) => {
+    const pms = (ms: MemberSpec[]) => (project?.members ?? []).filter(pm =>
+      ms.some(m => m.included && m.root_path === pm.root_path));
+    const prev = memberSandboxUnion(sbGlobals.current, project, pms(before));
+    const next = memberSandboxUnion(sbGlobals.current, project, pms(after));
+    if (sbEq(sbLines(sbRw), prev.rw)) setSbRw(next.rw.join("\n"));
+    if (sbEq(sbLines(sbHosts), prev.hosts)) setSbHosts(next.hosts.join("\n"));
+  };
+  const setIncluded = (fn: (m: MemberSpec) => boolean) =>
+    setMembers(prev => {
+      const next = prev.map(m => ({ ...m, included: fn(m) }));
+      resyncSandbox(prev, next);
+      return next;
+    });
   const applyMemberSet = (set: MemberSet) => {
     const wanted = new Set(set.members);
-    setMembers(prev => prev.map(m => ({ ...m, included: wanted.has(m.root_path) })));
+    setIncluded(m => wanted.has(m.root_path));
   };
   const saveCurrentMemberSet = () => {
     const name = setSaveName.trim();
@@ -274,7 +299,7 @@ export function NewTaskDialog() {
           <button
             type="button"
             data-testid="members-all-include"
-            onClick={() => setMembers(prev => prev.map(m => ({ ...m, included: true })))}
+            onClick={() => setIncluded(() => true)}
             className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[11.5px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
           >
             {t("newTask.membersAll")}
@@ -282,7 +307,7 @@ export function NewTaskDialog() {
           <button
             type="button"
             data-testid="members-none-include"
-            onClick={() => setMembers(prev => prev.map(m => ({ ...m, included: false })))}
+            onClick={() => setIncluded(() => false)}
             className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[11.5px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
           >
             {t("newTask.membersNone")}
@@ -597,28 +622,15 @@ export function NewTaskDialog() {
         return out.join("\n");
       };
       // For multi-repo: union globals + host + every member's own
-      // sandbox lists (carried inline on the member). Same dedupe-
-      // preserving order as single-repo, just N+1 inputs instead of 2.
-      // ponytail: the union covers ALL members — unchecking one later
-      // doesn't remove its lines (the textareas are user-editable and
-      // what's shown is what gets pinned). Per-line provenance would be
-      // needed to subtract an excluded member's entries.
-      if ((p?.type ?? "single") === "multi") {
-        const mem = p?.members ?? [];
-        setSbRw(merge(
-          s.sandbox_default_rw_paths,
-          p?.sandbox_rw_paths,
-          ...mem.map(m => m.sandbox_rw_paths),
-        ));
-        setSbHosts(merge(
-          s.sandbox_default_allowed_hosts,
-          p?.sandbox_allowed_hosts,
-          ...mem.map(m => m.sandbox_allowed_hosts),
-        ));
-      } else {
-        setSbRw(merge(s.sandbox_default_rw_paths,      p?.sandbox_rw_paths));
-        setSbHosts(merge(s.sandbox_default_allowed_hosts, p?.sandbox_allowed_hosts));
-      }
+      // sandbox lists (carried inline on the member) — everything starts
+      // included, so the all-members union IS the checked-members union.
+      // Later include toggles re-derive it (setIncluded), so an excluded
+      // member's lines stop being pinned.
+      sbGlobals.current = s;
+      const multi = (p?.type ?? "single") === "multi";
+      const u = memberSandboxUnion(s, p, multi ? p?.members ?? [] : []);
+      setSbRw(u.rw.join("\n"));
+      setSbHosts(u.hosts.join("\n"));
       setDockerMounts(merge(s.docker_default_extra_mounts));
     }).catch(() => {});
     // Import mode: off by default. We eager-load the project's existing
@@ -1620,9 +1632,7 @@ export function NewTaskDialog() {
                     data-testid="member-include"
                     aria-label={t("newTask.memberInclude", { name: m.name })}
                     checked={m.included}
-                    onChange={v =>
-                      setMembers(prev => prev.map((x, i) => (i === idx ? { ...x, included: v } : x)))
-                    }
+                    onChange={v => setIncluded(x => x.root_path === m.root_path ? v : x.included)}
                   />
                   <div className="min-w-0">
                     <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
@@ -1693,7 +1703,11 @@ export function NewTaskDialog() {
             <div className="flex flex-col gap-2">
               {members.map((m, idx) => {
                 const update = (patch: Partial<MemberSpec>) =>
-                  setMembers(prev => prev.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
+                  setMembers(prev => {
+                    const next = prev.map((x, i) => (i === idx ? { ...x, ...patch } : x));
+                    if ("included" in patch) resyncSandbox(prev, next);
+                    return next;
+                  });
                 // Write the flip through to storage right away (not on
                 // submit), mirroring chooseMode above: a cancelled dialog
                 // still teaches the next open. Non-git rows never persist —

@@ -23,8 +23,9 @@ import { defaultCliFirst, visibleCliIds, isTerminalCli } from "@/lib/agents";
 import { taskRename, taskSetCli, taskSetYolo, taskSetResumeOverride, taskSetSandbox, taskSetDocker, taskUpdateMembers, sandboxAvailable, settingsLoad, dockerImageStatus, type DockerImageStatus } from "@/lib/ipc";
 import { readMemberModes, seedMemberMode, persistMemberMode } from "./memberModes";
 import { cn } from "@/lib/utils";
-import { effectiveSandboxMode, isTaskCaged, selectionFor, selectionToFields, type CreateMultiMember, type MemberMode, type Project, type SandboxSelection, type Task, type TaskMember } from "@/lib/types";
+import { effectiveSandboxMode, isTaskCaged, selectionFor, selectionToFields, type CreateMultiMember, type MemberMode, type Project, type SandboxSelection, type Settings, type Task, type TaskMember } from "@/lib/types";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
+import { memberSandboxUnion } from "@/lib/projectSandboxDefault";
 import { ListField } from "@/components/settings/Controls";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import { dockerToggleMessage, leaveDockerMessage } from "@/lib/sandboxSwitchCopy";
@@ -84,6 +85,7 @@ export function EditTaskDialog() {
   const [osSandboxOk, setOsSandboxOk] = useState<boolean | null>(null);
   const [dockerSettings, setDockerSettings] = useState<{ docker_sandbox_enabled?: boolean } | null>(null);
   const [dockerImage, setDockerImage] = useState<DockerImageStatus | null>(null);
+  const sbGlobals = useRef<Settings | null>(null);
   useEffect(() => {
     if (!open) return;
     // Reset BEFORE re-probing — stale non-null values from the previous
@@ -93,7 +95,13 @@ export function EditTaskDialog() {
     setDockerSettings(null);
     setDockerImage(null);
     sandboxAvailable().then(setOsSandboxOk).catch(() => setOsSandboxOk(false));
-    settingsLoad().then(setDockerSettings).catch(() => {});
+    settingsLoad().then(s => {
+      // The globals layer of the seatbelt auto-union — a member toggle
+      // re-derives the lists and needs it to not drop lines it can't
+      // rebuild.
+      sbGlobals.current = s;
+      setDockerSettings(s);
+    }).catch(() => {});
     dockerImageStatus().then(setDockerImage).catch(() => {});
   }, [open]);
   const dockerOffered = !!dockerSettings?.docker_sandbox_enabled && !!dockerImage?.available;
@@ -207,7 +215,32 @@ export function EditTaskDialog() {
 
   const isLive = task?.is_main_checkout ?? false;
   const update = (key: string, patch: Partial<Row>) =>
-    setRows(prev => prev.map(r => (r.key === key ? { ...r, ...patch } : r)));
+    setRows(prev => {
+      const next = prev.map(r => (r.key === key ? { ...r, ...patch } : r));
+      // A membership toggle re-syncs the seatbelt lists only while they
+      // still hold an AUTO value — the union for the previous checked
+      // set, or the stored list when IT was itself auto-derived (the
+      // backend's "untouched" rule: stored == composition base or the
+      // all-members union the dialog pins at create). A stored list the
+      // user hand-pinned — or a textarea they edited here — is theirs,
+      // and is never rewritten by a checkbox.
+      if ("checked" in patch && task && project) {
+        const pms = (rs: Row[]) => (project.members ?? []).filter(pm =>
+          rs.some(r => r.checked && r.root_path === pm.root_path));
+        const allAuto = memberSandboxUnion(sbGlobals.current, project, project.members ?? []);
+        const prevAuto = memberSandboxUnion(sbGlobals.current, project, pms(prev));
+        const nextAuto = memberSandboxUnion(sbGlobals.current, project, pms(next));
+        const untouched = (now: string[], stored: string[], prevB: string[], allB: string[]) =>
+          arrEq(now, prevB) || ((arrEq(stored, prevB) || arrEq(stored, allB)) && arrEq(now, stored));
+        if (untouched(lines(sbRw), task.sandbox_rw_paths ?? [], prevAuto.rw, allAuto.rw)) {
+          setSbRw(nextAuto.rw.join("\n"));
+        }
+        if (untouched(lines(sbHosts), task.sandbox_allowed_hosts ?? [], prevAuto.hosts, allAuto.hosts)) {
+          setSbHosts(nextAuto.hosts.join("\n"));
+        }
+      }
+      return next;
+    });
 
   const removing = useMemo(() => rows.filter(r => r.existing && !r.checked), [rows]);
   const adding = useMemo(() => rows.filter(r => !r.existing && r.checked), [rows]);
