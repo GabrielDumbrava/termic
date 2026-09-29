@@ -1637,9 +1637,11 @@ export function NewTaskDialog() {
                 className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]"
               >
                 <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                {includedMembers.length === members.length
-                  ? t("newTask.membersLiveNote", { count: members.length })
-                  : t("newTask.membersLiveNotePartial", { included: includedMembers.length, count: members.length })}
+                {/* One wording for both, "N of M members run live": the all
+                    case used to get a separate "All N members…" string, which
+                    read differently for no reason and is what this spec's
+                    "2 of 2 members run live" assertion always expected. */}
+                {t("newTask.membersLiveNote", { included: includedMembers.length, count: members.length })}
               </div>
             ) : (
               <div

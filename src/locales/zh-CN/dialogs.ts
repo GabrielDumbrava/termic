@@ -381,8 +381,22 @@ export default {
     resumeOverrideHint: "替换 {{agent}} 的默认恢复参数。{WORKSPACE_NAME}、{WORKSPACE_SLUG} 和 {BRANCH} 在启动时展开。之后可在任务菜单中修改。",
     resumeOverridePlaceholder: "--resume {WORKSPACE_NAME}",
     overrideResumeToggle: "覆盖恢复参数",
-    membersLiveNote: "全部 {{count}} 个成员都将实时运行，链接进宿主检出。智能体可直接修改每个仓库。没有工作树隔离。",
+    membersLiveNote: "{{count}} 个成员中有 {{included}} 个将实时运行，链接进宿主检出。智能体可直接修改这些仓库。没有工作树隔离。",
+    membersLiveNoteNone: "尚未选择成员。至少勾选一个才能创建任务。",
     membersLabel: "成员（{{count}}）",
+    membersLabelOf: "成员（{{count}} 中的 {{included}}）",
+    membersLinkedHint: "未勾选的成员不会进入该任务",
+    membersAll: "全部",
+    membersNone: "全不选",
+    memberInclude: "包含 {{name}}",
+    // Chinese has no plural agreement, so both forms carry the same text. The
+    // parity test requires the key SETS to match, which is what keeps a later
+    // edit from dropping one of them here alone.
+    memberSetApplies_one: "适用于此处列出的 {{count}} 个成员",
+    memberSetApplies_other: "适用于此处列出的 {{count}} 个成员",
+    memberSetDelete: "删除成员集 {{name}}",
+    memberSetNamePlaceholder: "为该成员集命名",
+    memberSetSave: "保存成员集",
     setAll: "全部设为：",
     perRepo: "按仓库设置模式 + 分支",
     nonGitMemberTitle: "不是 git 仓库，只能在主检出中运行",

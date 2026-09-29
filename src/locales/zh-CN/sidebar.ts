@@ -144,6 +144,7 @@ export default {
     worktreesUnavailableHint: "此文件夹不是 git 仓库。将项目指向一个 git 仓库（或在此文件夹执行 git init）即可启用工作树。",
     advanced: "高级…",
     advancedWorktreeHint: "基础分支、沙箱、导入…",
+    advancedWorktreeMultiHint: "成员、基础分支、沙箱、导入…",
     advancedMainHint: "更多选项和设置…",
     importWorktree: "导入工作树",
     detached: "分离头 {{head}}",

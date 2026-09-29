@@ -144,6 +144,9 @@ export default {
     worktreesUnavailableHint: "This folder isn't a git repo. Point the project at a git repo (or git-init this folder) to enable worktrees.",
     advanced: "Advanced…",
     advancedWorktreeHint: "Base branch, sandbox, import…",
+    // The multi-repo variant: the Advanced sheet there also picks which
+    // member repos the task gets.
+    advancedWorktreeMultiHint: "Members, base branch, sandbox, import…",
     advancedMainHint: "More options and settings…",
     importWorktree: "Import worktree",
     detached: "detached {{head}}",

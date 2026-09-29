@@ -28,6 +28,7 @@ const EXCLUDED: Record<string, string> = {
   openPromptFire: "needs a specific Prompt object; reached from the prompt palette",
   openRaceCompare: "needs a raceId; reached from the race board",
   openEditCommand: "edits the run command of a specific tab; reached from its menu",
+  openEditTask: "edits one MULTI-repo task's member composition; reached from that task's menu, and there is nothing to edit on a single-repo task",
   openCustomCommand: "a New-task variant; reached from the launcher menu",
   openNewTask: "needs a projectId + seed; the palette routes via openProjectPicker",
   openWelcome: "first-run onboarding, not a thing you go looking for",

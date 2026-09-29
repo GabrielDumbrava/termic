@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { highlightingFor, syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, highlightingFor, syntaxTree } from "@codemirror/language";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { languages as registry } from "@codemirror/language-data";
 import {
@@ -195,10 +195,24 @@ describe("Terraform highlighting", () => {
     const resolved = await langForPath("main.tf");
     expect(resolved?.id).toBe("HCL");
     const state = EditorState.create({ doc, extensions: [resolved!.ext, resolveEditorTheme("auto")] });
-    const tree = syntaxTree(state);
-    const errors: number[] = [];
-    tree.iterate({ enter: node => { if (node.type.isError) errors.push(node.from); } });
-    expect(errors).toEqual([]);
+    // `ensureSyntaxTree`, not `syntaxTree`: HCL is a real Lezer LR parser, and
+    // the parse that `EditorState.create` kicks off runs on a TIME budget. When
+    // that budget expires the tree is partial, and a partial LR tree ends in
+    // error nodes at the point it stopped, which is indistinguishable from a
+    // grammar that cannot read the fixture. This went red on CI with errors at
+    // offset 95 (the `=` of `enabled = true`, a third of the way in) while
+    // passing on every developer machine, on a commit that touched neither the
+    // parser, its version, nor the lockfile. Forcing the parse to completion
+    // removes the machine's spare CPU from the assertion either way.
+    const tree = ensureSyntaxTree(state, doc.length, 10_000) ?? syntaxTree(state);
+    const errors: string[] = [];
+    tree.iterate({ enter: node => {
+      if (node.type.isError) errors.push(`${node.from}: ${JSON.stringify(doc.slice(Math.max(0, node.from - 10), node.from + 10))}`);
+    } });
+    // The coverage is part of the message: "errors, and the tree stops short of
+    // the document" is a starved parse, "errors, and the tree covers it" is a
+    // real grammar failure, and they need opposite fixes.
+    expect(errors, `parsed ${tree.length}/${doc.length} chars`).toEqual([]);
     const classes = new Set<string>();
     highlightTree(tree, classHighlighter, (_from, _to, cls) => {
       for (const name of cls.split(" ")) classes.add(name);
