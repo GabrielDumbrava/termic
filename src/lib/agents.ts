@@ -991,7 +991,7 @@ export function decideResume(opts: {
    *  no session_id_args: first spawn is fresh, subsequent spawns (after
    *  post_launch_capture stores the ID) use resume_id_args. */
   captureCapable?: boolean;
-  /** Primary = the auto-created default tab OR the first tab of its cli.
+  /** Primary = the durable, auto-created default tab, never a new "+" tab.
    *  Gates the override + cwd-resume paths (see above). */
   isPrimary: boolean;
   /** `tab.cli === task.cli` — this tab runs the task's OWN agent rather than
@@ -1184,6 +1184,8 @@ export function spawnArgsForCli(
     yolo: boolean;
     resume: boolean;
     task?: Task;
+    /** Explicit per-tab argv, after registry/task defaults, before runtime args. */
+    agentArgs?: string[];
     /** True for the auto-created default tab; false for user-added "+" tabs.
      *  Gates name_args — secondary tabs start fresh and shouldn't get --name. */
     isPrimary?: boolean;
@@ -1253,6 +1255,7 @@ export function spawnArgsForCli(
     // them ahead of every termic-managed runtime block, while still after
     // Settings defaults so the task can select its own model or reasoning.
     ...(opts.isPrimary && opts.task?.cli === cli ? (opts.task.agent_args ?? []) : []),
+    ...(opts.agentArgs ?? []),
     // Before the resume block: codex's resume is a subcommand, and these
     // are root-binary globals.
     ...(opts.unattended ? (UNATTENDED_SPAWN_ARGS[cli] ?? []) : []),

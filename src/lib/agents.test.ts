@@ -1770,3 +1770,19 @@ describe("resume picker", () => {
     expect(resumePickerArgsForCli("claude-own")).toEqual(["--resume", "--all"]);
   });
 });
+
+
+describe("per-tab launch overrides", () => {
+  it("applies tab argv after registry defaults and before resume/runtime flags", () => {
+    mockAgents.length = 0;
+    mockAgents.push({ id: "codex", display_name: "Codex", command: "codex", icon_id: "lucide:terminal", color: "#000", builtin: true, args: ["--model", "default"],
+      capabilities: { resume_args: ["resume", "--last"], yolo_args: ["--dangerously-bypass-approvals-and-sandbox"] },
+    } as Agent);
+    const agentArgs = ["-c", 'model_reasoning_effort="xhigh"', "--model", "worker"];
+    expect(spawnArgsForCli("codex", { yolo: true, resume: true, agentArgs })).toEqual([
+      "--model", "default", ...agentArgs, "resume", "--last", "--dangerously-bypass-approvals-and-sandbox",
+    ]);
+    expect(mockAgents[0].args).toEqual(["--model", "default"]);
+    mockAgents.length = 0;
+  });
+});

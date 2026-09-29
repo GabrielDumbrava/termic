@@ -64,6 +64,7 @@ export interface ClosedTabEntry {
   customTitle?: boolean;
   command?: string | null;
   sessionId?: string | null;
+  agentArgs?: string[];
   closedAt: string;
 }
 
@@ -547,6 +548,7 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       is_default: !!t.is_default,
       command: t.command ?? null,
       session_id: t.sessionId ?? null,
+      ...(t.agentArgs?.length ? { agent_args: t.agentArgs } : {}),
       pane_leaf_id: t.paneId ?? null,
       // Run pop-out tabs persist WITH their marker so the RunPane comes back
       // in its pane on relaunch (the run script re-fires, like custom tabs).
@@ -1863,6 +1865,7 @@ export const useApp = create<AppState>((set, get) => ({
         is_default: !!pt.is_default,
         ...(pt.command ? { command: pt.command } : {}),
         ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+        ...(pt.agent_args?.length ? { agentArgs: pt.agent_args } : {}),
         ...(unattendedRestore && pt.is_default ? { unattended: true } : {}),
         ...(pt.pinned ? { pinned: true } : {}),
         ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
@@ -1911,6 +1914,7 @@ export const useApp = create<AppState>((set, get) => ({
               ...(pt.pinned ? { pinned: true } : {}),
               ...(pt.command ? { command: pt.command } : {}),
               ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+              ...(pt.agent_args?.length ? { agentArgs: pt.agent_args } : {}),
               ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
                     ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
             });
@@ -2231,6 +2235,7 @@ export const useApp = create<AppState>((set, get) => ({
             customTitle: closingTerm.customTitle,
             command: closingTerm.command ?? null,
             sessionId: closingTerm.sessionId ?? null,
+            agentArgs: closingTerm.agentArgs,
             closedAt: new Date().toISOString(),
           }
         : null;
@@ -2313,6 +2318,7 @@ export const useApp = create<AppState>((set, get) => ({
       ...(entry.isDefault ? { is_default: true } : {}),
       command: entry.command ?? undefined,
       sessionId: entry.sessionId ?? undefined,
+      agentArgs: entry.agentArgs,
     };
     get().addTab(taskId, tab);
   },

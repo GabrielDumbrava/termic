@@ -272,3 +272,27 @@ describe("termic tab: a genuinely stopped task", () => {
     await expect(newTabHandler({ taskId: "ws1", kind: "shell" })).rejects.toThrow(/stopped/);
   });
 });
+
+
+describe("per-tab launch arguments", () => {
+  it("persists isolated overrides and restores them with the same tab", async () => {
+    seed();
+    const agentArgs = ["--model", "worker", "--effort", "high"];
+    const r = await newTabHandler({ taskId: "ws1", kind: "agent", id: "claude", agentArgs });
+    const state = useApp.getState();
+    expect(state.tasks[0].persisted_tabs?.find(t => t.id === r.tabId)?.agent_args).toEqual(agentArgs);
+    expect(state.tasks[0].persisted_tabs?.find(t => t.id === "main")?.agent_args).toBeUndefined();
+    expect(state.agents.find(a => a.id === "claude")?.args).toEqual([]);
+    useApp.setState({ tabs: {}, mountedTasks: new Set() });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const restored = useApp.getState().tabs.ws1.find(t => t.id === r.tabId);
+    expect(restored).toMatchObject({ agentArgs, is_default: false });
+  });
+
+  it.each(["shell", "terminal", "default"])("rejects overrides for %s before opening a tab", async kind => {
+    seed();
+    await expect(newTabHandler({ taskId: "ws1", kind, agentArgs: ["--model", "worker"] }))
+      .rejects.toThrow("explicit agent");
+    expect(useApp.getState().tabs.ws1).toBeUndefined();
+  });
+});

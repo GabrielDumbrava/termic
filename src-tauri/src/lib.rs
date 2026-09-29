@@ -704,6 +704,8 @@ pub struct Task {
 pub struct PersistedTab {
     pub id: String,
     pub cli: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_args: Vec<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -759,6 +761,8 @@ pub struct ScheduledMessage {
 pub struct PersistedTabInput {
     pub id: String,
     pub cli: String,
+    #[serde(default)]
+    pub agent_args: Vec<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -8370,6 +8374,7 @@ fn merge_persisted_tabs(
         .map(|t| {
             let p = prior.get(t.id.as_str());
             PersistedTab {
+                agent_args: t.agent_args,
                 session_id: p.and_then(|p| p.session_id.clone()).or(t.session_id),
                 scheduled: p.map(|p| p.scheduled.clone()).unwrap_or_default(),
                 id: t.id,

@@ -50,3 +50,17 @@ logged to `tasks-migration.log`, never carried forward). The JS half
 (`workspaceExpandMode` → `taskExpandMode`, `collapsedWorkspaces` → `collapsedTasks`,
 plus the two `newWorkspaceLast*` keys); everything else in `localStorage` is keyed
 by task UUID, which never changes.
+
+
+### Per-tab launch arguments
+
+Agent tabs created through the CLI/MCP may carry `agent_args` in their
+persisted tab record (`agentArgs` in the frontend). These arguments follow
+registry defaults, precede managed resume/runtime arguments, and survive
+close/reopen and application restart. They do not change Settings or the
+task's default agent. Empty arguments remain absent from serialized tabs.
+
+Only the durable default tab can inherit legacy task-level resume history.
+A new secondary tab starts a fresh session even if it is the first tab of a
+different profile. Explicit `tab --resume SESSION_ID` and restoration of a
+tab's own captured session continue to resume that specific session.

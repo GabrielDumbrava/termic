@@ -959,7 +959,13 @@ fn handle_status(
     let sandbox = sandbox_mode_str(t);
     let sessions = (t.persisted_tabs.len() + t.right_split_tabs.len()) as u32;
     let dirty_files = diff.map(|d| d.files_changed + d.untracked);
-    let tabs = cached_tab_states(&host.agent_cache().snapshot(), &t.id);
+    let mut tabs = cached_tab_states(&host.agent_cache().snapshot(), &t.id);
+    if let Some(tabs) = &mut tabs {
+        for tab in tabs {
+            tab.agent_args = t.persisted_tabs.iter().find(|p| p.id == tab.id)
+                .map(|p| p.agent_args.clone()).unwrap_or_default();
+        }
+    }
     Reply::ok(
         id,
         ReplyData::Status(proto::StatusData {
@@ -2661,7 +2667,7 @@ fn handle_prompts(req: &Request, host: &dyn CliHost) -> Reply {
 /// does, so delivery stays confirmed (docs/plans/cli.md, Phase 1).
 fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
     let Command::Tab {
-        task, project, kind, prompt, prompt_ref, wait, timeout_ms, resume, title, cwd,
+        task, project, kind, agent_args, prompt, prompt_ref, wait, timeout_ms, resume, title, cwd,
     } = &req.cmd
     else {
         unreachable!("handle_tab called with a non-tab command")
@@ -2671,6 +2677,9 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
     // opened, after the cheap validations.
     let has_prompt = prompt.is_some() || prompt_ref.is_some();
     let id = &req.id;
+    if !agent_args.is_empty() && !matches!(kind, proto::TabKind::Agent { .. }) {
+        return Reply::err(id, ErrorCode::BadRequest, "tab launch arguments need an explicit --agent");
+    }
     if resume.is_some() {
         // A session id only means something to a NAMED agent tab: shell /
         // terminal kinds never resume, and Default would silently bind the
@@ -2773,6 +2782,7 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         "new_tab",
         serde_json::json!({
             "taskId": t.id, "kind": kind_str, "id": agent_id, "resume": resume, "title": title,
+            "agentArgs": agent_args,
         }),
         OPEN_TIMEOUT,
     ) {
@@ -2807,7 +2817,7 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
     let Some(prompt) = prompt else {
         return Reply::ok(
             id,
-            ReplyData::Tab(proto::TabData { task_id: t.id, tab_id, cli, title, prompt: None }),
+            ReplyData::Tab(proto::TabData { agent_args: agent_args.clone(), task_id: t.id, tab_id, cli, title, prompt: None }),
         );
     };
 
@@ -2870,6 +2880,7 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         return Reply::ok(
             id,
             ReplyData::Tab(proto::TabData {
+                agent_args: agent_args.clone(),
                 task_id: t.id,
                 tab_id,
                 cli,
@@ -2905,6 +2916,7 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         Ok(result) => Reply::ok(
             id,
             ReplyData::Tab(proto::TabData {
+                agent_args: agent_args.clone(),
                 task_id: t.id,
                 tab_id,
                 cli,
@@ -3015,7 +3027,7 @@ fn handle_tab_rename(
         .unwrap_or_else(|| title.trim().to_string());
     Reply::ok(
         id,
-        ReplyData::Tab(proto::TabData { task_id: t.id, tab_id: rt.id, cli: rt.cli, title, prompt: None }),
+        ReplyData::Tab(proto::TabData { agent_args: t.persisted_tabs.iter().find(|p| p.id == rt.id).map(|p| p.agent_args.clone()).unwrap_or_default(), task_id: t.id, tab_id: rt.id, cli: rt.cli, title, prompt: None }),
     )
 }
 
@@ -4212,6 +4224,7 @@ pub(crate) fn cached_tab_states(
             .iter()
             .enumerate()
             .map(|(i, t)| proto::TabStatus {
+                agent_args: Vec::new(),
                 id: t.id.clone(),
                 index: i as u32 + 1,
                 kind: t.kind.clone(),
@@ -6498,6 +6511,7 @@ mod tests {
 
     fn tab_cmd(task: &str, kind: proto::TabKind) -> Command {
         Command::Tab {
+            agent_args: Vec::new(),
             task: Some(task.into()),
             project: None,
             kind,
@@ -6539,6 +6553,33 @@ mod tests {
                 Some(id) => assert_eq!(calls[0].1["id"], id, "{want_kind}"),
                 None => assert!(calls[0].1["id"].is_null(), "{want_kind}"),
             }
+        }
+    }
+
+    #[test]
+    fn tab_arguments_are_forwarded_and_echoed_without_mutating_task_defaults() {
+        let host = StubHost::default();
+        host.script_rpc("new_tab", Ok(serde_json::json!({"tabId":"t1", "cli":"codex", "title":"Codex"})));
+        let mut command = tab_cmd("solo", proto::TabKind::Agent { id: "codex".into() });
+        let args = vec!["-c".to_string(), "model_reasoning_effort=\"high\"".to_string(), "--model".to_string(), "worker".to_string()];
+        if let Command::Tab { agent_args, .. } = &mut command { *agent_args = args.clone(); }
+        let reply = handle(&req(command, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let Some(ReplyData::Tab(data)) = reply.data else { panic!("not tab") };
+        assert_eq!(data.agent_args, args);
+        assert_eq!(host.rpc_calls.lock().unwrap()[0].1["agentArgs"], serde_json::json!(args));
+        assert!(host.tasks.iter().all(|t| t.agent_args.is_empty()));
+    }
+
+    #[test]
+    fn tab_arguments_refuse_implicit_or_non_agent_kinds_before_rpc() {
+        for kind in [proto::TabKind::Default, proto::TabKind::Shell, proto::TabKind::Terminal { id: "term".into() }] {
+            let host = StubHost::default();
+            let mut command = tab_cmd("solo", kind);
+            if let Command::Tab { agent_args, .. } = &mut command { *agent_args = vec!["--model".into(), "worker".into()]; }
+            let reply = handle(&req(command, Some("tok")), &host);
+            assert!(!reply.ok);
+            assert!(host.rpc_calls.lock().unwrap().is_empty());
         }
     }
 
@@ -8063,6 +8104,7 @@ mod tests {
 
     fn titled_tab_cmd(title: Option<&str>) -> Command {
         Command::Tab {
+            agent_args: Vec::new(),
             task: Some("w3".into()),
             project: None,
             kind: proto::TabKind::Agent { id: "claude".into() },
@@ -8468,6 +8510,7 @@ mod tests {
             .unwrap()
             .insert("close_tab".into(), Ok(serde_json::json!({ "killedPty": true })));
         let persisted = |id: &str, cli: &str, run: Option<&str>| crate::PersistedTab {
+            agent_args: Vec::new(),
             id: id.into(),
             cli: cli.into(),
             title: None,
@@ -8506,6 +8549,7 @@ mod tests {
             .unwrap()
             .insert("close_tab".into(), Ok(serde_json::json!({})));
         let persisted = |id: &str, is_default: bool| crate::PersistedTab {
+            agent_args: Vec::new(),
             id: id.into(),
             cli: "claude".into(),
             title: None,
@@ -8586,6 +8630,7 @@ mod tests {
         let host = StubHost::default();
         let mut t = w3(&host);
         t.persisted_tabs.push(crate::PersistedTab {
+            agent_args: Vec::new(),
             id: "brand-new".into(),
             cli: "shell".into(),
             title: None,
@@ -8648,6 +8693,7 @@ mod tests {
         let mut t = w3(&host);
         t.persisted_tabs = vec![
             crate::PersistedTab {
+                agent_args: Vec::new(),
                 id: "tab-a".into(),
                 cli: "claude".into(),
                 title: None,
@@ -8661,6 +8707,7 @@ mod tests {
                 scheduled: Vec::new(),
             },
             crate::PersistedTab {
+                agent_args: Vec::new(),
                 id: "tab-x".into(),
                 cli: "custom".into(),
                 title: None,
@@ -8674,6 +8721,7 @@ mod tests {
                 scheduled: Vec::new(),
             },
             crate::PersistedTab {
+                agent_args: Vec::new(),
                 id: "tab-sh".into(),
                 cli: "shell".into(),
                 title: None,
@@ -9000,6 +9048,7 @@ mod tests {
             Ok(serde_json::json!({ "mode": "spawned", "capable": true })),
         );
         let cmd = Command::Tab {
+            agent_args: Vec::new(),
             task: Some("solo".into()),
             project: None,
             kind: proto::TabKind::Agent { id: "claude".into() },
@@ -9035,6 +9084,7 @@ mod tests {
     fn tab_prompt_guards_fire_before_any_rpc() {
         let host = StubHost::default();
         let tab = |kind, prompt: Option<&str>, wait| Command::Tab {
+            agent_args: Vec::new(),
             task: Some("solo".into()),
             project: None,
             kind,
@@ -9126,6 +9176,7 @@ mod tests {
         );
         host.script_rpc("send_prompt", Err("cli_send:not_capable: no settle signal".into()));
         let cmd = Command::Tab {
+            agent_args: Vec::new(),
             task: Some("solo".into()),
             project: None,
             kind: proto::TabKind::Agent { id: "claude".into() },
@@ -10069,6 +10120,7 @@ mod tests {
         let mut host = StubHost { home: Some(home.path().to_path_buf()), ..Default::default() };
         // Pin the transcript via the persisted default tab's session id.
         host.tasks[2].persisted_tabs = vec![crate::PersistedTab {
+            agent_args: Vec::new(),
             id: "tab1".into(),
             cli: "claude".into(),
             is_default: true,

@@ -81,7 +81,9 @@ use std::io::{self, BufRead, Read, Write};
 /// clears the title of a tab that is already open. A v15 server would
 /// drop the unknown `title` field and open an untitled tab, so a script
 /// that then addresses `--tab <title>` would fail far from the cause.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// v17: per-tab launch arguments. Older servers would silently discard
+/// the requested model/reasoning, so a matching app and CLI are required.
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// The argv `new` pins to a task's agent: the generic `--arg` values, then
 /// `--model <m>` LAST, so an explicit model wins when the agent parses
@@ -399,6 +401,9 @@ pub enum Command {
     /// in sandbox, resume and YOLO behaviour and a typo must not land the
     /// caller in the wrong semantics (docs/plans/cli.md, GH #138).
     Tab {
+        /// Explicit per-tab argv. Requires an explicit agent kind.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agent_args: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         task: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -931,6 +936,9 @@ pub struct PromptEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TabData {
+    /// Explicit per-tab overrides, not the provider's inferred effective configuration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_args: Vec<String>,
     /// The task the tab was opened in.
     pub task_id: String,
     /// The tab's stable store id. Printed for every kind so a script can
@@ -1219,6 +1227,9 @@ pub struct TaskStatus {
 /// One tab row for `status` (GH #138 part 2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TabStatus {
+    /// Explicit per-tab overrides, not the provider's inferred effective configuration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_args: Vec<String>,
     /// Stable tab id: the identity every `--tab` selector resolves to.
     pub id: String,
     /// 1-based row number in THIS list, which is the task's terminal
@@ -1846,6 +1857,7 @@ mod tests {
                 task: None, project: None, timeout_ms: None, tab: None, cwd: Some("/t".into()),
             },
             Command::Tab {
+                agent_args: Vec::new(),
                 task: Some("fix-auth".into()),
                 project: None,
                 kind: TabKind::Agent { id: "claude".into() },
@@ -1858,11 +1870,13 @@ mod tests {
                 cwd: None,
             },
             Command::Tab {
+                agent_args: Vec::new(),
                 task: None, project: None, kind: TabKind::Shell,
                 prompt: None, prompt_ref: None, wait: false, timeout_ms: None,
                 resume: None, title: None, cwd: None,
             },
             Command::Tab {
+                agent_args: Vec::new(),
                 task: None, project: None, kind: TabKind::Default,
                 prompt: None, prompt_ref: None, wait: false, timeout_ms: None,
                 resume: None, title: None, cwd: None,
@@ -2048,6 +2062,7 @@ mod tests {
                     dirty_files: Some(4),
                     tabs: Some(vec![
                         TabStatus {
+                            agent_args: Vec::new(),
                             id: "t1".into(),
                             index: 1,
                             kind: "agent".into(),
@@ -2059,6 +2074,7 @@ mod tests {
                             queued: 1,
                         },
                         TabStatus {
+                            agent_args: Vec::new(),
                             id: "t2".into(),
                             index: 2,
                             kind: "shell".into(),
@@ -2132,6 +2148,7 @@ mod tests {
                 ],
             }),
             ReplyData::Tab(TabData {
+                agent_args: Vec::new(),
                 task_id: "w1".into(),
                 tab_id: "3f1c-…".into(),
                 cli: "claude".into(),
@@ -2139,6 +2156,7 @@ mod tests {
                 prompt: None,
             }),
             ReplyData::Tab(TabData {
+                agent_args: Vec::new(),
                 task_id: "w1".into(),
                 tab_id: "3f1c-…".into(),
                 cli: "claude".into(),
