@@ -2039,13 +2039,19 @@ fn top_up_extra_ports(task: &mut Task, proj: &Project, others: &[Task], range: P
     if task.port_block_len == 0 {
         task.port_block_len = task_block_len(task);
     }
-    let members = task.composition.len() as u16;
+    // First free slot inside the block, not `1 + members + extras`: member
+    // removal (task_update_members) leaves middle slots free while extras
+    // keep their frozen ports, so offset math would collide. Same scan as
+    // next_member_slot. `used` covers pairs added earlier in this loop.
+    let mut used: HashSet<u16> = std::iter::once(task.port)
+        .chain(task.composition.iter().map(|m| m.port))
+        .chain(task.extra_named_ports.iter().map(|np| np.port))
+        .collect();
     let mut added = false;
     for n in effective_extra_named_ports(proj) {
         if task.extra_named_ports.iter().any(|np| np.name == n) { continue; }
-        let slot = 1 + members + task.extra_named_ports.len() as u16;
-        let port = if slot < task.port_block_len {
-            task.port + slot
+        let port = if let Some(p) = (task.port.saturating_add(1)..task.port.saturating_add(task.port_block_len)).find(|p| !used.contains(p)) {
+            p
         } else {
             // Buffer exhausted: first-fit a single stray port. Occupancy
             // must reflect self's IN-PROGRESS state (pairs added earlier
@@ -2069,6 +2075,7 @@ fn top_up_extra_ports(task: &mut Task, proj: &Project, others: &[Task], range: P
                 }
             }
         };
+        used.insert(port);
         task.extra_named_ports.push(NamedPort { name: n, port });
         added = true;
     }
@@ -3508,8 +3515,12 @@ fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
     rw.extend(task.sandbox_rw_paths.iter().cloned());
     hosts.extend(task.sandbox_allowed_hosts.iter().cloned());
 
-    // Repos contributing to this task.
-    if task.composition.is_empty() {
+    // Repos contributing to this task. Empty composition can't tell
+    // "single-repo" from "multi with every member unchecked" — project
+    // type can.
+    let is_multi = projects.iter().find(|p| p.id == task.project_id)
+        .map(|p| p.project_type == ProjectType::Multi).unwrap_or(false);
+    if !is_multi && task.composition.is_empty() {
         // Single-repo: the project's committed `.termic.yaml` sandbox block
         // (re-read live) + its personal projects.json overrides.
         if let Some(p) = projects.iter().find(|p| p.id == task.project_id) {
@@ -6039,6 +6050,11 @@ fn task_open_repo(
     // fallback to the project's default, for the same reason the sandbox
     // args above have none: the CLI passes nothing and must get nothing.
     yolo: Option<bool>,
+    // Multi-repo only: member root_paths to link into the host checkout.
+    // `None` = every member (the quick-create / CLI callers' historical
+    // shape); `Some` links only the listed ones, in project-member order.
+    // Unknown paths are ignored — the list is a filter, not a spec.
+    members: Option<Vec<String>>,
 ) -> Result<Task, String> {
     let proj = load_projects_all().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
@@ -6059,6 +6075,15 @@ fn task_open_repo(
             .unwrap_or_else(|_| "HEAD".to_string())
     };
     let extra_names = effective_extra_named_ports(&proj);
+    // A passed subset filters which project members get linked in; None
+    // keeps the historical "every member" for the quick paths. Members
+    // stay in project order — the list is a filter, not a spec.
+    let wanted: Option<HashSet<&str>> = members.as_ref()
+        .map(|paths| paths.iter().map(|p| p.as_str()).collect());
+    let link_members: Vec<ProjectMember> = proj.members.iter()
+        .filter(|pm| wanted.as_ref().map_or(true, |w| w.contains(pm.root_path.as_str())))
+        .cloned()
+        .collect();
     // Allocate the block against the member-count UPPER BOUND (the loop
     // below may skip invalid / duplicate / symlink-conflicting members),
     // but freeze the extras only AFTER the loop, offset by the ACTUAL
@@ -6067,7 +6092,7 @@ fn task_open_repo(
     // offset could land outside the recorded block and collide with the
     // next task's base once skips exceed the buffer.
     let member_count_hint = if proj.project_type == ProjectType::Multi {
-        proj.members.len() as u16
+        link_members.len() as u16
     } else { 0 };
     // Stamped as port_block_len below: the hint-based allocation is the
     // recorded block even when members get skipped, so the unused tail
@@ -6075,7 +6100,8 @@ fn task_open_repo(
     let port_block_len = block_len(member_count_hint, extra_names.len() as u16);
     // Held until save_task below persists the claimed block.
     let _port_guard = PORT_ALLOC_LOCK.lock();
-    let port = next_base_port(&load_tasks_all(), port_block_len, current_port_range())?;
+    let all_tasks = load_tasks_all();
+    let port = next_base_port(&all_tasks, port_block_len, current_port_range())?;
 
     // Multi-repo project opened in REPO mode: drop a symlink for
     // each member into the host's working dir so the agent at the
@@ -6092,8 +6118,16 @@ fn task_open_repo(
         // Per-member port counter — same scheme as worktree-mode
         // multi-repo: task.port + i + 1 so members can run
         // PORT=$TERMIC_PORT npm run dev without colliding.
-        composition = link_repo_mode_members(host_dir, &proj.members, port + 1);
-        let dir_names: Vec<String> = composition.iter().map(|m| m.dir_name.clone()).collect();
+        composition = link_repo_mode_members(host_dir, &link_members, port + 1);
+        // Repo-root tasks SHARE the host checkout and its managed
+        // gitignore block: it must cover every live sibling's member
+        // dirs too, or a subset open would un-ignore links another
+        // task still owns.
+        let mut dir_names: Vec<String> = composition.iter().map(|m| m.dir_name.clone()).collect();
+        let mut siblings: Vec<String> = live_repo_root_dirs(&all_tasks, &proj.root_path, None)
+            .into_iter().filter(|d| !dir_names.contains(d)).collect();
+        siblings.sort();
+        dir_names.extend(siblings);
         // Don't error on gitignore write — host might be read-only or
         // the user might prefer to track these. Non-fatal.
         let _ = ensure_multirepo_gitignore(host_dir, &dir_names);
@@ -7174,17 +7208,9 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     // Helper that tears down everything we've created so far on
     // failure. Order: members first (so the host worktree git still
     // knows about them), then the host. Best-effort.
-    let rollback = |members_done: &[(ProjectMember, CreateMultiMember, String, MemberMode, String)]| {
-        for (mp, _, _, mode, path) in members_done {
-            match mode {
-                MemberMode::RepoRoot => {
-                    let _ = fs::remove_file(path);
-                }
-                MemberMode::Worktree => {
-                    let _ = git(&["worktree", "remove", "--force", path], Path::new(&mp.root_path));
-                    let _ = fs::remove_dir_all(path);
-                }
-            }
+    let rollback = |created: &[TaskMember]| {
+        for m in created {
+            let _ = teardown_member(&wrapper, m, &projects);
         }
         // Non-git host has no host worktree to unregister — just drop the dir.
         if !host.non_git {
@@ -7193,10 +7219,10 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         let _ = fs::remove_dir_all(&wrapper);
     };
 
-    // Now create each member. members_done accumulates so rollback
-    // can unwind a partial composition.
+    // Now create each member. `composition` doubles as the rollback
+    // manifest: every member that reached the record has on-disk state
+    // teardown_member can unwind.
     let mut composition: Vec<TaskMember> = Vec::new();
-    let mut done: Vec<(ProjectMember, CreateMultiMember, String, MemberMode, String)> = Vec::new();
     // Allocate the task's whole port block up front (GH #196): base
     // ($TERMIC_PORT) + one port per member + the host's extra named
     // ports + buffer. Members get base+1+i via the counter below;
@@ -7217,100 +7243,11 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     for (mp, spec, dir_name) in frozen.into_iter() {
         let member_port = next_member_port;
         next_member_port = next_member_port.saturating_add(1);
-        let target = wrapper.join(&dir_name);
-        match spec.mode {
-            MemberMode::RepoRoot => {
-                emit_create_progress(&app, &task_id, format!("Linking member '{dir_name}' to its live checkout…"));
-                if let Err(e) = fs_link::symlink_any(&mp.root_path, &target) {
-                    rollback(&done);
-                    return Err(format!("symlink {dir_name}: {e}"));
-                }
-                // Scripts come from the inline member's own per-project
-                // spec (the multi-repo project's member entry), the
-                // "different commands per multi-repo project" model.
-                // No files_to_copy pass here: repo-root mode IS the live
-                // checkout, so the gitignored files are already sitting in
-                // it. Copying onto itself would be a no-op at best and could
-                // clobber a file with its own stale copy at worst. The list
-                // is still frozen so a later mode change reads the same one.
-                composition.push(TaskMember {
-                    project_id: String::new(),
-                    repo_path: mp.root_path.clone(),
-                    dir_name: dir_name.clone(),
-                    mode: MemberMode::RepoRoot,
-                    branch: String::new(),
-                    path: mp.root_path.clone(),
-                    port: member_port,
-                    setup_script:   mp.setup_script.clone(),
-                    run_script:     mp.run_script.clone(),
-                    archive_script: mp.archive_script.clone(),
-                    files_to_copy:  mp.files_to_copy.clone(),
-                });
-                done.push((mp.clone(), spec, dir_name, MemberMode::RepoRoot, target.to_string_lossy().into_owned()));
-            }
-            MemberMode::Worktree => {
-                let mbranch = spec.branch.clone()
-                    .map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
-                    .unwrap_or_else(|| branch.clone());
-                let mbase = spec.base_branch.clone()
-                    .map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
-                    .unwrap_or_else(|| mp.base_branch.clone());
-                let mrepo = PathBuf::from(&mp.root_path);
-                // --no-track when creating from origin/* base — see
-                // single-repo create site for the rationale (deleting
-                // the worktree's branch later shouldn't risk wiping
-                // the remote upstream).
-                let mexists = git(&["rev-parse", "--verify", &mbranch], &mrepo).is_ok();
-                let mres = if mexists {
-                    emit_create_progress(&app, &task_id, format!("Adding member '{dir_name}' worktree on '{mbranch}'…"));
-                    git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo)
-                } else {
-                    // Refresh this member's base ref before cutting its branch,
-                    // honoring the member's own remote/base (GH #79).
-                    if do_fetch {
-                        emit_create_progress(&app, &task_id, format!("Fetching '{mbase}' for member '{dir_name}'…"));
-                        git_fetch_base(&mrepo, &mbase);
-                    }
-                    let mbase_ref = resolve_base_ref(&mrepo, &mbase);
-                    emit_create_progress(&app, &task_id, format!("Branching member '{dir_name}' ('{mbranch}') from '{mbase_ref}'…"));
-                    match git(&["branch", "--no-track", &mbranch, &mbase_ref], &mrepo) {
-                        Ok(_) => git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo),
-                        Err(e) => Err(e),
-                    }
-                };
-                if let Err(e) = mres {
-                    rollback(&done);
-                    return Err(format!("member {dir_name} worktree add failed: {e}"));
-                }
-                emit_create_progress(&app, &task_id, format!("Member '{dir_name}' worktree added."));
-                // Copy this member's own files_to_copy globs from its source
-                // repo into the fresh worktree (GH #264). Resolved per member
-                // — the override on the multi-repo project's member entry,
-                // else the member repo's committed `.termic.yaml` list.
-                let mcopy = member_effective_files_to_copy(&mp.root_path, &mp.files_to_copy);
-                if !mcopy.is_empty() {
-                    emit_create_progress(&app, &task_id, format!(
-                        "Copying {} file pattern(s) into '{dir_name}': {}",
-                        mcopy.len(), mcopy.join(", "),
-                    ));
-                    for pat in &mcopy {
-                        copy_matching(&mrepo, &target, pat);
-                    }
-                }
-                composition.push(TaskMember {
-                    project_id: String::new(),
-                    repo_path: mp.root_path.clone(),
-                    dir_name: dir_name.clone(),
-                    mode: MemberMode::Worktree,
-                    branch: mbranch,
-                    path: target.to_string_lossy().into_owned(),
-                    port: member_port,
-                    setup_script:   mp.setup_script.clone(),
-                    run_script:     mp.run_script.clone(),
-                    archive_script: mp.archive_script.clone(),
-                    files_to_copy:  mp.files_to_copy.clone(),
-                });
-                done.push((mp.clone(), spec, dir_name, MemberMode::Worktree, target.to_string_lossy().into_owned()));
+        match materialize_member(&app, &task_id, &wrapper, &mp, &spec, &dir_name, member_port, &branch, do_fetch) {
+            Ok(m) => composition.push(m),
+            Err(e) => {
+                rollback(&composition);
+                return Err(e);
             }
         }
     }
@@ -7365,22 +7302,10 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     } else {
         (sandbox_mode, sandbox_enabled)
     };
-    let mut base_rw: Vec<String> = Vec::new();
-    let mut base_hosts: Vec<String> = Vec::new();
-    let extend_unique = |target: &mut Vec<String>, src: &[String]| {
-        for v in src {
-            if !target.contains(v) { target.push(v.clone()); }
-        }
-    };
-    extend_unique(&mut base_rw,    &globals.sandbox_default_rw_paths);
-    extend_unique(&mut base_hosts, &globals.sandbox_default_allowed_hosts);
-    extend_unique(&mut base_rw,    &host.sandbox_rw_paths);
-    extend_unique(&mut base_hosts, &host.sandbox_allowed_hosts);
-    // Union each member's own sandbox lists (carried inline on the member).
-    for hm in &host.members {
-        extend_unique(&mut base_rw,    &hm.sandbox_rw_paths);
-        extend_unique(&mut base_hosts, &hm.sandbox_allowed_hosts);
-    }
+    // Base cage: globals + host + only the members actually in the task
+    // (an unchecked member's paths are not this task's to grant). Same
+    // derivation task_update_members re-checks after member edits.
+    let (base_rw, base_hosts) = multi_sandbox_base(&globals, &host, &composition, &projects);
     let sandbox_rw_paths    = args.sandbox_rw_paths.unwrap_or(base_rw);
     let sandbox_allowed_hosts = args.sandbox_allowed_hosts.unwrap_or(base_hosts);
     let docker_extra_mounts = args.docker_extra_mounts
@@ -7456,14 +7381,27 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     // dir for CLAUDE.md / AGENTS.md / .claude/, never something the
     // user wants to "run" — so we don't even peek at host.setup_script
     // here. (Single-repo task_create_sync handles its own.)
-    // Tuple shape: (dir_name, script, cwd, port). Per-member port
-    // so setup scripts that listen (rare but possible — e.g. setup
-    // boots a docker compose stack on $TERMIC_PORT) don't collide
-    // across siblings. Legacy tasks (port == 0) get the same
-    // task.port + i + 1 scheme retroactively.
+    // Member setup scripts stream on setup-output://<task.id> (see
+    // stream_member_setups — shared with task_update_members).
+    stream_member_setups(&app, &task, None);
+    Ok(task)
+}
+
+/// Runs every composition member's setup script, streaming lines on
+/// `setup-output://<task.id>` with a `[dir_name] ` prefix and firing a
+/// single `setup-done://` at the end. `only` restricts which members
+/// run (task_update_members passes just the newly added ones); sibling
+/// port env always covers the WHOLE composition so a setup reading a
+/// sibling's TERMIC_PORT_<DIR> works either way.
+/// Per-member port so setup scripts that listen (rare but possible —
+/// e.g. setup boots a docker compose stack on $TERMIC_PORT) don't
+/// collide across siblings. Legacy tasks (port == 0) get the same
+/// task.port + i + 1 scheme retroactively.
+fn stream_member_setups(app: &AppHandle, task: &Task, only: Option<&HashSet<String>>) {
     let member_setups: Vec<(String, String, std::path::PathBuf, u16)> = task.composition.iter()
         .enumerate()
         .filter_map(|(idx, m)| {
+            if only.map(|s| !s.contains(&m.dir_name)).unwrap_or(false) { return None; }
             // Per-member override wins; otherwise fall back to the member's
             // committed `.termic.yaml` setup, mirroring the run-script
             // resolution (resolveRunTargets). Without this, a member whose
@@ -7494,7 +7432,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         .map(|np| (np.name.clone(), np.port))
         .collect();
     if member_setups.is_empty() {
-        emit_scoped(&app, &format!("setup-done://{}", task.id),
+        emit_scoped(app, &format!("setup-done://{}", task.id),
             serde_json::json!({ "code": 0, "success": true }));
     } else {
         let app2 = app.clone();
@@ -7566,8 +7504,496 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
                 serde_json::json!({ "code": if ok { 0 } else { 1 }, "success": ok }));
         });
     }
+}
 
+/// Materialize one composition member under `parent`: the task wrapper
+/// for worktree tasks, the host checkout for live repo-root tasks.
+/// Shared by task_create_multi_sync (parent = fresh wrapper) and
+/// task_update_members (parent = whatever the task already points at).
+/// Returns the frozen TaskMember; on error the caller unwinds via
+/// teardown_member for every member that already made it.
+fn materialize_member(
+    app: &AppHandle, task_id: &str, parent: &Path,
+    mp: &ProjectMember, spec: &CreateMultiMember, dir_name: &str,
+    member_port: u16, task_branch: &str, do_fetch: bool,
+) -> Result<TaskMember, String> {
+    let target = parent.join(dir_name);
+    match spec.mode {
+        MemberMode::RepoRoot => {
+            // Tolerate the two ways the entry can already be right: our
+            // own symlink to the same checkout (re-add), or the member
+            // physically living at <parent>/<name> (parent-folder layout,
+            // no link needed — same case link_repo_mode_members handles).
+            // Anything else occupying the path is user content — refuse
+            // rather than clobber.
+            if let Ok(meta) = target.symlink_metadata() {
+                let is_our_link = meta.file_type().is_symlink()
+                    && fs::read_link(&target).ok().map(|p| p.to_string_lossy().into_owned())
+                        == Some(mp.root_path.clone());
+                let is_member_itself = !meta.file_type().is_symlink()
+                    && matches!(
+                        (fs::canonicalize(&target), fs::canonicalize(&mp.root_path)),
+                        (Ok(a), Ok(b)) if a == b
+                    );
+                if !is_our_link && !is_member_itself {
+                    return Err(format!(
+                        "{dir_name}: {} already exists and isn't this member's link",
+                        target.display()
+                    ));
+                }
+            } else {
+                emit_create_progress(app, task_id, format!("Linking member '{dir_name}' to its live checkout…"));
+                if let Err(e) = fs_link::symlink_any(&mp.root_path, &target) {
+                    return Err(format!("symlink {dir_name}: {e}"));
+                }
+            }
+            // Scripts come from the inline member's own per-project
+            // spec (the multi-repo project's member entry), the
+            // "different commands per multi-repo project" model.
+            // No files_to_copy pass here: repo-root mode IS the live
+            // checkout, so the gitignored files are already sitting in
+            // it. Copying onto itself would be a no-op at best and could
+            // clobber a file with its own stale copy at worst. The list
+            // is still frozen so a later mode change reads the same one.
+            Ok(TaskMember {
+                project_id: String::new(),
+                repo_path: mp.root_path.clone(),
+                dir_name: dir_name.to_string(),
+                mode: MemberMode::RepoRoot,
+                branch: String::new(),
+                path: mp.root_path.clone(),
+                port: member_port,
+                setup_script:   mp.setup_script.clone(),
+                run_script:     mp.run_script.clone(),
+                archive_script: mp.archive_script.clone(),
+                files_to_copy:  mp.files_to_copy.clone(),
+            })
+        }
+        MemberMode::Worktree => {
+            if target.symlink_metadata().is_ok() {
+                return Err(format!("{dir_name}: {} already exists", target.display()));
+            }
+            let mbranch = spec.branch.clone()
+                .map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
+                .unwrap_or_else(|| task_branch.to_string());
+            let mbase = spec.base_branch.clone()
+                .map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
+                .unwrap_or_else(|| mp.base_branch.clone());
+            let mrepo = PathBuf::from(&mp.root_path);
+            // --no-track when creating from origin/* base — see
+            // single-repo create site for the rationale (deleting
+            // the worktree's branch later shouldn't risk wiping
+            // the remote upstream).
+            let mexists = git(&["rev-parse", "--verify", &mbranch], &mrepo).is_ok();
+            if mexists {
+                emit_create_progress(app, task_id, format!("Adding member '{dir_name}' worktree on '{mbranch}'…"));
+                git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo)
+            } else {
+                // Refresh this member's base ref before cutting its branch,
+                // honoring the member's own remote/base (GH #79).
+                if do_fetch {
+                    emit_create_progress(app, task_id, format!("Fetching '{mbase}' for member '{dir_name}'…"));
+                    git_fetch_base(&mrepo, &mbase);
+                }
+                let mbase_ref = resolve_base_ref(&mrepo, &mbase);
+                emit_create_progress(app, task_id, format!("Branching member '{dir_name}' ('{mbranch}') from '{mbase_ref}'…"));
+                git(&["branch", "--no-track", &mbranch, &mbase_ref], &mrepo)
+                    .and_then(|_| git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo))
+            }
+            .map_err(|e| format!("member {dir_name} worktree add failed: {e}"))?;
+            emit_create_progress(app, task_id, format!("Member '{dir_name}' worktree added."));
+            // Copy this member's own files_to_copy globs from its source
+            // repo into the fresh worktree (GH #264). Resolved per member
+            // — the override on the multi-repo project's member entry,
+            // else the member repo's committed `.termic.yaml` list.
+            let mcopy = member_effective_files_to_copy(&mp.root_path, &mp.files_to_copy);
+            if !mcopy.is_empty() {
+                emit_create_progress(app, task_id, format!(
+                    "Copying {} file pattern(s) into '{dir_name}': {}",
+                    mcopy.len(), mcopy.join(", "),
+                ));
+                for pat in &mcopy {
+                    copy_matching(&mrepo, &target, pat);
+                }
+            }
+            Ok(TaskMember {
+                project_id: String::new(),
+                repo_path: mp.root_path.clone(),
+                dir_name: dir_name.to_string(),
+                mode: MemberMode::Worktree,
+                branch: mbranch,
+                path: target.to_string_lossy().into_owned(),
+                port: member_port,
+                setup_script:   mp.setup_script.clone(),
+                run_script:     mp.run_script.clone(),
+                archive_script: mp.archive_script.clone(),
+                files_to_copy:  mp.files_to_copy.clone(),
+            })
+        }
+    }
+}
+
+/// Which repo a composition member belongs to. New records carry
+/// `repo_path`; legacy ones predate it — a repo_root member's `path`
+/// IS the repo root (it's the link target), a worktree member resolves
+/// through the member project's id, same as archive.
+fn member_repo(m: &TaskMember, projects: &[Project]) -> Option<String> {
+    if !m.repo_path.is_empty() {
+        Some(m.repo_path.clone())
+    } else if m.mode == MemberMode::RepoRoot {
+        Some(m.path.clone())
+    } else {
+        projects.iter().find(|p| p.id == m.project_id).map(|mp| mp.root_path.clone())
+    }
+}
+
+/// Remove one member's on-disk footprint under `parent`. Worktrees: try
+/// `git worktree remove` first — a blind rm -rf leaves a dangling
+/// registration in the repo's .git/worktrees/ — then remove_dir_all for
+/// residue. Repo-root members only unlink if the symlink still points
+/// where we put it.
+fn teardown_member(parent: &Path, m: &TaskMember, projects: &[Project]) -> Result<(), String> {
+    match m.mode {
+        MemberMode::RepoRoot => {
+            let link = parent.join(&m.dir_name);
+            // Only remove a symlink that still points where we put it
+            // (m.path is the repo root for RepoRoot members) — a repointed
+            // link or real content is the user's. Stricter than archive's
+            // wrapper path, which unlinks anything symlink-shaped; the
+            // update path can run on a LIVE checkout, so be sure.
+            let ours = link.symlink_metadata().map(|md| md.file_type().is_symlink()).unwrap_or(false)
+                && fs::read_link(&link).map(|t| t.to_string_lossy() == m.path).unwrap_or(false);
+            if ours {
+                fs::remove_file(&link).map_err(|e| format!("rm link {}: {e}", m.dir_name))?;
+            }
+            Ok(())
+        }
+        MemberMode::Worktree => {
+            if let Some(repo_path) = member_repo(m, projects) {
+                let _ = git(&["worktree", "remove", "--force", &m.path], Path::new(&repo_path));
+            }
+            if Path::new(&m.path).exists() {
+                fs::remove_dir_all(&m.path).map_err(|e| format!("rm member dir {}: {e}", m.dir_name))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Next free member port inside the task's already-claimed block —
+/// PORT_BLOCK_BUFFER's tail exists precisely for late member adds.
+/// Reuses slots freed by removals. Legacy records (no port) get 0,
+/// matching the legacy "port unknown" convention.
+fn next_member_slot(t: &Task) -> Result<u16, String> {
+    if t.port < PORT_ALLOC_MIN { return Ok(0); }
+    let used: HashSet<u16> = t.composition.iter().map(|m| m.port)
+        .chain(t.extra_named_ports.iter().map(|np| np.port))
+        .chain(std::iter::once(t.port))
+        .collect();
+    let mut p = t.port.saturating_add(1);
+    while used.contains(&p) {
+        // checked_add, not saturating: at u16::MAX a saturating add pins
+        // forever and this loop runs holding PORT_ALLOC_LOCK.
+        p = match p.checked_add(1) { Some(v) => v, None => break };
+    }
+    if p >= t.port.saturating_add(task_block_len(t)) {
+        // ponytail: the block's +5 buffer covers realistic growth;
+        // beyond it the honest answer is "recreate the task", because
+        // claiming outside the block makes the port invisible to the
+        // allocator (task_port_intervals only sees block + named extras).
+        return Err(format!(
+            "no member port slots left — this task's block is full (buffer of {PORT_BLOCK_BUFFER} exhausted). Recreate the task to add more members."
+        ));
+    }
+    Ok(p)
+}
+
+/// The sandbox rw/hosts base a multi-repo task derives when the caller
+/// doesn't pin its own: globals + host + only the members actually in
+/// `composition`. Extracted from task_create_multi_sync so
+/// task_update_members can tell "still the auto-derived cage" (safe to
+/// re-derive) from "user customized" (leave alone).
+fn multi_sandbox_base(globals: &Settings, host: &Project, composition: &[TaskMember], projects: &[Project]) -> (Vec<String>, Vec<String>) {
+    multi_sandbox_base_of(
+        globals,
+        host,
+        host.members.iter().filter(|hm| composition.iter()
+            // member_repo resolves legacy records (empty repo_path) so a
+            // re-derive doesn't silently strip a legacy member's entries.
+            .any(|cm| member_repo(cm, projects).as_deref() == Some(hm.root_path.as_str()))),
+    )
+}
+
+/// The union core: globals → host → members (order preserved — the New
+/// Task dialog pins exactly this sequence into its sandbox textareas, so
+/// a same-order union is what "untouched" compares equal to).
+fn multi_sandbox_base_of<'a>(
+    globals: &Settings,
+    host: &Project,
+    members: impl Iterator<Item = &'a ProjectMember>,
+) -> (Vec<String>, Vec<String>) {
+    let mut base_rw: Vec<String> = Vec::new();
+    let mut base_hosts: Vec<String> = Vec::new();
+    let extend_unique = |target: &mut Vec<String>, src: &[String]| {
+        for v in src {
+            if !target.contains(v) { target.push(v.clone()); }
+        }
+    };
+    extend_unique(&mut base_rw,    &globals.sandbox_default_rw_paths);
+    extend_unique(&mut base_hosts, &globals.sandbox_default_allowed_hosts);
+    extend_unique(&mut base_rw,    &host.sandbox_rw_paths);
+    extend_unique(&mut base_hosts, &host.sandbox_allowed_hosts);
+    for hm in members {
+        extend_unique(&mut base_rw,    &hm.sandbox_rw_paths);
+        extend_unique(&mut base_hosts, &hm.sandbox_allowed_hosts);
+    }
+    (base_rw, base_hosts)
+}
+
+/// Add and/or remove members on an existing multi-repo task.
+/// `remove` lists member dir_names to drop; `add` takes the same
+/// per-member spec as create. Removals run first (frees dir_names and
+/// port slots for same-call adds). Per-member best-effort, like
+/// archive: every failure is collected and reported, but the members
+/// that succeeded stay done — the persisted composition always matches
+/// what's on disk. Added worktree members get their setup scripts
+/// streamed exactly as at create.
+#[tauri::command]
+async fn task_update_members(app: AppHandle, task_id: String, add: Vec<CreateMultiMember>, remove: Vec<String>) -> Result<Task, String> {
+    tauri::async_runtime::spawn_blocking(move || task_update_members_sync(app, task_id, add, remove))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn task_update_members_sync(app: AppHandle, task_id: String, add: Vec<CreateMultiMember>, remove: Vec<String>) -> Result<Task, String> {
+    let projects = load_projects_all();
+    let mut tasks = load_tasks_all();
+    let idx = tasks.iter().position(|t| t.id == task_id).ok_or("no such task")?;
+    if tasks[idx].archived {
+        return Err("task is archived — restore it before editing members".into());
+    }
+    let host = projects.iter().find(|p| p.id == tasks[idx].project_id)
+        .ok_or("project not found")?.clone();
+    let globals = load_settings_in(&host.profile);
+    if host.project_type != ProjectType::Multi {
+        return Err("only multi-repo tasks have editable members".into());
+    }
+    let parent = PathBuf::from(&tasks[idx].path);
+    let is_live = tasks[idx].is_main_checkout;
+    let mut errs: Vec<String> = Vec::new();
+
+    // --- removals first: frees dir_names + port slots for adds below.
+    // Best-effort per member like archive — a member whose teardown
+    // failed stays in the composition so the record stays truthful.
+    // Whole members, not just names: the merge must not drop a member a
+    // CONCURRENT edit added under the same dir_name (different path) —
+    // that's their record, and its on-disk dir isn't one we removed.
+    let mut removed_members: Vec<TaskMember> = Vec::new();
+    // Live host checkouts share member links with every sibling live
+    // repo-root task — the same guard archive runs before unlinking.
+    let sibling_dirs: HashSet<String> = if is_live {
+        live_repo_root_dirs(&tasks, &tasks[idx].path, Some(&task_id))
+    } else {
+        HashSet::new()
+    };
+    for dir in &remove {
+        let Some(mi) = tasks[idx].composition.iter().position(|m| &m.dir_name == dir) else {
+            errs.push(format!("'{dir}' is not a member of this task"));
+            continue;
+        };
+        let m = tasks[idx].composition[mi].clone();
+        let torn_down = if m.mode == MemberMode::RepoRoot && sibling_dirs.contains(&m.dir_name) {
+            // A sibling live repo-root task still claims this link — it
+            // is the sibling's file tree, not ours. Drop the record only.
+            Ok(())
+        } else {
+            teardown_member(&parent, &m, &projects)
+        };
+        match torn_down {
+            Ok(()) => {
+                tasks[idx].composition.remove(mi);
+                removed_members.push(m);
+            }
+            Err(e) => errs.push(e),
+        }
+    }
+
+    // --- additions, then the record merge. PORT_ALLOC_LOCK spans both:
+    // claimed slots can't be handed to a concurrent create/top-up, and
+    // the merge re-reads the record inside the same critical section —
+    // the worktree adds + fetches above take seconds, during which a
+    // rename, archive, or delete could have landed. Blind-saving the
+    // load from the top would resurrect it (same re-read restore does).
+    let do_fetch = fetch_before_create_enabled();
+    let task_branch = tasks[idx].branch.clone();
+    let port_guard = PORT_ALLOC_LOCK.lock();
+    let mut added_members: Vec<TaskMember> = Vec::new();
+    for spec in &add {
+        let mp = match host.members.iter().find(|m| m.root_path == spec.root_path) {
+            Some(mp) => mp.clone(),
+            None => { errs.push(format!("no member '{}' in this project", spec.root_path)); continue; }
+        };
+        let dir_name = spec.dir_name.clone()
+            .map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
+            .unwrap_or_else(|| mp.name.clone());
+        if dir_name.is_empty() || dir_name.contains('/') || dir_name == "." || dir_name == ".." {
+            errs.push(format!("invalid member dir name '{dir_name}'")); continue;
+        }
+        // One row per repo, stricter than create's dir_name-only dedupe:
+        // the edit UI keys addable rows by root_path and can't express
+        // two links to the same repo anyway.
+        if tasks[idx].composition.iter().any(|m| m.dir_name == dir_name
+            || member_repo(m, &projects).as_deref() == Some(spec.root_path.as_str())) {
+            errs.push(format!("'{dir_name}' is already a member of this task")); continue;
+        }
+        let port = match next_member_slot(&tasks[idx]) {
+            Ok(p) => p,
+            Err(e) => { errs.push(e); continue; }
+        };
+        // Live repo-root tasks can only link — spec.mode is honored
+        // for worktree tasks, forced RepoRoot under a live checkout.
+        let effective = if is_live {
+            CreateMultiMember { mode: MemberMode::RepoRoot, ..spec.clone() }
+        } else {
+            spec.clone()
+        };
+        match materialize_member(&app, &task_id, &parent, &mp, &effective, &dir_name, port, &task_branch, do_fetch) {
+            Ok(m) => {
+                // Keep the working view in step too — the dup check and
+                // next_member_slot above both read this composition.
+                tasks[idx].composition.push(m.clone());
+                added_members.push(m);
+            }
+            Err(e) => errs.push(e),
+        }
+    }
+
+    // Merge our delta onto the FRESH record — concurrent field writes
+    // (rename, yolo, archived) survive, and a concurrent member edit's
+    // dirs and ports are respected instead of clobbered.
+    let mut fresh = load_tasks_all();
+    let Some(fi) = fresh.iter().position(|t| t.id == task_id) else {
+        for m in &added_members { let _ = teardown_member(&parent, m, &projects); }
+        errs.push("task was deleted while members were being updated".into());
+        return Err(errs.join("; "));
+    };
+    if fresh[fi].archived {
+        // Even on an archived record keep it truthful: members we tore
+        // down leave the composition (a live task's archive is
+        // record-only — restore won't recreate links that aren't here).
+        // Adds are reversed instead — an archived task gains nothing.
+        fresh[fi].composition.retain(|m| !removed_members.iter()
+            .any(|r| r.dir_name == m.dir_name && r.path == m.path));
+        if let Err(e) = save_task(&fresh[fi]) { errs.push(e.to_string()); }
+        for m in &added_members { let _ = teardown_member(&parent, m, &projects); }
+        errs.push("task was archived while members were being updated".into());
+        return Err(errs.join("; "));
+    }
+    // The auto-cage check below compares the STORED lists against the
+    // base the pre-delta composition would derive — and also against the
+    // all-members union the New Task dialog pins at create (identical
+    // merge order). Either match means "user never touched it", so
+    // re-deriving is safe; anything else is theirs.
+    let (old_rw, old_hosts) = multi_sandbox_base(&globals, &host, &fresh[fi].composition, &projects);
+    let (all_rw, all_hosts) = multi_sandbox_base_of(&globals, &host, host.members.iter());
+    // Retain by (dir_name, path) — a concurrent re-add under the same
+    // dir_name with a different path is their member, not the one we
+    // tore down; its on-disk dir still exists.
+    fresh[fi].composition.retain(|m| !removed_members.iter()
+        .any(|r| r.dir_name == m.dir_name && r.path == m.path));
+    let mut added_dirs: HashSet<String> = HashSet::new();
+    for mut m in added_members {
+        if fresh[fi].composition.iter().any(|x| x.dir_name == m.dir_name) {
+            // A concurrent edit claimed this dir_name; our materialized
+            // dir would be a duplicate on disk — tear it back down.
+            let _ = teardown_member(&parent, &m, &projects);
+            errs.push(format!("'{}' was added by a concurrent edit", m.dir_name));
+            continue;
+        }
+        if fresh[fi].composition.iter().any(|x| x.port == m.port)
+            || fresh[fi].extra_named_ports.iter().any(|np| np.port == m.port)
+        {
+            match next_member_slot(&fresh[fi]) {
+                Ok(p) => m.port = p,
+                Err(e) => {
+                    let _ = teardown_member(&parent, &m, &projects);
+                    errs.push(format!("{}: {e}", m.dir_name));
+                    continue;
+                }
+            }
+        }
+        added_dirs.insert(m.dir_name.clone());
+        fresh[fi].composition.push(m);
+    }
+    let (new_rw, new_hosts) = multi_sandbox_base(&globals, &host, &fresh[fi].composition, &projects);
+    if fresh[fi].sandbox_rw_paths == old_rw || fresh[fi].sandbox_rw_paths == all_rw {
+        fresh[fi].sandbox_rw_paths = new_rw;
+    }
+    if fresh[fi].sandbox_allowed_hosts == old_hosts || fresh[fi].sandbox_allowed_hosts == all_hosts {
+        fresh[fi].sandbox_allowed_hosts = new_hosts;
+    }
+    save_task(&fresh[fi]).map_err(|e| e.to_string())?;
+    drop(port_guard);
+    let task = fresh[fi].clone();
+
+    // .gitignore bookkeeping, per task shape. Worktree wrapper: the
+    // managed block mirrors this task's members. Live checkout: union
+    // every live repo-root task's dirs — a member dropped here may
+    // still be claimed by a sibling (its record is already saved, so
+    // the union counts it correctly).
+    if is_live {
+        let dirs: Vec<String> = live_repo_root_dirs(&load_tasks_all(), &task.path, None).into_iter().collect();
+        if let Err(e) = ensure_multirepo_gitignore(&parent, &dirs) {
+            eprintln!("update-members gitignore write failed (non-fatal): {e}");
+        }
+    } else if !host.non_git {
+        let dir_names: Vec<String> = task.composition.iter().map(|m| m.dir_name.clone()).collect();
+        if let Err(e) = ensure_multirepo_gitignore(&parent, &dir_names) {
+            eprintln!("update-members gitignore write failed (non-fatal): {e}");
+        }
+        // Re-commit bookkeeping like create does — the managed block
+        // changed, and ?? noise in the Changes view is ours to hide.
+        let bookkeeping = ["CLAUDE.md", "AGENTS.md", ".gitignore", ".claude", ".gemini", ".codex"];
+        let mut to_add: Vec<&str> = Vec::new();
+        for f in &bookkeeping {
+            if parent.join(f).exists() { to_add.push(*f); }
+        }
+        if !to_add.is_empty() {
+            let mut add_args: Vec<&str> = vec!["add", "--"];
+            add_args.extend(&to_add);
+            let _ = git(&add_args, &parent);
+            let _ = git(
+                &["-c", "user.email=termic@local", "-c", "user.name=Termic",
+                  "commit", "-q", "-m", "termic: task bookkeeping"],
+                &parent,
+            );
+        }
+    }
+
+    // New members get the same post-create setup treatment — including
+    // on partial failure, since the ones that landed are real now.
+    if !added_dirs.is_empty() {
+        stream_member_setups(&app, &task, Some(&added_dirs));
+    }
+    if !errs.is_empty() {
+        return Err(errs.join("; "));
+    }
     Ok(task)
+}
+
+/// Member dir_names every OTHER live repo-root task on `host_path`
+/// still claims. Two callers need the same set: task_open_repo unions
+/// it into the host's managed .gitignore block (a subset open must not
+/// un-ignore a sibling's links) and task_archive consults it before
+/// unlinking anything (`exclude_id` skips the archiving task itself —
+/// its record isn't flagged archived yet, so it would match itself).
+fn live_repo_root_dirs(tasks: &[Task], host_path: &str, exclude_id: Option<&str>) -> HashSet<String> {
+    tasks.iter()
+        .filter(|o| Some(o.id.as_str()) != exclude_id && !o.archived && o.path == host_path)
+        .flat_map(|o| o.composition.iter()
+            .filter(|cm| cm.mode == MemberMode::RepoRoot)
+            .map(|cm| cm.dir_name.clone()))
+        .collect()
 }
 
 /// Rewrite (or insert) a fenced Termic-managed block at the bottom of
@@ -7875,9 +8301,9 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 
 #[tauri::command]
 fn task_set_cli(id: String, cli: String) -> Result<Task, String> {
-    if !["claude", "codex", "agy", "grok", "copilot", "opencode", "devin"]
-        .contains(&cli.as_str())
-    {
+    // Validate against the agent registry, not a fixed list — user-defined
+    // agents are valid picks (the picker's visibleCliIds is registry-driven).
+    if crate::agent_dirs::resolve_agent(&load_settings_inner().agents, &cli).is_none() {
         return Err(format!("unknown cli: {cli}"));
     }
     let mut list = load_tasks_all();
@@ -9952,7 +10378,11 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
     // declared order — stack teardown convention (last started,
     // first stopped). Single-repo tasks: host's project
     // archive_script fires (covers `npm run cleanup` etc).
-    if !w.composition.is_empty() {
+    // A multi task with every member unchecked has an empty
+    // composition — key on project type, not emptiness.
+    let is_multi = proj.as_ref()
+        .map(|p| p.project_type == ProjectType::Multi).unwrap_or(false);
+    if is_multi || !w.composition.is_empty() {
         for m in w.composition.iter().rev() {
             // Per-member override, else the member's committed `.termic.yaml`
             // archive (same resolution as setup/run) so a member configured
@@ -9991,12 +10421,7 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
         // self by id; w.archived isn't set yet, so we'd otherwise match
         // ourselves.) Without this, archiving one DPF repo-root session
         // silently emptied another's repo list (no command ever ran).
-        let sibling_links: HashSet<String> = load_tasks_all().into_iter()
-            .filter(|o| o.id != w.id && !o.archived && o.path == w.path)
-            .flat_map(|o| o.composition.into_iter()
-                .filter(|cm| cm.mode == MemberMode::RepoRoot)
-                .map(|cm| cm.dir_name))
-            .collect();
+        let sibling_links = live_repo_root_dirs(&load_tasks_all(), &w.path, Some(&w.id));
         for m in &w.composition {
             if m.mode != MemberMode::RepoRoot { continue; }
             if sibling_links.contains(&m.dir_name) { continue; }
@@ -10202,7 +10627,10 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     let wt_path = PathBuf::from(&list[idx].path);
     let repo = PathBuf::from(&proj.root_path);
 
-    if list[idx].composition.is_empty() {
+    // Empty composition is ambiguous now that a multi task can check
+    // zero members — the single-vs-multi fork keys on project type.
+    let is_multi = proj.project_type == ProjectType::Multi;
+    if !is_multi && list[idx].composition.is_empty() {
         // ── Single-repo task ──────────────────────────────────────────
         if !proj.non_git {
             let _ = git(&["worktree", "prune"], &repo);
@@ -10392,25 +10820,16 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     let task = list[idx].clone();
 
     // Run setup script(s) fire-and-forget, same as creation.
-    if task.composition.is_empty() {
+    if !is_multi && task.composition.is_empty() {
         let (setup, _, _) = effective_scripts(&proj);
         if !setup.trim().is_empty() {
             run_script_streaming(setup, wt_path, task.port, task.name.clone(), task.extra_named_ports.clone(), app, task.id.clone());
         }
     } else {
-        for m in &task.composition {
-            if !m.setup_script.trim().is_empty() {
-                run_script_streaming(
-                    m.setup_script.clone(),
-                    PathBuf::from(&m.path),
-                    if m.port > 0 { m.port } else { task.port },
-                    task.name.clone(),
-                    task.extra_named_ports.clone(),
-                    app.clone(),
-                    task.id.clone(),
-                );
-            }
-        }
+        // Same runner as create/update: resolves the .termic.yaml fallback
+        // (the old per-member loop skipped it — m.setup_script only) and
+        // runs members in declared order with sibling port env.
+        stream_member_setups(&app, &task, None);
     }
 
     Ok(task)
@@ -23554,7 +23973,7 @@ pub fn run() {
             window_close_if_not_last,
             profiles_list, profiles_disable, profile_create, profile_close, profile_seeded_tasks_path, profile_update, profile_open, profile_delete_preview, profile_delete,
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder, project_set_group,
-            tasks_list, task_create, task_create_multi, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_docker, task_set_yolo,
+            tasks_list, task_create, task_create_multi, task_update_members, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_docker, task_set_yolo,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
 
@@ -28915,6 +29334,97 @@ mod tests {
         assert!(s.contains("secrets.env"));
         assert!(s.contains("/y"));
         assert!(!s.contains("/x"));
+    }
+
+    fn repo_dir_task(id: &str, path: &str, dirs: &[&str]) -> Task {
+        Task {
+            id: id.into(),
+            path: path.into(),
+            composition: dirs.iter().map(|d| TaskMember {
+                dir_name: (*d).into(),
+                mode: MemberMode::RepoRoot,
+                ..Default::default()
+            }).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn live_repo_root_dirs_unions_only_live_siblings_on_the_same_host() {
+        // A subset open must not un-ignore links a sibling repo-root
+        // task still owns: the managed block gets this task's dirs UNION
+        // the live siblings' — the set this computes.
+        let host = tempdir().unwrap();
+        let host_path = host.path().to_string_lossy().into_owned();
+        let other_host = tempdir().unwrap();
+
+        let sibling = repo_dir_task("sib", &host_path, &["api"]);
+        let mut archived = repo_dir_task("arc", &host_path, &["old"]);
+        archived.archived = true;                       // dead: doesn't count
+        let other = repo_dir_task("oth", &other_host.path().to_string_lossy(), &["web"]);
+        let mut wt = repo_dir_task("wt", &host_path, &["wt-member"]);
+        wt.composition[0].mode = MemberMode::Worktree;  // wrapper dir, not a host link
+
+        let dirs = live_repo_root_dirs(&[sibling, archived, other, wt], &host_path, None);
+        assert_eq!(dirs, HashSet::from(["api".to_string()]));
+
+        // exclude_id skips the archiving task itself: its record isn't
+        // flagged archived yet when task_archive asks.
+        let tasks = vec![
+            repo_dir_task("sib", &host_path, &["api"]),
+            repo_dir_task("me", &host_path, &["docs"]),
+        ];
+        let dirs = live_repo_root_dirs(&tasks, &host_path, Some("me"));
+        assert_eq!(dirs, HashSet::from(["api".to_string()]));
+    }
+
+    fn member_port_task(port: u16, member_ports: &[u16], extra_ports: &[u16], block_len: u16) -> Task {
+        Task {
+            port,
+            port_block_len: block_len,
+            composition: member_ports.iter().enumerate().map(|(i, p)| TaskMember {
+                dir_name: format!("m{i}"),
+                port: *p,
+                ..Default::default()
+            }).collect(),
+            extra_named_ports: extra_ports.iter().enumerate().map(|(i, p)| NamedPort {
+                name: format!("e{i}"), port: *p,
+            }).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn next_member_slot_fills_the_block_buffer() {
+        // base=4000, block_len=8: members at +1,+2 → the next add takes
+        // +3, inside the task's already-claimed block.
+        let t = member_port_task(4000, &[4001, 4002], &[], 8);
+        assert_eq!(next_member_slot(&t).unwrap(), 4003);
+    }
+
+    #[test]
+    fn next_member_slot_reuses_freed_and_skips_extra_ports() {
+        // A removal frees its slot; extras pinned mid-member-zone are
+        // hopped over rather than collided with.
+        let t = member_port_task(4000, &[4002], &[4003], 8);
+        assert_eq!(next_member_slot(&t).unwrap(), 4001);
+        let t = member_port_task(4000, &[4001, 4002, 4003], &[4004], 8);
+        assert_eq!(next_member_slot(&t).unwrap(), 4005);
+    }
+
+    #[test]
+    fn next_member_slot_errors_when_the_block_is_full() {
+        // block_len=3 → only base+1 and base+2 are claimable; both taken.
+        let t = member_port_task(4000, &[4001, 4002], &[], 3);
+        assert!(next_member_slot(&t).is_err());
+    }
+
+    #[test]
+    fn next_member_slot_legacy_task_gets_zero() {
+        // port below the alloc floor = pre-allocation record: 0 is the
+        // "port unknown" convention, never a real assignment.
+        let t = member_port_task(0, &[0], &[], 0);
+        assert_eq!(next_member_slot(&t).unwrap(), 0);
     }
 
     fn repo_member(name: &str, root: &Path) -> ProjectMember {

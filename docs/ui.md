@@ -327,6 +327,43 @@ dialog started gating the member rows on the task type. What a plain-folder
 host really loses is the HOST-level "Branch from" pin (there are no host
 branches to pin); the members keep their own, in the dialog's member list.
 
+A task does not have to mount every member. Each row carries an include
+checkbox (default: all in); unchecked members are left out of the composition
+entirely, in worktree mode and in the main-checkout checklist alike
+(`task_create_multi`'s `members` arg and `task_open_repo`'s `members` arg are
+the same filter). Named subsets are saved per project in localStorage
+(`newTaskMemberSets`, `memberModes.ts`) — the chips under the Members header
+apply one in a click and the dashed "Save set…" button stores the current
+checkboxes. A member removed from the project stays in the set but is ignored
+at apply time, so a re-added member rejoins it. "Duplicate worktree" on a
+task re-seeds the dialog with that task's member subset (plus its branch),
+not the all-in default; a task frozen before subsets existed duplicates the
+way it always did.
+
+An existing multi-repo task is editable too — the task menu's "Edit task…"
+(multi-repo tasks only; a single-repo task has only its name, which Rename
+covers) opens a dialog that mirrors New Task field-for-field, so "what did I
+create" and "what can I change" are the same picture. Frozen fields render
+disabled rather than hidden (Task type, Branch name, Host branch from, each
+existing member's mode segmented control and branch — remove + re-add is how
+you change a member's mode); editable ones write through their existing
+commands: name → `task_rename`, Default CLI → `task_set_cli`, YOLO →
+`task_set_yolo`, and the member checklist → `task_update_members` (current
+members checked — uncheck = remove, gated by a destructive confirm for
+worktree members since it deletes the worktree; project members not in the
+task unchecked — check = add, with the same Main-checkout/Worktree toggle and
+branch/base fields the New Task dialog shows; on a live main-checkout task
+additions always link). Sandbox and Resume-args-override are the SAME fields
+as New Task — the real `SandboxPicker` (with the per-mode config pane to the
+right, same two-column layout New Task uses) and the inline override field —
+saved through the same commands their dedicated dialogs use (`task_set_sandbox`
+with `kill_live = false`, `task_set_docker` behind its mounted-agents confirm,
+`task_set_resume_override`). The restart affordance those dialogs have becomes
+a "Restart agents" toast action after a seatbelt change on a mounted task.
+Saved-set chips and Set-all bulk buttons are
+deliberately absent here — a one-click preset on existing members would be a
+one-click mass worktree deletion. One Save applies the delta and refreshes.
+
 ## Starting a task from an issue (GH #21/#22)
 
 One flow, two doors, and the SAME `NewTaskDialog` behind both:

@@ -87,6 +87,9 @@ export interface NewTaskSeed {
   agent?: string;
   /** Task type to pre-select, overriding the user's remembered choice. */
   mode?: "worktree" | "repo_root";
+  /** Multi-repo: pre-checks only these member root_paths — the "Duplicate"
+   *  of a subset task keeps the subset. Absent = every member checked. */
+  memberPaths?: string[];
   /** Bumped by `openNewTask` on every call. The dialog's reset effect keys
    *  on it, so a SECOND open for the same project re-seeds the form instead
    *  of no-op'ing — which is what a second deep link is (GH #192): the
@@ -125,6 +128,10 @@ interface UIState {
    *  closed. Lives in UI store so opening doesn't churn the task
    *  tree. */
   resumeOverrideTaskId: string | null;
+  /** "Edit task" dialog — multi-repo task id whose name + member
+   *  composition are being edited, null = closed. Lives in UI store so
+   *  opening doesn't churn the task tree. */
+  editTaskId: string | null;
   /** Read-only "Keyboard shortcuts" cheat-sheet modal (opened from the
    *  sidebar footer). Distinct from Settings → Shortcuts (which edits them). */
   /** True while Termic is in windowless mode (window closed to the menu bar,
@@ -292,6 +299,8 @@ interface UIState {
   closeRunCommands: () => void;
   openResumeOverride: (taskId: string) => void;
   closeResumeOverride: () => void;
+  openEditTask: (taskId: string) => void;
+  closeEditTask: () => void;
   openShortcutsHelp: () => void;
   closeShortcutsHelp: () => void;
   openWelcome: () => void;
@@ -461,6 +470,7 @@ export const useUI = create<UIState>(set => ({
   editCommandTaskId: null,
   runCommandsDialog: null,
   resumeOverrideTaskId: null,
+  editTaskId: null,
   windowless: false,
   // Assume focused until told otherwise: a first paint that guessed "away"
   // would badge a turn the user watched finish.
@@ -521,6 +531,8 @@ export const useUI = create<UIState>(set => ({
   closeRunCommands:   () => set({ runCommandsDialog: null }),
   openResumeOverride: (taskId) => set({ resumeOverrideTaskId: taskId }),
   closeResumeOverride:() => set({ resumeOverrideTaskId: null }),
+  openEditTask:   (taskId) => set({ editTaskId: taskId }),
+  closeEditTask:  () => set({ editTaskId: null }),
   setWindowless: (v) => set({ windowless: v }),
   setWindowFocused: (v) => set(s => (s.windowFocused === v ? s : { windowFocused: v })),
   setClosePromptOpen: (v) => set({ closePromptOpen: v }),

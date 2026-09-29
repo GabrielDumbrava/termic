@@ -4,8 +4,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   LS_MEMBER_MODES,
+  LS_MEMBER_SETS,
+  deleteMemberSet,
   persistMemberMode,
+  pruneMemberSets,
   readMemberModes,
+  readMemberSets,
+  saveMemberSet,
   seedMemberMode,
 } from "./memberModes";
 
@@ -66,5 +71,61 @@ describe("seedMemberMode", () => {
 
   it("defaults to worktree when nothing is remembered", () => {
     expect(seedMemberMode(false, {}, "/a")).toBe("worktree");
+  });
+});
+
+describe("member sets", () => {
+  it("returns [] when nothing is stored and survives a corrupt blob", () => {
+    expect(readMemberSets("p1")).toEqual([]);
+    store.set(LS_MEMBER_SETS, "not json {");
+    expect(readMemberSets("p1")).toEqual([]);
+    store.set(LS_MEMBER_SETS, JSON.stringify({ p1: [{ name: "x" }, { name: "y", members: "no" }] }));
+    expect(readMemberSets("p1")).toEqual([]);
+  });
+
+  it("scopes sets to their project", () => {
+    saveMemberSet("p1", "backend", ["/a", "/b"]);
+    saveMemberSet("p2", "all", ["/a"]);
+    expect(readMemberSets("p1")).toEqual([{ name: "backend", members: ["/a", "/b"] }]);
+    expect(readMemberSets("p2")).toEqual([{ name: "all", members: ["/a"] }]);
+  });
+
+  it("re-saving a name replaces the set rather than stacking a duplicate", () => {
+    saveMemberSet("p1", "backend", ["/a"]);
+    saveMemberSet("p1", "backend", ["/a", "/b"]);
+    expect(readMemberSets("p1")).toEqual([{ name: "backend", members: ["/a", "/b"] }]);
+  });
+
+  it("ignores a blank name", () => {
+    saveMemberSet("p1", "  ", ["/a"]);
+    expect(readMemberSets("p1")).toEqual([]);
+  });
+
+  it("deletes only the named set of that project", () => {
+    saveMemberSet("p1", "a", ["/x"]);
+    saveMemberSet("p1", "b", ["/y"]);
+    saveMemberSet("p2", "a", ["/z"]);
+    deleteMemberSet("p1", "a");
+    expect(readMemberSets("p1")).toEqual([{ name: "b", members: ["/y"] }]);
+    expect(readMemberSets("p2")).toEqual([{ name: "a", members: ["/z"] }]);
+  });
+
+  it("prunes sets for projects that no longer exist", () => {
+    saveMemberSet("p1", "a", ["/x"]);
+    saveMemberSet("p2", "b", ["/y"]);
+    pruneMemberSets(new Set(["p2"]));
+    expect(readMemberSets("p1")).toEqual([]);
+    expect(readMemberSets("p2")).toEqual([{ name: "b", members: ["/y"] }]);
+  });
+
+  it("swallows a throwing storage (dialog must not break)", () => {
+    (globalThis as any).localStorage = {
+      getItem: () => { throw new Error("denied"); },
+      setItem: () => { throw new Error("denied"); },
+    };
+    expect(() => saveMemberSet("p1", "s", ["/a"])).not.toThrow();
+    expect(() => deleteMemberSet("p1", "s")).not.toThrow();
+    expect(() => pruneMemberSets(new Set())).not.toThrow();
+    expect(readMemberSets("p1")).toEqual([]);
   });
 });

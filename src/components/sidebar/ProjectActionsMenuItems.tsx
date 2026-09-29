@@ -442,7 +442,9 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
             <span className="truncate">{t("projectActions.advanced")}</span>
             <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">
               {mode === "worktree"
-                ? t("projectActions.advancedWorktreeHint")
+                ? isMulti
+                  ? t("projectActions.advancedWorktreeMultiHint")
+                  : t("projectActions.advancedWorktreeHint")
                 : t("projectActions.advancedMainHint")}
             </span>
           </div>

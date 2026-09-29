@@ -2510,6 +2510,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const setActive = useApp(s => s.setActiveTask);
   const setActiveTabId = useApp(s => s.setActiveTabId);
   const loadAll = useApp(s => s.loadAll);
+  const taskProjectType = useApp(s => s.projects.find(p => p.id === w.project_id)?.type ?? "single");
   const terminalTabCount = useApp(s => (s.tabs[w.id] ?? []).filter(t => t.type === "terminal").length);
   const agents = useApp(s => s.agents);
   const expandMode = usePrefs(s => s.taskExpandMode);
@@ -3161,6 +3162,19 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   <span>{t("editCommand")}</span>
                 </DropdownItem>
               )}
+              {/* Member composition editing is a multi-repo-only thing —
+                  single-repo tasks have nothing but the name to edit,
+                  which Rename above already covers. */}
+              {taskProjectType === "multi" && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid={`task-edit-${w.id}`}
+                  onSelect={() => requestAnimationFrame(() => useUI.getState().openEditTask(w.id))}
+                >
+                  <Layers className="h-4 w-4" />
+                  <span>Edit task…</span>
+                </DropdownItem>
+              )}
               {/* Resume override: only for agent tasks (shell / custom
                   tabs don't resume an agent session). Lets a task
                   resume a named session instead of termic's auto-managed
@@ -3284,7 +3298,16 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   // Defer one frame so the dropdown's focus-teardown
                   // doesn't steal focus from the dialog's autofocused name
                   // input (see ProjectActionsMenuItems for the full why).
-                  onSelect={() => requestAnimationFrame(() => useUI.getState().openNewTask(w.project_id, { baseBranch: w.branch }))}
+                  onSelect={() => requestAnimationFrame(() => useUI.getState().openNewTask(w.project_id, {
+                    baseBranch: w.branch,
+                    // Keep the member subset too — the dialog defaults
+                    // all-in. Legacy composition records predate repo_path:
+                    // a member that can't be pinned must not silently
+                    // uncheck, so bail to the default if any is missing.
+                    memberPaths: (w.composition ?? []).every(m => m.repo_path)
+                      ? (w.composition ?? []).map(m => m.repo_path!)
+                      : undefined,
+                  }))}
                 >
                   <GitBranchPlus className="h-4 w-4" />
                   <span>{t("duplicateWorktree")}</span>

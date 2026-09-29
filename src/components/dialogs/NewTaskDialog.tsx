@@ -1,7 +1,7 @@
 // New task dialog: name + CLI segmented pills + branch name +
 // branch-from. Calls task_create on submit.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useUI } from "@/store/ui";
@@ -10,6 +10,7 @@ import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
 import { AppDialog, dialogTitleAction } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { defaultCliFirst, visibleCliIds, isTerminalCli, agentDisplayName } from "@/lib/agents";
@@ -21,7 +22,7 @@ import { withCreateLock } from "@/lib/createLock";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { uniqueBranch, derivedBranch } from "@/lib/quickTask";
 import { cn } from "@/lib/utils";
-import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap } from "lucide-react";
+import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X } from "lucide-react";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
 import { projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
@@ -30,7 +31,7 @@ import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktre
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
-import { readMemberModes, persistMemberMode, seedMemberMode } from "@/components/dialogs/memberModes";
+import { readMemberModes, persistMemberMode, seedMemberMode, readMemberSets, saveMemberSet, deleteMemberSet, type MemberSet } from "@/components/dialogs/memberModes";
 import { scoped } from "@/lib/profileScope";
 import { installCommand } from "@/lib/platform";
 
@@ -205,11 +206,116 @@ export function NewTaskDialog() {
     root_path: string;
     name: string;
     non_git: boolean;
+    // Unchecked = not part of this task's composition at all.
+    included: boolean;
     mode: MemberMode;
     branch: string;
     base_branch: string;
   };
   const [members, setMembers] = useState<MemberSpec[]>([]);
+  // Named member subsets ("backend only"), saved per project in localStorage
+  // — see memberModes.ts. Loaded on open; the chips below apply one.
+  const [memberSets, setMemberSets] = useState<MemberSet[]>([]);
+  const [setSaveOpen, setSetSaveOpen] = useState(false);
+  const [setSaveName, setSetSaveName] = useState("");
+  const includedMembers = useMemo(() => members.filter(m => m.included), [members]);
+  const applyMemberSet = (set: MemberSet) => {
+    const wanted = new Set(set.members);
+    setMembers(prev => prev.map(m => ({ ...m, included: wanted.has(m.root_path) })));
+  };
+  const saveCurrentMemberSet = () => {
+    const name = setSaveName.trim();
+    setSetSaveName(""); setSetSaveOpen(false);
+    if (!projectId || !name) return;
+    saveMemberSet(projectId, name, includedMembers.map(m => m.root_path));
+    setMemberSets(readMemberSets(projectId));
+  };
+  // Shared by the worktree member list and the main-checkout checklist:
+  // apply-one chips, the inline save affordance, and an All/None reset.
+  // Null when there's literally nothing to put in it — an empty flex div
+  // would still take a slot in the parent gap.
+  const memberSetsBar = members.length === 0 && memberSets.length === 0 ? null : (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {memberSets.map(s => {
+        // Stale paths are ignored at apply time — count what actually
+        // applies, not what's stored.
+        const applies = s.members.filter(p => members.some(m => m.root_path === p)).length;
+        return (
+        <span
+          key={s.name}
+          className="inline-flex items-stretch overflow-hidden rounded-[4px] border border-[var(--color-border)] text-[11.5px]"
+        >
+          <button
+            type="button"
+            data-testid="member-set-apply"
+            title={t("newTask.memberSetApplies", { count: applies })}
+            onClick={() => applyMemberSet(s)}
+            className="px-2 py-[2px] text-[var(--color-fg-dim)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            {s.name}
+          </button>
+          <button
+            type="button"
+            aria-label={t("newTask.memberSetDelete", { name: s.name })}
+            onClick={() => {
+              if (!projectId) return;
+              deleteMemberSet(projectId, s.name);
+              setMemberSets(readMemberSets(projectId));
+            }}
+            className="flex items-center border-l border-[var(--color-border)] px-1 text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+        );
+      })}
+      {members.length > 1 && (
+        <>
+          <button
+            type="button"
+            data-testid="members-all-include"
+            onClick={() => setMembers(prev => prev.map(m => ({ ...m, included: true })))}
+            className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[11.5px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
+          >
+            {t("newTask.membersAll")}
+          </button>
+          <button
+            type="button"
+            data-testid="members-none-include"
+            onClick={() => setMembers(prev => prev.map(m => ({ ...m, included: false })))}
+            className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[11.5px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
+          >
+            {t("newTask.membersNone")}
+          </button>
+        </>
+      )}
+      {members.length === 0 ? null : setSaveOpen ? (
+        <input
+          data-testid="member-set-name"
+          value={setSaveName}
+          autoFocus
+          onChange={e => setSetSaveName(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); saveCurrentMemberSet(); }
+            if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setSetSaveOpen(false); setSetSaveName(""); }
+          }}
+          onBlur={() => { setSetSaveOpen(false); setSetSaveName(""); }}
+          placeholder={t("newTask.memberSetNamePlaceholder")}
+          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+          className="h-6 w-32 rounded-[4px] border-0 bg-[var(--color-bg-2)] px-2 text-[11.5px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
+        />
+      ) : (
+        <button
+          type="button"
+          data-testid="member-set-save"
+          onClick={() => setSetSaveOpen(true)}
+          className="rounded-[4px] border border-dashed border-[var(--color-border)] px-2 py-[2px] text-[11.5px] text-[var(--color-fg-faint)] transition-colors hover:text-[var(--color-fg)]"
+        >
+          {t("newTask.memberSetSave")}
+        </button>
+      )}
+    </div>
+  );
   // Bulk flip for compositions with many members. Non-git members are pinned
   // to repo_root (no branches, no worktree), so "all worktree" skips them.
   // Persists each git member's new mode, same write-through as the row toggle.
@@ -478,25 +584,8 @@ export function NewTaskDialog() {
     setSbRw((p?.sandbox_rw_paths ?? []).join("\n"));
     setSbHosts((p?.sandbox_allowed_hosts ?? []).join("\n"));
     setDockerMounts("");
-    // Seed the per-member spec (multi-repo only). Each git member starts
-    // on its last-used mode (remembered per root_path, like the single-repo
-    // dialog remembers its toggle) and falls back to Worktree — the simplest
-    // + safest default. Non-git members can't be worktreed (no branches), so
-    // they force repo_root, same rule as a non-git single project / host.
-    if ((p?.type ?? "single") === "multi") {
-      const remembered = readMemberModes();
-      const seeded: MemberSpec[] = (p?.members ?? []).map(pm => ({
-        root_path: pm.root_path,
-        name: pm.name,
-        non_git: !!pm.non_git,
-        mode: seedMemberMode(!!pm.non_git, remembered, pm.root_path) as MemberMode,
-        branch: "",
-        base_branch: pm.base_branch || "",
-      }));
-      setMembers(seeded);
-    } else {
-      setMembers([]);
-    }
+    // (Per-member spec seeding lives in the useLayoutEffect below, so the
+    // rows land on the first painted frame.)
     settingsLoad().then(s => {
       const merge = (...lists: (string[] | undefined)[]) => {
         const seen = new Set<string>(); const out: string[] = [];
@@ -510,6 +599,10 @@ export function NewTaskDialog() {
       // For multi-repo: union globals + host + every member's own
       // sandbox lists (carried inline on the member). Same dedupe-
       // preserving order as single-repo, just N+1 inputs instead of 2.
+      // ponytail: the union covers ALL members — unchecking one later
+      // doesn't remove its lines (the textareas are user-editable and
+      // what's shown is what gets pinned). Per-line provenance would be
+      // needed to subtract an excluded member's entries.
       if ((p?.type ?? "single") === "multi") {
         const mem = p?.members ?? [];
         setSbRw(merge(
@@ -577,6 +670,40 @@ export function NewTaskDialog() {
     if (canImp) loadImportable(projectId);
     setBusy(false);
     submittingRef.current = false;
+  }, [projectId, seedNonce]);
+
+  // The member rows seed in a LAYOUT effect, separate from the big reset
+  // above: useEffect runs after first paint, so a multi-project open would
+  // paint one frame of an empty (or previous project's) member list before
+  // the rows pop in — reads as a flicker against the dialog's own mount
+  // animation. Layout effects commit before paint, so the seeded state is
+  // what's painted.
+  useLayoutEffect(() => {
+    if (!projectId) return;
+    const p = useApp.getState().projects.find(x => x.id === projectId);
+    const seed = useUI.getState().newTaskSeed;
+    if ((p?.type ?? "single") === "multi") {
+      const remembered = readMemberModes();
+      // A seed can pin the member subset (Duplicate of a subset task);
+      // absent = everything in.
+      const seedSet = seed?.memberPaths ? new Set(seed.memberPaths) : null;
+      const seeded: MemberSpec[] = (p?.members ?? []).map(pm => ({
+        root_path: pm.root_path,
+        name: pm.name,
+        non_git: !!pm.non_git,
+        // Everything starts included; subsets are unchecks / a saved set.
+        included: seedSet ? seedSet.has(pm.root_path) : true,
+        mode: seedMemberMode(!!pm.non_git, remembered, pm.root_path),
+        branch: "",
+        base_branch: pm.base_branch || "",
+      }));
+      setMembers(seeded);
+      setMemberSets(readMemberSets(projectId));
+    } else {
+      setMembers([]);
+      setMemberSets([]);
+    }
+    setSetSaveOpen(false); setSetSaveName("");
   }, [projectId, seedNonce]);
 
   // Tauri event unlisten handles. Owned by submit() (which registers them
@@ -837,6 +964,9 @@ export function NewTaskDialog() {
         resumeOverrideArg(),
         undefined, // no agent args from this dialog
         yoloArg,
+        // Multi-repo: link only the checked members into the live host
+        // checkout. Single-repo takes no member list at all.
+        isMulti ? includedMembers.map(m => m.root_path) : undefined,
       ));
       await loadAll();
       setActive(w.id);
@@ -915,7 +1045,7 @@ export function NewTaskDialog() {
           cli,
           base_branch: base.trim() || undefined,
           branch: branch.trim(),
-          members: members.map(m => ({
+          members: includedMembers.map(m => ({
             root_path: m.root_path,
             mode: m.mode,
             // Worktree mode: blank branch falls back to the task's
@@ -1463,19 +1593,69 @@ export function NewTaskDialog() {
             in Worktree mode, a branch + base override. RepoRoot mode
             collapses to a single warning line. */}
         {isMulti && mode === "repo_root" && (
-          <div
-            data-testid="members-live-note"
-            className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]"
-          >
-            <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-            {t("newTask.membersLiveNote", { count: members.length })}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[13px] font-medium text-[var(--color-fg)]">
+                {t("newTask.membersLabelOf", { included: includedMembers.length, count: members.length })}
+              </label>
+              <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+                {t("newTask.membersLinkedHint")}
+              </span>
+            </div>
+            {memberSetsBar}
+            <div className="flex flex-col gap-1.5">
+              {members.map((m, idx) => (
+                <label
+                  key={m.root_path}
+                  data-testid="member-mode-row"
+                  data-member-name={m.name}
+                  data-member-mode="repo_root"
+                  data-member-included={m.included ? "true" : "false"}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2",
+                    !m.included && "opacity-50",
+                  )}
+                >
+                  <Checkbox
+                    data-testid="member-include"
+                    aria-label={t("newTask.memberInclude", { name: m.name })}
+                    checked={m.included}
+                    onChange={v =>
+                      setMembers(prev => prev.map((x, i) => (i === idx ? { ...x, included: v } : x)))
+                    }
+                  />
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
+                    <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            {includedMembers.length > 0 ? (
+              <div
+                data-testid="members-live-note"
+                className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]"
+              >
+                <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                {includedMembers.length === members.length
+                  ? t("newTask.membersLiveNote", { count: members.length })
+                  : t("newTask.membersLiveNotePartial", { included: includedMembers.length, count: members.length })}
+              </div>
+            ) : (
+              <div
+                data-testid="members-live-note"
+                className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-2 text-[12px] text-[var(--color-fg-faint)]"
+              >
+                {t("newTask.membersLiveNoteNone")}
+              </div>
+            )}
           </div>
         )}
         {isMulti && mode === "worktree" && (
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-[13px] font-medium text-[var(--color-fg)]">
-                {t("newTask.membersLabel", { count: members.length })}
+                {t("newTask.membersLabelOf", { included: includedMembers.length, count: members.length })}
               </label>
               {members.length > 1 ? (
                 // Bulk flip, for compositions with many members. Same wording
@@ -1507,6 +1687,7 @@ export function NewTaskDialog() {
                 </span>
               )}
             </div>
+            {memberSetsBar}
             <div className="flex flex-col gap-2">
               {members.map((m, idx) => {
                 const update = (patch: Partial<MemberSpec>) =>
@@ -1525,13 +1706,26 @@ export function NewTaskDialog() {
                     data-testid="member-mode-row"
                     data-member-name={m.name}
                     data-member-mode={m.mode}
-                    className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2"
+                    data-member-included={m.included ? "true" : "false"}
+                    className={cn(
+                      "rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2",
+                      !m.included && "opacity-50",
+                    )}
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
-                        <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
-                      </div>
+                      <label className="flex min-w-0 cursor-pointer items-center gap-2.5">
+                        <Checkbox
+                          data-testid="member-include"
+                          aria-label={t("newTask.memberInclude", { name: m.name })}
+                          checked={m.included}
+                          onChange={v => update({ included: v })}
+                        />
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
+                          <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
+                        </div>
+                      </label>
+                      {m.included && (
                       <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-[2px] text-[11.5px]">
                         {/* Main checkout first, matching the single-repo toggle
                             and the sidebar quick menu (left = main, right =
@@ -1567,8 +1761,9 @@ export function NewTaskDialog() {
                           <GitBranch className="h-3 w-3" /> {t("newTask.worktree")}
                         </button>
                       </div>
+                      )}
                     </div>
-                    {m.mode === "worktree" ? (
+                    {m.included && (m.mode === "worktree" ? (
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         <Input
                           value={m.branch}
@@ -1585,12 +1780,12 @@ export function NewTaskDialog() {
                       <div className="mt-2 text-[11.5px] text-[var(--color-warn)]">
                         {t("newTask.liveSymlinkWarn")}
                       </div>
-                    )}
+                    ))}
                   </div>
                 );
               })}
             </div>
-            {members.some(m => m.mode === "repo_root") && (
+            {members.some(m => m.included && m.mode === "repo_root") && (
               <div className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]">
                 <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
                 {t("newTask.someLiveWarn")}
