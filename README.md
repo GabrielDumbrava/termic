@@ -283,6 +283,10 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   re-themes both chrome and the terminal pane. Or bring your own: drop a
   JSON file in the themes folder and it appears in the picker as a
   first-class theme — see [docs/themes.md](docs/themes.md).
+- **Speaks your language.** The whole interface is translated, with a
+  complete Simplified Chinese (简体中文) locale shipped in 1.10.0. Settings →
+  General → Language picks System, English or 简体中文, and the switch applies
+  immediately with no restart.
 - **Drive it from outside.** The `termic` CLI creates tasks, prompts agents,
   waits for one to go quiet and reads back what it produced, from any shell,
   and an agent inside a task can do the same to fan work out to others. An
@@ -408,6 +412,10 @@ specs and get an issue at the same time. That is the whole promotion path:
 
 - **Mobile app.** ([#165](https://github.com/simion/termic/issues/165)) A
   companion app for checking on and steering tasks while away from the Mac.
+- **Apple Containers as a sandbox backend.**
+  ([#296](https://github.com/simion/termic/issues/296)) A third cage beside
+  the Seatbelt profile and Docker mode, using macOS's own `container`
+  runtime, so a sandboxed task on Apple Silicon needs no Docker Desktop.
 - **Import Warp and Ghostty themes.** Termic has a native JSON theme format,
   but two large theme ecosystems already exist and neither is ours. Scan
   both directories, translate, and let people pick from the library they
