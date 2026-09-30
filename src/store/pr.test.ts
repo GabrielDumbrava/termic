@@ -37,12 +37,12 @@ import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import * as ipc from "@/lib/ipc";
 import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
-import type { PrLookup, Task, Project } from "@/lib/types";
+import type { ForgeProvider, PrLookup, Task, Project } from "@/lib/types";
 
 const lookupWith = (
   state: "open" | "merged" | "closed" | "draft" | null,
   number = 7,
-  provider: PrLookup["provider"] = "github",
+  provider: ForgeProvider = "github",
 ): PrLookup => ({
   provider,
   remote_url: "git@github.com:foo/bar.git",

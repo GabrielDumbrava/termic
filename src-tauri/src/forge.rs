@@ -651,7 +651,10 @@ fn classify_stderr(provider: &str, err: &str) -> ForgeError {
 /// deleted after a merge, which breaks by-branch lookup on GitLab).
 /// Ok(None) = the CLI worked and there is genuinely no PR yet.
 pub fn pr_status(provider: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
-    let bin = resolve_bin(cli_for_provider(provider)).ok_or(ForgeError::CliMissing(cli_for_provider(provider)))?;
+    // reprobe, not the cache: a CLI installed mid-session must resolve on
+    // the next call, not after the next detect() pass (which the user
+    // reaches only via Settings or a card hint).
+    let bin = reprobe_bin(cli_for_provider(provider)).ok_or(ForgeError::CliMissing(cli_for_provider(provider)))?;
     match provider {
         GITLAB => gitlab_mr_status(&bin, cwd, number),
         AZURE => azure_pr_status(&bin, cwd, number),
@@ -1170,7 +1173,7 @@ fn norm_time(s: &str) -> String {
 /// watcher only runs once the PR identity is known.
 pub fn pr_comments(provider: &str, cwd: &Path, number: u64) -> Result<Vec<PrComment>, ForgeError> {
     let cli = cli_for_provider(provider);
-    let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     let mut out = match provider {
         GITLAB => gitlab_mr_comments(&bin, cwd, number)?,
         AZURE => azure_pr_comments(&bin, cwd, number)?,
@@ -1595,7 +1598,7 @@ pub struct ForgeIssue {
 /// the forge CLI, so callers must spawn_blocking.
 pub fn issue_list(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
     let cli = cli_for_provider(provider);
-    let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     match provider {
         GITLAB => gitlab_issue_list(&bin, cwd, limit),
         AZURE => azure_issue_list(&bin, cwd, limit),
@@ -1941,7 +1944,7 @@ pub fn pr_create(
     draft: bool,
 ) -> Result<String, ForgeError> {
     let cli = cli_for_provider(provider);
-    let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     if provider == AZURE {
         return azure_pr_create(&bin, cwd, title, body, base, draft);
     }

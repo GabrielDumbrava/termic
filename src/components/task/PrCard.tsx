@@ -92,8 +92,14 @@ function ReviewChip({ review }: { review: PrStatus["review"] }) {
     review_required: { color: "var(--color-warn)", label: t("pr.reviewRequired") },
   } as const;
   const { color, label } = map[review];
+  // The one shrinkable item in the row (see the two-row comment below):
+  // "Changes requested" is the widest label here, and at the panel's
+  // 280px default width a fully-populated row would otherwise push the
+  // action buttons off the card's right edge — clipped by the window
+  // itself, where the button isn't even clickable. truncate keeps the
+  // buttons on-screen; the full label stays reachable via title.
   return (
-    <span className="shrink-0 whitespace-nowrap text-[11.5px] leading-none" style={{ color }}>{label}</span>
+    <span title={label} className="min-w-0 truncate text-[11.5px] leading-none" style={{ color }}>{label}</span>
   );
 }
 
