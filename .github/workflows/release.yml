@@ -567,8 +567,43 @@ jobs:
           fi
 
           rm -f "$NAME"
-          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run -n squashfs-root "$NAME"
+          # `-u` embeds update information in the AppImage's `.upd_info` ELF
+          # section and writes the matching `.zsync` beside it. That is what
+          # AppImageUpdate, Gear Lever and AppImageLauncher read to offer an
+          # update, and what makes that update a DELTA: zsync pulls only the
+          # squashfs blocks that changed instead of the whole ~100MB image.
+          # Without it those tools correctly report the AppImage as having no
+          # update source, and a user who manages it that way is stuck on the
+          # version they downloaded unless they happen to open the app.
+          #
+          # Termic's own Tauri updater is unaffected either way: it fetches
+          # latest.json and swaps the file whole. The two are independent, and
+          # a user can be served by either.
+          #
+          # `latest` resolves through the GitHub API at check time, so the
+          # embedded string stays correct for every future release and the
+          # glob absorbs the version in the filename.
+          OWNER="${GITHUB_REPOSITORY%%/*}"; REPO="${GITHUB_REPOSITORY#*/}"
+          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run -n \
+            -u "gh-releases-zsync|${OWNER}|${REPO}|latest|termic_*_amd64.AppImage.zsync" \
+            squashfs-root "$NAME"
           rm -rf squashfs-root
+
+          # The .zsync is useless if it is not published, and embedded update
+          # info pointing at a file that does not exist is WORSE than none:
+          # the tools stop reporting "no update source" and start reporting a
+          # broken one. So this fails the release rather than shipping it.
+          if [ ! -s "${NAME}.zsync" ]; then
+            echo "::error::appimagetool -u produced no ${NAME}.zsync; update info would point at nothing"
+            exit 1
+          fi
+          # Best effort: confirm the section actually landed. A warning, not a
+          # failure, because this is a cross-check of appimagetool's own work
+          # and binutils is not something the release should depend on.
+          if command -v readelf >/dev/null 2>&1; then
+            readelf -x .upd_info "$NAME" >/dev/null 2>&1 \
+              || echo "::warning::no .upd_info section found in $NAME"
+          fi
 
           cd "$GITHUB_WORKSPACE"
           npx tauri signer sign "$BUNDLE_DIR/$NAME"   # rewrites $NAME.sig
@@ -598,6 +633,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/release/bundle/appimage/*.AppImage.zsync
 
   # ─── Windows x64 (experimental) ────────────────────────────────────
   # The signature is checked against the app's own public key before
@@ -715,7 +751,7 @@ jobs:
           FOOTER
           fi
           cat <<'FOOTER'
-          - **Linux** (x86_64): download the `.AppImage` below, then `chmod +x` it and run. Sandbox is macOS-only; everything else works the same.
+          - **Linux** (x86_64): download the `.AppImage` below, then `chmod +x` it and run. Sandbox is macOS-only; everything else works the same. The image carries zsync update info, so Gear Lever and AppImageUpdate can update it in place (the `.zsync` beside it is for them, not for you).
 
           The app self-updates after install. Full install and update help: https://termic.dev
           FOOTER
@@ -725,7 +761,7 @@ jobs:
             --title "v${VERSION}" \
             --notes-file release-notes.md \
             mac/dmg/*.dmg mac/macos/* \
-            linux/*.AppImage linux/*.AppImage.sig
+            linux/*.AppImage linux/*.AppImage.sig linux/*.AppImage.zsync
 
   # ─── Attach the Windows build to the release ──────────────────────
   # After the release exists, and only if the Windows build succeeded, so a
