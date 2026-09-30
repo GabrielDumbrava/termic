@@ -281,6 +281,26 @@ columns (`w-max` + `mx-auto`), so a narrow window scrolls and a wide one
 centers; never `justify-center` + overflow, which clips the left columns
 permanently.
 
+**An EMPTY state column is not rendered**, because four columns of nothing
+push the ones with cards off screen (reported with a screenshot of exactly
+that). The hidden ones collapse onto a thin rail at the right edge, one
+vertical strip each, click to pin one back open for the visit.
+
+The rail is not decoration: each strip carries the same `data-board-cell` +
+`data-column` the real column does, so a card dropped on it runs the identical
+command. That matters because Settled and In review ARE drop targets (clear
+work state, open the PR dialog) and are emptiest exactly when you want to drop
+into them, so hiding a column must never take its command with it. Revealing
+every column on drag instead was tried first and is worse: the board reflows
+under the hand holding the card, and the target does not exist until the drag
+has already begun. Archived is never hidden, being both muscle memory and the
+destructive drop.
+
+Tasks whose project is missing from the store are skipped entirely. The
+sidebar renders tasks by walking PROJECTS, so such a task is invisible there,
+while the board enumerates tasks and was the only surface that showed it, with
+the group header falling back to printing the raw project UUID at the user.
+
 Swimlanes by agent (`task.cli`) are dividers INSIDE a column, sticky while
 the column scrolls, shown only when more than one agent has live tasks; the
 same rule hides project sub-headers on single-project groups. The Archived

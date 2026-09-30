@@ -231,6 +231,9 @@ export default {
     ageMinutes: "{{count}} 分钟",
     ageHours: "{{count}} 小时",
     ageDays: "{{count}} 天",
+    unknownProject: "未知项目",
+    hiddenTip: "{{names}}。空列已隐藏，拖动卡片时会重新出现。",
+    showColumn: "显示{{name}}",
   },
   activity: {
     windowTitle: "活动",

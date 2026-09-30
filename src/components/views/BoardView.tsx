@@ -30,7 +30,7 @@
 // (nothing to clear, main checkout): the matrix lives in
 // boardDropCommand() in src/lib/taskBoardState.ts.
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Archive, Check, GitPullRequest, Zap } from "lucide-react";
 import { EMPTY_TABS, selectTaskTabs, useApp } from "@/store/app";
@@ -173,14 +173,29 @@ export function BoardView() {
     return g ? accentCss(groupColors[g]) : undefined;
   };
 
-  const liveTasks = useMemo(() => tasks.filter(w => !w.archived), [tasks]);
+  // A task whose project is not in this profile's list is skipped, exactly as
+  // every other surface skips it: the sidebar renders tasks BY WALKING
+  // PROJECTS, so such a task is invisible there, while the board enumerates
+  // tasks and so was the only place it appeared. It appeared badly, too, with
+  // the group header falling back to printing the raw project UUID at the
+  // user (reported from a screenshot: "5F117239-3B68-...", CSS-uppercased like
+  // a project name). Agreeing with the sidebar is the fix; the header's
+  // fallback below is now only a belt-and-braces label.
+  const known = useCallback(
+    (w: Task) => projectById.has(w.project_id),
+    [projectById],
+  );
+  const liveTasks = useMemo(() => tasks.filter(w => !w.archived && known(w)), [tasks, known]);
   // The full archived list feeds the badge and the empty state; the column
   // renders the capped, most-recent-first slice (Tasks > archive limit).
-  const archivedAll = useMemo(() => tasks.filter(w => w.archived), [tasks]);
+  const archivedAll = useMemo(() => tasks.filter(w => w.archived && known(w)), [tasks, known]);
   const archivedTasks = useMemo(
     () => recentArchived(archivedAll, resolveBoardArchiveLimit(boardArchiveLimitMode, boardArchiveLimitCustom)),
     [archivedAll, boardArchiveLimitMode, boardArchiveLimitCustom],
   );
+  /** Columns the user has pinned open from the hidden strip, for this view's
+   *  lifetime only: a pin is a "show me that one now", not a setting. */
+  const [pinnedCols, setPinnedCols] = useState<readonly BoardStateColumn[]>([]);
   const colTasks = useMemo(() => {
     const cols: Record<BoardStateColumn, Task[]> = { backlog: [], attention: [], working: [], review: [], settled: [] };
     for (const w of liveTasks) {
@@ -376,6 +391,29 @@ export function BoardView() {
   };
 
   const dragTask = drag ? tasks.find(w => w.id === drag.taskId) : undefined;
+  // An empty state column is hidden, so four columns of nothing stop pushing
+  // the ones with cards off screen.
+  //
+  // Hiding one must not take its COMMAND with it. Settled and In review are
+  // drop targets, not just displays (drop-on-Settled clears the work state,
+  // drop-on-In-review opens the PR dialog), and they are emptiest exactly when
+  // you want to drop into them. So the rail on the right carries each hidden
+  // column's own `data-board-cell` + `data-column`, which is what the drop
+  // handler reads: dropping on the strip runs the same command the column
+  // would have. Revealing the columns on drag instead was the first shape and
+  // it was worse, because the board reflows under the hand that is holding a
+  // card, and the target does not exist until the drag has already started.
+  //
+  // Archived is never hidden: it is reached by muscle memory, and its drop is
+  // the destructive one.
+  const hiddenCols = useMemo(
+    () => BOARD_STATE_COLUMNS.filter(c => colTasks[c].length === 0 && !pinnedCols.includes(c)),
+    [colTasks, pinnedCols],
+  );
+  const shownCols = useMemo(
+    () => BOARD_STATE_COLUMNS.filter(c => !hiddenCols.includes(c)),
+    [hiddenCols],
+  );
   const boardEmpty = liveTasks.length === 0 && archivedAll.length === 0;
   const ctx: CardContext = { agents, useBranchAsTaskName, workPrefs };
 
@@ -393,7 +431,7 @@ export function BoardView() {
               clip the left columns permanently) and a wide window centers
               them. */}
           <div className="mx-auto flex h-full w-max gap-3 p-3">
-            {BOARD_STATE_COLUMNS.map(col => (
+            {shownCols.map(col => (
               <BoardColumnView
                 key={col}
                 column={col}
@@ -452,6 +490,45 @@ export function BoardView() {
                 </button>
               )}
             </section>
+
+            {/* What is not on screen, and how to get it back. A thin rail
+                rather than a menu: it has to say the columns still exist (a
+                board that silently drops "Working" reads as a bug) without
+                costing the width the hiding just bought. Click one to pin it
+                open for this visit; it is not a setting. */}
+            {hiddenCols.length > 0 && (
+              <aside
+                data-testid="board-hidden-columns"
+                className="flex w-[30px] shrink-0 flex-col overflow-hidden rounded-lg bg-[var(--color-bg-2)]/40"
+                title={t("board.hiddenTip", { names: hiddenCols.map(c => t(COL_LABEL[c])).join(", ") })}
+              >
+                {hiddenCols.map((c, i) => (
+                  <button
+                    key={c}
+                    type="button"
+                    data-board-hidden-column={c}
+                    // The same hooks a real column exposes, so a drop here
+                    // goes through the identical path (see the drag handler's
+                    // `[data-board-cell]` lookup) rather than a second one.
+                    data-board-cell
+                    data-column={c}
+                    aria-label={t("board.showColumn", { name: t(COL_LABEL[c]) })}
+                    onClick={() => setPinnedCols(prev => prev.includes(c) ? prev : [...prev, c])}
+                    // flex-1 so each strip is a drop target worth aiming at,
+                    // not a label. The divider is what makes four of them read
+                    // as four targets rather than one long tab.
+                    className={cn(
+                      "flex flex-1 items-center justify-center px-1 text-[10.5px] text-[var(--color-fg-faint)]",
+                      "transition-colors hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
+                      i > 0 && "border-t border-[var(--color-border)]",
+                    )}
+                    style={{ writingMode: "vertical-rl" }}
+                  >
+                    {t(COL_LABEL[c])}
+                  </button>
+                ))}
+              </aside>
+            )}
           </div>
         </div>
       )}
@@ -604,6 +681,7 @@ function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAcc
   onCardPointerDown: (e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => void;
   onCardClick: (w: Task) => void;
 }) {
+  const { t } = useTranslation("chrome");
   const groups = boardCellGroups(tasks, projectOrder);
   return (
     <>
@@ -622,7 +700,10 @@ function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAcc
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
                 style={{ backgroundColor: projectAccent(project) ?? "var(--color-fg-faint)" }}
               />
-              <span className="truncate">{project?.name ?? g.projectId}</span>
+              {/* Never the id. A UUID is not a thing to show a person, and
+                  BoardView filters out tasks whose project is missing, so this
+                  only covers a project removed between the two reads. */}
+              <span className="truncate">{project?.name ?? t("board.unknownProject")}</span>
             </div>
             {/* While the pointer holds cards over this group, the accent ring
                 is the "this is where the drop lands" signal; everywhere else

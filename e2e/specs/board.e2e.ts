@@ -286,4 +286,47 @@ describe("board view", () => {
     );
     await snap("board-capped-archive.png");
   });
+
+  // Empty columns are hidden so the ones with cards are not pushed off screen
+  // (reported with four empty columns doing exactly that). The rail on the
+  // right says which are hidden, and carries their drop targets so hiding a
+  // column never removes its command.
+  it("hides empty columns onto a rail that still takes their drops", async () => {
+    await clickByText("Kanban");
+    await waitVisible('[data-testid="board-view"]');
+    // Whatever is empty right now is what should be missing. Read it from the
+    // store rather than assuming a fixture shape.
+    const emptyCols = await browser.execute(() => {
+      const shown = [...document.querySelectorAll("[data-board-cell][data-column]")]
+        .filter(e => !e.hasAttribute("data-board-hidden-column"))
+        .map(e => (e as HTMLElement).dataset.column);
+      return ["backlog", "attention", "working", "review", "settled"].filter(c => !shown.includes(c));
+    }) as string[];
+    expect(emptyCols.length).toBeGreaterThan(0);
+
+    // Each hidden one is on the rail, and is still a drop target there.
+    await waitVisible('[data-testid="board-hidden-columns"]');
+    for (const c of emptyCols) {
+      await waitVisible(`[data-board-hidden-column="${c}"]`);
+      const droppable = await browser.execute((col) => {
+        const el = document.querySelector(`[data-board-hidden-column="${col}"]`);
+        return !!el?.hasAttribute("data-board-cell") && el.getAttribute("data-column") === col;
+      }, c);
+      // expect-webdriverio takes one argument, so the name goes in a throw.
+      if (!droppable) throw new Error(`${c}: the rail strip does not answer the drop handler`);
+    }
+
+    // Archived is never hidden: it is the destructive drop and wants a fixed
+    // home, empty or not.
+    await waitVisible("[data-board-archive]");
+
+    // Clicking a strip pins that column back open for this visit.
+    const pin = emptyCols[0];
+    await browser.execute((col) => {
+      (document.querySelector(`[data-board-hidden-column="${col}"]`) as HTMLElement).click();
+    }, pin);
+    await waitVisible(`[data-board-cell][data-column="${pin}"]:not([data-board-hidden-column])`);
+    await waitGone(`[data-board-hidden-column="${pin}"]`);
+    await snap("board-hidden-columns.png");
+  });
 });

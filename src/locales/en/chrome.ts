@@ -231,6 +231,9 @@ export default {
     ageMinutes: "{{count}}m",
     ageHours: "{{count}}h",
     ageDays: "{{count}}d",
+    unknownProject: "Unknown project",
+    hiddenTip: "{{names}}. Empty columns are hidden; they come back while you drag a card.",
+    showColumn: "Show {{name}}",
   },
   activity: {
     windowTitle: "Activity",
