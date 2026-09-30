@@ -5,6 +5,7 @@ import {
   boardCellGroups,
   boardDropCommand,
   boardLanes,
+  mergeReorderedGroup,
   recentArchived,
   resolveBoardArchiveLimit,
   taskBoardColumn,
@@ -283,6 +284,60 @@ describe("recentArchived", () => {
     const tasks = [task({ archived: true, archived_at: "2026-09-01T00:00:00Z" })];
     expect(recentArchived(tasks, 0)).toEqual([]);
     expect(recentArchived(tasks, -5)).toEqual([]);
+  });
+
+  it("Infinity reads as everything, not nothing", () => {
+    // The "unlimited" mode resolves to Infinity, which slice(0, 0) once
+    // turned into an empty column under a badge showing the full count.
+    const tasks = [
+      task({ archived: true, archived_at: "2026-09-01T00:00:00Z" }),
+      task({ archived: true, archived_at: "2026-09-02T00:00:00Z" }),
+    ];
+    expect(recentArchived(tasks, Number.POSITIVE_INFINITY)).toHaveLength(2);
+  });
+
+  it("the unlimited mode's resolver output renders the whole archive", () => {
+    // The seam the unit matrix missed: resolveBoardArchiveLimit's return
+    // value is only useful if recentArchived consumes it correctly.
+    const tasks = [
+      task({ archived: true, archived_at: "2026-09-01T00:00:00Z" }),
+      task({ archived: true, archived_at: "2026-09-02T00:00:00Z" }),
+      task({ archived: true, archived_at: "2026-09-03T00:00:00Z" }),
+    ];
+    expect(recentArchived(tasks, resolveBoardArchiveLimit("unlimited", 0)).map(w => w.archived_at))
+      .toEqual(["2026-09-03T00:00:00Z", "2026-09-02T00:00:00Z", "2026-09-01T00:00:00Z"]);
+  });
+});
+
+describe("mergeReorderedGroup", () => {
+  it("places the reordered group where its first member sat, others keep order", () => {
+    expect(mergeReorderedGroup(["a", "b", "c", "d", "e"], ["c", "a", "b"]))
+      .toEqual(["c", "a", "b", "d", "e"]);
+    // Group at the tail: no member left to land at, same result.
+    expect(mergeReorderedGroup(["a", "b", "c"], ["c", "b", "a"]))
+      .toEqual(["c", "b", "a"]);
+  });
+
+  it("a preview id the task list lost (archived, deleted, moved) snaps back", () => {
+    // g2 was archived while the drag was in flight: writing the merge
+    // anyway once consumed a store slot with the dead id, so a live card
+    // vanished from tasks.
+    expect(mergeReorderedGroup(["a", "c", "d"], ["a", "g2", "c"])).toBeNull();
+    expect(mergeReorderedGroup([], ["a", "b"])).toBeNull();
+  });
+
+  it("an empty preview has nothing to place", () => {
+    // Defensive edge (the preview always carries the whole origin group in
+    // practice); exercises the no-insertion bail-out, not the subset check.
+    expect(mergeReorderedGroup(["a", "b"], [])).toBeNull();
+  });
+
+  it("a task added to the project mid-drag survives the merge", () => {
+    // x2 joined after the preview was taken: it is not in the group, so it
+    // keeps its relative position and the result stays a permutation of
+    // projIds (the store write consumes exactly one queue entry per task).
+    expect(mergeReorderedGroup(["a", "x2", "b", "c"], ["c", "a", "b"]))
+      .toEqual(["c", "a", "b", "x2"]);
   });
 });
 

@@ -30,7 +30,7 @@
 // (nothing to clear, main checkout): the matrix lives in
 // boardDropCommand() in src/lib/taskBoardState.ts.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Archive, Check, GitPullRequest, Zap } from "lucide-react";
 import { EMPTY_TABS, selectTaskTabs, useApp } from "@/store/app";
@@ -49,6 +49,7 @@ import {
   boardCellGroups,
   boardDropCommand,
   boardLanes,
+  mergeReorderedGroup,
   recentArchived,
   resolveBoardArchiveLimit,
   taskBoardColumn,
@@ -96,6 +97,30 @@ interface DragSnapshot {
   canCreatePr: boolean;
 }
 
+/** The origin group's live reorder preview. Keyed by GROUP (project + lane +
+ *  column), never by project alone: groups of one project share the
+ *  projectId across every lane and column, and a preview applied there
+ *  matched none of the ids — the other group's cards all vanished and its
+ *  ring lit as a drop target the whole drag. */
+interface ReorderPreview {
+  projectId: string;
+  lane: string;
+  column: BoardStateColumn;
+  ids: string[];
+}
+
+// Stable identities for the four targets (bear trap 8's shape, applied to
+// props): setDrag writes a fresh snapshot per pointermove, and the memoized
+// columns below only skip a render while every prop keeps its identity. One
+// shared object per kind means a move that changes just the ghost's x/y
+// leaves the dragTarget prop referentially untouched. A kind names exactly
+// one column (settle only from Settled, createPr only from In review), so
+// the kind is the whole identity.
+const ARCHIVE_TARGET: DragTarget = { kind: "archive" };
+const SETTLE_TARGET: DragTarget = { kind: "settle" };
+const CREATE_PR_TARGET: DragTarget = { kind: "createPr" };
+const REORDER_TARGET: DragTarget = { kind: "reorder" };
+
 const COL_LABEL: Record<BoardStateColumn, string> = {
   backlog: "board.colBacklog",
   attention: "board.colAttention",
@@ -142,7 +167,13 @@ export function BoardView() {
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
   const boardArchiveLimitMode = usePrefs(s => s.boardArchiveLimitMode);
   const boardArchiveLimitCustom = usePrefs(s => s.boardArchiveLimit);
-  const workPrefs: WorkStatePrefs = { settledHighlight, workingIndicator, attentionIndicator };
+  // Stable identities: ctx and projectAccent flow into every memoized card
+  // and column below, and a fresh object here would defeat the memo on
+  // every BoardView render (one per pointermove during a drag).
+  const workPrefs: WorkStatePrefs = useMemo(
+    () => ({ settledHighlight, workingIndicator, attentionIndicator }),
+    [settledHighlight, workingIndicator, attentionIndicator],
+  );
 
   // Re-render trigger for PR polls, nothing more. The pr store lives outside
   // useApp precisely so its 60s tick re-renders nobody by default; the board
@@ -165,13 +196,12 @@ export function BoardView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, columnKey, settledHighlight, workingIndicator, attentionIndicator]);
 
-  const lanes = useMemo(() => boardLanes(tasks, agents), [tasks, agents]);
   const projectOrder = useMemo(() => projects.map(p => p.id), [projects]);
   const projectById = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
-  const projectAccent = (p: Project | undefined): string | undefined => {
+  const projectAccent = useCallback((p: Project | undefined): string | undefined => {
     const g = p ? groupOf(p) : null;
     return g ? accentCss(groupColors[g]) : undefined;
-  };
+  }, [groupColors]);
 
   // A task whose project is not in this profile's list is skipped, exactly as
   // every other surface skips it: the sidebar renders tasks BY WALKING
@@ -186,6 +216,11 @@ export function BoardView() {
     [projectById],
   );
   const liveTasks = useMemo(() => tasks.filter(w => !w.archived && known(w)), [tasks, known]);
+  // Lanes are about VISIBLE cards, so boardLanes gets liveTasks, not tasks:
+  // a lane kept alive only by a task whose project left the profile (the
+  // filter above, the same invisibility every other surface applies) once
+  // forced agent dividers onto columns whose visible cards were one agent.
+  const lanes = useMemo(() => boardLanes(liveTasks, agents), [liveTasks, agents]);
   // The full archived list feeds the badge and the empty state; the column
   // renders the capped, most-recent-first slice (Tasks > archive limit).
   const archivedAll = useMemo(() => tasks.filter(w => w.archived && known(w)), [tasks, known]);
@@ -210,8 +245,8 @@ export function BoardView() {
   // The document-level listener pattern from the sidebar's task drag: the
   // listeners cannot live on the card because the pointer leaves it mid-drag.
   const [drag, setDrag] = useState<DragSnapshot | null>(null);
-  const [preview, setPreview] = useState<{ projectId: string; ids: string[] } | null>(null);
-  const previewRef = useRef<typeof preview>(null);
+  const [preview, setPreview] = useState<ReorderPreview | null>(null);
+  const previewRef = useRef<ReorderPreview | null>(null);
   const armedRef = useRef<{
     id: string; projectId: string; lane: string; column: BoardStateColumn;
     groupIds: string[]; x: number; y: number; started: boolean;
@@ -223,40 +258,12 @@ export function BoardView() {
   // sidebar's taskClickSuppressed.
   const clickSuppressed = useRef(false);
 
-  const setPreviewBoth = (v: typeof preview) => { previewRef.current = v; setPreview(v); };
+  const setPreviewBoth = useCallback((v: ReorderPreview | null) => {
+    previewRef.current = v;
+    setPreview(v);
+  }, []);
 
-  const onCardPointerDown = (e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => {
-    if (e.button !== 0) return;
-    const target = e.target as HTMLElement;
-    // Real controls (the PR badge is a button) and portaled menus/dialogs
-    // never start a drag. Same bail-out set as the sidebar.
-    if (target.closest('button, input, a, [data-no-drag], [role="menu"], [role="dialog"]')) return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    // The group the card starts in, in RENDERED order (preview-aware would be
-    // wrong: a drag always starts from the settled order).
-    const groupIds = liveTasks
-      .filter(u => u.project_id === w.project_id && u.cli === lane && columnOf.get(u.id) === column)
-      .map(u => u.id);
-    // Which commands this card's drop could run, computed once: the settled
-    // and review columns advertise their drop hints for the whole drag only
-    // when the command would not be a guaranteed no-op.
-    const hooks = useApp.getState().agentHooksInstalled;
-    armedRef.current = {
-      id: w.id, projectId: w.project_id, lane, column, groupIds,
-      x: e.clientX, y: e.clientY, started: false,
-      grabDX: e.clientX - rect.left, grabDY: e.clientY - rect.top, width: rect.width,
-      target: null,
-      canSettle: column !== "settled"
-        && boardDropCommand(column, "settled", w, useApp.getState().tabs[w.id] ?? EMPTY_TABS, hooks) != null,
-      canCreatePr: column !== "review"
-        && boardDropCommand(column, "review", w, useApp.getState().tabs[w.id] ?? EMPTY_TABS, hooks) != null,
-    };
-    document.addEventListener("pointermove", onDragPointerMove);
-    document.addEventListener("pointerup", onDragPointerUp);
-    document.addEventListener("pointercancel", onDragPointerUp);
-  };
-
-  const onDragPointerMove = (e: PointerEvent) => {
+  const onDragPointerMove = useCallback((e: PointerEvent) => {
     const armed = armedRef.current;
     if (!armed) return;
     if (!armed.started) {
@@ -268,7 +275,7 @@ export function BoardView() {
     const el = document.elementFromPoint(e.clientX, e.clientY);
     let target: DragTarget = null;
     if (el?.closest("[data-board-archive]")) {
-      target = { kind: "archive" };
+      target = ARCHIVE_TARGET;
     } else {
       const cell = el?.closest<HTMLElement>("[data-board-cell]");
       const laneEl = el?.closest<HTMLElement>("[data-board-lane]");
@@ -280,7 +287,7 @@ export function BoardView() {
           && cell.dataset.column === armed.column
           && laneEl?.dataset.boardLane === armed.lane
           && group.dataset.boardProjectGroup === armed.projectId) {
-        target = { kind: "reorder" };
+        target = REORDER_TARGET;
         // First card whose midpoint is below the cursor wins; none = drop at
         // the end of the group. Midpoint rule identical to the sidebar's.
         let beforeId: string | null = null;
@@ -289,13 +296,19 @@ export function BoardView() {
           const r = c.getBoundingClientRect();
           if (e.clientY < (r.top + r.bottom) / 2) { beforeId = c.dataset.boardTaskId!; break; }
         }
-        const base = previewRef.current?.projectId === armed.projectId ? previewRef.current.ids : armed.groupIds;
+        const pv = previewRef.current;
+        const base = pv && pv.projectId === armed.projectId
+          && pv.lane === armed.lane && pv.column === armed.column
+          ? pv.ids
+          : armed.groupIds;
         const rest = base.filter(id => id !== armed.id);
         const insertAt = beforeId ? rest.indexOf(beforeId) : rest.length;
         const next = [...rest];
         next.splice(insertAt === -1 ? rest.length : insertAt, 0, armed.id);
         // No-op guard (bear trap 8): identical order writes nothing.
-        if (next.some((id, i) => id !== base[i])) setPreviewBoth({ projectId: armed.projectId, ids: next });
+        if (next.some((id, i) => id !== base[i])) {
+          setPreviewBoth({ projectId: armed.projectId, lane: armed.lane, column: armed.column, ids: next });
+        }
       } else if (cell) {
         // Outside the origin group a drop on Settled / In review is a
         // command, not a status write (boardDropCommand for the matrix and
@@ -308,19 +321,27 @@ export function BoardView() {
             useApp.getState().tabs[armed.id] ?? EMPTY_TABS,
             useApp.getState().agentHooksInstalled,
           );
-          if (cmd) target = cmd;
+          if (cmd) {
+            target = cmd.kind === "settle" ? SETTLE_TARGET
+              : cmd.kind === "createPr" ? CREATE_PR_TARGET
+              : ARCHIVE_TARGET; // unreachable: the archive element matched above
+          }
         }
       }
     }
     armed.target = target;
+    // Left the origin group: it is not a target ("everywhere else stays
+    // quiet"), so its preview and ring go with the move. The ref guard keeps
+    // this from writing state on every event while the pointer stays away.
+    if (target?.kind !== "reorder" && previewRef.current) setPreviewBoth(null);
     setDrag({
       taskId: armed.id, x: e.clientX, y: e.clientY,
       grabDX: armed.grabDX, grabDY: armed.grabDY, width: armed.width, target,
       canSettle: armed.canSettle, canCreatePr: armed.canCreatePr,
     });
-  };
+  }, [setPreviewBoth]);
 
-  const onDragPointerUp = () => {
+  const onDragPointerUp = useCallback(() => {
     document.removeEventListener("pointermove", onDragPointerMove);
     document.removeEventListener("pointerup", onDragPointerUp);
     document.removeEventListener("pointercancel", onDragPointerUp);
@@ -362,17 +383,13 @@ export function BoardView() {
     // relative positions, the group lands where its first member was.
     const all = useApp.getState().tasks;
     const projIds = all.filter(u => u.project_id === armed.projectId && !u.archived).map(u => u.id);
-    const groupSet = new Set(armed.groupIds);
-    const merged: string[] = [];
-    let inserted = false;
-    for (const id of projIds) {
-      if (groupSet.has(id)) {
-        if (!inserted) { merged.push(...pv.ids); inserted = true; }
-        continue;
-      }
-      merged.push(id);
-    }
-    if (!inserted) merged.push(...pv.ids);
+    // The preview was taken at drag start; a task archived, deleted or moved
+    // project mid-drag leaves it naming ids the list no longer holds, and
+    // writing it anyway once consumed store slots with dead ids (a live card
+    // vanished from `tasks`, or `undefined` did and the next render threw).
+    // Null is the cue to snap back; the board redraws from the store.
+    const merged = mergeReorderedGroup(projIds, pv.ids);
+    if (!merged) return;
     if (merged.every((id, i) => id === projIds[i])) return; // no-op, write nothing
     // Write the store once so board and sidebar agree immediately, then
     // persist through the same IPC the sidebar drag uses. Fall back to a
@@ -383,12 +400,43 @@ export function BoardView() {
       u.project_id === armed.projectId && !u.archived ? byId.get(queue.shift()!)! : u);
     useApp.setState({ tasks: next });
     taskReorder(merged).catch(() => { void useApp.getState().loadAll(); });
-  };
+  }, [onDragPointerMove, setPreviewBoth]);
 
-  const onCardClick = (w: Task) => {
+  const onCardPointerDown = useCallback((e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    // Real controls (the PR badge is a button) and portaled menus/dialogs
+    // never start a drag. Same bail-out set as the sidebar.
+    if (target.closest('button, input, a, [data-no-drag], [role="menu"], [role="dialog"]')) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // The group the card starts in, in RENDERED order (preview-aware would be
+    // wrong: a drag always starts from the settled order).
+    const groupIds = liveTasks
+      .filter(u => u.project_id === w.project_id && u.cli === lane && columnOf.get(u.id) === column)
+      .map(u => u.id);
+    // Which commands this card's drop could run, computed once: the settled
+    // and review columns advertise their drop hints for the whole drag only
+    // when the command would not be a guaranteed no-op.
+    const hooks = useApp.getState().agentHooksInstalled;
+    armedRef.current = {
+      id: w.id, projectId: w.project_id, lane, column, groupIds,
+      x: e.clientX, y: e.clientY, started: false,
+      grabDX: e.clientX - rect.left, grabDY: e.clientY - rect.top, width: rect.width,
+      target: null,
+      canSettle: column !== "settled"
+        && boardDropCommand(column, "settled", w, useApp.getState().tabs[w.id] ?? EMPTY_TABS, hooks) != null,
+      canCreatePr: column !== "review"
+        && boardDropCommand(column, "review", w, useApp.getState().tabs[w.id] ?? EMPTY_TABS, hooks) != null,
+    };
+    document.addEventListener("pointermove", onDragPointerMove);
+    document.addEventListener("pointerup", onDragPointerUp);
+    document.addEventListener("pointercancel", onDragPointerUp);
+  }, [liveTasks, columnOf, onDragPointerMove, onDragPointerUp]);
+
+  const onCardClick = useCallback((w: Task) => {
     if (clickSuppressed.current) return;
     useApp.getState().setActiveTask(w.id);
-  };
+  }, []);
 
   const dragTask = drag ? tasks.find(w => w.id === drag.taskId) : undefined;
   // An empty state column is hidden, so four columns of nothing stop pushing
@@ -439,7 +487,7 @@ export function BoardView() {
                 key={col}
                 column={col}
                 laneIds={lanes}
-                tasksByLane={groupByLane(colTasks[col], lanes)}
+                cellTasks={colTasks[col]}
                 projectOrder={projectOrder}
                 projectById={projectById}
                 projectAccent={projectAccent}
@@ -536,10 +584,15 @@ export function BoardView() {
                         "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px]",
                         "text-[var(--color-fg-faint)] transition-colors",
                         "hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-                        // Lit while a drag could land here: the same two
-                        // commands a real column would run.
-                        (drag?.target?.kind === "settle" || drag?.target?.kind === "createPr")
-                          && "ring-1 ring-inset ring-[var(--color-accent-soft)]",
+                        // Lit while a drag could land HERE. Each row is its
+                        // own column's target, so only the row whose column
+                        // the hovered command belongs to lights, exactly the
+                        // way the real columns scope themselves; the old
+                        // kind-only check lit every row at once.
+                        (c === "settled" && drag?.target?.kind === "settle")
+                          || (c === "review" && drag?.target?.kind === "createPr")
+                          ? "ring-1 ring-inset ring-[var(--color-accent-soft)]"
+                          : undefined,
                       )}
                     >
                       <span className="h-[5px] w-[5px] shrink-0 rounded-full bg-[var(--color-fg-faint)]" />
@@ -601,16 +654,25 @@ function groupByLane(tasks: Task[], laneIds: string[]): { lane: string; tasks: T
 }
 
 // ─── Column ──────────────────────────────────────────────────────────────
+//
+// Every component below this line is memoized, which is what makes the drag
+// affordable: setDrag writes a fresh snapshot per pointermove, and with all
+// props identity-stable across a move that changes nothing but the ghost's
+// x/y (singleton targets, memoized ctx, stable handlers), the per-move
+// render stops at BoardView itself. Before the memo, a drag over a 50-card
+// board reconciled every column, group and card at input frequency.
 
-function BoardColumnView({ column, laneIds, tasksByLane, projectOrder, projectById, projectAccent, ctx, preview, dragTarget, dragSourceId, dragHint, onCardPointerDown, onCardClick }: {
+const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTasks, projectOrder, projectById, projectAccent, ctx, preview, dragTarget, dragSourceId, dragHint, onCardPointerDown, onCardClick }: {
   column: BoardStateColumn;
   laneIds: string[];
-  tasksByLane: { lane: string; tasks: Task[] }[];
+  /** The column's cards, straight from the memoized colTasks map. Split
+   *  into lanes HERE so a skipped render does not rebuild the array. */
+  cellTasks: Task[];
   projectOrder: string[];
   projectById: Map<string, Project>;
   projectAccent: (p: Project | undefined) => string | undefined;
   ctx: CardContext;
-  preview: { projectId: string; ids: string[] } | null;
+  preview: ReorderPreview | null;
   dragTarget: DragTarget;
   dragSourceId: string | null;
   /** True while a drag is in flight whose card could run THIS column's
@@ -621,6 +683,7 @@ function BoardColumnView({ column, laneIds, tasksByLane, projectOrder, projectBy
   onCardClick: (w: Task) => void;
 }) {
   const { t } = useTranslation("chrome");
+  const tasksByLane = useMemo(() => groupByLane(cellTasks, laneIds), [cellTasks, laneIds]);
   const count = tasksByLane.reduce((n, g) => n + g.tasks.length, 0);
   const accent = COL_ACCENT[column];
   const isCommandTarget =
@@ -685,11 +748,11 @@ function BoardColumnView({ column, laneIds, tasksByLane, projectOrder, projectBy
       </div>
     </section>
   );
-}
+});
 
 // ─── Project groups inside one lane ──────────────────────────────────────
 
-function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAccent, ctx, preview, dragSourceId, onCardPointerDown, onCardClick }: {
+const LaneGroups = memo(function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAccent, ctx, preview, dragSourceId, onCardPointerDown, onCardClick }: {
   lane: string;
   column: BoardStateColumn;
   tasks: Task[];
@@ -697,7 +760,7 @@ function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAcc
   projectById: Map<string, Project>;
   projectAccent: (p: Project | undefined) => string | undefined;
   ctx: CardContext;
-  preview: { projectId: string; ids: string[] } | null;
+  preview: ReorderPreview | null;
   dragSourceId: string | null;
   onCardPointerDown: (e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => void;
   onCardClick: (w: Task) => void;
@@ -708,7 +771,12 @@ function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAcc
     <>
       {groups.map(g => {
         const project = projectById.get(g.projectId);
-        const ordered = preview?.projectId === g.projectId
+        // Only the ORIGIN group applies the preview: same project, same
+        // lane, same column. A project-only match once applied it to every
+        // other group of the project too, where none of the ids matched and
+        // the group rendered zero cards under a lit drop ring.
+        const ordered = preview !== null && preview.column === column
+          && preview.lane === lane && preview.projectId === g.projectId
           ? preview.ids.map(id => g.tasks.find(w => w.id === id)).filter((w): w is Task => !!w)
           : g.tasks;
         return (
@@ -732,7 +800,10 @@ function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAcc
             <div
               className={cn(
                 "flex flex-col gap-2 rounded-lg",
-                dragSourceId != null && preview?.projectId === g.projectId
+                dragSourceId != null && preview !== null
+                  && preview.column === column
+                  && preview.lane === lane
+                  && preview.projectId === g.projectId
                   && "ring-1 ring-inset ring-[var(--color-accent-soft)]",
               )}
             >
@@ -742,9 +813,10 @@ function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAcc
                   task={w}
                   ctx={ctx}
                   column={column}
+                  lane={lane}
                   isDragSource={dragSourceId === w.id}
-                  onPointerDown={e => onCardPointerDown(e, w, lane, column)}
-                  onClick={() => onCardClick(w)}
+                  onCardPointerDown={onCardPointerDown}
+                  onCardClick={onCardClick}
                 />
               ))}
             </div>
@@ -753,19 +825,20 @@ function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAcc
       })}
     </>
   );
-}
+});
 
 // ─── Cards ───────────────────────────────────────────────────────────────
 // Each card subscribes to ONLY its own tab slice (selectTaskTabs), so a
 // keystroke in one task re-renders one card, not the board.
 
-function BoardCard({ task: w, ctx, column, isDragSource, onPointerDown, onClick }: {
+const BoardCard = memo(function BoardCard({ task: w, ctx, column, lane, isDragSource, onCardPointerDown, onCardClick }: {
   task: Task;
   ctx: CardContext;
   column: BoardStateColumn;
+  lane: string;
   isDragSource: boolean;
-  onPointerDown: (e: React.PointerEvent) => void;
-  onClick: () => void;
+  onCardPointerDown: (e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => void;
+  onCardClick: (w: Task) => void;
 }) {
   const { t } = useTranslation("chrome");
   const tabs = useApp(selectTaskTabs(w.id));
@@ -795,10 +868,10 @@ function BoardCard({ task: w, ctx, column, isDragSource, onPointerDown, onClick 
       data-board-task-id={w.id}
       role="button"
       tabIndex={0}
-      onPointerDown={onPointerDown}
-      onClick={onClick}
+      onPointerDown={e => onCardPointerDown(e, w, lane, column)}
+      onClick={() => onCardClick(w)}
       onKeyDown={ev => {
-        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onClick(); }
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onCardClick(w); }
       }}
       style={{ borderLeftColor: edge }}
       className={cn(
@@ -840,7 +913,7 @@ function BoardCard({ task: w, ctx, column, isDragSource, onPointerDown, onClick 
       </div>
     </div>
   );
-}
+});
 
 /** The card's cage badge, the sidebar's precedence verbatim (Docker first -
  *  Docker tasks store `sandbox_mode: "off"` because the cages are mutually
@@ -882,7 +955,7 @@ function TaskSandboxBadge({ task: w, tabs, t }: {
 /** The archived column's card: read-only, single-row compact. Restore stays
  *  in History, so the card has no click action and the column footer links
  *  there instead. */
-function ArchivedCard({ task: w, project, ctx }: {
+const ArchivedCard = memo(function ArchivedCard({ task: w, project, ctx }: {
   task: Task;
   project: Project | undefined;
   ctx: CardContext;
@@ -899,4 +972,4 @@ function ArchivedCard({ task: w, project, ctx }: {
       {project && <span className="shrink-0 truncate text-[10.5px] text-[var(--color-fg-faint)]">{project.name}</span>}
     </div>
   );
-}
+});
