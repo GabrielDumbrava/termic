@@ -523,6 +523,18 @@ describe("message queue", () => {
     if (taskId) await archiveTask(taskId);
   });
 
+  /** Every line the fixture agent has read, oldest first. Terminal output is a
+   *  canvas, so this file is the only way to assert WHAT arrived and in what
+   *  order. Missing until the first prompt lands. */
+  function promptsLog(): string[] {
+    try {
+      return readFileSync(join(dataDir, "e2e-agent-prompts.log"), "utf8")
+        .split("\n").filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   it("holds a message while working, then drains it when idle", async () => {
     await waitForAppShell();
     await requireTermicApi();
@@ -570,6 +582,74 @@ describe("message queue", () => {
     );
 
     await snap("message-queue.png");
+  });
+
+  // "Send all now" and the per-row "send this one now" (both in the queue
+  // popover). The point of both is to IGNORE the work-done gate, so each case
+  // queues while the agent is mid-turn and asserts the messages arrive anyway.
+  it("sends every queued message now, in order, while the agent is working", async () => {
+    await submitToAgent(taskId, "work");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 10_000, message: "agent never went back to working",
+    });
+
+    const before = promptsLog().length;
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      const tab = s.tabs[id][0].id;
+      for (const text of ["flush-one", "flush-two", "flush-three"]) s.enqueueAgentMessage(id, tab, text);
+    }, taskId);
+    await browser.waitUntil(async () => (await queuedCount(taskId!)) === 3, {
+      timeout: 8_000, timeoutMsg: "the three messages were not held",
+    });
+
+    await clickWhenVisible(`[data-task-id="${taskId}"] [data-testid="queue-button"]`);
+    await clickWhenVisible('[data-testid="queue-send-all-now"]');
+
+    await browser.waitUntil(async () => (await queuedCount(taskId!)) === 0, {
+      timeout: 20_000, interval: 300, timeoutMsg: "the queue never emptied after Send all now",
+    });
+    // Each one whole and on its own line, in the order queued. Interleaved
+    // writes would show up here as a run-together line or a missing message:
+    // a send is text then the submit CR 450ms later, so writing the next
+    // message inside that window puts it in the previous one's input box.
+    await browser.waitUntil(async () => {
+      const got = promptsLog().slice(before);
+      return ["flush-one", "flush-two", "flush-three"].every(m => got.includes(m));
+    }, { timeout: 20_000, interval: 300, timeoutMsg: "the agent did not receive all three whole" });
+    const lines = promptsLog().slice(before);
+    expect(lines.indexOf("flush-one")).toBeLessThan(lines.indexOf("flush-two"));
+    expect(lines.indexOf("flush-two")).toBeLessThan(lines.indexOf("flush-three"));
+  });
+
+  it("sends one queued message ahead of the rest from its own row", async () => {
+    await submitToAgent(taskId, "work");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 10_000, message: "agent never went back to working",
+    });
+    const before = promptsLog().length;
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      const tab = s.tabs[id][0].id;
+      for (const text of ["row-head", "row-jumper"]) s.enqueueAgentMessage(id, tab, text);
+    }, taskId);
+    await browser.waitUntil(async () => (await queuedCount(taskId!)) === 2, {
+      timeout: 8_000, timeoutMsg: "the two messages were not held",
+    });
+
+    await clickWhenVisible(`[data-task-id="${taskId}"] [data-testid="queue-button"]`);
+    // The SECOND row's icon: the one that is not next up is the whole point.
+    await browser.execute(() => {
+      const rows = [...document.querySelectorAll('[data-testid="queue-item-send-now"]')];
+      (rows[1] as HTMLElement).click();
+    });
+
+    // The jumper arrives while the other one is still queued behind it.
+    await browser.waitUntil(async () => promptsLog().slice(before).includes("row-jumper"), {
+      timeout: 20_000, interval: 300, timeoutMsg: "the promoted message never arrived",
+    });
+    expect(promptsLog().slice(before)).not.toContain("row-head");
+    expect(await queuedCount(taskId!)).toBe(1);
   });
 });
 

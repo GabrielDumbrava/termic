@@ -25,7 +25,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { workDoneCapable } from "@/lib/agents";
 import { cn } from "@/lib/utils";
-import { MessageSquarePlus, X, Repeat, CornerDownLeft, Send, CalendarClock } from "lucide-react";
+import { MessageSquarePlus, X, Repeat, CornerDownLeft, Send, SendHorizontal, CalendarClock } from "lucide-react";
 import type { TerminalTab } from "@/lib/types";
 import { dateInputValue, formatScheduleDate, isScheduled, localDateValue, startOfDayIn } from "@/lib/scheduledQueue";
 
@@ -68,6 +68,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   const scheduleAgentMessage = useApp(s => s.scheduleAgentMessage);
   const syncScheduledMessages = useApp(s => s.syncScheduledMessages);
   const forceAgentQueueSend = useApp(s => s.forceAgentQueueSend);
+  const flushAgentQueue = useApp(s => s.flushAgentQueue);
 
   // Only work-done-capable agent tabs with a live PTY can host a queue — the
   // loop advances on work-done, which shells / detection-off agents never emit.
@@ -168,6 +169,22 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   function sendNow() {
     if (!target || queue.length === 0) return;
     forceAgentQueueSend(taskId, target.id);
+  }
+
+  /** One row's own "now": the item is promoted to the head and sent, so it
+   *  jumps the line without disturbing the order behind it. */
+  function sendItemNow(itemId: string) {
+    if (!target) return;
+    forceAgentQueueSend(taskId, target.id, itemId);
+  }
+
+  /** Every message, back to back, without waiting for work-done between them.
+   *  Deliberately no confirm: it is the escape hatch for an agent whose
+   *  work-done never arrives, and a dialog in front of it would be one more
+   *  thing standing between the user and their own messages. */
+  function sendAllNow() {
+    if (!target || queue.length === 0) return;
+    flushAgentQueue(taskId, target.id);
   }
 
   const tip = !canQueue
@@ -290,6 +307,16 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                     ×{running && i === 0 ? q.remaining : q.repeat}
                   </span>
                 )}
+                {/* Same hover reveal as the remove button beside it: the row
+                    stays quiet until you are pointing at it. */}
+                <button
+                  onClick={() => sendItemNow(q.id)}
+                  data-testid="queue-item-send-now"
+                  title={t("queue.sendItemNowTip")}
+                  className="mt-0.5 shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-accent)] group-hover:opacity-100"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                </button>
                 <button
                   onClick={() => removeItem(q.id)}
                   title={t("queue.removeTip")}
@@ -384,6 +411,15 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
               <Tip content={t("queue.sendNowTip")} side="top">
                 <Button variant="ghost" size="sm" className="ml-auto gap-1.5" onClick={sendNow}>
                   <Send className="h-3 w-3" /> {t("queue.sendNow")}
+                </Button>
+              </Tip>
+            )}
+            {/* Only from two messages up: with one queued it would be the
+                button to its left under a different name. */}
+            {queue.length > 1 && (
+              <Tip content={t("queue.sendAllNowTip", { count: queue.length })} side="top">
+                <Button variant="ghost" size="sm" className="gap-1.5" data-testid="queue-send-all-now" onClick={sendAllNow}>
+                  <SendHorizontal className="h-3 w-3" /> {t("queue.sendAllNow")}
                 </Button>
               </Tip>
             )}

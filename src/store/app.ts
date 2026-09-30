@@ -424,11 +424,20 @@ export interface AppState {
    *  may hold scheduled items (add, remove, clear, delivery). Writes nothing
    *  when they already match. */
   syncScheduledMessages: (taskId: string, tabId: string) => void;
-  /** Force the head queued message out immediately (the "Send now" button),
-   *  even while the agent is mid-turn. Bumps `queueForceKick`, which a
-   *  dedicated TerminalPane effect watches and drains without the mid-turn
-   *  guard. No-op for non-terminal tabs or an empty/inactive queue. */
-  forceAgentQueueSend: (taskId: string, tabId: string) => void;
+  /** Force a queued message out immediately (the "Send now" button), even
+   *  while the agent is mid-turn. Bumps `queueForceKick`, which a dedicated
+   *  TerminalPane effect watches and drains without the mid-turn guard. No-op
+   *  for non-terminal tabs or an empty/inactive queue.
+   *
+   *  With `itemId`, that item is moved to the head first, so a per-row "send
+   *  this one now" reuses the whole head-send path (repeat counting, CLI
+   *  prompt-delivery reporting, the scheduled-item branch) instead of growing
+   *  a second delivery route beside it. */
+  forceAgentQueueSend: (taskId: string, tabId: string, itemId?: string) => void;
+  /** Send EVERY queued message now, in order, without waiting for work-done
+   *  between them ("Send all now"). Bumps `queueFlushKick`; TerminalPane runs
+   *  the loop, awaiting each delivery before starting the next. */
+  flushAgentQueue: (taskId: string, tabId: string) => void;
   renameTab: (taskId: string, tabId: string, title: string) => void;
   clearTabCustomTitle: (taskId: string, tabId: string) => void;
   /** Update the tab's PTY-driven `OSC 0/2` title. No-op when the user
@@ -2558,16 +2567,44 @@ export const useApp = create<AppState>((set, get) => ({
     ipc.taskSetTabScheduled(taskId, tabId, items).catch(() => {});
   },
 
-  forceAgentQueueSend: (taskId, tabId) => set(s => {
+  forceAgentQueueSend: (taskId, tabId, itemId) => set(s => {
     const list = s.tabs[taskId] || [];
     const next = list.map(t => {
       if (t.id !== tabId || t.type !== "terminal" || !(t.queue?.length)) return t;
+      // A named item is PROMOTED to the head rather than sent where it sits.
+      // The engine only ever sends the head, so promoting is what lets one row
+      // jump the line without a second delivery path: the item keeps its
+      // identity (repeat, remaining, promptId, notBefore) and the order behind
+      // it is preserved. An unknown id leaves the queue alone and still kicks,
+      // which is the same thing the plain "Send now" does.
+      const queue = itemId
+        ? (() => {
+          const i = t.queue!.findIndex(q => q.id === itemId);
+          if (i <= 0) return t.queue!;   // absent, or already the head
+          const picked = t.queue![i];
+          return [picked, ...t.queue!.filter((_, j) => j !== i)];
+        })()
+        : t.queue!;
       // Re-activate in case the loop had stalled, then bump the force kick so
       // TerminalPane drains the head right now (ignoring the mid-turn guard).
       return {
         ...t,
+        queue,
         queueActive: true,
         queueForceKick: (t.queueForceKick ?? 0) + 1,
+      } as Tab;
+    });
+    return { tabs: { ...s.tabs, [taskId]: next } };
+  }),
+
+  flushAgentQueue: (taskId, tabId) => set(s => {
+    const list = s.tabs[taskId] || [];
+    const next = list.map(t => {
+      if (t.id !== tabId || t.type !== "terminal" || !(t.queue?.length)) return t;
+      return {
+        ...t,
+        queueActive: true,
+        queueFlushKick: (t.queueFlushKick ?? 0) + 1,
       } as Tab;
     });
     return { tabs: { ...s.tabs, [taskId]: next } };

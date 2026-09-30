@@ -1731,3 +1731,79 @@ describe("visiting a partially-done tab", () => {
     expect(t.workState).toBe("working"); // the rest is still running
   });
 });
+
+describe("forcing a queued message out", () => {
+  const items = (): QueueItem[] => [
+    { id: "q1", text: "first", repeat: 1, remaining: 1 },
+    { id: "q2", text: "second", repeat: 3, remaining: 2, promptId: "p9" },
+    { id: "q3", text: "third", repeat: 1, remaining: 1, notBefore: 999 },
+  ];
+  const seedQueue = (queue: QueueItem[] = items()) => {
+    useApp.setState({
+      tabs: { ws1: [{ id: "t1", type: "terminal", title: "claude", cli: "claude", queue } as never] },
+    });
+  };
+  const tab = () => useApp.getState().tabs.ws1[0] as TerminalTab;
+
+  it("kicks without touching the order when no item is named", () => {
+    seedQueue();
+    const before = tab().queueForceKick ?? 0;
+    useApp.getState().forceAgentQueueSend("ws1", "t1");
+    expect(tab().queue!.map(q => q.id)).toEqual(["q1", "q2", "q3"]);
+    expect(tab().queueForceKick).toBe(before + 1);
+    expect(tab().queueActive).toBe(true);
+  });
+
+  it("promotes the named item to the head, keeping the rest in order", () => {
+    // The engine only sends the head, so promotion is how one row jumps the
+    // line without a second delivery path.
+    seedQueue();
+    useApp.getState().forceAgentQueueSend("ws1", "t1", "q3");
+    expect(tab().queue!.map(q => q.id)).toEqual(["q3", "q1", "q2"]);
+    expect(tab().queueForceKick).toBe(1);
+  });
+
+  it("carries the promoted item's own state with it", () => {
+    // remaining/promptId/notBefore ride along: a promoted CLI-queued prompt
+    // must still report its delivery, and a repeat must not restart.
+    seedQueue();
+    useApp.getState().forceAgentQueueSend("ws1", "t1", "q2");
+    expect(tab().queue![0]).toEqual({
+      id: "q2", text: "second", repeat: 3, remaining: 2, promptId: "p9",
+    });
+  });
+
+  it("leaves the queue alone for the head, or an id that is gone", () => {
+    // Both are no-op promotions that still kick: the user asked for a send.
+    seedQueue();
+    useApp.getState().forceAgentQueueSend("ws1", "t1", "q1");
+    expect(tab().queue!.map(q => q.id)).toEqual(["q1", "q2", "q3"]);
+    useApp.getState().forceAgentQueueSend("ws1", "t1", "nope");
+    expect(tab().queue!.map(q => q.id)).toEqual(["q1", "q2", "q3"]);
+    expect(tab().queueForceKick).toBe(2);
+  });
+
+  it("does nothing on an empty queue", () => {
+    seedQueue([]);
+    useApp.getState().forceAgentQueueSend("ws1", "t1", "q1");
+    useApp.getState().flushAgentQueue("ws1", "t1");
+    expect(tab().queueForceKick).toBeUndefined();
+    expect(tab().queueFlushKick).toBeUndefined();
+    expect(tab().queueActive).toBeUndefined();
+  });
+
+  it("flushing bumps its own kick and reactivates a stalled queue", () => {
+    // A separate kick from the force one: TerminalPane drains the whole queue
+    // on this, awaiting each delivery, and must not confuse it with "send the
+    // head now".
+    seedQueue();
+    useApp.setState({
+      tabs: { ws1: [{ ...tab(), queueActive: false } as never] },
+    });
+    useApp.getState().flushAgentQueue("ws1", "t1");
+    expect(tab().queueFlushKick).toBe(1);
+    expect(tab().queueActive).toBe(true);
+    expect(tab().queueForceKick).toBeUndefined();
+    expect(tab().queue!.map(q => q.id)).toEqual(["q1", "q2", "q3"]);
+  });
+});

@@ -231,6 +231,15 @@ if [ -n "$picker" ]; then
 fi
 
 while IFS= read -r line; do
+  # Record every submitted line, in order, one per line. Terminal output is a
+  # canvas, so this file is the only way a spec can assert WHAT the agent
+  # received and in what ORDER: "send all now" writes several messages back to
+  # back, and a message landing inside another one's input box is exactly the
+  # failure that would otherwise pass unnoticed. Same best-effort append as the
+  # argv log, and the leading debris is stripped below rather than here so the
+  # file shows what was really read.
+  printf '%s\n' "$line" \
+    >> "${TERMIC_DATA_DIR}/e2e-agent-prompts.log" 2>/dev/null || true
   # Strip leading interrupt bytes. A directive that reads a keystroke mid-turn
   # can be handed MORE than the one byte it consumes (xterm does not promise
   # one onData call per key), and the remainder then arrives glued to the front

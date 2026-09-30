@@ -47,7 +47,7 @@ import { useAgentUsage } from "@/store/agentUsage";
 import { useAgentContext } from "@/store/agentContext";
 import { imageFromClipboard, pastePathText } from "@/lib/clipboardImage";
 import { setupImeReplacementBridge } from "@/lib/ime";
-import { deliverMessage, sendMessageToPty } from "@/lib/agentSend";
+import { deliverMessage } from "@/lib/agentSend";
 import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { waitForAgentReady } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
@@ -704,6 +704,10 @@ const captureArmedRef = useRef(false);
   // faster than the user-configured floor.
   const lastQueueSendAtRef = useRef(0);
   const queueThrottleTimerRef = useRef<number | null>(null);
+  /** The most recent queue delivery's promise (text + the submit CR). Only
+   *  "Send all now" reads it, to write messages one after another instead of
+   *  on top of each other. */
+  const lastDeliveryRef = useRef<Promise<unknown>>(Promise.resolve());
   // The scheduled item (GH #300) whose readiness wait + delivery is under way,
   // so a second kick during the wait does not type it twice.
   const scheduledInFlightRef = useRef<string | null>(null);
@@ -835,7 +839,7 @@ const captureArmedRef = useRef(false);
       // (pty_write silently no-ops on a dead id).
       const pid = head.promptId;
       patchTab(task.id, tab.id, { workState: "idle", unread: null });
-      deliverMessage(ptyId, head.text)
+      lastDeliveryRef.current = deliverMessage(ptyId, head.text)
         .then(async () => {
           const now = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id);
           const samePty = now?.type === "terminal" && now.ptyId === ptyId;
@@ -848,7 +852,10 @@ const captureArmedRef = useRef(false);
         })
         .catch(e => reportCliPromptDelivery(pid, false, String((e as Error)?.message ?? e)));
     } else {
-      sendMessageToPty(ptyId, head.text);
+      // deliverMessage, not sendMessageToPty (its fire-and-forget wrapper):
+      // identical call, but keeping the promise is what lets "Send all now"
+      // wait for the submit CR before writing the next message.
+      lastDeliveryRef.current = deliverMessage(ptyId, head.text).catch(() => {});
     }
     lastQueueSendAtRef.current = Date.now();
     patchTab(task.id, tab.id, { lastInputAt: Date.now() });
@@ -913,6 +920,53 @@ const captureArmedRef = useRef(false);
     if (!forceKickMountedRef.current) { forceKickMountedRef.current = true; return; }
     sendNextQueuedRef.current?.(true);
   }, [queueForceKick]);
+
+  // "Send all now": empty the queue in one pass, awaiting each delivery.
+  //
+  // Sequential, not a loop of force-kicks, because a send is two writes with a
+  // 450ms gap (agentSend's SUBMIT_DELAY_MS: text, then the submit CR). Firing
+  // them concurrently would put the second message inside the first one's input
+  // box and let one CR submit the pair, so the agent would receive a blob and
+  // the rest would vanish. `lastDeliveryRef` is the promise for the write that
+  // just went out; awaiting it between items is what keeps them separate.
+  //
+  // Guarded three ways: the mount run is skipped (a kick stored on a tab must
+  // not fire when its pane remounts), a flush already running is not restarted,
+  // and every iteration re-reads the tab so a restart, an unmount or a user
+  // clearing the queue stops it rather than typing into whatever replaced it.
+  const queueFlushKick = tab.type === "terminal" ? tab.queueFlushKick : undefined;
+  const flushMountedRef = useRef(false);
+  const flushingRef = useRef(false);
+  useEffect(() => {
+    if (!flushMountedRef.current) { flushMountedRef.current = true; return; }
+    if (flushingRef.current) return;
+    let cancelled = false;
+    flushingRef.current = true;
+    void (async () => {
+      try {
+        // A ceiling on iterations, not `while (true)`: a bug that stopped
+        // consuming the head would otherwise write to the agent forever.
+        for (let i = 0; i < 200; i++) {
+          if (cancelled) return;
+          const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+          if (!cur?.queue?.length || !cur.ptyId || cur.ptyId !== ptyRef.current) return;
+          const before = cur.queue.length;
+          const sent = sendNextQueuedRef.current?.(true);
+          if (!sent) return;
+          await lastDeliveryRef.current;
+          const after = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+          // No progress means the head declined to leave (a scheduled item
+          // mid-flight, say). Stop rather than spin on it.
+          if ((after?.queue?.length ?? 0) >= before
+              && after?.queue?.[0]?.id === cur.queue[0].id
+              && (after?.queue?.[0]?.remaining ?? 0) >= cur.queue[0].remaining) return;
+        }
+      } finally {
+        flushingRef.current = false;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [queueFlushKick, task.id, tab.id]);
 
   // Cancel any pending throttled send when this pane unmounts so the timer
   // doesn't fire into a torn-down tab.

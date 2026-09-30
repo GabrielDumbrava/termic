@@ -1458,6 +1458,12 @@ export interface TerminalTab extends BaseTab {
    *  Watched by a dedicated TerminalPane effect that sends regardless of
    *  `workState` AND bypasses the queue send-interval throttle. */
   queueForceKick?: number;
+  /** Bumped by "Send all now" to empty the queue in one go, each message
+   *  awaited before the next is written. A plain loop over `queueForceKick`
+   *  would interleave: every send is text, then the submit CR 450ms later
+   *  (agentSend's SUBMIT_DELAY_MS), so a second message written inside that
+   *  window lands in the first one's input box and the CR submits the pair. */
+  queueFlushKick?: number;
   /** Bumped to respawn an EXITED agent tab programmatically (the CLI's
    *  `send --resume`), exactly like clicking the exited banner's Restart.
    *  Watched by a TerminalPane effect; no-op while the PTY is live. */
