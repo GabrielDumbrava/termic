@@ -11,7 +11,7 @@
 import type { ForgeIssue } from "@/lib/types";
 import { forgeName, issueNoun, azureWorkItemCommentsCommand } from "@/lib/forge";
 import { usePromptLibrary } from "@/store/prompts";
-import { WORK_ISSUE_PROMPT } from "@/lib/builtinPrompts";
+import { WORK_ISSUE_PROMPT, WORK_ISSUES_PROMPT } from "@/lib/builtinPrompts";
 import { slugify, branchify } from "@/lib/utils";
 
 /** How much issue body we inline. Long issues exist (design docs pasted into
@@ -61,7 +61,7 @@ function truncationNote(issue: Pick<ForgeIssue, "provider" | "number">, remoteUr
  *  show. The number leads so a row is identifiable when the title truncates. */
 export function issueTaskName(issue: Pick<ForgeIssue, "number" | "title">, max = 60): string {
   const ref = `#${issue.number}`;
-  const title = issue.title.trim();
+  const title = san(issue.title).trim();
   if (!title) return ref;
   const full = `${ref} ${title}`;
   return full.length <= max ? full : `${full.slice(0, max - 1).trimEnd()}…`;
@@ -81,13 +81,22 @@ export function issueBranch(
   return branchify(prefix ? `${prefix}/${stem}` : stem);
 }
 
+/** Issue text lands in a bracketed paste to the agent's PTY: a control byte
+ *  in it (ESC[201~ ends the paste early, then the rest - including \r - lands
+ *  as live keystrokes) is worse than a lost character. Strip C0/C1 except
+ *  \n and \t, the only ones the prompt's own structure uses. Same idea as
+ *  `commentPromptFor` in store/pr, which flattens single-line text instead. */
+function san(s: string): string {
+  return s.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+}
+
 /** The issue half of the prompt: identity, link, body, and how to read the
  *  discussion. Exported separately so tests can assert it without depending
  *  on the prompt library's state. */
 export function issueContext(issue: ForgeIssue, bodyMax = BODY_MAX, remoteUrl = ""): string {
   const host = forgeName(issue.provider);
   const noun = issueNoun(issue.provider);
-  const body = issue.body.trim();
+  const body = san(issue.body).trim();
   const truncated = body.length > bodyMax;
   const fetchCmd = issueFetchCommand(issue, remoteUrl);
   // The no-remote fallback embeds a project=PROJECT placeholder the agent
@@ -101,10 +110,10 @@ export function issueContext(issue: ForgeIssue, bodyMax = BODY_MAX, remoteUrl = 
     : "";
   const shown = truncated ? `${body.slice(0, bodyMax).trimEnd()}${truncationNote(issue, remoteUrl)}` : body;
   const lines = [
-    `${host} ${noun} ${issueRef(issue)}: ${issue.title.trim()}`,
-    issue.url,
+    `${host} ${noun} ${issueRef(issue)}: ${san(issue.title).trim()}`,
+    san(issue.url),
   ];
-  if (issue.labels.length) lines.push(`${issue.provider === "azure" ? "Tags" : "Labels"}: ${issue.labels.join(", ")}`);
+  if (issue.labels.length) lines.push(`${issue.provider === "azure" ? "Tags" : "Labels"}: ${issue.labels.map(san).join(", ")}`);
   lines.push("");
   lines.push(shown || `(The ${noun} has no description. The discussion is all there is.)`);
   lines.push("");
@@ -118,25 +127,27 @@ export function issueContext(issue: ForgeIssue, bodyMax = BODY_MAX, remoteUrl = 
 
 /** The full prompt seeded into a fresh issue task: issue context, then the
  *  user's (or default) "Work on the issue" instructions. Reads the library
- *  live so an edited or disabled builtin is respected; falls back to the
- *  shipped text if the user deleted it outright, because a task created from
- *  an issue with no instructions at all would just be a wall of context. */
+ *  live so an edited builtin's body is used; falls back to the shipped text
+ *  if the user deleted it outright, because a task created from an issue
+ *  with no instructions at all would just be a wall of context. (A DISABLED
+ *  builtin still supplies the text: disabling hides the template from the
+ *  prompt picker, it doesn't ask for instruction-free issue tasks.) */
 export function buildIssuePrompt(issue: ForgeIssue, maxChars?: number, remoteUrl = ""): string {
-  const prompt = usePromptLibrary.getState().prompts.find(p => p.id === "builtin:work-issue");
-  const instructions = (prompt?.body ?? WORK_ISSUE_PROMPT).trim();
-  const tail = `\n\n---\n\n${instructions}`;
-  // The composed prompt now lands in the New Task dialog's Initial prompt box,
-  // which caps what it will send (deepLink's MAX_PROMPT_CHARS), so a caller can
-  // ask for a prompt that fits. What gives is the BODY: the instructions are
-  // the actual ask, and the body is context the agent can re-read in full with
-  // the fetch command that is already in the prompt. Trimming the tail instead
-  // would drop the ask and leave a wall of context with no instruction.
+  return buildIssuesPrompt([issue], maxChars, remoteUrl);
+}
+
+/** The context half of a prompt, body-trimmed to fit a character budget.
+ *  What gives is the BODY: the instructions are the actual ask, and the body
+ *  is context the agent can re-read in full with the fetch command that is
+ *  already in the prompt. Trimming the tail instead would drop the ask and
+ *  leave a wall of context with no instruction. */
+function fittedContext(issue: ForgeIssue, maxChars: number | undefined, remoteUrl: string): string {
   let bodyMax = BODY_MAX;
   if (maxChars !== undefined) {
     // Overhead measured with an empty body, which substitutes the longer
     // "no description" placeholder - so this errs on the side of a shorter
     // body rather than overshooting the cap.
-    const overhead = issueContext({ ...issue, body: "" }, BODY_MAX, remoteUrl).length + tail.length;
+    const overhead = issueContext({ ...issue, body: "" }, BODY_MAX, remoteUrl).length;
     bodyMax = Math.max(0, Math.min(BODY_MAX, maxChars - overhead));
     // A body that still overflows gets the "read the rest" note appended
     // (a real command for azure, ~80 chars) - count it, then re-fit.
@@ -144,5 +155,45 @@ export function buildIssuePrompt(issue: ForgeIssue, maxChars?: number, remoteUrl
       bodyMax = Math.max(0, Math.min(BODY_MAX, maxChars - overhead - truncationNote(issue, remoteUrl).length));
     }
   }
-  return `${issueContext(issue, bodyMax, remoteUrl)}${tail}`;
+  return issueContext(issue, bodyMax, remoteUrl);
+}
+
+/** WORK_ISSUES_PROMPT with the provider's noun swapped in ("work items" for
+ *  Azure). The constant is written so its only issue-noun phrases are
+ *  "the issues", "each issue", "an issue", "these issues" - which is what
+ *  makes a mechanical swap grammatical. Order: article fix first, then
+ *  plural, then singular (each guards the next from half-replacing). */
+function pluralTail(noun: string): string {
+  if (noun === "issue") return WORK_ISSUES_PROMPT;
+  return WORK_ISSUES_PROMPT
+    .replace(/\ban issue\b/g, `a ${noun}`)
+    .replace(/\bissues\b/g, `${noun}s`)
+    .replace(/\bissue\b/g, noun);
+}
+
+/** One task seeded with one or several issues: every picked issue's context
+ *  in pick order, then a single instructions tail - one ask, N subjects, not
+ *  N copies of "work on the issue". The budget splits evenly across issues
+ *  so the whole still fits the prompt box. */
+export function buildIssuesPrompt(issues: ForgeIssue[], maxChars?: number, remoteUrl = ""): string {
+  if (issues.length === 0) return "";
+  const prompt = usePromptLibrary.getState().prompts.find(p => p.id === "builtin:work-issue");
+  // The shipped text is singular ("the issue above"), wrong for a multi-pick
+  // prompt. Only the UNMODIFIED builtin gets the count- and provider-correct
+  // default: an edited one is the user's own wording, used verbatim either
+  // way. A deleted builtin falls back to the shipped text, same as before.
+  const noun = issueNoun(issues[0].provider);
+  const instructions = ((!prompt || !prompt.modified) && issues.length > 1
+    ? pluralTail(noun)
+    : (prompt?.body ?? WORK_ISSUE_PROMPT)).trim();
+  const tail = `\n\n---\n\n${instructions}`;
+  const perIssue = maxChars === undefined ? undefined : Math.max(1, Math.floor((maxChars - tail.length) / issues.length));
+  let contexts = issues.map(i => fittedContext(i, perIssue, remoteUrl)).join("\n\n---\n\n");
+  // Degenerate caps (maxChars smaller than the irreducible per-issue
+  // overhead) can still overshoot: the tail is the ask, so the CONTEXT
+  // gives, never the instructions.
+  if (maxChars !== undefined && contexts.length > maxChars - tail.length) {
+    contexts = contexts.slice(0, Math.max(0, maxChars - tail.length));
+  }
+  return `${contexts}${tail}`;
 }

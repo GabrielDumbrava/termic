@@ -1219,7 +1219,7 @@ export interface IssueLookup {
  *  maintainer's day job), so a long list would be slower to fetch, slower to
  *  read and rarely what was wanted. */
 export interface ForgePr {
-  provider: "github" | "gitlab";
+  provider: "github" | "gitlab" | "azure";
   number: number;
   title: string;
   url: string;
@@ -1238,7 +1238,7 @@ export interface ForgePr {
  *  PR", which is an answer rather than a failure. Mirrors `PrPickList` in
  *  src-tauri/src/lib.rs. */
 export interface PrPickList {
-  provider: "github" | "gitlab" | null;
+  provider: "github" | "gitlab" | "azure" | null;
   remote_url: string;
   status: "ok" | "not-found" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
   message: string;

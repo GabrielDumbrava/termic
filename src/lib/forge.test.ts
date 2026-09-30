@@ -57,7 +57,11 @@ describe("azurePrThreadsCommand", () => {
     // the two edges forge.rs's azure_remote_parsing pins too.
     ["ssh://git@ssh.dev.azure.com:22/v3/myorg/proj/repo", "https://dev.azure.com/myorg", "proj", "repo"],
     ["ssh://git@vs-ssh.visualstudio.com:22/v3/myorg/proj/repo", "https://myorg.visualstudio.com", "proj", "repo"],
-    ["https://myorg.visualstudio.com/DefaultCollection/proj/_git/repo", "https://myorg.visualstudio.com/DefaultCollection", "proj", "repo"],
+    // The collection segment is dropped: az's org-URL grammar takes zero
+    // path segments, so keeping it fails every call as "not cloud".
+    ["https://myorg.visualstudio.com/DefaultCollection/proj/_git/repo", "https://myorg.visualstudio.com", "proj", "repo"],
+    // Pre-v3 SSH: _ssh is the repo marker, the org is the whole host.
+    ["user@myorg.visualstudio.com:proj/_ssh/repo", "https://myorg.visualstudio.com", "proj", "repo"],
     // A PAT in the userinfo (ADO's documented clone pattern), a '@' in a
     // path segment (not userinfo), and the userinfo-less scp form
     // provider_for_repo hands down after remote_for_display strips it.

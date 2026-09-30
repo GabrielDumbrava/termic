@@ -191,6 +191,36 @@ describe("deliverMessage", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("accepts a rendered paste chip as the echo for a paste-wrapped send", async () => {
+    // Codex/copilot show a pasted body as "[Pasted Content N chars]" /
+    // "[Paste #1 - X lines]" and never echo the text - the chip IS the echo,
+    // since only a text-accepting composer can render one.
+    vi.useFakeTimers();
+    try {
+      const p = deliverMessage("pty-1", "line one\nline two", { verifyEcho: true });
+      await vi.advanceTimersByTimeAsync(50);
+      echo("[Pasted Content 21 chars]");
+      await vi.advanceTimersByTimeAsync(1000);
+      await p;
+      expect(submitted()).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does NOT accept a chip for a short send, where the text must echo", async () => {
+    // A chip on a non-pasted message can't be ours: nothing we sent would
+    // render as one, so matching it would pass on a coincidence.
+    vi.useFakeTimers();
+    try {
+      const p = deliverMessage("pty-1", "hi", { verifyEcho: true });
+      const caught = p.catch(e => String(e));
+      await vi.advanceTimersByTimeAsync(50);
+      echo("[Pasted Content 9000 chars]");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await caught).toMatch(/did not echo/);
+      expect(submitted()).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("submits anyway when the PTY cannot be observed", async () => {
     // Absence of evidence is not evidence. A listener that fails must not
     // silently swallow every prompt; fall back to the old behaviour.

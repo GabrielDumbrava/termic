@@ -2707,7 +2707,7 @@ describe("the route into an issue task", () => {
   it("says why a non-forge repo has no issues instead of showing an empty list", async () => {
     // The fixture pushes to a local bare repo. An empty list would read as
     // "no open issues", which is a different and wrong statement.
-    await waitForText("is not a GitHub or GitLab host");
+    await waitForText("is not a GitHub, GitLab, or Azure DevOps host");
   });
 
   it("drops back to a blank form, split and all", async () => {

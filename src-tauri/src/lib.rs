@@ -2585,12 +2585,20 @@ fn fetch_ref(repo: &Path, remote_ref: &str) -> std::result::Result<(), String> {
     if !remotes.lines().any(|r| r.trim() == remote) {
         return Ok(());
     }
-
-    let mut cmd = git_command();
     // Single-ref, no-tags fetch: updates refs/remotes/<remote>/<ref> via the
     // remote's configured fetch refspec and nothing else — fast, no need to
     // pull every ref.
-    cmd.args(["fetch", "--no-tags", remote, refname]).current_dir(repo);
+    guarded_fetch(repo, remote, refname, &format!("fetch {remote}/{refname}"))
+}
+
+/// A `git fetch` with the credential prompts disabled and a wall-clock
+/// deadline: `git()` alone would let an SSH passphrase prompt or a hung
+/// transfer wedge the calling `spawn_blocking` thread forever. `spec` is one
+/// fetch argument — a bare refname (via the remote's configured refspec) or
+/// a full `src:dst` refspec; `desc` names the op in error strings.
+fn guarded_fetch(repo: &Path, remote: &str, spec: &str, desc: &str) -> std::result::Result<(), String> {
+    let mut cmd = git_command();
+    cmd.args(["fetch", "--no-tags", remote, spec]).current_dir(repo);
     // Same login-shell env as git() so credential helpers / SSH config resolve
     // from a GUI-launched .app (bare launchd PATH otherwise).
     let (path, inject) = shell_env::spawn_env();
@@ -2606,7 +2614,7 @@ fn fetch_ref(repo: &Path, remote_ref: &str) -> std::result::Result<(), String> {
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| format!("spawn fetch {remote}/{refname}: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("spawn {desc}: {e}"))?;
 
     // Drain stderr on its own thread. Reading only after exit would let a
     // chatty remote (SSH banner, verbose proxy rejection) fill the pipe
@@ -2636,9 +2644,9 @@ fn fetch_ref(repo: &Path, remote_ref: &str) -> std::result::Result<(), String> {
                 }
                 let err = collect_err(stderr_reader);
                 return Err(if err.is_empty() {
-                    format!("fetch {remote}/{refname} failed ({status})")
+                    format!("{desc} failed ({status})")
                 } else {
-                    format!("fetch {remote}/{refname} failed: {err}")
+                    format!("{desc} failed: {err}")
                 });
             }
             Ok(None) => {
@@ -2647,14 +2655,14 @@ fn fetch_ref(repo: &Path, remote_ref: &str) -> std::result::Result<(), String> {
                     let _ = child.wait();
                     let err = collect_err(stderr_reader);
                     return Err(if err.is_empty() {
-                        format!("fetch {remote}/{refname} timed out")
+                        format!("{desc} timed out")
                     } else {
-                        format!("fetch {remote}/{refname} timed out: {err}")
+                        format!("{desc} timed out: {err}")
                     });
                 }
                 thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => return Err(format!("wait fetch {remote}/{refname}: {e}")),
+            Err(e) => return Err(format!("wait {desc}: {e}")),
         }
     }
 }
@@ -13347,7 +13355,7 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>) -> Resu
         return Ok(none("no-remote", "No git remote configured, so there are no pull requests to pull from.".into()));
     }
     let Some(provider) = provider else {
-        return Ok(none("unsupported-remote", format!("Remote {remote_url} is not a GitHub or GitLab host.")));
+        return Ok(none("unsupported-remote", format!("Remote {} is not a GitHub, GitLab, or Azure DevOps host.", forge::remote_for_display(&remote_url))));
     };
     let with = |status: &str, message: String, prs: Vec<forge::ForgePr>| PrPickList {
         provider: Some(provider.to_string()),
@@ -13369,7 +13377,7 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>) -> Resu
         Ok(prs) => Ok(with("ok", String::new(), prs)),
         Err(forge::ForgeError::CliMissing(cli)) => Ok(with(
             "cli-missing",
-            format!("The {cli} CLI is not installed. Install it (e.g. `brew install {cli}`) to start a task from a pull request."),
+            cli_missing_message(provider, &cli, "start a task from a pull request"),
             Vec::new(),
         )),
         Err(forge::ForgeError::Auth(msg)) => Ok(with("cli-unauthed", msg, Vec::new())),
@@ -13388,11 +13396,13 @@ async fn project_forge_prs(project_id: String, limit: Option<u32>, number: Optio
 /// Fetch a PR's head into a LOCAL branch and return its name, so the existing
 /// "check out an existing branch into a worktree" path can do the rest.
 ///
-/// `refs/pull/<n>/head` is the universal spelling: GitHub publishes it for a
-/// fork's PR exactly as for a branch in the repo itself, which is what makes
-/// this one code path instead of two. (It is also what `gh pr checkout` fetches
-/// for a fork.) Nothing is checked out here and no worktree is made: this only
-/// puts the commits and a branch pointer in the repo.
+/// `refs/pull/<n>/head` is the GitHub spelling, published for a fork's PR
+/// exactly as for a branch in the repo itself - which is what makes it one
+/// code path instead of two. (It is also what `gh pr checkout` fetches
+/// for a fork.) Azure has no magic PR ref - its PR source is an ordinary
+/// branch, so that provider fetches `refs/heads/<head_ref>` instead. Nothing
+/// is checked out here and no worktree is made: this only puts the commits
+/// and a branch pointer in the repo.
 #[tauri::command]
 async fn project_fetch_pr_branch(
     project_id: String,
@@ -13430,11 +13440,28 @@ async fn project_fetch_pr_branch(
             // have committed onto.
             return Ok(branch);
         }
-        git(
-            &["fetch", &remote, &format!("refs/pull/{number}/head:refs/heads/{branch}")],
-            &repo,
-        )
-        .map_err(|e| format!("could not fetch pull request #{number}: {e}"))?;
+        // refs/pull/<n>/head is GitHub-only magic; GitLab publishes the same
+        // thing at refs/merge-requests/<n>/head. Azure has no PR ref at all:
+        // a same-repo PR's source is an ordinary branch, fetched by name. A
+        // FORK PR's head lives on the fork's remote - fetching the name from
+        // origin would either fail or, worse, silently succeed with OUR
+        // same-named branch's commits, so that case is refused outright.
+        let provider = forge::provider_for_repo(&repo, &remote).0;
+        if provider == Some(forge::AZURE) && cross_repository {
+            return Err(format!(
+                "pull request #{number} comes from a fork, which this repo's remote cannot reach"
+            ));
+        }
+        let refspec = match provider {
+            Some(forge::AZURE) => format!("refs/heads/{}:refs/heads/{branch}", head_ref.trim()),
+            Some(forge::GITLAB) => format!("refs/merge-requests/{number}/head:refs/heads/{branch}"),
+            _ => format!("refs/pull/{number}/head:refs/heads/{branch}"),
+        };
+        // guarded_fetch, not git(): a network fetch without the
+        // prompt-disabled/deadline guards can wedge this thread forever on
+        // an SSH passphrase prompt or a hung transfer.
+        guarded_fetch(&repo, &remote, &refspec, &format!("fetch {remote} pull-request-{number}"))
+            .map_err(|e| format!("could not fetch pull request #{number}: {e}"))?;
         Ok(branch)
     })
     .await
@@ -19935,7 +19962,7 @@ fn detect_external_apps(
 /// and then handing the bare name to `Command::new` would search the host
 /// process's own PATH instead - a different, shorter list - so an editor in
 /// `~/.local/bin` would be offered in the menu and then fail to launch. Same
-/// reason `detect_clis_blocking` and `forge::resolve_bin_uncached` both keep
+/// reason `detect_clis_blocking` and forge's own bin re-probe both keep
 /// the full path once they have found it.
 #[cfg_attr(feature = "e2e", allow(dead_code))]
 fn resolve_external_app(candidate: &str) -> Option<String> {

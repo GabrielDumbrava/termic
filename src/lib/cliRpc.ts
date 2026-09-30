@@ -22,7 +22,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useApp } from "@/store/app";
-import { waitForAgentReady } from "@/lib/agentReady";
+import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { usePrefs } from "@/store/prefs";
 import { usePromptLibrary } from "@/store/prompts";
 import {
@@ -377,8 +377,16 @@ async function injectPromptTracked(
   // Wait for the TUI to reach its input box, so the prompt lands there
   // and not in a splash screen that discards it; then RE-READ the tab (it
   // may have restarted onto a fresh PTY while we waited - never type into
-  // a stale pty).
-  const ready = await waitForAgentReady(() => agentTabFor(taskId, tabId));
+  // a stale pty). Same readiness rules as seedPrompt's race path: an agent
+  // that owns its own ready signal and never sends it is showing a startup
+  // prompt, where typing + Enter confirms whatever is highlighted.
+  const cli = agentTabFor(taskId, tabId)?.cli;
+  const hooksOwnReadiness = hooksOwnStartupReadiness(cli, !!cli && useApp.getState().agentHooksInstalled[cli] === true);
+  const ready = await waitForAgentReady(() => agentTabFor(taskId, tabId), { hooksOwnReadiness });
+  if (ready === "blocked") {
+    await report(false, `${cli} never reported ready; not typing (startup prompt?)`);
+    return;
+  }
   const tab = ready === "lost" ? undefined : agentTabFor(taskId, tabId);
   if (!tab?.ptyId) {
     await report(false, "the agent tab lost its PTY before the prompt could be typed");
@@ -390,8 +398,11 @@ async function injectPromptTracked(
     // wait's own-prompt settle logic can never trust a "done" that
     // predates this prompt.
     useApp.getState().patchTab(taskId, tab.id, { workState: "idle", unread: null });
-    // Resolves only after text AND the submit CR are written.
-    await deliverMessage(tab.ptyId, prompt);
+    // Resolves only after text AND the submit CR are written. Echo-verify
+    // unless the agent itself claimed ready (same protection as
+    // seedPrompt: a missing echo means the paste went somewhere that is
+    // not an input box).
+    await deliverMessage(tab.ptyId, prompt, { verifyEcho: ready !== "ready" });
     // pty_write silently no-ops on a dead id, so "the writes resolved"
     // is not "the agent received them": delivered means the SAME tab
     // still holds the SAME, still-live PTY after both writes.

@@ -2659,6 +2659,9 @@ mod tests {
         for m in &spec.mounts {
             assert!(!m.host.starts_with(&format!("{home}/.config/gh")), "{} is the user's real gh login", m.host);
             assert!(!m.host.starts_with(&format!("{home}/.config/glab-cli")), "{} is the user's real glab login", m.host);
+            // ~/.azure holds az tokens + PATs; it must stay a shared state
+            // mount (if listed at all), never the live credential store.
+            assert!(!m.host.starts_with(&format!("{home}/.azure")), "{} is the user's real az login", m.host);
         }
     }
 

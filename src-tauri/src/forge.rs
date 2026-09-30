@@ -14,8 +14,10 @@
 //! azure-devops extension refuses Azure DevOps Server (on-prem) orgs, so a
 //! self-hosted instance has no hosts to learn anyway — host-name matching
 //! (`dev.azure.com`, `*.visualstudio.com`) is the complete answer, not a
-//! fallback. `--detect` inside a repo resolves org/project/repo the same
-//! way gh/glab pick up the repo, so most commands take no repo arguments.
+//! fallback. Commands pass the remote's org/project/repo explicitly
+//! (`azure_scope`) rather than `--detect`: the extension's own remote
+//! parser can't read PAT-in-URL remotes and silently falls back to the
+//! configured default org — possibly a different org than the repo's.
 //!
 //! Everything here is BLOCKING (subprocess spawns, 100ms-1s against the
 //! network) — callers must wrap in `tauri::async_runtime::spawn_blocking`
@@ -186,7 +188,7 @@ fn bin_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 
 /// Resolve a forge CLI to an absolute path using the login-shell PATH
 /// (already probed + cached by shell_env — no extra `sh -lc` spawn here)
-/// plus the common install locations detect_clis also falls back to.
+/// plus the common install locations detect() also falls back to.
 /// Cached per binary name; `detect()` re-probes and refreshes the cache
 /// so a mid-session `brew install gh` is picked up everywhere.
 fn resolve_bin(name: &str) -> Option<String> {
@@ -395,8 +397,10 @@ pub fn detect() -> Vec<ForgeCliStatus> {
 ///   hosts:   the PAT orgs' hosts, so the Settings row can name them.
 ///   account: `az account show`'s UPN for Entra users; for PAT-only users
 ///            (who have no Entra account to read) a `profile/profiles/me`
-///            invoke — the ONE network call in this probe, made only when
-///            the PAT file proves a login exists — so the comment watcher's
+///            invoke — the probe's only network call(s) (up to N+1 serial
+///            tries for a multi-org PAT, ending at the first success), made
+///            only when the PAT file proves a login exists — so the comment
+///            watcher's
 ///            self-exclusion has an identity to compare against (comments
 ///            carry `author.uniqueName`, which is the same email).
 fn detect_azure() -> ForgeCliStatus {
@@ -447,10 +451,10 @@ fn detect_azure() -> ForgeCliStatus {
         // PAT-only login leaves no local trace of WHO the user is, and the
         // watcher's self-exclusion compares against this field — without it
         // the agent's own replies would re-trigger it in a loop. And when
-        // BOTH creds exist, `az devops`/`az repos` authenticate as the PAT
-        // (the extension consults its PAT store before the Entra token), so
-        // the identity comments get stamped with is the PAT's, not the
-        // `az account` UPN — prefer whoami whenever a PAT is in play.
+        // BOTH creds exist, `az devops`/`az repos` may authenticate as
+        // EITHER (the extension tries the Entra token first, PAT fallback),
+        // so the identity comments get stamped with can be the PAT's, not
+        // the `az account` UPN — prefer whoami whenever a PAT is in play.
         if authed && (account.is_empty() || !pat_orgs.is_empty()) {
             // Multi-org PAT users can hold a dead PAT on the first listed
             // org — walk them until one resolves an identity. An empty list
@@ -874,6 +878,11 @@ fn gitlab_approvals_to_review(a: &serde_json::Value) -> String {
 /// Segments come back DECODED (a remote percent-encodes a project named
 /// "My Project" as My%20Project) - invoke's --route-parameters encodes
 /// again, so handing it the raw segment would double-encode to a 404.
+/// Handles the remotes ADO hands out: HTTPS
+/// (dev.azure.com/{org}/{project}/_git/{repo}, {org}.visualstudio.com[/coll]/
+/// {project}/_git/{repo}, PAT-in-URL userinfo), v3 SSH
+/// (ssh.dev.azure.com:v3/... , vs-ssh.visualstudio.com:v3/...) and the
+/// pre-v3 legacy {user}@{org}.visualstudio.com:{project}/_ssh/{repo}.
 fn azure_remote_info(url: &str) -> Option<(String, String, String)> {
     let host = host_of_remote(url)?;
     // Path part: after the host "/" for scheme URLs, after the host ":" for
@@ -906,6 +915,15 @@ fn azure_remote_info(url: &str) -> Option<(String, String, String)> {
         };
         return Some((org_url, project.clone(), strip_git_suffix(repo)));
     }
+    // Legacy pre-v3 SSH: {user}@{org}.visualstudio.com:{project}/_ssh/{repo}.
+    // The org is the whole host; _ssh takes _git's slot as the repo marker.
+    if host.ends_with(".visualstudio.com") && segs.get(1).map(|s| s.as_str()) == Some("_ssh") {
+        return Some((
+            format!("https://{host}"),
+            segs[0].clone(),
+            strip_git_suffix(segs.get(2)?),
+        ));
+    }
     // HTTPS: project is the segment before _git, repo the one after.
     let git_at = segs.iter().position(|s| s == "_git")?;
     // dev.azure.com carries the org as a PATH segment, so _git needs an
@@ -921,14 +939,11 @@ fn azure_remote_info(url: &str) -> Option<(String, String, String)> {
     let org_url = if host == "dev.azure.com" {
         format!("https://dev.azure.com/{}", segs[0])
     } else {
-        // {org}.visualstudio.com — anything before the project segment is
-        // the (rare, legacy) collection name.
-        let extra = &segs[..git_at - 1];
-        if extra.is_empty() {
-            format!("https://{host}")
-        } else {
-            format!("https://{host}/{}", extra.join("/"))
-        }
+        // {org}.visualstudio.com — the org is the whole HOST; a legacy
+        // /{collection}/ segment between host and project is not part of it.
+        // az's org-URL grammar accepts zero path segments, so keeping the
+        // collection makes every call fail with "Services (cloud) only".
+        format!("https://{host}")
     };
     Some((org_url, project.clone(), repo))
 }
@@ -939,10 +954,45 @@ fn strip_git_suffix(s: &str) -> String {
     s.strip_suffix(".git").unwrap_or(s).to_string()
 }
 
-/// Is `err` (already lowercased) ADO's "no such PR" error? Kept a helper so
-/// the TF401180 string lives in one tested place.
+/// (org_url, project, repo) from the remote, or an error naming it. Every az
+/// call below passes these as explicit --org/--project/--repository flags
+/// rather than relying on `--detect`: the extension's own remote parser
+/// cannot read PAT-in-URL remotes (userinfo is not an org segment), so it
+/// errors - or worse, silently falls back to the configured default org,
+/// which can be a DIFFERENT org than the repo the user is looking at.
+fn azure_scope(cwd: &Path) -> Result<(String, String, String), ForgeError> {
+    let (_, remote_url) = provider_for_repo(cwd, &crate::detect_default_remote(cwd));
+    azure_remote_info(&remote_url).ok_or_else(|| {
+        ForgeError::Other(format!(
+            "cannot parse Azure DevOps remote {}",
+            remote_for_display(&remote_url)
+        ))
+    })
+}
+
+/// Is `err` (already lowercased) ADO's "no such PR" error? Scoped to PR
+/// phrasing/TF401180 on purpose: a bare "not found" could be the org, the
+/// project or the repo erroring, which is a real failure, not a miss.
 fn azure_missing_pr(err: &str) -> bool {
-    err.contains("not found") || err.contains("does not exist")
+    err.contains("tf401180")
+        || (err.contains("pull request")
+            && (err.contains("not found") || err.contains("does not exist")))
+}
+
+/// `az repos pr show --id` is ORG-scoped, not repo-scoped: a number that
+/// belongs to a sibling repo resolves, where gh would say "not found". The
+/// payload's repository carries name AND project - compare both, since a
+/// repo named the same in a sibling project would pass name alone. Absent
+/// fields stay permissive: don't second-guess a payload that doesn't say.
+fn azure_pr_in_repo(v: &serde_json::Value, project: &str, repo: &str) -> bool {
+    v["repository"]["name"]
+        .as_str()
+        .map(|n| n.eq_ignore_ascii_case(repo))
+        .unwrap_or(true)
+        && v["repository"]["project"]["name"]
+            .as_str()
+            .map(|p| p.eq_ignore_ascii_case(project))
+            .unwrap_or(true)
 }
 
 /// Remote text for an error message, with any embedded `user:PAT@`
@@ -967,9 +1017,14 @@ pub(crate) fn remote_for_display(url: &str) -> String {
 }
 
 fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<PrStatus>, ForgeError> {
+    let (org, project, repo) = azure_scope(cwd)?;
     let v: serde_json::Value = if let Some(n) = number {
-        let o = run(bin, &["repos", "pr", "show", "--id", &n.to_string(), "--output", "json"], Some(cwd))
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+        let o = run(
+            bin,
+            &["repos", "pr", "show", "--id", &n.to_string(), "--org", &org, "--project", &project, "--output", "json"],
+            Some(cwd),
+        )
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
         if !o.status.success() {
             // "TF401180: The requested pull request was not found." — a real
             // "no PR" (deleted or never existed), same exit-nonzero shape as
@@ -979,12 +1034,15 @@ fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<
             }
             return Err(classify_failure(AZURE, &o));
         }
-        serde_json::from_slice(&o.stdout)
-            .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+            .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?;
+        if !azure_pr_in_repo(&v, &project, &repo) {
+            return Ok(None);
+        }
+        v
     } else {
         // No by-branch view on az: resolve the branch ourselves, then list
-        // its PRs. --detect (default on) resolves org/project/repo from
-        // the cwd remote, same convenience gh/glab get from git context.
+        // its PRs, scoped to THIS repo like gh/glab get from git context.
         let branch = crate::git(&["branch", "--show-current"], cwd)
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
@@ -993,7 +1051,8 @@ fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<
         }
         let o = run(
             bin,
-            &["repos", "pr", "list", "--source-branch", &branch, "--status", "all", "--output", "json"],
+            &["repos", "pr", "list", "--source-branch", &branch, "--status", "all",
+              "--repository", &repo, "--org", &org, "--project", &project, "--output", "json"],
             Some(cwd),
         )
         .map_err(|e| ForgeError::Other(e.to_string()))?;
@@ -1021,7 +1080,7 @@ fn azure_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option<
     // Policy evaluations are a second call; only an in-flight PR has a
     // verdict worth it (same cheapening as gitlab_review_decision).
     let checks = if state == "open" || state == "draft" {
-        azure_pr_checks(bin, cwd, id)
+        azure_pr_checks(bin, cwd, id, &org, &project)
     } else {
         "none".to_string()
     };
@@ -1081,10 +1140,11 @@ fn azure_votes_to_review(reviewers: &serde_json::Value) -> String {
 /// kinds read as CI — a rejected "Minimum number of reviewers" or
 /// "Work item linking" evaluation is a review/label state, not a check.
 /// Best-effort: a failed call (no policies, old server) is "none".
-fn azure_pr_checks(bin: &str, cwd: &Path, number: u64) -> String {
+fn azure_pr_checks(bin: &str, cwd: &Path, number: u64, org: &str, project: &str) -> String {
     let Ok(o) = run(
         bin,
-        &["repos", "pr", "policy", "list", "--id", &number.to_string(), "--output", "json"],
+        &["repos", "pr", "policy", "list", "--id", &number.to_string(),
+          "--org", org, "--project", project, "--output", "json"],
         Some(cwd),
     ) else {
         return "none".into();
@@ -1115,7 +1175,7 @@ fn azure_policies_to_checks(v: &serde_json::Value) -> String {
         // rejected/broken are failing; approved/notApplicable fall through.
         match p["status"].as_str().unwrap_or("") {
             "rejected" | "broken" => return "failing".into(),
-            "queued" | "running" | "notStarted" | "inProgress" => pending = true,
+            "queued" | "running" | "notStarted" => pending = true,
             _ => {}
         }
     }
@@ -1378,13 +1438,7 @@ fn parse_gitlab_notes(v: &serde_json::Value, members: &HashSet<String>) -> Vec<P
 fn azure_pr_comments(bin: &str, cwd: &Path, number: u64) -> Result<Vec<PrComment>, ForgeError> {
     // Parse the remote before spawning anything - a remote this can't read
     // fails the ~1s subprocess anyway, so check the cheap thing first.
-    let (_, remote_url) = provider_for_repo(cwd, &crate::detect_default_remote(cwd));
-    let Some((org, project, repo)) = azure_remote_info(&remote_url) else {
-        return Err(ForgeError::Other(format!(
-            "cannot parse Azure DevOps remote {}",
-            remote_for_display(&remote_url)
-        )));
-    };
+    let (org, project, repo) = azure_scope(cwd)?;
     // Trusted identities for the comment author check: the PR's creator
     // and reviewers all have real repo standing (the comment-watcher trust
     // gate needs SOME membership signal; ADO notes carry none of their own).
@@ -1425,8 +1479,16 @@ fn azure_pr_identities(bin: &str, cwd: &Path, number: u64) -> HashSet<String> {
             return hit.usernames.clone();
         }
     }
-    let out: HashSet<String> = run(bin, &["repos", "pr", "show", "--id", &number.to_string(), "--output", "json"], Some(cwd))
-        .ok()
+    let scope = azure_scope(cwd).ok();
+    let out: HashSet<String> = scope
+        .and_then(|(org, project, _)| {
+            run(
+                bin,
+                &["repos", "pr", "show", "--id", &number.to_string(), "--org", &org, "--project", &project, "--output", "json"],
+                Some(cwd),
+            )
+            .ok()
+        })
         .filter(|o| o.status.success())
         .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
         .map(|v| {
@@ -1454,8 +1516,12 @@ fn azure_identities_cache() -> &'static Mutex<HashMap<String, MembersHit>> {
 /// a branch name recycled after an abandoned PR would otherwise resolve to
 /// the stale record).
 fn pick_azure_branch_pr(list: &[serde_json::Value]) -> Option<serde_json::Value> {
+    // The NEWEST active one - a branch can have several active PRs to
+    // different targets and the list order isn't documented, so first-in-
+    // list would pick an arbitrary one.
     list.iter()
-        .find(|p| p["status"].as_str() == Some("active"))
+        .filter(|p| p["status"].as_str() == Some("active"))
+        .max_by_key(|p| p["creationDate"].as_str().unwrap_or(""))
         .or_else(|| list.iter().max_by_key(|p| p["creationDate"].as_str().unwrap_or("")))
         .cloned()
 }
@@ -1671,9 +1737,10 @@ pub struct ForgePr {
     pub author: String,
     /// The PR's source branch name, which is what the worktree gets called.
     pub head_ref: String,
-    /// True when the head lives in a FORK. `refs/pull/<n>/head` is fetched the
-    /// same way either way, but the local branch is named differently to avoid
-    /// colliding with a same-named branch of our own.
+    /// True when the head lives in a FORK. The local branch is prefixed to
+    /// avoid colliding with a same-named branch of our own (and on Azure,
+    /// where the head ref is an ordinary branch on the fork's remote, to
+    /// mark that origin may not have it at all).
     pub cross_repository: bool,
     pub draft: bool,
     /// RFC3339 UTC, for "updated 3 days ago" style ordering.
@@ -1686,14 +1753,12 @@ const PR_JSON_FIELDS: &str =
 /// The signed-in user's own open PRs. See `ForgePr` for why it is only theirs.
 pub fn pr_list_mine(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
     let cli = cli_for_provider(provider);
-    let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     match provider {
         GITLAB => Err(ForgeError::Other(
             "Picking a merge request is not wired up for GitLab yet. Paste the number instead.".into(),
         )),
-        AZURE => Err(ForgeError::Other(
-            "Picking a pull request is not wired up for Azure DevOps yet. Paste the number instead.".into(),
-        )),
+        AZURE => azure_pr_list(&bin, cwd, limit),
         _ => {
             let n = limit.to_string();
             let o = run(
@@ -1718,16 +1783,14 @@ pub fn pr_list_mine(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeP
 /// it to a number.
 pub fn pr_by_number(provider: &str, cwd: &Path, number: u64) -> Result<Option<ForgePr>, ForgeError> {
     let cli = cli_for_provider(provider);
-    let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     if provider == GITLAB {
         return Err(ForgeError::Other(
             "Opening a merge request by number is not wired up for GitLab yet.".into(),
         ));
     }
     if provider == AZURE {
-        return Err(ForgeError::Other(
-            "Opening a pull request by number is not wired up for Azure DevOps yet.".into(),
-        ));
+        return azure_pr_show(&bin, cwd, number);
     }
     let n = number.to_string();
     let o = run(&bin, &["pr", "view", &n, "--json", PR_JSON_FIELDS], Some(cwd))
@@ -1765,6 +1828,93 @@ fn parse_github_prs(v: &serde_json::Value) -> Vec<ForgePr> {
         })
         .filter(|p| p.number > 0)
         .collect()
+}
+
+/// `az repos pr list`, scoped to the repo (an org-level list would drag in
+/// PRs from every repo in the project) and to the signed-in user: the
+/// extension resolves `--creator me` to the current identity client-side.
+fn azure_pr_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
+    let (org, project, repo) = azure_scope(cwd)?;
+    let top = limit.to_string();
+    let o = run(
+        bin,
+        &[
+            "repos", "pr", "list", "--repository", &repo,
+            "--org", &org, "--project", &project,
+            "--creator", "me", "--status", "active", "--top", &top, "--output", "json",
+        ],
+        Some(cwd),
+    )
+    .map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        return Err(classify_failure(AZURE, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?;
+    Ok(v.as_array().unwrap_or(&Vec::new()).iter().filter_map(azure_pr).collect())
+}
+
+fn azure_pr_show(bin: &str, cwd: &Path, number: u64) -> Result<Option<ForgePr>, ForgeError> {
+    let (org, project, repo) = azure_scope(cwd)?;
+    let n = number.to_string();
+    let o = run(
+        bin,
+        &["repos", "pr", "show", "--id", &n, "--org", &org, "--project", &project, "--output", "json"],
+        Some(cwd),
+    )
+    .map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        // A wrong number is an answer, like the gh arm, not an error banner.
+        if azure_missing_pr(&stderr_of(&o).to_lowercase()) {
+            return Ok(None);
+        }
+        return Err(classify_failure(AZURE, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("az returned unparseable JSON: {e}")))?;
+    if !azure_pr_in_repo(&v, &project, &repo) {
+        return Ok(None);
+    }
+    Ok(azure_pr(&v))
+}
+
+/// `az repos pr` returns the REST shape: pullRequestId, sourceRefName as
+/// `refs/heads/x`, repository.webUrl to hang the browser URL off (the
+/// `url` field is the `_apis` route, not a page), and `forkSource` only
+/// when the head lives in a fork.
+fn azure_pr(i: &serde_json::Value) -> Option<ForgePr> {
+    let number = i["pullRequestId"].as_u64()?;
+    let web = i["repository"]["webUrl"].as_str().unwrap_or("");
+    let url = if web.is_empty() {
+        i["url"].as_str().unwrap_or("").to_string()
+    } else {
+        format!("{web}/pullrequest/{number}")
+    };
+    Some(ForgePr {
+        provider: AZURE.into(),
+        number,
+        title: i["title"].as_str().unwrap_or("").trim().to_string(),
+        url,
+        // PR descriptions are markdown, not HTML like work item fields.
+        body: i["description"].as_str().unwrap_or("").trim().to_string(),
+        author: i["createdBy"]["uniqueName"].as_str()
+            .or_else(|| i["createdBy"]["displayName"].as_str())
+            .unwrap_or("")
+            .to_string(),
+        head_ref: i["sourceRefName"].as_str().unwrap_or("")
+            .strip_prefix("refs/heads/")
+            .unwrap_or("")
+            .to_string(),
+        cross_repository: i["forkSource"].is_object(),
+        draft: i["isDraft"].as_bool().unwrap_or(false),
+        // ADO has no updatedDate on a PR payload; closedDate is the freshest
+        // touch it does have, creationDate the fallback.
+        updated_at: norm_time(
+            i["closedDate"].as_str()
+                .or_else(|| i["creationDate"].as_str())
+                .unwrap_or(""),
+        ),
+    })
 }
 
 fn gitlab_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
@@ -1823,19 +1973,13 @@ fn parse_gitlab_issues(v: &serde_json::Value) -> Vec<ForgeIssue> {
 /// take its `limit`. If that ever bites, the escape hatch is
 /// `az devops invoke --area wit --resource wiql` ($top) + a ids-only
 /// workitems batch.
-fn azure_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
-    // The WIQL needs the project name spelled out; resolve it before the
-    // spawn so an unparseable remote fails cheap.
-    let (_, remote_url) = provider_for_repo(cwd, &crate::detect_default_remote(cwd));
-    let Some((_, project, _)) = azure_remote_info(&remote_url) else {
-        return Err(ForgeError::Other(format!(
-            "cannot parse Azure DevOps remote {}",
-            remote_for_display(&remote_url)
-        )));
-    };
-    // Single quotes in the project name are escaped by doubling.
+/// The work-item picker query: open items in this project, newest-changed
+/// first. `NOT IN GROUP 'Completed'/'Removed'` are state CATEGORIES - they
+/// cover custom states mapped to those categories too, which enumerating
+/// state names would miss. Single quotes in the project name are doubled.
+fn azure_workitems_wiql(project: &str) -> String {
     let project = project.replace('\'', "''");
-    let wiql = format!(
+    format!(
         "SELECT [System.Id], [System.Title], [System.Description], \
                 [System.ChangedDate], [System.CommentCount], [System.Tags], \
                 [System.CreatedBy] \
@@ -1844,8 +1988,15 @@ fn azure_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>
            AND [System.State] NOT IN GROUP 'Completed' \
            AND [System.State] NOT IN GROUP 'Removed' \
          ORDER BY [System.ChangedDate] DESC"
-    );
-    let o = run(bin, &["boards", "query", "--wiql", &wiql, "--output", "json"], Some(cwd))
+    )
+}
+
+fn azure_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
+    // The WIQL needs the project name spelled out; resolve it before the
+    // spawn so an unparseable remote fails cheap.
+    let (org, project, _) = azure_scope(cwd)?;
+    let wiql = azure_workitems_wiql(&project);
+    let o = run(bin, &["boards", "query", "--wiql", &wiql, "--org", &org, "--output", "json"], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
         return Err(classify_failure(AZURE, &o));
@@ -1989,8 +2140,10 @@ fn azure_pr_create(
     if branch.is_empty() {
         return Err(ForgeError::Other("cannot create a PR from a detached HEAD".into()));
     }
+    let (org, project, repo) = azure_scope(cwd)?;
     let mut args = vec![
         "repos", "pr", "create",
+        "--repository", &repo, "--org", &org, "--project", &project,
         "--title", title, "--description", body,
         "--source-branch", &branch, "--target-branch", base,
         "--output", "json",
@@ -2414,11 +2567,17 @@ code.internal.acme.com configured to use ssh protocol.\n";
             r("ssh://git@ssh.dev.azure.com:22/v3/myorg/proj/repo"),
             Some(("https://dev.azure.com/myorg".into(), "proj".into(), "repo".into()))
         );
-        // A legacy collection segment on visualstudio.com stays part of the
-        // org URL rather than being mistaken for the project.
+        // A legacy collection segment on visualstudio.com is DROPPED: az's
+        // org-URL grammar accepts zero path segments, so keeping
+        // /DefaultCollection would fail every call as "not Services (cloud)".
         assert_eq!(
             r("https://myorg.visualstudio.com/DefaultCollection/proj/_git/repo"),
-            Some(("https://myorg.visualstudio.com/DefaultCollection".into(), "proj".into(), "repo".into()))
+            Some(("https://myorg.visualstudio.com".into(), "proj".into(), "repo".into()))
+        );
+        // The pre-v3 SSH shape: org is the host, _ssh is the repo marker.
+        assert_eq!(
+            r("user@myorg.visualstudio.com:proj/_ssh/repo"),
+            Some(("https://myorg.visualstudio.com".into(), "proj".into(), "repo".into()))
         );
         assert_eq!(r("https://github.com/foo/bar"), None);
         assert_eq!(r(""), None);
@@ -2557,6 +2716,74 @@ code.internal.acme.com configured to use ssh protocol.\n";
         // u9 is neither the PR creator nor a reviewer.
         assert!(!out[1].trusted);
         assert_eq!(out[1].created_at, "2026-06-11T08:02:00Z");
+    }
+
+    #[test]
+    fn azure_pr_parsing() {
+        // `az repos pr list/show` returns the REST shape.
+        let v: serde_json::Value = serde_json::from_str(r#"{
+            "pullRequestId": 13, "title": " Feature flags ", "status": "active",
+            "description": "Adds the flag store",
+            "creationDate": "2026-07-02T09:30:00Z",
+            "sourceRefName": "refs/heads/feat/flags",
+            "isDraft": true,
+            "createdBy": {"uniqueName": "bob@x.io", "displayName": "Bob"},
+            "repository": {"webUrl": "https://dev.azure.com/o/Proj/_git/widgets"},
+            "url": "https://dev.azure.com/o/_apis/git/repositories/r/pullRequests/13"
+        }"#).unwrap();
+        let pr = azure_pr(&v).unwrap();
+        assert_eq!(pr.number, 13);
+        assert_eq!(pr.provider, "azure");
+        assert_eq!(pr.title, "Feature flags");
+        // Browser URL hangs off the repo's webUrl, not the _apis route.
+        assert_eq!(pr.url, "https://dev.azure.com/o/Proj/_git/widgets/pullrequest/13");
+        assert_eq!(pr.head_ref, "feat/flags");
+        assert_eq!(pr.author, "bob@x.io");
+        assert!(pr.draft);
+        assert!(!pr.cross_repository);
+        assert_eq!(pr.updated_at, "2026-07-02T09:30:00Z");
+
+        // A fork PR marks cross_repository; a missing pullRequestId is skipped.
+        let fork: serde_json::Value = serde_json::from_str(r#"{
+            "pullRequestId": 9, "sourceRefName": "refs/heads/x",
+            "repository": {}, "forkSource": {"repository": {"id": "f"}}
+        }"#).unwrap();
+        assert!(azure_pr(&fork).unwrap().cross_repository);
+        assert!(azure_pr(&serde_json::json!({"title": "no id"})).is_none());
+    }
+
+    #[test]
+    fn azure_repo_scope_guards() {
+        // `az repos pr show --id` resolves org-wide; the repo name in the
+        // payload is what keeps a sibling repo's PR from passing as ours.
+        let v = serde_json::json!({"pullRequestId": 5, "repository": {"name": "widgets"}});
+        assert!(azure_pr_in_repo(&v, "p", "Widgets")); // case-insensitive
+        assert!(!azure_pr_in_repo(&v, "p", "api"));
+        // A same-named repo in a SIBLING project: org-scoped --id resolves it,
+        // and the name check alone would pass. The project on the payload is
+        // what tells them apart.
+        let sibling = serde_json::json!({"pullRequestId": 5, "repository": {
+            "name": "widgets", "project": {"name": "otherProj"}}});
+        assert!(!azure_pr_in_repo(&sibling, "thisProj", "widgets"));
+        assert!(azure_pr_in_repo(&sibling, "OtherProj", "widgets"));
+        // No repository on the payload: don't second-guess.
+        assert!(azure_pr_in_repo(&serde_json::json!({"pullRequestId": 5}), "p", "widgets"));
+
+        // A miss is PR-shaped only - "project X not found" is a real error,
+        // not a wrong-number answer.
+        assert!(azure_missing_pr("tf401180: the requested pull request was not found."));
+        assert!(azure_missing_pr("the pull request does not exist"));
+        assert!(!azure_missing_pr("project 'nope' was not found"));
+        assert!(!azure_missing_pr("repository widgets not found"));
+    }
+
+    #[test]
+    fn azure_wiql() {
+        let w = azure_workitems_wiql("O'Brien's Project");
+        assert!(w.contains("[System.TeamProject] = 'O''Brien''s Project'"));
+        assert!(w.contains("[System.State] NOT IN GROUP 'Completed'"));
+        assert!(w.contains("[System.State] NOT IN GROUP 'Removed'"));
+        assert!(w.contains("FROM workitems"));
     }
 
     #[test]

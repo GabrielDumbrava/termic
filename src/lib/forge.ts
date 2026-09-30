@@ -139,6 +139,11 @@ function azureRemoteParts(url: string): { org: string; project: string; repo: st
       : `https://${segs[1]}.visualstudio.com`;
     return { org, project: segs[2], repo: noDotGit(segs[3]) };
   }
+  // Legacy pre-v3 SSH: {user}@{org}.visualstudio.com:{project}/_ssh/{repo} -
+  // _ssh takes _git's slot, the org is the whole host.
+  if (host.endsWith(".visualstudio.com") && segs[1] === "_ssh" && segs.length >= 3) {
+    return { org: `https://${host}`, project: segs[0], repo: noDotGit(segs[2]) };
+  }
   const gitAt = segs.indexOf("_git");
   // dev.azure.com needs org + project before _git (org is a path
   // segment); *.visualstudio.com needs just the project (org is host).
@@ -146,6 +151,8 @@ function azureRemoteParts(url: string): { org: string; project: string; repo: st
   const project = segs[gitAt - 1];
   const repo = noDotGit(segs[gitAt + 1]);
   if (host === "dev.azure.com") return { org: `https://dev.azure.com/${segs[0]}`, project, repo };
-  const extra = segs.slice(0, gitAt - 1);
-  return { org: `https://${host}${extra.length ? `/${extra.join("/")}` : ""}`, project, repo };
+  // A legacy /{collection}/ segment between host and project is NOT part
+  // of the org: az's org-URL grammar accepts zero path segments, so
+  // keeping it fails every call as "Services (cloud) only".
+  return { org: `https://${host}`, project, repo };
 }

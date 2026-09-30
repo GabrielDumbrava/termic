@@ -31,8 +31,8 @@ import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext, type Settings, type PrPickList, type ForgePr } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
-import { buildIssuePrompt, issueBranch, issueRef, issueTaskName } from "@/lib/issuePrompt";
-import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, issueNoun } from "@/lib/forge";
+import { buildIssuesPrompt, issueBranch, issueRef, issueTaskName } from "@/lib/issuePrompt";
+import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, issueNoun, prRef } from "@/lib/forge";
 import { readMemberModes, persistMemberMode, seedMemberMode, readMemberSets, saveMemberSet, deleteMemberSet, type MemberSet } from "@/components/dialogs/memberModes";
 import { scoped } from "@/lib/profileScope";
 
@@ -412,7 +412,7 @@ export function NewTaskDialog() {
   const [issueMode, setIssueMode] = useState(false);
   const [issueLookup, setIssueLookup] = useState<IssueLookup | null>(null);
   const [issueLoading, setIssueLoading] = useState(false);
-  const [issueSelected, setIssueSelected] = useState<ForgeIssue | null>(null);
+  const [issuePicks, setIssuePicks] = useState<ForgeIssue[]>([]);
   const [issueQuery, setIssueQuery] = useState("");
   // Existing-branch mode: check out a branch that already exists (typically
   // someone else's, to review it) into a new worktree instead of cutting one.
@@ -680,12 +680,20 @@ export function NewTaskDialog() {
     // next open - for a DIFFERENT project - still showed project A's issue
     // list, and creating from it seeded the agent with project A's issue.
     setIssueMode(false);
-    setIssueSelected(null);
+    setIssuePicks([]);
     setIssueLookup(null);
     // The filter text is per-open too: a query typed against one project's
     // list must not silently carry into the next project's picker.
     setIssueQuery("");
     setIssueLoading(false);
+    // PR mode is per-open for exactly the issue-mode reason above: leaving
+    // it set reopened a different project straight into the PR pane with
+    // the PREVIOUS project's cached list.
+    setPrMode(false);
+    setPrLookup(null);
+    setPrQuery("");
+    setPrLoading(false);
+    setPrBusy(0);
     // Existing-branch mode is per-open too, like issue mode beside it: a
     // branch picked for one project must not survive into the next open.
     setCheckoutMode(false);
@@ -703,7 +711,11 @@ export function NewTaskDialog() {
     // (#129). Only meaningful for single-repo git projects (worktree mode).
     setExistingBranches([]);
     if (canImp) {
-      projectGitBranches(projectId).then(setExistingBranches).catch(() => {});
+      // Guarded like the pickers: a slow `git branch` landing after a
+      // re-open would feed THIS project's collision check another repo's
+      // branch names.
+      const stale = staleFor(projectId, seed);
+      projectGitBranches(projectId).then(b => { if (!stale()) setExistingBranches(b); }).catch(() => {});
     }
     // Non-git folders can't be worktreed → force repo_root. Everything else
     // restores the user's last-used type (main checkout by default). Shares
@@ -782,14 +794,28 @@ export function NewTaskDialog() {
   const nameSlugsAway = !!name.trim() && !derived && !branchEdited;
   useEffect(() => { if (!branchEdited) setBranch(derived); }, [derived, branchEdited]);
 
+  /** A fetch that outlives a close must not land in the NEXT open. Two
+   *  conditions: a different projectId is the obvious one; the same-
+   *  project reopen is caught by seed IDENTITY - openNewTask mints a
+   *  fresh `newTaskSeed` object every call (the nonce inside it resets
+   *  to 1 after close, so it can't be compared). */
+  const staleFor = (pid: string, seed: object | null) => () => {
+    const u = useUI.getState();
+    return u.newTaskProjectId !== pid || u.newTaskSeed !== seed;
+  };
+
   // Load the project's importable (existing, unopened) worktrees.
   // Declared as a hoisted function so the open-effect can call it.
   function loadImportable(pid: string) {
     setImportLoading(true);
+    // Same stale guard as the issue/branch fetches: the list outlives a
+    // close, and late worktree paths would be pickable rows for the wrong
+    // project.
+    const stale = staleFor(pid, useUI.getState().newTaskSeed);
     taskImportableWorktrees(pid)
-      .then(list => setImportList(list))
-      .catch(e => setErr(String(e)))
-      .finally(() => setImportLoading(false));
+      .then(list => { if (!stale()) setImportList(list); })
+      .catch(e => { if (!stale()) setErr(String(e)); })
+      .finally(() => { if (!stale()) setImportLoading(false); });
   }
 
   // Flip into import mode from the in-form affordance, lazy-loading the
@@ -798,6 +824,8 @@ export function NewTaskDialog() {
     if (!projectId) return;
     setImportMode(true);
     setCheckoutMode(false);
+    if (issueMode) exitIssues();
+    if (prMode) exitPrs();
     setErr(null);
     if (importList.length === 0 && !importLoading) loadImportable(projectId);
   }
@@ -818,7 +846,7 @@ export function NewTaskDialog() {
     // There used to be a second seeder beside this one that composed and sent
     // the issue prompt itself, which meant an issue task's first message was
     // never shown to the user before it went out. Picking an issue now fills
-    // THIS box instead (pickIssue), so there is one seeder, the user sees the
+    // THIS box instead (toggleIssue), so there is one seeder, the user sees the
     // prompt, and they can edit or clear it before Create.
     //
     // SETUP_SPAWN_DEADLINE_MS, not the default: the issue seeder used the long
@@ -839,12 +867,16 @@ export function NewTaskDialog() {
     setImportMode(false);
     setImportSelected(null);
     if (issueMode) exitIssues();
+    if (prMode) exitPrs();
     setErr(null);
     setCheckoutLoading(true);
+    // Same stale guard as enterIssues: the context fetch outlives a close,
+    // and late refs would seed the reopened dialog's checkout pane.
+    const stale = staleFor(projectId, useUI.getState().newTaskSeed);
     projectBranchContext(projectId)
-      .then(setCheckoutRefs)
-      .catch(e => setErr(String(e)))
-      .finally(() => setCheckoutLoading(false));
+      .then(refs => { if (!stale()) setCheckoutRefs(refs); })
+      .catch(e => { if (!stale()) setErr(String(e)); })
+      .finally(() => { if (!stale()) setCheckoutLoading(false); });
   }
 
   function exitCheckout() {
@@ -863,10 +895,13 @@ export function NewTaskDialog() {
     setErr(null);
     setPrQuery("");
     setPrLoading(true);
+    // Same stale guard as enterIssues: a lookup landing in a re-opened
+    // dialog would show the previous project's PRs.
+    const stale = staleFor(projectId, useUI.getState().newTaskSeed);
     projectForgePrs(projectId)
-      .then(setPrLookup)
-      .catch(e => setErr(String(e)))
-      .finally(() => setPrLoading(false));
+      .then(l => { if (!stale()) setPrLookup(l); })
+      .catch(e => { if (!stale()) setErr(String(e)); })
+      .finally(() => { if (!stale()) setPrLoading(false); });
   }
 
   function exitPrs() {
@@ -910,7 +945,8 @@ export function NewTaskDialog() {
   function parsePrQuery(raw: string): number {
     const t = raw.trim();
     const fromUrl = t.match(/\/pull\/(\d+)/) ?? t.match(/\/merge_requests\/(\d+)/) ?? t.match(/\/pullrequest\/(\d+)/i);
-    const n = Number(fromUrl ? fromUrl[1] : t.replace(/^#/, ""));
+    // "#123" is the gh spelling, "!123" the glab/ado one Termic itself renders.
+    const n = Number(fromUrl ? fromUrl[1] : t.replace(/^[#!]/, ""));
     return Number.isInteger(n) && n > 0 ? n : 0;
   }
 
@@ -920,10 +956,16 @@ export function NewTaskDialog() {
    *  handles. */
   async function pickPr(pr: ForgePr) {
     if (!projectId) return;
+    // The fetch → checkout chain outlives a close: every step re-checks the
+    // dialog is still open for THIS project before touching state, and before
+    // the mutating checkout most of all (a repo_root pick would otherwise
+    // switch the live checkout after the user already walked away).
+    const stale = staleFor(projectId, useUI.getState().newTaskSeed);
     setPrBusy(b => b + 1);
     setErr(null);
     try {
       const branch = await projectFetchPrBranch(projectId, pr.number, pr.head_ref, pr.cross_repository);
+      if (stale()) return;
       if (mode === "repo_root") {
         // Main checkout: the task IS the repo's live checkout, so getting onto
         // the PR means moving the checkout itself. Stash-safe on the Rust side
@@ -931,6 +973,7 @@ export function NewTaskDialog() {
         // said out loud afterwards, because this branch change is shared with
         // every other main-checkout task, the editor and any dev server.
         const res = await projectGitCheckout(projectId, branch);
+        if (stale()) return;
         setPrMode(false);
         setName(n => n.trim() || `pr-${pr.number}`);
         useUI.getState().pushToast(
@@ -947,14 +990,15 @@ export function NewTaskDialog() {
       // fetched when the dialog opened does not know it yet and the branch
       // field would flag its own fresh branch as unknown.
       const refs = await projectBranchContext(projectId).catch(() => null);
+      if (stale()) return;
       if (refs) setCheckoutRefs(refs);
       setCheckoutBranch(branch);
       setPrMode(false);
       setCheckoutMode(true);
     } catch (e) {
-      setErr(String(e));
+      if (!stale()) setErr(String(e));
     } finally {
-      setPrBusy(b => b - 1);
+      if (!stale()) setPrBusy(b => b - 1);
     }
   }
 
@@ -962,17 +1006,22 @@ export function NewTaskDialog() {
     if (!projectId) return;
     const n = parsePrQuery(prQuery);
     if (!n) { setErr(t("newTask.prNumberUnparsed")); return; }
+    const stale = staleFor(projectId, useUI.getState().newTaskSeed);
     setPrBusy(b => b + 1);
     setErr(null);
     try {
       const found = await projectForgePrs(projectId, { number: n });
-      setPrLookup(found);
+      if (stale()) return;
+      // A miss keeps the loaded list: replacing prLookup wholesale would
+      // strand the pane on the not-found message with no way back.
+      if (found.status === "not-found") setErr(found.message);
+      else setPrLookup(found);
       const pr = found.prs[0];
       if (pr) await pickPr(pr);
     } catch (e) {
-      setErr(String(e));
+      if (!stale()) setErr(String(e));
     } finally {
-      setPrBusy(b => b - 1);
+      if (!stale()) setPrBusy(b => b - 1);
     }
   }
 
@@ -984,13 +1033,16 @@ export function NewTaskDialog() {
     setIssueMode(true);
     setImportMode(false);
     setCheckoutMode(false);
+    // The sources are one question with one answer: arriving here from a PR
+    // closes that pane, the same way enterPrs clears this one.
+    if (prMode) exitPrs();
     setErr(null);
     if (!projectId) return;
     setIssueLoading(true);
     // The fetch outlives a close: a stale lookup landing in a re-opened
     // dialog would seed the wrong project's issues (and its provider into
     // the pane copy and prompts). Same guard as projectBranchContext above.
-    const stale = () => useUI.getState().newTaskProjectId !== projectId;
+    const stale = staleFor(projectId, useUI.getState().newTaskSeed);
     projectForgeIssues(projectId, 50)
       .then(l => { if (!stale()) setIssueLookup(l); })
       .catch(e => { if (!stale()) setIssueLookup({
@@ -1051,38 +1103,55 @@ export function NewTaskDialog() {
     // they are just text the user may well want to keep; a first message that
     // opens "GitHub issue #266:" is actively wrong on a task that is no longer
     // about that issue, and "blank task instead" says what it clears.
-    if (issueSelected) setPrompt("");
+    if (issuePicks.length > 0) setPrompt("");
     // The issue's text just left the box, so the reason YOLO stepped back
     // left with it (see `yoloHeld`). Not e2e-covered: picking an issue needs
     // a real forge, which the fixture repo is not.
     if (yoloHeld === "issue") { setYolo(yoloDefaultRef.current); setYoloHeld(null); }
-    setIssueSelected(null);
+    setIssuePicks([]);
     setErr(null);
   }
 
-  /** Picking an issue fills the name, the branch and the first message, all
-   *  three still editable. The prompt is composed into the visible box rather
-   *  than sent behind the user's back at create time: the box is the preview,
-   *  and an issue nearly always needs a sentence of steering added to it.
-   *
-   *  It does NOT force worktree mode: an issue task in the main checkout is a
-   *  legitimate thing to want, and silently switching the mode under the user
-   *  would be worse than letting them choose. */
-  function pickIssue(issue: ForgeIssue) {
-    setIssueSelected(issue);
-    setName(issueTaskName(issue));
-    setBranch(uniqueBranch(issueBranch(issue, branchPrefix), existingBranches));
-    setBranchEdited(false);
+  /** Fills name, branch and first message from the picks: the LAST one
+   *  supplies the name and branch, and the prompt covers every pick - one
+   *  task seeded with all of them, created by the ordinary single submit. */
+  function fillFromPicks(picks: ForgeIssue[]) {
+    const lead = picks[picks.length - 1];
+    setName(issueTaskName(lead));
+    setBranch(uniqueBranch(issueBranch(lead, branchPrefix), existingBranches));
+    // Marked edited so the derived-branch effect doesn't immediately
+    // overwrite `issue-NNN-…` with `feature/<name>` on the name change.
+    setBranchEdited(true);
     // Budgeted so the composed prompt fits what the box will actually send.
-    // Overwrites whatever is in there - same as the name and branch beside it,
-    // and picking a second issue has to replace the first one's prompt or the
-    // agent gets handed two.
-    setPrompt(buildIssuePrompt(issue, MAX_PROMPT_CHARS, issueLookup?.remote_url ?? ""));
-    // The issue's author wrote that prompt, so a YOLO default steps back
+    setPrompt(buildIssuesPrompt(picks, MAX_PROMPT_CHARS, issueLookup?.remote_url ?? ""));
+    // The issues' authors wrote that prompt, so a YOLO default steps back
     // (see `yoloHeld`). A box the user ticked themselves steps back too: the
     // text it was ticked for has just been replaced. One already held for a
     // link now says "the issue", since that is whose text is in the box.
     if (yolo || yoloHeld) { setYolo(false); setYoloHeld("issue"); }
+  }
+
+  /** Rows are a multi-select: every ticked issue goes into the ONE task's
+   *  prompt. Toggling rebuilds name/branch (from the lead pick) and the
+   *  prompt (all picks), so the box always previews exactly what the agent
+   *  will get; un-picking the last clears the prompt - name and branch stay,
+   *  same as leaving issue mode.
+   *
+   *  It does NOT force worktree mode: an issue task in the main checkout is a
+   *  legitimate thing to want, and silently switching the mode under the user
+   *  would be worse than letting them choose. */
+  function toggleIssue(issue: ForgeIssue) {
+    const rest = issuePicks.filter(p => p.number !== issue.number);
+    const next = rest.length === issuePicks.length ? [...issuePicks, issue] : rest;
+    setIssuePicks(next);
+    if (next.length > 0) fillFromPicks(next);
+    else {
+      setPrompt("");
+      // Release the branch-edited latch fillFromPicks set: with no picks
+      // left, the derived branch should follow the name again.
+      setBranchEdited(false);
+      if (yoloHeld === "issue") { setYolo(yoloDefaultRef.current); setYoloHeld(null); }
+    }
     setErr(null);
   }
 
@@ -1721,11 +1790,12 @@ export function NewTaskDialog() {
             grows it on attach and as the user types, so the hint that used to explain
             "typed once ready, nothing sent until Create" isn't needed to
             justify the extra height; the placeholder carries that now. */}
-        {/* The selected issue's own provider names the noun - the
+        {/* The picked issues' own provider names the noun - the
             project-level `noun` above reads providerByProject, which can
-            be null/stale while issueSelected is already in hand. */}
+            be null/stale while issuePicks is already in hand. With several
+            picked, the box holds every pick's context under one ask. */}
         {canPrompt && (
-          <Field label={issueSelected ? t("newTask.initialPromptFromIssue", { noun: issueNoun(issueSelected.provider) }) : t("newTask.initialPrompt")}>
+          <Field label={issuePicks.length > 0 ? t("newTask.initialPromptFromIssue", { noun: issueNoun(issuePicks[issuePicks.length - 1].provider) }) : t("newTask.initialPrompt")}>
             <div className="flex flex-col gap-1">
               <textarea
                 ref={attachPrompt}
@@ -2113,11 +2183,7 @@ export function NewTaskDialog() {
             <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
               <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingPrs")}
             </div>
-          ) : prLookup && prLookup.status !== "ok" && prLookup.status !== "not-found" ? (
-            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-              {prLookup.message}
-            </div>
-          ) : prLookup?.status === "not-found" ? (
+          ) : prLookup && prLookup.status !== "ok" ? (
             <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
               {prLookup.message}
             </div>
@@ -2138,7 +2204,7 @@ export function NewTaskDialog() {
                     className="flex w-full flex-col gap-0.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-60"
                   >
                     <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg)]">
-                      <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">#{pr.number}</span>
+                      <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">{prRef(pr.provider, pr.number)}</span>
                       <span className="min-w-0 truncate">{pr.title}</span>
                       {pr.draft && (
                         <span className="shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10.5px] text-[var(--color-fg-faint)]">
@@ -2184,7 +2250,8 @@ export function NewTaskDialog() {
         return (
         <div
           data-testid="issue-column"
-          data-issue-picked={issueSelected ? String(issueSelected.number) : undefined}
+          data-issue-picked={issuePicks.length > 0 ? String(issuePicks[issuePicks.length - 1].number) : undefined}
+          data-issue-count={issuePicks.length}
           className="flex min-w-0 flex-col gap-3"
         >
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
@@ -2236,20 +2303,23 @@ export function NewTaskDialog() {
                 className="mb-1.5 h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
               />
               <div className="min-h-[220px] flex-1 overflow-auto rounded-md border border-[var(--color-border-soft)]">
-                {visibleIssues.map(issue => (
+                {visibleIssues.map(issue => {
+                  const picked = issuePicks.some(p => p.number === issue.number);
+                  return (
                   <button
                     key={issue.number}
                     type="button"
-                    onClick={() => pickIssue(issue)}
+                    aria-pressed={picked}
+                    onClick={() => toggleIssue(issue)}
                     title={issue.title}
                     className={cn(
                       "flex w-full items-start gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
-                      issueSelected?.number === issue.number && "bg-[var(--color-accent-deep)]/10",
+                      picked && "bg-[var(--color-accent-deep)]/10",
                     )}
                   >
                     <CircleDot className={cn(
                       "mt-px h-4 w-4 shrink-0",
-                      issueSelected?.number === issue.number ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]",
+                      picked ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]",
                     )} />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[13px] text-[var(--color-fg)]">
@@ -2267,11 +2337,12 @@ export function NewTaskDialog() {
                         ))}
                       </div>
                     </div>
-                    {issueSelected?.number === issue.number && (
+                    {picked && (
                       <Check className="mt-px h-4 w-4 shrink-0 text-[var(--color-accent)]" />
                     )}
                   </button>
-                ))}
+                  );
+                })}
                 {visibleIssues.length === 0 && (
                   <div className="px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
                     {t("newTask.noFilterMatch")}
@@ -2283,7 +2354,14 @@ export function NewTaskDialog() {
           {/* A plain shell / registry terminal has no prompt box, so the
               composed prompt has nowhere to go. Say so here, where the issue
               was chosen, rather than letting Create silently drop it. */}
-          {issueSelected && !canPrompt && (
+          {/* Multi-pick reads as one line under the list, not a mode: every
+              ticked row is still just "that issue, filled in". */}
+          {issuePicks.length > 1 && (
+            <p className="text-[12px] leading-snug text-[var(--color-fg-dim)]">
+              {t("newTask.picksHint", { count: issuePicks.length })}
+            </p>
+          )}
+          {issuePicks.length > 0 && !canPrompt && (
             <p className="text-[12px] leading-snug text-[var(--color-warn)]">
               {t("newTask.noPromptBoxWarn", { agent: agentLabel, noun: paneNouns.noun })}
             </p>

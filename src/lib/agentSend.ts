@@ -114,8 +114,16 @@ function normalizeEcho(s: string): string {
  *  worst for the agents this check exists to protect, because an agent that
  *  echoes once and then goes quiet (a canonical-mode line reader, as against
  *  a TUI repainting its input box) gives exactly one chance to see it. */
+/** Codex/copilot render a paste-wrapped send as a chip ("[Pasted Content
+ *  1760 chars]", "[Paste #1 - 3 lines]") and never echo the text itself, so
+ *  a literal prefix match can never pass for it. The chip IS the echo: a
+ *  selection list cannot render one, only a text-accepting composer can -
+ *  accepting it keeps the picker protection alive for pasted sends. */
+const PASTE_CHIP = /\[(pasted|paste)[^\]]*]/i;
+
 function armEcho(ptyId: string, text: string) {
   const want = normalizeEcho(text).slice(0, ECHO_PREFIX_CHARS);
+  const pasted = /[\r\n]/.test(text) || text.length > PASTE_OVER_CHARS;
   let seen = "";
   let unlisten: (() => void) | undefined;
   let failed = false;
@@ -139,6 +147,10 @@ function armEcho(ptyId: string, text: string) {
      *  this BEFORE writing, so there is no gap for the echo to fall into. */
     armed: ready,
     stop: () => { unlisten?.(); },
+    /** For the failure message: what we were looking for and what actually
+     *  came back. A withheld submit is otherwise undiagnosable - the last
+     *  one turned out to be a paste chip the literal check could not see. */
+    diag: () => `want="${want}" saw ${seen.length} chars, tail="${seen.slice(-40)}"`,
     /** True as soon as the echo is seen, false at the window. */
     async wait(windowMs = ECHO_WINDOW_MS): Promise<boolean> {
       await ready;
@@ -149,10 +161,10 @@ function armEcho(ptyId: string, text: string) {
       if (!want || failed) return true;
       const deadline = Date.now() + windowMs;
       while (Date.now() < deadline) {
-        if (seen.includes(want)) return true;
+        if (seen.includes(want) || (pasted && PASTE_CHIP.test(seen))) return true;
         await sleep(40);
       }
-      return seen.includes(want);
+      return seen.includes(want) || (pasted && PASTE_CHIP.test(seen));
     },
   };
 }
@@ -198,22 +210,20 @@ export function deliverMessage(
       // whatever of the next message had already been typed (see the
       // turn-start guard in TerminalPane's queue drain, which is the fix).
       //
-      // The echo still cannot be the gate for those, because of
+      // The echo still cannot gate those literally, because of
       // PASTE_OVER_CHARS above: a long message goes as one bracketed paste,
       // and several agents show a pasted block as a "[Pasted text #1 +N
-      // lines]" chip INSTEAD of the text. Waiting for that text to come back
-      // would time out on a message that arrived perfectly, and withholding
-      // the CR would then lose it for good. So the echo stays where its
-      // premise holds: the FIRST message typed into an agent that has never
-      // been ready, short enough not to be pasted, where "no echo" really does
-      // mean "this is a selection list, not an input box" and submitting would
-      // answer a dialog instead of sending a prompt.
+      // lines]" chip INSTEAD of the text. The chip counts (PASTE_CHIP): it
+      // can only come from a text-accepting composer, so the gate stays a
+      // gate for pasted sends too - "no chip and no echo" still means "this
+      // is a selection list, not an input box" and submitting would answer
+      // a dialog instead of sending a prompt.
       if (echo && !(await echo.wait(opts.echoWindowMs))) {
         // The text went nowhere. Withhold the CR: on a selection list it would
         // confirm the highlighted option, and claude's is `No, exit`, so the
         // submit that was meant to deliver a prompt kills the agent instead.
         // Measured, on a single injection at termic's own ready floor.
-        throw new Error("agent did not echo the message; not submitting");
+        throw new Error(`agent did not echo the message; not submitting (${echo.diag()})`);
       }
       // The echo wait REPLACES the guesswork in SUBMIT_DELAY_MS but not the
       // delay itself: that window exists so a CR is not coalesced into the

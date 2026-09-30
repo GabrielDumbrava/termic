@@ -20,8 +20,9 @@ import { useApp } from "@/store/app";
 import { usePr } from "@/store/pr";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { ptyWrite, taskGitStatus, taskPrCreate, openPath } from "@/lib/ipc";
-import { agentDisplayName } from "@/lib/agents";
+import { taskGitStatus, taskPrCreate, openPath } from "@/lib/ipc";
+import { agentDisplayName, isTerminalCli } from "@/lib/agents";
+import { deliverMessage } from "@/lib/agentSend";
 import { forgeCli, prNoun, prNounShort, prRef } from "@/lib/forge";
 import type { TerminalTab } from "@/lib/types";
 import { Sparkles } from "lucide-react";
@@ -43,6 +44,14 @@ export function CreatePrDialog() {
   const lookup = usePr(s => taskId ? s.byTask[taskId]?.lookup ?? null : null);
   const projectProvider = usePr(s => task ? s.providerByProject[task.project_id] : undefined);
   const provider = lookup?.provider ?? task?.pr_provider ?? projectProvider ?? "github";
+  // Resolved-to-none (a real answer, not the "github" fallback): the repo
+  // isn't on a forge, so both paths out of this dialog are dead ends -
+  // say so rather than leave a silently disabled button.
+  const forgeless = !lookup?.provider && !task?.pr_provider && projectProvider === null;
+  // Unresolved (no source has answered yet) is distinguishable from the
+  // "github" DEFAULT: drafting types a literal CLI name into the agent, so
+  // that path waits for a real answer rather than guessing `gh` on ADO.
+  const providerResolved = !!(lookup?.provider ?? task?.pr_provider ?? projectProvider);
   const noun = provider === "gitlab" ? t("createPr.nounMr") : t("createPr.nounPr");
   // The prompt typed into the agent's terminal is an instruction for the CLI,
   // not UI copy, so it stays English regardless of the UI language.
@@ -98,9 +107,12 @@ export function CreatePrDialog() {
    *  command itself. Prefers the active tab when that's an agent;
    *  otherwise the first live agent tab. */
   function draftWithAgent() {
-    if (!task) return;
+    if (!task || !providerResolved) return;
+    const agents = useApp.getState().agents;
     const tabs = (useApp.getState().tabs[task.id] || []).filter(
-      (t): t is TerminalTab => t.type === "terminal" && t.cli !== "shell" && t.cli !== "custom" && !!t.ptyId,
+      // isTerminalCli covers shell/custom/registry-terminal kinds alike.
+      (t): t is TerminalTab => t.type === "terminal" && !t.runTab
+        && !isTerminalCli(t.cli, agents) && !!t.ptyId,
     );
     const activeId = useApp.getState().activeTab[task.id];
     const target = tabs.find(t => t.id === activeId) ?? tabs[0];
@@ -123,8 +135,11 @@ export function CreatePrDialog() {
       `commit anything that should ship, and push. ` +
       `Then create it with \`${createCmd}\`, writing a concise title and a reviewer-friendly description: what changed, why, and how to verify. ` +
       `Do not merge anything.`;
-    const bytes = new TextEncoder().encode(prompt + "\r");
-    ptyWrite(target.ptyId, Array.from(bytes)).catch(() => {});
+    // deliverMessage, not a raw ptyWrite burst: the prompt is ~450 chars
+    // (past the paste threshold) and a CR in the same burst is swallowed as
+    // a literal newline. deliverMessage wraps the paste and submits on a
+    // separate write after the coalescing window.
+    void deliverMessage(target.ptyId, prompt);
     pushToast(t("createPr.toastSent", { agent: agentDisplayName(target.cli, useApp.getState().agents), noun }), "success");
     close();
   }
@@ -169,8 +184,9 @@ export function CreatePrDialog() {
           </label>
         </div>
         {err && <p className="break-words text-[12.5px] text-[var(--color-err)]">{err}</p>}
+        {forgeless && <p className="text-[12.5px] text-[var(--color-fg-dim)]">{t("createPr.noForge")}</p>}
         <div className="mt-1 flex items-center justify-between gap-2">
-          <Button variant="ghost" size="sm" onClick={draftWithAgent} disabled={busy}
+          <Button variant="ghost" size="sm" onClick={draftWithAgent} disabled={busy || !providerResolved}
             title={t("createPr.draftWithAgentTitle")}>
             <Sparkles className="h-4 w-4" /> {t("createPr.draftWithAgent")}
           </Button>
