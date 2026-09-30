@@ -4,6 +4,60 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.11.0] - 2026-09-30
+
+A kanban board over every task, and multi-repo tasks pick their own members.
+
+### Features
+- **Kanban board.** A third nav view beside Dashboard and History, every task
+  a card in a column derived from what the terminal is actually doing (not
+  started, needs you, working, in review, settled), never from a status
+  somebody dragged. Swimlanes by agent when more than one has cards, drop on
+  Archived to archive through the usual confirm, drop on In review to open the
+  PR. Columns with nothing in them collapse into an Inactive column at the
+  right, which still takes their drops. Thanks to
+  [@lymanzhao](https://github.com/lymanzhao).
+- **Pick which repos a multi-repo task gets.** A member checklist in the New
+  task dialog, saved sets you can reapply, and an Edit task dialog that adds or
+  removes members on a task that already exists. Thanks to
+  [@kaceper11](https://github.com/kaceper11).
+- **Choose the model and reasoning when opening an agent tab**, per tab, and
+  new tabs start fresh instead of inheriting the last one. `termic tab` takes
+  the same options. Thanks to
+  [@thiagorbernardo](https://github.com/thiagorbernardo).
+- **Send queued messages now.** "Send all now" empties an agent's queue in one
+  pass without waiting for work-done between messages, and each row in the
+  queue has its own send icon that jumps that one ahead of the rest.
+
+### Bug fixes
+- **The Linux AppImage could not start for anyone whose mount enforces file
+  permissions.** `AppRun.wrapped` shipped as 0770 with everything inside owned
+  by root, so the file the launcher runs was not executable by the person
+  running it. It survived a plain double-click because squashfuse does not
+  enforce the mode, and failed under firejail, `default_permissions`, or an
+  extracted copy run by another user.
+- **A long queued message reached the agent with its beginning missing.** The
+  queue could send while the agent was still finishing the previous message,
+  and the input box it clears took the new text with it. A queued message now
+  waits for the agent to actually start its turn, and long ones are sent as a
+  single paste.
+- **A queue could wait forever.** If an agent never reported work-done again,
+  the messages behind it were never delivered, which is what a handoff from
+  another agent looked like. After a few minutes of complete silence from a
+  busy agent the next message goes anyway. Tunable in Settings, Tasks.
+- **A second Codex tab in a task resumed the wrong conversation.** `codex
+  resume --last` means the newest session in that directory, which stops
+  identifying a conversation once the task has two Codex tabs.
+- **The quick-create row could vanish the moment you picked an agent**, when
+  the closing menu handed focus back to the "+" button.
+- **A draft pull request no longer turns red** when its checks fail: a draft is
+  not asking to be looked at.
+- **A pull request no longer reads as broken** when a check was cancelled (a
+  newer push supersedes a run) or is waiting for a maintainer to approve a fork
+  workflow. Neither means the build failed.
+- Two switches in the New task dialog ("Existing branch" and "New branch
+  instead") were still English in every language.
+
 ## [1.10.0] - 2026-09-28
 
 Termic now speaks Simplified Chinese, and idles much lighter with many live

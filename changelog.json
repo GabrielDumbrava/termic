@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.11.0",
+      "date": "2026-09-30",
+      "summary": "A kanban board over every task, and multi-repo tasks pick their own members."
+    },
+    {
       "version": "1.10.0",
       "date": "2026-09-28",
       "summary": "Termic now speaks Simplified Chinese, and idles much lighter with many live tasks."
