@@ -3468,9 +3468,23 @@ describe("spawn links across projects", () => {
     await waitVisible(`[data-task-group-id="${orch}"] ${row(near)}`);
     const d = await disk();
     expect(d[near]).toEqual({ group: orch, spawnedBy: orch });
-    // The rail already says it. Waited for, not read once: the parent only
-    // gets its group when this first child joins, and until the store has
-    // that, the two do not share a block yet and the mark is (briefly) right.
+    // The rail already says it, but only once the PARENT is in the group too:
+    // it joins when this first child does, and until the store has that, the
+    // two do not share a block and the mark is briefly correct.
+    //
+    // So wait for that precondition explicitly rather than waiting out the
+    // mark and hoping. Waiting only on the mark made this a race with however
+    // long the parent's join took, which on the Linux runner lost, and then
+    // reported "a same-group child kept its started-by mark" about a child
+    // that was right and a parent that was late.
+    await browser.waitUntil(
+      async () => (await browser.execute(
+        (id) => window.__termic!.useApp.getState().tasks
+          .find((t: any) => t.id === id)?.group?.id ?? null,
+        orch,
+      )) === orch,
+      { timeout: 10_000, timeoutMsg: "the parent never joined the group its child founded" },
+    );
     await browser.waitUntil(
       () => browser.execute((s) => !document.querySelector(s), mark(near)),
       { timeout: 5_000, timeoutMsg: "a same-group child kept its started-by mark" },

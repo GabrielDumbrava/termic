@@ -452,16 +452,33 @@ describe("scratchpads from the CLI", () => {
     const w = await cliRpc({ cmd: "pad_write", task: taskId, pad: pad.scratchId, content: "- more\n", append: true });
     expect(w.ok).toBe(true);
     await browser.waitUntil(ring, { timeout: 5_000, timeoutMsg: "an append while you were elsewhere did not ring the pad" });
-    // Put the text back for the next case, which asserts on it exactly.
+    // No cleanup for the next case: it seeds its own content now. Left as a
+    // reset of THIS case's append so the pad is in a known state either way.
     await cliRpc({ cmd: "pad_write", task: taskId, pad: pad.scratchId, content: "# Findings\n" });
   });
 
   it("writes into the OPEN pad live, and reads back the human's edits", async () => {
     const [pad] = (await pads(taskId)).filter((p: any) => p.title === "Findings");
+    // SEEDED HERE, not inherited. This used to assert on content the previous
+    // case put back on its way out, so the case failed on the Linux runner
+    // saying "the editor never loaded the seeded text" when the truth was that
+    // a different case had not finished leaving it there. A case that depends
+    // on its neighbour's cleanup reports its neighbour's timing as its own bug.
+    const w0 = await cliRpc({ cmd: "pad_write", task: taskId, pad: pad.scratchId, content: "# Findings\n" });
+    expect(w0.ok).toBe(true);
     await browser.execute((id, tid) => window.__termic!.useApp.getState().setActiveTabId(id, tid), taskId, pad.id);
-    await browser.waitUntil(async () => (await editorText(pad.id)) === "# Findings\n", {
-      timeout: 10_000, timeoutMsg: "the pad's editor never loaded the seeded text",
-    });
+    // The last thing the editor actually held, so the failure says WHICH of
+    // the two happened: null is "no CodeMirror on screen yet", a mount too
+    // slow, and anything else is content that arrived wrong. Those want
+    // different fixes and one message covered both.
+    let seen: string | null = null;
+    await browser.waitUntil(
+      async () => (seen = await editorText(pad.id)) === "# Findings\n",
+      {
+        timeout: 10_000,
+        timeoutMsg: `the pad's editor never loaded the seeded text (held: ${JSON.stringify(seen)})`,
+      },
+    );
 
     const w = await cliRpc({ cmd: "pad_write", task: taskId, pad: "findings", content: "- first result\n", append: true });
     expect(w.ok).toBe(true);
