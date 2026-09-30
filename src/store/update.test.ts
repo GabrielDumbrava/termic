@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 // Mock Tauri/store imports before importing the module.
 import { vi } from "vitest";
@@ -6,7 +6,8 @@ vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("@/store/app", () => ({ useApp: { getState: vi.fn(() => ({})), setState: vi.fn(), subscribe: vi.fn() } }));
 
-import { cmpVersion, entryFor } from "@/store/update";
+import { check } from "@tauri-apps/plugin-updater";
+import { cmpVersion, entryFor, useUpdate } from "@/store/update";
 import type { ChangelogEntry } from "@/store/update";
 
 // ── cmpVersion ────────────────────────────────────────────────────────
@@ -77,5 +78,85 @@ describe("entryFor", () => {
   it("matches exactly — no partial version matches", () => {
     // "1.0" should not match "1.0.0"
     expect(entryFor(log, "1.0")).toBeNull();
+  });
+});
+
+// ── checkNow undismisses ──────────────────────────────────────────────
+
+describe("checkNow", () => {
+  // Reported: dismiss the update card, then "Check for updates" finds the
+  // same version, toasts "Update available", and shows nothing. Both surfaces
+  // hide on `update.version === dismissedVersion`, so the toast faded and left
+  // no card, no pill and no way to install.
+  //
+  // Dismissing means "not now". Asking for a check is changing your mind.
+  // This file runs in the node environment, which has no localStorage, and
+  // the store's own accessors swallow that in a try/catch. A shim rather than
+  // dropping the assertion: whether the cleared dismissal is PERSISTED is the
+  // difference between the fix holding and the card hiding again on relaunch.
+  const store = new Map<string, string>();
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, String(v)); },
+      removeItem: (k: string) => { store.delete(k); },
+      clear: () => { store.clear(); },
+    });
+    vi.stubEnv("DEV", false);            // checkNow returns early in dev
+    vi.stubEnv("VITE_BETA", "");         // ...and in a beta bundle
+    localStorage.clear();
+    useUpdate.setState({ update: null, dismissedVersion: "" });
+  });
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+
+  it("clears the dismissal when a check finds an update", async () => {
+    useUpdate.setState({ dismissedVersion: "1.11.0" });
+    vi.mocked(check).mockResolvedValue({ version: "1.11.0" } as never);
+
+    const r = await useUpdate.getState().checkNow();
+
+    expect(r).toBe("available");
+    expect(useUpdate.getState().dismissedVersion).toBe("");
+    // The thing the user actually wanted: the card's own condition passes.
+    const s = useUpdate.getState();
+    expect(s.update && s.update.version !== s.dismissedVersion).toBe(true);
+  });
+
+  it("keeps the dismissal when the check finds nothing", async () => {
+    // A briefly unreachable manifest must not throw away a deliberate
+    // dismissal, or the next background check re-shows the dismissed card.
+    useUpdate.setState({ dismissedVersion: "1.11.0" });
+    vi.mocked(check).mockResolvedValue(null as never);
+
+    expect(await useUpdate.getState().checkNow()).toBe("uptodate");
+    expect(useUpdate.getState().dismissedVersion).toBe("1.11.0");
+  });
+
+  it("keeps the dismissal when the check throws", async () => {
+    useUpdate.setState({ dismissedVersion: "1.11.0" });
+    vi.mocked(check).mockRejectedValue(new Error("offline"));
+
+    expect(await useUpdate.getState().checkNow()).toBe("error");
+    expect(useUpdate.getState().dismissedVersion).toBe("1.11.0");
+  });
+
+  it("persists the cleared dismissal, so a relaunch does not re-hide it", async () => {
+    localStorage.setItem("updateDismissedVersion", "1.11.0");
+    useUpdate.setState({ dismissedVersion: "1.11.0" });
+    vi.mocked(check).mockResolvedValue({ version: "1.11.0" } as never);
+
+    await useUpdate.getState().checkNow();
+    expect(localStorage.getItem("updateDismissedVersion")).toBe("");
+  });
+
+  it("a NEWER version was never hidden by an older dismissal", async () => {
+    // Why nobody who dismissed a card is stuck forever: the dismissal records
+    // a VERSION, not a boolean, so the next release shows up on its own.
+    useUpdate.setState({ dismissedVersion: "1.11.0" });
+    vi.mocked(check).mockResolvedValue({ version: "1.11.1" } as never);
+
+    await useUpdate.getState().checkNow();
+    const s = useUpdate.getState();
+    expect(s.update && s.update.version !== s.dismissedVersion).toBe(true);
   });
 });

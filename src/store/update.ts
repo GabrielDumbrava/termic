@@ -246,7 +246,22 @@ export const useUpdate = create<UpdateState>((set, get) => ({
     if (import.meta.env.DEV || isBetaBuild()) return "uptodate";
     try {
       const u = await check();
-      set({ update: u });
+      // An explicit check UNDISMISSES. Dismissing the card means "not now",
+      // and asking for a check is the user changing their mind: without this
+      // both surfaces stay hidden (each hides on `version === dismissedVersion`),
+      // so the check reported "Update available" in a toast that then faded,
+      // and left no card, no pill and no way to install it. Reported.
+      //
+      // Only when a check actually FINDS an update. Clearing it on a null
+      // answer would throw away a deliberate dismissal because the manifest
+      // was briefly unreachable, and the next background check would then
+      // re-show the card the user had dismissed.
+      if (u) {
+        lsSet(LS_DISMISSED, "");
+        set({ update: u, dismissedVersion: "" });
+      } else {
+        set({ update: u });
+      }
       return u ? "available" : "uptodate";
     } catch (e) {
       console.warn("[updater] manual check failed:", e);
