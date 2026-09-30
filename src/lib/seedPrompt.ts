@@ -23,7 +23,7 @@
 import { useApp } from "@/store/app";
 import { logWorkState } from "@/lib/workStateLog";
 import { deliverMessage } from "@/lib/agentSend";
-import { waitForAgentReady, sleep } from "@/lib/agentReady";
+import { waitForAgentReady, sleep, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import type { TerminalTab } from "@/lib/types";
 
 /** How long to wait for the agent's PTY before giving up. Race/New-Task
@@ -54,7 +54,7 @@ export function seedPromptWhenReady(
     // Does this agent report its own readiness? If so, waiting for it beats
     // every heuristic, and NOT waiting is what makes this path dangerous.
     const cli = defaultTab()?.cli;
-    const hooksOwnReadiness = !!cli && useApp.getState().agentHooksInstalled[cli] === true;
+    const hooksOwnReadiness = hooksOwnStartupReadiness(cli, !!cli && useApp.getState().agentHooksInstalled[cli] === true);
     const outcome = await waitForAgentReady(defaultTab, { hooksOwnReadiness });
     if (outcome === "lost") return;
     // The agent reports readiness and never reported it. Something is holding
