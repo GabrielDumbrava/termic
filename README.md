@@ -283,6 +283,12 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   re-themes both chrome and the terminal pane. Or bring your own: drop a
   JSON file in the themes folder and it appears in the picker as a
   first-class theme — see [docs/themes.md](docs/themes.md).
+- **Kanban board.** A third nav view beside Dashboard and History, every
+  task a card in a column derived from what the terminal is actually doing
+  (not started, working, needs you, in review, settled), never from a status
+  somebody dragged. Swimlanes by agent when more than one has cards, drop on
+  Archived to archive through the usual confirm, drop on In review to open
+  the PR. Anything that would not mean something snaps back.
 - **Speaks your language.** The whole interface is translated, with a
   complete Simplified Chinese (简体中文) locale shipped in 1.10.0. Settings →
   General → Language picks System, English or 简体中文, and the switch applies
@@ -410,13 +416,6 @@ specs and get an issue at the same time. That is the whole promotion path:
 
 ### Planned
 
-- **A kanban board over tasks.**
-  ([#318](https://github.com/simion/termic/issues/318)) A third nav view
-  with columns derived from real state (not started / working / settled /
-  needs-attention / PR open / archived), not Multica-style stored
-  statuses: the terminal is the ground truth and a hand-moved card would
-  drift from it. Swimlanes by agent, drag-to-archive, nothing else
-  draggable that does not mean something.
 - **Mobile app.** ([#165](https://github.com/simion/termic/issues/165)) A
   companion app for checking on and steering tasks while away from the Mac.
 - **Apple Containers as a sandbox backend.**
