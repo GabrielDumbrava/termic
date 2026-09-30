@@ -5,10 +5,25 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const writes: number[][] = [];
 let dataCb: ((d: Uint8Array) => void) | undefined;
 const unlisten = vi.fn();
+/** Every ipc call in the order it happened. The ORDER is the contract for the
+ *  echo path, not just the contents. */
+const calls: string[] = [];
+/** Ticks of the event loop `onPtyData` takes to register, so a test can widen
+ *  the window the listener is not yet live in. */
+let listenDelayTicks = 0;
 
 vi.mock("@/lib/ipc", () => ({
-  ptyWrite: (_id: string, bytes: number[]) => { writes.push(bytes); return Promise.resolve(); },
-  onPtyData: (_id: string, cb: (d: Uint8Array) => void) => { dataCb = cb; return Promise.resolve(unlisten); },
+  ptyWrite: (_id: string, bytes: number[]) => {
+    calls.push("write");
+    writes.push(bytes);
+    return Promise.resolve();
+  },
+  onPtyData: async (_id: string, cb: (d: Uint8Array) => void) => {
+    for (let i = 0; i < listenDelayTicks; i++) await Promise.resolve();
+    calls.push("listen");
+    dataCb = cb;
+    return unlisten;
+  },
 }));
 
 const { deliverMessage } = await import("@/lib/agentSend");
@@ -19,7 +34,10 @@ const text = (b: number[]) => new TextDecoder().decode(new Uint8Array(b));
 const submitted = () => writes.some(w => w.length === 1 && w[0] === CR);
 const echo = (s: string) => dataCb?.(new TextEncoder().encode(s));
 
-beforeEach(() => { writes.length = 0; dataCb = undefined; unlisten.mockClear(); });
+beforeEach(() => {
+  writes.length = 0; calls.length = 0; dataCb = undefined;
+  listenDelayTicks = 0; unlisten.mockClear();
+});
 
 describe("deliverMessage", () => {
   // The bug: bytes go to the PTY as typed, so a `\n` inside the text is an
@@ -203,5 +221,81 @@ describe("deliverMessage", () => {
       await p;
       expect(submitted()).toBe(true);
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("deliverMessage: the echo listener is armed before the write", () => {
+  // The flake this fixes, and it was never really a test problem. Subscribing
+  // AFTER ptyWrite resolves puts an IPC round trip in a footrace with the PTY
+  // flusher's 8ms coalescing window. Lose that race and the echo is emitted
+  // into a gap where nothing is listening, so "no echo" is concluded about an
+  // agent that echoed perfectly.
+  //
+  // And the consequence is not a mistimed check: no echo means the CR is
+  // withheld, the seed path has no retry, and the message is LOST with its
+  // text sitting typed in the agent's box. It bit the e2e race case roughly
+  // one run in four, both racers at the same millisecond, and it is worst for
+  // exactly the agents this check protects: one that echoes once and then goes
+  // quiet gives a single chance to see it.
+  it("registers the PTY listener BEFORE writing the text", async () => {
+    const p = deliverMessage("pty-1", "hello", { verifyEcho: true, echoWindowMs: 200 });
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    echo("hello");
+    await p;
+    expect(calls[0]).toBe("listen");
+    expect(calls.indexOf("listen")).toBeLessThan(calls.indexOf("write"));
+  });
+
+  it("still sees an echo that arrives in the very first output burst", async () => {
+    // The case the old ordering dropped: the agent's only echo lands the
+    // instant the write does. A canonical-mode line reader echoes once via the
+    // tty line discipline and then says nothing until it gets a newline, so
+    // this is its ONLY chance.
+    const p = deliverMessage("pty-1", "hello", { verifyEcho: true, echoWindowMs: 200 });
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    echo("hello");
+    await p;
+    expect(submitted()).toBe(true);
+  });
+
+  it("keeps that order however slow the listener registration is", async () => {
+    // Widen the gap the bug lived in. The assertion is the ORDER, not the
+    // absence of a write at some sampled instant: once `listen` has returned,
+    // the write follows immediately and correctly, so sampling for "nothing
+    // written yet" is a race in the test rather than a property of the code.
+    listenDelayTicks = 12;
+    const p = deliverMessage("pty-1", "hello", { verifyEcho: true, echoWindowMs: 200 });
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    echo("hello");
+    await p;
+    expect(calls.indexOf("listen")).toBeLessThan(calls.indexOf("write"));
+    expect(submitted()).toBe(true);
+  });
+
+  it("does not arm a listener at all when the echo check is off", async () => {
+    // The queue's path. It must not pay a round trip it does not use.
+    await deliverMessage("pty-1", "hello");
+    expect(calls).not.toContain("listen");
+    expect(submitted()).toBe(true);
+  });
+
+  it("still withholds the CR when the agent genuinely never echoes", async () => {
+    // The check has to keep working: on claude's trust picker a CR confirms
+    // the highlighted `No, exit` and kills the agent.
+    const p = deliverMessage("pty-1", "hello", { verifyEcho: true, echoWindowMs: 60 });
+    await expect(p).rejects.toThrow(/did not echo/);
+    expect(submitted()).toBe(false);
+  });
+
+  it("releases the listener whichever way it ends", async () => {
+    const ok = deliverMessage("pty-1", "hello", { verifyEcho: true, echoWindowMs: 200 });
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    echo("hello");
+    await ok;
+    expect(unlisten).toHaveBeenCalledTimes(1);
+
+    unlisten.mockClear();
+    await deliverMessage("pty-1", "nope", { verifyEcho: true, echoWindowMs: 60 }).catch(() => {});
+    expect(unlisten).toHaveBeenCalledTimes(1);
   });
 });

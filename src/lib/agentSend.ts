@@ -91,43 +91,70 @@ function normalizeEcho(s: string): string {
     .replace(/\s+/g, "");
 }
 
-/** Watch `ptyId` for `text` coming back, i.e. for the agent ECHOING what we
- *  just typed. Resolves true as soon as it does, false at the window.
+/** An armed watch for `text` coming back from `ptyId`, i.e. for the agent
+ *  ECHOING what we are about to type.
  *
  *  This is the readiness check for agents that report nothing. An input box
  *  echoes what you type; a selection list does not, which is what makes it a
  *  discriminator rather than another timer. Measured against claude's trust
  *  picker ("Is this a project you created or one you trust?", highlighted
  *  default `No, exit`), which the quiet heuristic reads as a ready agent:
- *  no echo there, echo in a real input box, in every run. */
-async function waitForEcho(ptyId: string, text: string, windowMs = ECHO_WINDOW_MS): Promise<boolean> {
+ *  no echo there, echo in a real input box, in every run.
+ *
+ *  ARMED BEFORE THE WRITE, and that ordering is the whole point of this
+ *  being a two-step object rather than one `waitForEcho(...)` call. A Tauri
+ *  event emitted before `listen()` has registered reaches nobody (the same
+ *  trap `ipc.ts` warns about on the attach path), and the PTY flusher
+ *  coalesces on an 8ms window, so subscribing after `ptyWrite` resolves puts
+ *  an IPC round trip in a footrace with that 8ms.
+ *
+ *  Losing that race did not merely mis-time the check, it DROPPED THE
+ *  MESSAGE: no echo seen means the CR is withheld, and the seed path has no
+ *  retry, so the agent sat with the text typed and never submitted. It is
+ *  worst for the agents this check exists to protect, because an agent that
+ *  echoes once and then goes quiet (a canonical-mode line reader, as against
+ *  a TUI repainting its input box) gives exactly one chance to see it. */
+function armEcho(ptyId: string, text: string) {
   const want = normalizeEcho(text).slice(0, ECHO_PREFIX_CHARS);
-  // Nothing distinctive to look for (whitespace-only). Not a failure: fall
-  // through to sending, which is what we did before this existed.
-  if (!want) return true;
   let seen = "";
   let unlisten: (() => void) | undefined;
-  try {
-    const dec = new TextDecoder();
-    unlisten = await onPtyData(ptyId, bytes => {
-      // Keep only the tail: the answer is always in the recent output, and an
-      // unbounded string here would grow with a streaming agent.
-      seen = (seen + normalizeEcho(dec.decode(bytes, { stream: true }))).slice(-4096);
-    });
-    const deadline = Date.now() + windowMs;
-    while (Date.now() < deadline) {
-      if (seen.includes(want)) return true;
-      await sleep(40);
+  let failed = false;
+  const dec = new TextDecoder();
+  // Kept as a promise rather than awaited here so the caller can arm and
+  // write without a second round trip in between; `wait` joins it.
+  const ready = (async () => {
+    try {
+      unlisten = await onPtyData(ptyId, bytes => {
+        // Keep only the tail: the answer is always in the recent output, and
+        // an unbounded string here would grow with a streaming agent.
+        seen = (seen + normalizeEcho(dec.decode(bytes, { stream: true }))).slice(-4096);
+      });
+    } catch {
+      failed = true;
     }
-    return seen.includes(want);
-  } catch {
-    // Could not observe the PTY at all. Absence of evidence is not evidence:
-    // report "echoed" so the caller sends, matching the old behaviour rather
-    // than silently swallowing every prompt on a listener failure.
-    return true;
-  } finally {
-    unlisten?.();
-  }
+  })();
+
+  return {
+    /** Resolve once the listener is actually registered. The caller awaits
+     *  this BEFORE writing, so there is no gap for the echo to fall into. */
+    armed: ready,
+    stop: () => { unlisten?.(); },
+    /** True as soon as the echo is seen, false at the window. */
+    async wait(windowMs = ECHO_WINDOW_MS): Promise<boolean> {
+      await ready;
+      // Nothing distinctive to look for (whitespace-only), or we could not
+      // observe the PTY at all. Absence of evidence is not evidence: report
+      // "echoed" so the caller sends, rather than silently swallowing every
+      // prompt on a listener failure.
+      if (!want || failed) return true;
+      const deadline = Date.now() + windowMs;
+      while (Date.now() < deadline) {
+        if (seen.includes(want)) return true;
+        await sleep(40);
+      }
+      return seen.includes(want);
+    },
+  };
 }
 
 /** Same delivery as {@link sendMessageToPty}, but the returned promise
@@ -144,49 +171,60 @@ export function deliverMessage(
   // Resolve only after BOTH the text AND the Enter (CR) have been written, so
   // an awaiting caller doesn't treat a half-delivered message (text in, never
   // submitted) as sent. Rejects if either write fails.
-  return ptyWrite(ptyId, textBytes).then(async () => {
-    // Stamped AFTER the write resolves, not before. `SUBMIT_DELAY_MS` is a
-    // gap between the TEXT reaching the PTY and the CR, so it has to be
-    // measured from the write completing; timing it from before the IPC round
-    // trip silently spends part of the window on the round trip itself. On a
-    // loaded machine that shortens the real gap by exactly as much as the
-    // machine is slow, which is when the coalescing this guards against is
-    // most likely.
-    const wroteAt = Date.now();
-    // Opt-in, and still NOT what the queue uses, though the reason has
-    // changed and is worth keeping straight.
-    //
-    // The old reason was that a queued message needs no check because "the
-    // queue only ever sends after a turn ended, which already proves the agent
-    // was at its input box". Transcripts disproved that: work-done can fire
-    // while the agent is still finishing its previous submit, and when that
-    // submit lands the agent CLEARS its input box, taking with it whatever of
-    // the next message had already been typed (see the turn-start guard in
-    // TerminalPane's queue drain, which is the fix).
-    //
-    // The echo still cannot be the gate for those, because of PASTE_OVER_CHARS
-    // above: a long message goes as one bracketed paste, and several agents
-    // show a pasted block as a "[Pasted text #1 +N lines]" chip INSTEAD of the
-    // text. Waiting for that text to come back would time out on a message
-    // that arrived perfectly, and withholding the CR would then lose it for
-    // good. So the echo stays where its premise holds: the FIRST message typed
-    // into an agent that has never been ready, short enough not to be pasted,
-    // where "no echo" really does mean "this is a selection list, not an input
-    // box" and submitting would answer a dialog instead of sending a prompt.
-    if (opts.verifyEcho && !(await waitForEcho(ptyId, text, opts.echoWindowMs))) {
-      // The text went nowhere. Withhold the CR: on a selection list it would
-      // confirm the highlighted option, and claude's is `No, exit`, so the
-      // submit that was meant to deliver a prompt kills the agent instead.
-      // Measured, on a single injection at termic's own ready floor.
-      throw new Error("agent did not echo the message; not submitting");
+  return (async () => {
+    // Armed BEFORE the write, and awaited, so the echo cannot be emitted into
+    // a gap where nothing is listening. See armEcho for why that gap loses
+    // the message rather than merely mistiming the check.
+    const echo = opts.verifyEcho ? armEcho(ptyId, text) : null;
+    if (echo) await echo.armed;
+    try {
+      await ptyWrite(ptyId, textBytes);
+      // Stamped AFTER the write resolves, not before. `SUBMIT_DELAY_MS` is a
+      // gap between the TEXT reaching the PTY and the CR, so it has to be
+      // measured from the write completing; timing it from before the IPC
+      // round trip silently spends part of the window on the round trip
+      // itself. On a loaded machine that shortens the real gap by exactly as
+      // much as the machine is slow, which is when the coalescing this guards
+      // against is most likely.
+      const wroteAt = Date.now();
+      // Opt-in, and still NOT what the queue uses, though the reason has
+      // changed and is worth keeping straight.
+      //
+      // The old reason was that a queued message needs no check because "the
+      // queue only ever sends after a turn ended, which already proves the
+      // agent was at its input box". Transcripts disproved that: work-done can
+      // fire while the agent is still finishing its previous submit, and when
+      // that submit lands the agent CLEARS its input box, taking with it
+      // whatever of the next message had already been typed (see the
+      // turn-start guard in TerminalPane's queue drain, which is the fix).
+      //
+      // The echo still cannot be the gate for those, because of
+      // PASTE_OVER_CHARS above: a long message goes as one bracketed paste,
+      // and several agents show a pasted block as a "[Pasted text #1 +N
+      // lines]" chip INSTEAD of the text. Waiting for that text to come back
+      // would time out on a message that arrived perfectly, and withholding
+      // the CR would then lose it for good. So the echo stays where its
+      // premise holds: the FIRST message typed into an agent that has never
+      // been ready, short enough not to be pasted, where "no echo" really does
+      // mean "this is a selection list, not an input box" and submitting would
+      // answer a dialog instead of sending a prompt.
+      if (echo && !(await echo.wait(opts.echoWindowMs))) {
+        // The text went nowhere. Withhold the CR: on a selection list it would
+        // confirm the highlighted option, and claude's is `No, exit`, so the
+        // submit that was meant to deliver a prompt kills the agent instead.
+        // Measured, on a single injection at termic's own ready floor.
+        throw new Error("agent did not echo the message; not submitting");
+      }
+      // The echo wait REPLACES the guesswork in SUBMIT_DELAY_MS but not the
+      // delay itself: that window exists so a CR is not coalesced into the
+      // text burst as a paste continuation, which is about the agent's stdin
+      // batching, not about whether it was reading. An echo seen at 40ms must
+      // still not submit at 40ms. So sleep out whatever is left of it.
+      const remaining = SUBMIT_DELAY_MS - (Date.now() - wroteAt);
+      if (remaining > 0) await sleep(remaining);
+      await ptyWrite(ptyId, [0x0d]);
+    } finally {
+      echo?.stop();
     }
-    // The echo wait REPLACES the guesswork in SUBMIT_DELAY_MS but not the
-    // delay itself: that window exists so a CR is not coalesced into the text
-    // burst as a paste continuation, which is about the agent's stdin
-    // batching, not about whether it was reading. An echo seen at 40ms must
-    // still not submit at 40ms. So sleep out whatever is left of it.
-    const remaining = SUBMIT_DELAY_MS - (Date.now() - wroteAt);
-    if (remaining > 0) await sleep(remaining);
-    await ptyWrite(ptyId, [0x0d]);
-  });
+  })();
 }
