@@ -71,6 +71,12 @@ export function TasksSection() {
   const setBoardArchiveLimitMode = usePrefs(s => s.setBoardArchiveLimitMode);
   const boardArchiveLimit = usePrefs(s => s.boardArchiveLimit);
   const setBoardArchiveLimit = usePrefs(s => s.setBoardArchiveLimit);
+  // The custom limit input keeps its own draft: Number("") is 0, so writing
+  // the parse straight through turned "clear the field to retype" into
+  // "store 0" — the Archived column emptied mid-edit and a stuck "0" went
+  // back into the field. The store only ever sees a parseable number; the
+  // draft dies on blur and the stored value shows again.
+  const [limitDraft, setLimitDraft] = useState<string | null>(null);
 
   const hydrated = useRef(false);
   useEffect(() => {
@@ -425,8 +431,13 @@ export function TasksSection() {
           {boardArchiveLimitMode === "custom" && (
             <Input
               type="number"
-              value={boardArchiveLimit}
-              onChange={(e) => setBoardArchiveLimit(Number(e.target.value))}
+              value={limitDraft ?? String(boardArchiveLimit)}
+              onChange={(e) => {
+                setLimitDraft(e.target.value);
+                const n = Number(e.target.value);
+                if (e.target.value.trim() !== "" && Number.isFinite(n)) setBoardArchiveLimit(n);
+              }}
+              onBlur={() => setLimitDraft(null)}
               className="w-24 font-mono"
               data-testid="board-archive-limit-input"
             />
