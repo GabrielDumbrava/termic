@@ -267,6 +267,64 @@ draw it:
   state and reads the task list only when the hovered row changes, so
   hovering re-renders nothing else; it skips a drag and the icon rail, and a
   row that is not in the DOM (collapsed project, filtered out) gets no line.
+## Kanban view (over tasks)
+
+The third nav view (GH #318), an overlay like History: `view.page === "board"`
+in `src/store/app.ts`, mounted by `MainArea`'s overlay chain, unmounted when
+left, so idle cost is zero by construction. One global board across projects,
+laid out as a standard kanban: six full-height fixed-width columns (Not
+started, Needs attention, Working, In review, Settled, Archived), each with
+its own surface
+one step above the page background, a header (semantic dot + title + count
+badge) and an independently scrolling card stack. The row sizes to its
+columns (`w-max` + `mx-auto`), so a narrow window scrolls and a wide one
+centers; never `justify-center` + overflow, which clips the left columns
+permanently.
+
+Swimlanes by agent (`task.cli`) are dividers INSIDE a column, sticky while
+the column scrolls, shown only when more than one agent has live tasks; the
+same rule hides project sub-headers on single-project groups. The Archived
+column is agent-agnostic, read-only apart from being the drop-to-archive
+target, and links to History in its footer.
+
+**The columns are derived, never stored** (`src/lib/taskBoardState.ts`, the
+third consumer of `taskWorkState.ts` after the sidebar and the dashboard):
+archived overrides everything, then attention, then working, then a persisted
+open/draft PR identity (main checkouts excluded, same gate as the pr poller),
+then Not started for a task with no work evidence this session (no terminal
+tab has a classified `workState` or a `lastInputAt`: the state machine skips
+the idle write on a fresh spawn, so untouched stays distinguishable from a
+finished turn, whose tab holds `done` or an explicit `idle` write), and
+everything else is Settled. A merged/closed PR falls through past review.
+Not started is session-scoped by design, the same honesty as the done badge:
+nothing here survives a restart, and persisting a "has worked" flag would be
+a stored status. There is no `status` field on Task and there must not be
+one: the terminal is the ground truth, and a stored status a card could
+carry would drift from the PTY with no reconciliation path.
+
+Rendering discipline: the whole board's column assignment is ONE string-keyed
+selector (`src/lib/boardColumnKey.ts`, kept out of the pure module because it
+reads both stores), so the view re-renders when a card changes column and only
+then; each card subscribes to its own `selectTaskTabs` slice for its badge.
+`selectorFanout.test.ts` pins all three counts.
+
+Drags mean something or they do not happen. Hand-rolled pointer events, the
+sidebar's pattern; no dnd-kit. Exactly two drags are wired: reorder within a
+same-project group inside one cell (settle, one store write, `task_reorder`,
+whose Rust contract is same-project ids) and drop on the Archived column
+(shared `confirmAndArchive`, so the confirm dialog, delete-branch checkbox,
+open-PR warning and spinner come with it). Every other drop snaps back with
+no write. Restore stays in History; the Archived column links there.
+
+The Archived column renders a CAPPED slice, not the whole archive: the most
+recent entries first (the same `archived_at ?? created` sort History uses),
+limited by Settings -> Tasks' "Kanban archived column limit" — the factory
+default 25, unlimited, or a custom number taken as-is (no bounds; anything
+below one renders an empty column). The cap bounds the DOM only: the column
+badge always shows the full count, and History still lists everything.
+`recentArchived()` in
+[src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts) is the one sort +
+cap; the badge reads the uncapped filter.
 
 ## What a task is called (name vs branch)
 

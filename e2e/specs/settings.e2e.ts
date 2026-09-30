@@ -1202,6 +1202,85 @@ describe("archive confirmation settings", () => {
   });
 });
 
+// The board's Archived column cap (PR #339 review: the column used to render
+// every archived task). What the cap DOES is pinned in board.e2e.ts; what
+// matters here is that Settings -> Tasks reaches it, and that the three-way
+// control writes the pref pair the column reads.
+describe("kanban archived column limit setting", () => {
+  const prefs = () =>
+    browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      return { mode: p.boardArchiveLimitMode, limit: p.boardArchiveLimit };
+    });
+
+  const pick = (v: string) =>
+    browser.execute((val) => {
+      const sel = document.querySelector(
+        '[data-testid="board-archive-limit-select"]',
+      ) as HTMLSelectElement;
+      sel.value = val;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    }, v);
+
+  const typeLimit = (v: string) =>
+    browser.execute((val) => {
+      const input = document.querySelector(
+        '[data-testid="board-archive-limit-input"]',
+      ) as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(input, val);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, v);
+
+  after(async () => {
+    // "default" is the factory answer and the state the board spec assumes;
+    // a leaked custom cap would follow the next file into its board.
+    await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      p.setBoardArchiveLimitMode("default");
+      p.setBoardArchiveLimit(25);
+      window.__termic!.useApp.getState().closeSettings();
+    });
+  });
+
+  it("offers default, unlimited and custom, and keeps the custom number as typed", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("tasks"));
+    await waitForText("Kanban archived column limit");
+
+    // Default lands with no number input on screen.
+    expect((await prefs()).mode).toBe("default");
+    expect(await browser.execute(() =>
+      !!document.querySelector('[data-testid="board-archive-limit-input"]'))).toBe(false);
+
+    // Custom reveals the input and the value goes through untouched: no
+    // bounds, by design. 1000 reads back 1000, on screen and in the store.
+    await pick("custom");
+    await waitVisible('[data-testid="board-archive-limit-input"]');
+    await typeLimit("1000");
+    await browser.waitUntil(async () => (await prefs()).limit === 1000,
+      { timeout: 5_000, timeoutMsg: "the custom limit never reached the store" });
+    expect(await browser.execute(() =>
+      (document.querySelector('[data-testid="board-archive-limit-input"]') as HTMLInputElement).value),
+    ).toBe("1000");
+
+    // Unlimited hides the input again; the stored number keeps its value for
+    // the day custom comes back.
+    const limitBefore = (await prefs()).limit;
+    await pick("unlimited");
+    await browser.waitUntil(async () => (await prefs()).mode === "unlimited",
+      { timeout: 5_000, timeoutMsg: "the mode never reached unlimited" });
+    expect(await browser.execute(() =>
+      !!document.querySelector('[data-testid="board-archive-limit-input"]'))).toBe(false);
+    expect((await prefs()).limit).toBe(limitBefore);
+    await snap("board-archive-limit-settings.png");
+  });
+});
+
 // P2: the branch-as-task-name toggle (GH #260). What the pref DOES is pinned
 // in task.e2e.ts; what matters here is that Settings -> Tasks can reach it,
 // since it is app-wide and the sidebar offers no other way in.

@@ -410,6 +410,13 @@ specs and get an issue at the same time. That is the whole promotion path:
 
 ### Planned
 
+- **A kanban board over tasks.**
+  ([#318](https://github.com/simion/termic/issues/318)) A third nav view
+  with columns derived from real state (not started / working / settled /
+  needs-attention / PR open / archived), not Multica-style stored
+  statuses: the terminal is the ground truth and a hand-moved card would
+  drift from it. Swimlanes by agent, drag-to-archive, nothing else
+  draggable that does not mean something.
 - **Mobile app.** ([#165](https://github.com/simion/termic/issues/165)) A
   companion app for checking on and steering tasks while away from the Mac.
 - **Apple Containers as a sandbox backend.**
