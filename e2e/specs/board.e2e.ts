@@ -454,6 +454,70 @@ describe("board view", () => {
       // mean a seam to stub the opener, which does not exist yet.
       await snap("board-card-pr.png");
     });
+
+    it("a wide PR chip and churn never make the column scroll sideways", async () => {
+      // Shipped broken in 1.11.2: the chip and the churn were both shrink-0 on
+      // one line, so "#18495 - checks failing" next to "+356 -21 12 files"
+      // overflowed a 280px column and gave the whole lane a horizontal
+      // scrollbar, with the file count clipped off the right edge. Reported
+      // with a screenshot.
+      //
+      // The widest shape there is: a five-digit PR, a failing-checks note and
+      // a seven-figure churn.
+      await browser.execute((id) => {
+        const t = window.__termic!;
+        t.useApp.setState((s: any) => ({
+          tasks: s.tasks.map((w: any) => w.id === id
+            ? { ...w, pr_url: "https://github.com/acme/repo/pull/18495", pr_number: 18495, pr_provider: "github" }
+            : w),
+        }));
+        t.usePr.setState((s: any) => ({
+          byTask: {
+            ...s.byTask,
+            [id]: {
+              lookup: {
+                provider: "github", remote_url: "", status: "ok", message: "",
+                pr: {
+                  provider: "github", number: 18495, url: "https://github.com/acme/repo/pull/18495",
+                  title: "x", state: "open", checks: "failing", review: "none",
+                  base: "main", head: "topic",
+                },
+              },
+              loading: false, fetchedAt: Date.now(),
+            },
+          },
+        }));
+        t.useDiffStat.setState((s: any) => ({
+          byTask: {
+            ...s.byTask,
+            [id]: {
+              stat: { files_changed: 11016, insertions: 1513884, deletions: 365272, untracked: 3 },
+              loading: false, fetchedAt: Date.now(), error: null,
+            },
+          },
+        }));
+      }, t2);
+
+      await waitVisible(`${CARD(t2)} [data-testid="board-card-churn"]`);
+      const overflow = await browser.execute((id) => {
+        const card = document.querySelector(`[data-board-task-id="${id}"]`) as HTMLElement;
+        // The scrolling ancestor is the column's card list.
+        const col = card.closest("[data-board-cell]") as HTMLElement;
+        const list = [...col.querySelectorAll<HTMLElement>("div")]
+          .find(d => d.scrollHeight > d.clientHeight || d.className.includes("overflow-y-auto")) ?? col;
+        return {
+          // The real symptom: content wider than the box it sits in.
+          listOverflow: list.scrollWidth - list.clientWidth,
+          colOverflow: col.scrollWidth - col.clientWidth,
+          cardOverflow: card.scrollWidth - card.clientWidth,
+        };
+      }, t2);
+      // Measured, not eyeballed: any positive value is a sideways scrollbar.
+      expect(overflow.cardOverflow).toBeLessThanOrEqual(0);
+      expect(overflow.listOverflow).toBeLessThanOrEqual(0);
+      expect(overflow.colOverflow).toBeLessThanOrEqual(0);
+      await snap("board-card-wide.png");
+    });
   });
 
   // A pin is a SETTING. It was this view's state first, so leaving Kanban and

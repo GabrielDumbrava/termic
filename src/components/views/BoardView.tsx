@@ -539,7 +539,7 @@ export function BoardView() {
                   {archivedAll.length}
                 </span>
               </header>
-              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pb-2.5">
+              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden px-2.5 pb-2.5">
                 {drag && (
                   <div className="rounded-lg border border-dashed border-[var(--color-border)] px-2 py-2 text-center text-[11.5px] text-[var(--color-fg-faint)]">
                     {t("board.archiveHint")}
@@ -752,7 +752,7 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
           </button>
         )}
       </header>
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pb-2.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden px-2.5 pb-2.5">
         {dragHint && (
           <div className="rounded-lg border border-dashed border-[var(--color-border)] px-2 py-2 text-center text-[11.5px] text-[var(--color-fg-faint)]">
             {t(column === "settled" ? "board.settleHint" : "board.reviewHint")}
@@ -1005,7 +1005,13 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
     : "";
 
   return (
-    <div className="flex items-center gap-2">
+    // WRAPS, and every child can shrink. A 280px column cannot always hold
+    // "#18495 - checks failing" and "+356 -21 12 files" on one line, and when
+    // it could not, the row overflowed and gave the whole COLUMN a horizontal
+    // scrollbar with the file counts clipped off the right edge. Shipped that
+    // way in 1.11.2. Wrapping costs a second line on the widest cards and
+    // nothing on the rest.
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
       {url && (
         <button
           type="button"
@@ -1016,11 +1022,11 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
           // stopPropagation, or the click also activates the task behind it.
           onClick={e => { e.stopPropagation(); openPath(url).catch(() => {}); }}
           onPointerDown={e => e.stopPropagation()}
-          className="flex min-w-0 shrink-0 items-center gap-1 rounded px-1 py-px text-[10.5px] hover:bg-[var(--color-bg-3)]"
+          className="flex min-w-0 items-center gap-1 rounded px-1 py-px text-[10.5px] hover:bg-[var(--color-bg-3)]"
           style={{ color }}
         >
           <PrIcon className="h-3 w-3 shrink-0" />
-          <span className="tabular-nums">{id}</span>
+          <span className="shrink-0 tabular-nums">{id}</span>
           {checkNote && <span className="truncate">· {checkNote}</span>}
         </button>
       )}
@@ -1046,7 +1052,7 @@ function BoardChurn({ task: w, stat }: { task: Task; stat: TaskDiffStat }) {
     <span
       data-testid="board-card-churn"
       title={tip}
-      className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums text-[10.5px]"
+      className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums text-[10.5px]"
     >
       {stat.insertions > 0 && <span style={{ color: "var(--color-ok)" }}>+{stat.insertions}</span>}
       {stat.deletions > 0 && <span style={{ color: "var(--color-err)" }}>-{stat.deletions}</span>}
