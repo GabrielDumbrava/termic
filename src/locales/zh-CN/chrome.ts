@@ -221,6 +221,7 @@ export default {
     colReview: "审查中",
     colSettled: "已完成",
     colArchived: "已归档",
+    colInactive: "空闲列",
     emptyTitle: "还没有任务",
     emptyBody: "你启动的每个任务都会按其当前状态出现在对应的列里。",
     archiveHint: "将卡片拖到此处即可归档",
@@ -232,7 +233,6 @@ export default {
     ageHours: "{{count}} 小时",
     ageDays: "{{count}} 天",
     unknownProject: "未知项目",
-    hiddenTip: "{{names}}。空列已隐藏，拖动卡片时会重新出现。",
     showColumn: "显示{{name}}",
   },
   activity: {

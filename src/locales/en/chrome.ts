@@ -221,6 +221,7 @@ export default {
     colReview: "In review",
     colSettled: "Settled",
     colArchived: "Archived",
+    colInactive: "Inactive",
     emptyTitle: "No tasks yet",
     emptyBody: "Every task you start shows up here, in the column matching what it is doing right now.",
     archiveHint: "Drop a card here to archive it",
@@ -232,7 +233,6 @@ export default {
     ageHours: "{{count}}h",
     ageDays: "{{count}}d",
     unknownProject: "Unknown project",
-    hiddenTip: "{{names}}. Empty columns are hidden; they come back while you drag a card.",
     showColumn: "Show {{name}}",
   },
   activity: {

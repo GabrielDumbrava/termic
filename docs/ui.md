@@ -277,24 +277,29 @@ started, Needs attention, Working, In review, Settled, Archived), each with
 its own surface
 one step above the page background, a header (semantic dot + title + count
 badge) and an independently scrolling card stack. The row sizes to its
-columns (`w-max` + `mx-auto`), so a narrow window scrolls and a wide one
-centers; never `justify-center` + overflow, which clips the left columns
-permanently.
+columns (`w-max`), LEFT aligned, so a narrow window scrolls; never
+`justify-center` + overflow, which clips the left columns permanently. It
+centered with `mx-auto` until empty columns started hiding, at which point two
+columns floated mid-window with a screenful of nothing beside them.
 
-**An EMPTY state column is not rendered**, because four columns of nothing
-push the ones with cards off screen (reported with a screenshot of exactly
-that). The hidden ones collapse onto a thin rail at the right edge, one
-vertical strip each, click to pin one back open for the visit.
+**An EMPTY state column is not rendered**, because columns of nothing push the
+ones with cards off screen (reported with a screenshot of exactly that). The
+hidden ones gather in an **Inactive** column at the right, one ordinary row
+each, name and a zero, click a row to bring its column back for the visit.
 
-The rail is not decoration: each strip carries the same `data-board-cell` +
-`data-column` the real column does, so a card dropped on it runs the identical
-command. That matters because Settled and In review ARE drop targets (clear
-work state, open the PR dialog) and are emptiest exactly when you want to drop
-into them, so hiding a column must never take its command with it. Revealing
-every column on drag instead was tried first and is worse: the board reflows
-under the hand holding the card, and the target does not exist until the drag
-has already begun. Archived is never hidden, being both muscle memory and the
-destructive drop.
+That column is not a legend: each row carries the same `data-board-cell` +
+`data-column` a real column does, so a card dropped on a row runs the identical
+command through the identical handler. It has to, because Settled and In review
+ARE drop targets (clear work state, open the PR dialog) and are emptiest exactly
+when you want to drop into them, so hiding a column must never take its command
+with it. Archived is never hidden, being both muscle memory and the destructive
+drop.
+
+Two shapes were tried and rejected before this one, both caught by looking at
+it. Revealing every column while dragging reflows the board under the hand
+holding the card, and the drop target does not exist until the drag has already
+begun (the existing cross-column e2e case could not find it). A thin rail of
+vertical labels at the edge fits more but reads as a rendering glitch.
 
 Tasks whose project is missing from the store are skipped entirely. The
 sidebar renders tasks by walking PROJECTS, so such a task is invisible there,

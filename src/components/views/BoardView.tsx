@@ -426,11 +426,14 @@ export function BoardView() {
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-x-auto">
-          {/* w-max + mx-auto: the row sizes to its columns, so a window too
-              narrow for all five SCROLLS (justify-center + overflow would
-              clip the left columns permanently) and a wide window centers
-              them. */}
-          <div className="mx-auto flex h-full w-max gap-3 p-3">
+          {/* w-max, LEFT aligned: the row sizes to its columns, so a window
+              too narrow for them all scrolls (justify-center + overflow would
+              clip the left columns permanently). It used to center with
+              `mx-auto`, which looked fine at six columns and wrong the moment
+              empty ones started hiding: two columns floated in the middle of
+              the window with a screenful of nothing to their left. A board
+              reads from the left. */}
+          <div className="flex h-full w-max gap-3 p-3">
             {shownCols.map(col => (
               <BoardColumnView
                 key={col}
@@ -496,38 +499,56 @@ export function BoardView() {
                 board that silently drops "Working" reads as a bug) without
                 costing the width the hiding just bought. Click one to pin it
                 open for this visit; it is not a setting. */}
+            {/* Inactive columns: one ordinary column holding the ones with
+                nothing in them, rather than a thin rail of vertical text (the
+                first shape, and it read as a glitch). Each row is still that
+                column's own drop target, carrying the `data-board-cell` +
+                `data-column` the drag handler reads, so hiding a column never
+                takes its command with it: Settled clears the work state and In
+                review opens the PR dialog, and both are emptiest exactly when
+                you want to drop into them. Click a row to bring its column
+                back for this visit. */}
             {hiddenCols.length > 0 && (
-              <aside
+              <section
                 data-testid="board-hidden-columns"
-                className="flex w-[30px] shrink-0 flex-col overflow-hidden rounded-lg bg-[var(--color-bg-2)]/40"
-                title={t("board.hiddenTip", { names: hiddenCols.map(c => t(COL_LABEL[c])).join(", ") })}
+                className="flex w-[200px] shrink-0 flex-col rounded-[10px] bg-[var(--color-bg-1)]/60"
               >
-                {hiddenCols.map((c, i) => (
-                  <button
-                    key={c}
-                    type="button"
-                    data-board-hidden-column={c}
-                    // The same hooks a real column exposes, so a drop here
-                    // goes through the identical path (see the drag handler's
-                    // `[data-board-cell]` lookup) rather than a second one.
-                    data-board-cell
-                    data-column={c}
-                    aria-label={t("board.showColumn", { name: t(COL_LABEL[c]) })}
-                    onClick={() => setPinnedCols(prev => prev.includes(c) ? prev : [...prev, c])}
-                    // flex-1 so each strip is a drop target worth aiming at,
-                    // not a label. The divider is what makes four of them read
-                    // as four targets rather than one long tab.
-                    className={cn(
-                      "flex flex-1 items-center justify-center px-1 text-[10.5px] text-[var(--color-fg-faint)]",
-                      "transition-colors hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-                      i > 0 && "border-t border-[var(--color-border)]",
-                    )}
-                    style={{ writingMode: "vertical-rl" }}
-                  >
-                    {t(COL_LABEL[c])}
-                  </button>
-                ))}
-              </aside>
+                <header className="flex shrink-0 items-center gap-2 px-2.5 pb-1 pt-2.5">
+                  <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-fg-faint)]" />
+                  <span className="text-[12.5px] font-semibold text-[var(--color-fg-faint)]">
+                    {t("board.colInactive")}
+                  </span>
+                  <span className="ml-auto rounded px-2 py-0.5 text-[11px] font-medium tabular-nums text-[var(--color-fg-faint)]">
+                    {hiddenCols.length}
+                  </span>
+                </header>
+                <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-1.5">
+                  {hiddenCols.map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      data-board-hidden-column={c}
+                      data-board-cell
+                      data-column={c}
+                      aria-label={t("board.showColumn", { name: t(COL_LABEL[c]) })}
+                      onClick={() => setPinnedCols(prev => prev.includes(c) ? prev : [...prev, c])}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px]",
+                        "text-[var(--color-fg-faint)] transition-colors",
+                        "hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
+                        // Lit while a drag could land here: the same two
+                        // commands a real column would run.
+                        (drag?.target?.kind === "settle" || drag?.target?.kind === "createPr")
+                          && "ring-1 ring-inset ring-[var(--color-accent-soft)]",
+                      )}
+                    >
+                      <span className="h-[5px] w-[5px] shrink-0 rounded-full bg-[var(--color-fg-faint)]" />
+                      <span className="min-w-0 truncate">{t(COL_LABEL[c])}</span>
+                      <span className="ml-auto tabular-nums opacity-60">0</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
             )}
           </div>
         </div>
