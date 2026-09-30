@@ -255,6 +255,28 @@ describe("my feature", () => {
 });
 ```
 
+### Never click something that calls `openPath`
+
+A spec may assert that a link is THERE, with the right target and state. It
+must not click it. `openPath` is the OS opener: `open` on macOS, which returns
+at once, and `xdg-open` on Linux, which on a CI runner reaches for a browser
+through the desktop portal and does not come back.
+
+The cost is not one red test. A board case that clicked the card's PR chip
+passed on macOS, and on Linux hung for the 60s mocha timeout, then hung the
+suite's after-all hook, then every spec that ran after it in that session:
+deep-link and editor both failed as timeouts with nothing wrong in them. The
+run reads as "Linux is flaky again" rather than as one bad line.
+
+No spec in this suite clicks an opener-backed link. That is a convention with
+no enforcement, so it is written here: `task-pr-badge` and `board-card-pr` are
+both asserted on and never clicked.
+
+The consequence is a real gap. A link's click guard (`stopPropagation`, so the
+row or card behind it does not also activate) is not covered by anything, and
+covering it would need a seam to stub the opener, which does not exist. Say so
+when you add one rather than quietly clicking it.
+
 ### The e2e build never takes focus (and must not)
 
 Each spec file launches its own instance, so a run launches seventeen. Under

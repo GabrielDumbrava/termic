@@ -440,21 +440,18 @@ describe("board view", () => {
       // No lookup has resolved, so it is an identity and not a state yet.
       expect(chip.state).toBe("unknown");
 
-      // Clicking the chip must not activate the task behind it: the card is
-      // itself a button, and a PR link that also navigates is a trap.
-      const activeBefore = await browser.execute(
-        () => window.__termic!.useApp.getState().activeTaskId ?? null,
-      );
-      await browser.execute((id) => {
-        (document.querySelector(
-          `[data-board-task-id="${id}"] [data-testid="board-card-pr"]`,
-        ) as HTMLElement).click();
-      }, t2);
-      const activeAfter = await browser.execute(
-        () => window.__termic!.useApp.getState().activeTaskId ?? null,
-      );
-      expect(activeAfter).toBe(activeBefore);
-      await waitVisible('[data-testid="board-view"]');
+      // NOT clicked, deliberately, and this is the one rule to keep if this
+      // case is ever extended. The chip opens the PR through `openPath`,
+      // which on Linux is `xdg-open`: on a CI runner that reaches for a
+      // browser through the desktop portal and does not come back. An earlier
+      // version of this case did click it, passed on macOS where `open`
+      // returns immediately, and on Linux hung the test, then the after-all
+      // hook, then every spec that followed in that session.
+      //
+      // No spec in this suite clicks an opener-backed link, for that reason.
+      // The chip's own guard (`stopPropagation`, so the card behind it does
+      // not also activate) is therefore NOT covered here; covering it would
+      // mean a seam to stub the opener, which does not exist yet.
       await snap("board-card-pr.png");
     });
   });
