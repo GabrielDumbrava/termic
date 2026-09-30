@@ -584,8 +584,21 @@ jobs:
           # embedded string stays correct for every future release and the
           # glob absorbs the version in the filename.
           OWNER="${GITHUB_REPOSITORY%%/*}"; REPO="${GITHUB_REPOSITORY#*/}"
+          # DERIVED from the real filename, never written out. The first cut of
+          # this hardcoded `termic_*_amd64.AppImage.zsync`, from the comment
+          # below that says Tauri lowercases productName. It does not: the
+          # asset is `Termic_<v>_amd64.AppImage`, and v1.11.2 shipped with an
+          # update string whose case did not match the file it names. A
+          # container test caught nothing because the fixture name was invented
+          # to match the assumption.
+          ZSYNC_GLOB="$(printf '%s' "$NAME" | sed -E 's/_[0-9][0-9A-Za-z.+-]*_/_*_/')".zsync
+          case "$ZSYNC_GLOB" in
+            *'*'*) ;;
+            *) echo "::error::could not derive a version glob from $NAME"; exit 1 ;;
+          esac
+          echo "update info: gh-releases-zsync|${OWNER}|${REPO}|latest|${ZSYNC_GLOB}"
           ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run -n \
-            -u "gh-releases-zsync|${OWNER}|${REPO}|latest|termic_*_amd64.AppImage.zsync" \
+            -u "gh-releases-zsync|${OWNER}|${REPO}|latest|${ZSYNC_GLOB}" \
             squashfs-root "$NAME"
           rm -rf squashfs-root
 
@@ -597,6 +610,13 @@ jobs:
             echo "::error::appimagetool -u produced no ${NAME}.zsync; update info would point at nothing"
             exit 1
           fi
+          # And the glob must actually MATCH the file being published. This is
+          # the check that would have caught the case mismatch above, and it
+          # costs nothing: the answer is knowable right here.
+          case "${NAME}.zsync" in
+            $ZSYNC_GLOB) ;;
+            *) echo "::error::update info glob '$ZSYNC_GLOB' does not match the published ${NAME}.zsync"; exit 1 ;;
+          esac
           # Best effort: confirm the section actually landed. A warning, not a
           # failure, because this is a cross-check of appimagetool's own work
           # and binutils is not something the release should depend on.
@@ -608,10 +628,9 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           npx tauri signer sign "$BUNDLE_DIR/$NAME"   # rewrites $NAME.sig
       - name: Locate AppImage
-        # Tauri lowercases productName for the AppImage filename. The
-        # exact form (`termic_<v>_amd64.AppImage`) has held across
-        # Tauri 2 releases but we glob defensively so a future rename
-        # doesn't break the upload + manifest.
+        # Globbed, never spelled out. The form is `Termic_<v>_amd64.AppImage`
+        # (productName's own case, NOT lowercased: a stale comment here said
+        # otherwise and cost v1.11.2 a mismatched zsync update string).
         id: find
         run: |
           BUNDLE_DIR=src-tauri/target/release/bundle/appimage
