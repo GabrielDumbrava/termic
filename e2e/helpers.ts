@@ -1729,27 +1729,74 @@ export async function clickMenuItemUntilReady(
   opts: { timeout?: number; reopen?: () => Promise<void> } = {},
 ): Promise<void> {
   const { timeout = 15_000, reopen } = opts;
+  // What the attempts actually did, for the failure message. This helper used
+  // to time out saying only "never produced its result", which is true of a
+  // menu that never opened, a click that was swallowed, and a result that
+  // simply took too long, and those want three different fixes. Its sibling
+  // `clickMenuItemUntil` got a DOM dump for the same reason; this is that, plus
+  // the per-attempt history only this one can collect.
+  const attempts: string[] = [];
+  let reopens = 0;
+  let reopenErr = "";
+  let clicks = 0;
   await browser.waitUntil(
     async () => {
       if (await ready()) return true;
       // Nothing to click: the menu closed under the last attempt. Put it back
       // before spending another poll on an empty document.
-      if (reopen && !(await browser.execute((t) =>
+      const present = await browser.execute((t) =>
         [...document.querySelectorAll("[role='menuitem']")].some(
           (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
-        ), text))) {
-        await reopen().catch(() => { /* a half-open menu is the next poll's problem */ });
+        ), text);
+      if (reopen && !present) {
+        reopens += 1;
+        // Still swallowed, but no longer silently: a reopen that throws every
+        // time is the difference between "the menu will not stay open" and
+        // "the click does nothing", and the message could not tell them apart.
+        await reopen().catch((e: Error) => { reopenErr = String(e?.message ?? e); });
         if (await ready()) return true;
       }
-      await browser.execute((t) => {
+      const clicked = await browser.execute((t) => {
         const el = [...document.querySelectorAll("[role='menuitem']")].find(
           (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
         );
-        if (el) (el as HTMLElement).click();
+        if (!el) return false;
+        (el as HTMLElement).click();
+        return true;
       }, text);
+      if (clicked) clicks += 1;
+      attempts.push(present ? (clicked ? "clicked" : "vanished") : "absent");
       return await ready();
     },
-    { timeout, timeoutMsg: `menu item "${text}" never produced its result` },
-  );
+    {
+      timeout,
+      timeoutMsg: `menu item "${text}" never produced its result`,
+    },
+  ).catch(async (e: Error) => {
+    // Same shape as `clickMenuItemUntil`'s dump: what is on screen NOW, plus
+    // the history of what the attempts saw, which is the part that says
+    // whether the menu was ever there to click.
+    const state = await browser.execute((t) => ({
+      menus: [...document.querySelectorAll('[role="menu"]')]
+        .map(m => `${Math.round(m.getBoundingClientRect().width)}x${Math.round(m.getBoundingClientRect().height)} state=${m.getAttribute("data-state")}`),
+      items: [...document.querySelectorAll('[role="menuitem"]')]
+        .map(e => (e as HTMLElement).innerText.trim().replace(/\s+/g, " ")).slice(0, 12),
+      wanted: [...document.querySelectorAll('[role="menuitem"]')]
+        .filter(e => e.textContent?.trim() === t)
+        .map(e => `${Math.round(e.getBoundingClientRect().width)}x${Math.round(e.getBoundingClientRect().height)}`),
+      dialogs: [...document.querySelectorAll('[role="dialog"]')]
+        .map(d => d.getAttribute("data-state") ?? "(no state)"),
+      focus: (() => {
+        const a = document.activeElement as HTMLElement | null;
+        return a ? `${a.tagName}${a.id ? `#${a.id}` : ""}` : "none";
+      })(),
+    }), text);
+    throw new Error(
+      `${e.message}\n  attempts: ${attempts.length} (${clicks} clicked, ${reopens} reopened`
+      + `${reopenErr ? `, reopen error: ${reopenErr}` : ""})`
+      + `\n  sequence: ${attempts.slice(-12).join(" ")}`
+      + `\n  DOM at timeout: ${JSON.stringify(state)}`,
+    );
+  });
 }
 
