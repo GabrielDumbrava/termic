@@ -11636,6 +11636,42 @@ async fn task_git_branches(id: String, dir_name: String) -> Result<Vec<String>, 
 /// branch is already checked out in another worktree) restores the stash and
 /// errors. A pop conflict is reported, not swallowed - the caller warns the
 /// user so they resolve it instead of silently losing the changes.
+/// Check out `branch` in a PROJECT's main checkout, before any task exists.
+///
+/// Same stash-safe dance as `task_git_checkout` (which operates on a task's
+/// dir): stash dirty work, switch, pop, and put the work back if the switch
+/// fails. Used by the New Task dialog's "from a pull request" route in
+/// main-checkout mode, where the task IS the repo's live checkout, so getting
+/// onto the PR's branch means moving the checkout everyone shares.
+#[tauri::command]
+async fn project_git_checkout(project_id: String, branch: String) -> Result<CheckoutResult, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<CheckoutResult, String> {
+        let p = load_projects_all()
+            .into_iter()
+            .find(|p| p.id == project_id)
+            .ok_or("no project")?;
+        let cwd = PathBuf::from(&p.root_path);
+        let dirty = !git(&["status", "--porcelain"], &cwd).map_err(|e| e.to_string())?.trim().is_empty();
+        let mut stashed = false;
+        if dirty {
+            git(&["stash", "push", "-u", "-m", &format!("termic: switch to {branch}")], &cwd)
+                .map_err(|e| e.to_string())?;
+            stashed = true;
+        }
+        if let Err(e) = git(&["checkout", &branch], &cwd) {
+            if stashed { let _ = git(&["stash", "pop"], &cwd); }
+            return Err(e.to_string());
+        }
+        let mut conflicted = false;
+        if stashed && git(&["stash", "pop"], &cwd).is_err() {
+            conflicted = true;
+        }
+        Ok(CheckoutResult { branch, stashed, conflicted })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn task_git_checkout(id: String, dir_name: String, branch: String) -> Result<CheckoutResult, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<CheckoutResult, String> {
@@ -24125,7 +24161,7 @@ pub fn run() {
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
             detect_forges, task_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
-            project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch,
+            project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
             task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             scratch_list, scratch_read, scratch_write, scratch_set_meta, scratch_delete,

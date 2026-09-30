@@ -906,6 +906,10 @@ export const projectForgePrs = (projectId: string, opts?: { limit?: number; numb
 
 /** Fetch a PR's head into a local branch and get its name back, so the
  *  existing check-out-a-branch worktree path can take it from there. */
+export const projectGitCheckout = (projectId: string, branch: string) =>
+  invoke<{ branch: string; stashed: boolean; conflicted: boolean }>(
+    "project_git_checkout", { projectId, branch });
+
 export const projectFetchPrBranch = (
   projectId: string, number: number, headRef: string, crossRepository: boolean,
 ) => invoke<string>("project_fetch_pr_branch", { projectId, number, headRef, crossRepository });

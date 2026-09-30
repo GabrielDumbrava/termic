@@ -14,7 +14,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { defaultCliFirst, visibleCliIds, isTerminalCli, agentDisplayName } from "@/lib/agents";
-import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches, projectBranchContext, dockerImageStatus, type DockerImageStatus, projectForgePrs, projectFetchPrBranch} from "@/lib/ipc";
+import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches, projectBranchContext, dockerImageStatus, type DockerImageStatus, projectForgePrs, projectFetchPrBranch, projectGitCheckout} from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
 import { seedPromptWhenReady, SETUP_SPAWN_DEADLINE_MS } from "@/lib/seedPrompt";
 import { MAX_PROMPT_CHARS } from "@/lib/deepLink";
@@ -853,6 +853,35 @@ export function NewTaskDialog() {
     setErr(null);
   }
 
+  /** Where this task comes from. Derived from the mode flags rather than
+   *  stored beside them: they are what the rest of the dialog reads, and a
+   *  second source of truth would be one more thing to keep in step.
+   *
+   *  Rendered as a row of sub-tabs under the task type, because these five
+   *  are one question ("where does this task come from") and they used to be
+   *  four separate buttons crowding the title line. */
+  type TaskSource = "new" | "branch" | "issue" | "pr" | "import";
+  const source: TaskSource =
+    importMode ? "import" : checkoutMode ? "branch" : issueMode ? "issue" : prMode ? "pr" : "new";
+
+  function chooseSource(next: TaskSource) {
+    if (next === source) return;
+    // Leave whatever is on before entering the next: each `enter*` already
+    // clears its siblings, but "new" has no enter of its own.
+    if (next === "new") {
+      if (importMode) { setImportMode(false); setImportSelected(null); }
+      if (checkoutMode) exitCheckout();
+      if (issueMode) exitIssues();
+      if (prMode) exitPrs();
+      setErr(null);
+      return;
+    }
+    if (next === "import") { enterImport(); return; }
+    if (next === "branch") { enterCheckout(); return; }
+    if (next === "issue") { enterIssues(); return; }
+    enterPrs();
+  }
+
   /** A pasted "123", "#123" or a full PR URL, reduced to a number. Returns 0
    *  for anything else, which the caller reports rather than guessing at. */
   function parsePrQuery(raw: string): number {
@@ -872,6 +901,25 @@ export function NewTaskDialog() {
     setErr(null);
     try {
       const branch = await projectFetchPrBranch(projectId, pr.number, pr.head_ref, pr.cross_repository);
+      if (mode === "repo_root") {
+        // Main checkout: the task IS the repo's live checkout, so getting onto
+        // the PR means moving the checkout itself. Stash-safe on the Rust side
+        // (stash, switch, pop, and put the work back if the switch fails), and
+        // said out loud afterwards, because this branch change is shared with
+        // every other main-checkout task, the editor and any dev server.
+        const res = await projectGitCheckout(projectId, branch);
+        setPrMode(false);
+        setName(n => n.trim() || `pr-${pr.number}`);
+        useUI.getState().pushToast(
+          res.conflicted
+            ? t("newTask.prCheckedOutConflict", { branch })
+            : res.stashed
+              ? t("newTask.prCheckedOutStashed", { branch })
+              : t("newTask.prCheckedOut", { branch }),
+          res.conflicted ? "error" : "info",
+        );
+        return;
+      }
       // Re-read the refs: the branch was created a moment ago, so the context
       // fetched when the dialog opened does not know it yet and the branch
       // field would flag its own fresh branch as unknown.
@@ -1238,83 +1286,9 @@ export function NewTaskDialog() {
       // whole row on every open of a dialog that usually has nothing to do
       // with issues. Labels are short because worktree mode can show two of
       // them at once; the row wraps if a title ever leaves no space.
-      titleAction={
-        <>
-          {/* Import (issue #5): adopt a worktree that already exists on disk
-              instead of branching a fresh one. Only offered when there is
-              actually something to adopt, hence the count. */}
-          {canImport && !importMode && !checkoutMode && mode === "worktree" && importList.length > 0 && (
-            <button type="button" onClick={enterImport} {...dialogTitleAction}>
-              <FolderGit2 className="h-3.5 w-3.5" />
-              {t("newTask.importAction")}
-              <span className="text-[var(--color-fg-faint)]">({importList.length})</span>
-            </button>
-          )}
-          {/* Check out a branch that already exists (a colleague's, to
-              review it) instead of cutting a new one. Worktree mode only,
-              like import: the point is a separate folder for a separate
-              agent. */}
-          {canImport && !importMode && !checkoutMode && mode === "worktree" && (
-            <button type="button" data-testid="checkout-branch-toggle" onClick={enterCheckout} {...dialogTitleAction}>
-              <GitBranch className="h-3.5 w-3.5" />
-              {t("newTask.checkoutToggle")}
-            </button>
-          )}
-          {checkoutMode && (
-            <button type="button" data-testid="checkout-branch-exit" onClick={exitCheckout} {...dialogTitleAction}>
-              <Plus className="h-3.5 w-3.5" />
-              {t("newTask.checkoutExit")}
-            </button>
-          )}
-          {/* Start from an issue. Only for repos actually hosted on a forge
-              (the #21/#22 tooling is CLI-backed, so it is real only where
-              gh/glab can reach). Doubles as the discovery point for the CLIs:
-              a GitHub repo whose owner has never installed gh still sees the
-              entry and learns what it would buy them. */}
-          {canIssues && forgeProvider && !issueMode && !importMode && !checkoutMode && (
-            <button type="button" onClick={enterIssues} {...dialogTitleAction}>
-              <CircleDot className="h-3.5 w-3.5" />
-              {t("newTask.fromIssue", { forge: forgeProvider === "gitlab" ? "GitLab" : "GitHub" })}
-              {!forgeCliReady && (
-                <span className="text-[var(--color-fg-faint)]">{t("newTask.needsCli", { cli: forgeCli })}</span>
-              )}
-            </button>
-          )}
-          {/* Only in worktree mode: a PR becomes a branch, and a branch becomes
-              a worktree. In main-checkout mode there is nowhere to put it. */}
-          {canIssues && forgeProvider && mode === "worktree" && !prMode && !issueMode && !importMode && !checkoutMode && (
-            <button type="button" data-testid="from-pr-toggle" onClick={enterPrs} {...dialogTitleAction}>
-              <GitPullRequest className="h-3.5 w-3.5" />
-              {t("newTask.fromPr", { forge: forgeProvider === "gitlab" ? "GitLab" : "GitHub" })}
-              {!forgeCliReady && (
-                <span className="text-[var(--color-fg-faint)]">{t("newTask.needsCli", { cli: forgeCli })}</span>
-              )}
-            </button>
-          )}
-          {prMode && (
-            <button type="button" data-testid="from-pr-exit" onClick={exitPrs} {...dialogTitleAction}>
-              <Plus className="h-3.5 w-3.5" />
-              {t("newTask.prExit")}
-            </button>
-          )}
-          {canIssues && issueMode && (
-            <button type="button" onClick={exitIssues} {...dialogTitleAction}>
-              <Plus className="h-3.5 w-3.5" />
-              {t("newTask.blankInstead")}
-            </button>
-          )}
-          {canImport && importMode && (
-            <button
-              type="button"
-              onClick={() => { setImportMode(false); setImportSelected(null); setResumeOverride(""); setResumeOpen(false); setErr(null); }}
-              {...dialogTitleAction}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t("newTask.newWorktreeInstead")}
-            </button>
-          )}
-        </>
-      }
+      // The "where does this task come from" choices moved OUT of the title
+      // line and into sub-tabs under Task type: four of them crowded the header
+      // and read as unrelated chrome when they are one question.
       // Widen the dialog to fit what's inside. Base width per mode (xl 36rem /
       // 2xl 42rem / 3xl 48rem) sizes the single-column form. Each extra column
       // (sandbox config, issue picker) is equal (flex-1) plus a 2rem (ml-8)
@@ -1422,6 +1396,87 @@ export function NewTaskDialog() {
             (and, for multi, the per-member list: every member runs live) and
             creates in the repo's live checkout. Non-git projects can't
             worktree, so the Worktree button is disabled there. */}
+        {/* Two levels, top to bottom: WHAT kind of task, then WHERE it comes
+            from. They were a segmented control plus four buttons in the title
+            line, which read as five unrelated switches; as tabs and sub-tabs
+            the second row is plainly a consequence of the first. Both rows
+            always render (never conditionally hidden) so the dialog does not
+            change shape as you move through it. */}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-1 border-b border-[var(--color-border)]">
+            {([
+              ["repo_root", "task-type-main", t("newTask.mainCheckout"), Link2],
+              ["worktree", "task-type-worktree", t("newTask.worktree"), GitBranch],
+            ] as const).map(([m, testid, label, Icon]) => {
+              const on = mode === m;
+              // Main checkout is not offered for the two sources that ARE a
+              // worktree: adopting an existing worktree, and checking a branch
+              // into one. The tab stays visible and disabled rather than
+              // disappearing, so the row does not reflow under you and the
+              // answer to "why can I not pick that" is on screen.
+              const worktreeOnlySource = source === "branch" || source === "import";
+              const disabled = m === "worktree"
+                ? !canWorktree
+                : worktreeOnlySource;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  data-testid={testid}
+                  disabled={disabled}
+                  title={disabled && m === "repo_root" ? t("newTask.mainCheckoutNotForSource") : undefined}
+                  onClick={() => chooseMode(m)}
+                  className={cn(
+                    "-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-[12.5px] transition-colors",
+                    on
+                      ? "border-[var(--color-accent)] text-[var(--color-fg)]"
+                      : "border-transparent text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                    disabled && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" /> {label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Sources. Which ones exist depends on the row above: importing a
+              worktree and checking a branch into one need a worktree to put it
+              in, while an issue or a PR seeds either kind. */}
+          <div className="flex flex-wrap items-center gap-1">
+            {([
+              ["new", "checkout-branch-exit", t("newTask.sourceNew"), true],
+              ["branch", "checkout-branch-toggle", t("newTask.sourceBranch"), mode === "worktree" && canImport],
+              ["import", "source-import", t("newTask.sourceImport", { count: importList.length }),
+                mode === "worktree" && canImport && importList.length > 0],
+              ["issue", "source-issue", t("newTask.sourceIssue"), canIssues && !!forgeProvider],
+              ["pr", "from-pr-toggle", t("newTask.sourcePr"), canIssues && !!forgeProvider],
+            ] as const).map(([sv, testid, label, shown]) => shown ? (
+              <button
+                key={sv}
+                type="button"
+                data-testid={testid}
+                data-source-tab={sv}
+                aria-pressed={source === sv}
+                onClick={() => chooseSource(sv as TaskSource)}
+                className={cn(
+                  "rounded-md px-2 py-1 text-[12px] transition-colors",
+                  source === sv
+                    ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                    : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                )}
+              >
+                {label}
+              </button>
+            ) : null)}
+            {(source === "issue" || source === "pr") && !forgeCliReady && (
+              <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+                {t("newTask.needsCli", { cli: forgeCli })}
+              </span>
+            )}
+          </div>
+        </div>
+
         {!importMode && !checkoutMode && (
           <div className="flex flex-col gap-1.5">
             {/* Label + toggle share one row (not label-above-control like

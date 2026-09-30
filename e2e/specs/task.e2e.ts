@@ -1670,8 +1670,11 @@ describe("check out an existing branch", () => {
         const labels = [...(dlg?.querySelectorAll("label") ?? [])].map((l) => l.textContent?.trim());
         return {
           labels,
-          taskTypeToggle: [...(dlg?.querySelectorAll("button") ?? [])].some(
-            (b) => b.textContent?.trim() === "Main checkout",
+          // The Main checkout tab, and whether it can be chosen. It used to
+          // disappear in this mode; it now stays and is DISABLED, so the row
+          // does not reflow and the reason is on screen.
+          mainCheckoutOffered: [...(dlg?.querySelectorAll("button") ?? [])].some(
+            (b) => b.textContent?.trim() === "Main checkout" && !(b as HTMLButtonElement).disabled,
           ),
         };
       });
@@ -1680,8 +1683,8 @@ describe("check out an existing branch", () => {
     expect(inMode.labels).toContain("Branch");
     expect(inMode.labels).toContain("Compare against");
     expect(inMode.labels).not.toContain("Branch name");
-    // The answer is always a worktree, so the task-type toggle goes.
-    expect(inMode.taskTypeToggle).toBe(false);
+    // The answer is always a worktree, so Main checkout cannot be picked.
+    expect(inMode.mainCheckoutOffered).toBe(false);
     await snap("checkout-branch-mode.png");
 
     await clickWhenVisible('[data-testid="checkout-branch-exit"]');
@@ -1690,7 +1693,7 @@ describe("check out an existing branch", () => {
     expect(back.labels).toContain("Branch name");
     expect(back.labels).toContain("Branch from");
     expect(back.labels).not.toContain("Compare against");
-    expect(back.taskTypeToggle).toBe(true);
+    expect(back.mainCheckoutOffered).toBe(true);
     await clickDialogButton("Cancel");
     await waitGone('[data-testid="new-task-name"]', 5_000);
   });

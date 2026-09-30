@@ -357,6 +357,20 @@ export async function clickMenuItem(text: string): Promise<void> {
  * item is gone because the menu closed, this stops clicking, so a landed
  * click is never repeated into a second task.
  */
+/** Why every menu lookup below is scoped to the OPEN menu.
+ *
+ *  Unscoped `[role='menuitem']` is a bug, and a subtle one. The tab strip's "+"
+ *  menu and the sidebar row's New submenu offer the SAME entries ("Terminal",
+ *  "FakeAgent", ...), so with a stale menu still in the DOM the helper could
+ *  click the sidebar's Terminal, which adds a tab to a DIFFERENT task. The
+ *  spec's own task then never reaches its expected count, the retry loop clicks
+ *  again, and the reported shape is "31 attempts, 31 clicked, nothing
+ *  happened", which reads like a dead click rather than a click that worked
+ *  somewhere else. Radix leaves a closing menu mounted while its animation
+ *  finishes, and on an occluded window that animation never finishes, so the
+ *  stale menu can sit there indefinitely.
+ *
+ */
 export async function clickMenuItemUntil(
   text: string,
   doneSelector: string,
@@ -401,14 +415,19 @@ export async function clickMenuItemUntil(
               const r = done.getBoundingClientRect();
               if (r.width > 0 && r.height > 0) return true;
             }
-            const el = [...document.querySelectorAll("[role='menuitem']")].find(
+            const el = (() => {
+              const open = [...document.querySelectorAll('[role="menu"]')]
+                .filter(m => m.getAttribute("data-state") !== "closed");
+              const scope: (Document | Element)[] = open.length ? [open[open.length - 1]] : [document];
+              return scope.flatMap(sc => [...sc.querySelectorAll<HTMLElement>("[role='menuitem']")]);
+            })().find(
               (e) =>
                 e.textContent?.trim() === t &&
                 e.getBoundingClientRect().width > 0,
             );
             // No item and no result yet: the menu is mid-remount, or the click
             // landed and its result has not painted. Either way, wait.
-            if (el) (el as HTMLElement).click();
+            if (el) el.click();
             return false;
           },
           text,
@@ -1745,7 +1764,12 @@ export async function clickMenuItemUntilReady(
       // Nothing to click: the menu closed under the last attempt. Put it back
       // before spending another poll on an empty document.
       const present = await browser.execute((t) =>
-        [...document.querySelectorAll("[role='menuitem']")].some(
+        (() => {
+              const open = [...document.querySelectorAll('[role="menu"]')]
+                .filter(m => m.getAttribute("data-state") !== "closed");
+              const scope: (Document | Element)[] = open.length ? [open[open.length - 1]] : [document];
+              return scope.flatMap(sc => [...sc.querySelectorAll<HTMLElement>("[role='menuitem']")]);
+            })().some(
           (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
         ), text);
       if (reopen && !present) {
@@ -1757,11 +1781,16 @@ export async function clickMenuItemUntilReady(
         if (await ready()) return true;
       }
       const clicked = await browser.execute((t) => {
-        const el = [...document.querySelectorAll("[role='menuitem']")].find(
+        const el = (() => {
+              const open = [...document.querySelectorAll('[role="menu"]')]
+                .filter(m => m.getAttribute("data-state") !== "closed");
+              const scope: (Document | Element)[] = open.length ? [open[open.length - 1]] : [document];
+              return scope.flatMap(sc => [...sc.querySelectorAll<HTMLElement>("[role='menuitem']")]);
+            })().find(
           (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
         );
         if (!el) return false;
-        (el as HTMLElement).click();
+        el.click();
         return true;
       }, text);
       if (clicked) clicks += 1;
