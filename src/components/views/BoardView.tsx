@@ -30,17 +30,19 @@
 // (nothing to clear, main checkout): the matrix lives in
 // boardDropCommand() in src/lib/taskBoardState.ts.
 
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Archive, Check, GitPullRequest, X, Zap } from "lucide-react";
+import { Archive, Check, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, X, Zap } from "lucide-react";
 import { EMPTY_TABS, selectTaskTabs, useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
+import { useDiffStat } from "@/store/diffStat";
+import { prBadgeAppearance } from "@/lib/prBadgeAppearance";
+import { openPath } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
-import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { DockerSandboxIcon, SandboxIcon, sandboxModeText } from "@/components/SandboxIcon";
 import { taskLabel } from "@/lib/taskLabel";
 import { taskWorkBadge, type WorkStatePrefs } from "@/lib/taskWorkState";
@@ -65,7 +67,7 @@ import { confirmAndArchive } from "@/lib/archiveTask";
 import { taskReorder } from "@/lib/ipc";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import type { Agent, Project, Tab, Task, TerminalTab } from "@/lib/types";
+import type { Agent, Project, Tab, Task, TaskDiffStat, TerminalTab } from "@/lib/types";
 import type { TFunction } from "i18next";
 
 /** Everything a card needs that is the SAME for every card, hoisted so N
@@ -948,13 +950,110 @@ const BoardCard = memo(function BoardCard({ task: w, ctx, column, lane, isDragSo
         <span className="flex shrink-0 items-center gap-1.5">
           <TaskLocationIcon isMainCheckout={w.is_main_checkout} />
           <TaskSandboxBadge task={w} tabs={tabs} t={t} />
-          <TaskPrBadge task={w} />
           {badge && <TaskWorkBadge reason={badge} />}
         </span>
       </div>
+      {/* Third row: what this task has actually produced, and where it is up
+          to on the forge. The board has the width a sidebar row does not, and
+          these are the two questions you open a task to answer. It renders
+          only when there is something to say, so a just-created task keeps
+          the two-row card it had. */}
+      <BoardCardFooter task={w} />
     </div>
   );
 });
+
+/** PR identity + change summary, the row that uses the board's extra width.
+ *
+ *  The PR is the full chip here rather than the sidebar's bare glyph: with
+ *  room for the number, its state and its checks, the card answers "is this
+ *  reviewable yet" without opening anything, and the whole chip is the link.
+ *
+ *  Colour comes from prBadgeAppearance, the same tested rule the sidebar
+ *  uses, so the board cannot drift into its own palette. */
+const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task }) {
+  const { t } = useTranslation("chrome");
+  // Per-card subscriptions, deliberately: BoardView's own pr subscription
+  // folds only `state` into its key, and widening that would re-render every
+  // column whenever any task's check count moved.
+  const pr = usePr(s => s.byTask[w.id]?.lookup?.pr ?? null);
+  const stat = useDiffStat(s => s.byTask[w.id]?.stat ?? null);
+  const request = useDiffStat(s => s.request);
+
+  // Ask for a measurement when this card mounts, and again whenever the card
+  // re-renders past the staleness floor. `request` is a no-op on a fresh
+  // answer, so this is not a poll: a board nobody has open measures nothing.
+  useEffect(() => { request(w.id); });
+
+  const url = pr?.url ?? w.pr_url ?? "";
+  const num = pr?.number ?? w.pr_number ?? 0;
+  const changed = (stat?.files_changed ?? 0) > 0;
+  if (!url && !changed) return null;
+
+  const { color } = prBadgeAppearance(pr?.state ?? null, pr?.checks ?? null);
+  const noun = pr?.provider === "gitlab" ? "MR" : "PR";
+  const id = num ? `${noun === "MR" ? "!" : "#"}${num}` : noun;
+  const forge = noun === "MR" ? "GitLab" : "GitHub";
+  const PrIcon =
+    pr?.state === "merged" ? GitMerge
+    : pr?.state === "closed" ? GitPullRequestClosed
+    : pr?.state === "draft" ? GitPullRequestDraft
+    : GitPullRequest;
+  const checkNote =
+    pr?.checks === "failing" ? t("board.prChecksFailing")
+    : pr?.checks === "pending" ? t("board.prChecksPending")
+    : "";
+
+  return (
+    <div className="flex items-center gap-2">
+      {url && (
+        <button
+          type="button"
+          data-no-drag
+          data-testid="board-card-pr"
+          data-pr-state={pr?.state ?? "unknown"}
+          title={t("board.prOpenOn", { id, forge })}
+          // stopPropagation, or the click also activates the task behind it.
+          onClick={e => { e.stopPropagation(); openPath(url).catch(() => {}); }}
+          onPointerDown={e => e.stopPropagation()}
+          className="flex min-w-0 shrink-0 items-center gap-1 rounded px-1 py-px text-[10.5px] hover:bg-[var(--color-bg-3)]"
+          style={{ color }}
+        >
+          <PrIcon className="h-3 w-3 shrink-0" />
+          <span className="tabular-nums">{id}</span>
+          {checkNote && <span className="truncate">· {checkNote}</span>}
+        </button>
+      )}
+      {changed && <BoardChurn task={w} stat={stat!} />}
+    </div>
+  );
+});
+
+/** `+N -M · k files`, in the same tokens the compare view uses. */
+function BoardChurn({ task: w, stat }: { task: Task; stat: TaskDiffStat }) {
+  const { t } = useTranslation("chrome");
+  const files = t("board.churnFiles", { count: stat.files_changed });
+  const tip = [
+    t("board.churnTip", {
+      added: stat.insertions, removed: stat.deletions, files,
+      base: w.base_branch || "the base",
+    }),
+    // Said out loud rather than hidden: those lines are counted by reading
+    // the files, so a binary or an oversized one contributes none.
+    stat.untracked > 0 ? t("board.churnTipUntracked", { count: stat.untracked }) : "",
+  ].filter(Boolean).join(". ");
+  return (
+    <span
+      data-testid="board-card-churn"
+      title={tip}
+      className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums text-[10.5px]"
+    >
+      {stat.insertions > 0 && <span style={{ color: "var(--color-ok)" }}>+{stat.insertions}</span>}
+      {stat.deletions > 0 && <span style={{ color: "var(--color-err)" }}>-{stat.deletions}</span>}
+      <span className="text-[var(--color-fg-faint)]">{files}</span>
+    </span>
+  );
+}
 
 /** The card's cage badge, the sidebar's precedence verbatim (Docker first -
  *  Docker tasks store `sandbox_mode: "off"` because the cages are mutually

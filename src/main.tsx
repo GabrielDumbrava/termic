@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -57,6 +57,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/store/scriptRuns"),
         import("@/store/prompts"),
         import("@/lib/agentRace"),
+        import("@/store/diffStat"),
         import("@/lib/issuePrompt"),
         import("@/lib/seedPrompt"),
         import("@/lib/agentSignalLog"),
@@ -83,6 +84,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       usePrefs: prefs.usePrefs,
       useRace: race.useRace,
       usePr: pr.usePr,
+      useDiffStat: diffStat.useDiffStat,
       // One pass of the BACKGROUND status poller (GH #281). Exposed because
       // its real cadence is minutes and the badge it drives lives on rows
       // whose PR card is not mounted - there is nothing on screen to click

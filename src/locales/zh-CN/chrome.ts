@@ -235,6 +235,13 @@ export default {
     unknownProject: "未知项目",
     showColumn: "始终显示{{name}}",
     hideColumn: "不再始终显示{{name}}",
+    churnFiles_one: "{{count}} 个文件",
+    churnFiles_other: "{{count}} 个文件",
+    churnTip: "相对 {{base}}：+{{added}} / -{{removed}}，共 {{files}}",
+    churnTipUntracked: "其中 {{count}} 个是新文件（行数为估算）",
+    prOpenOn: "在 {{forge}} 上打开 {{id}}",
+    prChecksFailing: "检查失败",
+    prChecksPending: "检查进行中",
   },
   activity: {
     windowTitle: "活动",

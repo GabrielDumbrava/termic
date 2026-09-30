@@ -1563,6 +1563,18 @@ export interface TaskDiffSummary {
   untracked: number;
 }
 
+/** `task_diff_stat`: the numbers from a task's diff, without the diff. Cheap
+ *  enough to poll for every card on the board (two git processes per repo).
+ *  `insertions` folds in an ESTIMATE for untracked files: newlines counted by
+ *  reading them, with binaries and anything over 2MB skipped. `files_changed`
+ *  and `untracked` are exact. */
+export interface TaskDiffStat {
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  untracked: number;
+}
+
 export interface EditTab extends BaseTab {
   type: "edit";
   path: string;

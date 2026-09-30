@@ -335,6 +335,38 @@ card from another project reads at a glance when one appears). The Archived
 column is agent-agnostic, read-only apart from being the drop-to-archive
 target, and links to History in its footer.
 
+### A card's third row: what it produced, and where the PR is
+
+Two rows carry identity (agent, name, branch, age, cage). The third answers
+the two questions you would otherwise open the task for, and renders only when
+it has an answer, so a new task keeps the two-row card it had.
+
+**PR chip** (`data-testid="board-card-pr"`). The number, the state glyph and
+the checks, all one link, opened with `openPath`. The board has width a
+sidebar row does not, so this is the full chip rather than the sidebar's bare
+glyph: `#42 - checks failing` says whether a task is reviewable without
+opening anything. Colour comes from `prBadgeAppearance`, the same tested rule
+the sidebar uses, so the board cannot drift into a second palette.
+
+The chip stops the click from reaching the card. The card is itself a button,
+and a link that also navigates somewhere else is a trap.
+
+**Churn** (`data-testid="board-card-churn"`): `+N -M - k files`, right
+aligned, `--color-ok` / `--color-err`, the same tokens the compare view uses.
+A zero side is omitted rather than printed, because "+0 -0 0 files" on every
+untouched task is noise.
+
+The numbers come from `task_diff_stat`, a lean sibling of `task_diff` (see
+[ipc.md](ipc.md)) behind `src/store/diffStat.ts`. That store is NOT a poller.
+A PR changes because someone elsewhere clicked something, so it has to be
+polled to be discovered; a diff changes because an agent on this machine wrote
+a file, and measuring costs two git processes per repo. So it is demand
+driven with a 20s floor and a per-flush cap: the board measures what it is
+about to draw, a card nobody is looking at is never measured, and a board
+nobody has open costs nothing. It lives outside `useApp` for the reason
+`pr.ts` does, since writing a number into the app store on a timer would
+re-run every mounted task's selectors.
+
 **The columns are derived, never stored** (`src/lib/taskBoardState.ts`, the
 third consumer of `taskWorkState.ts` after the sidebar and the dashboard):
 archived overrides everything, then attention, then working, then a persisted

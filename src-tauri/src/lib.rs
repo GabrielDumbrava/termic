@@ -10963,6 +10963,118 @@ pub(crate) fn task_diff_inner(id: String) -> Result<TaskDiffSummary, String> {
     Ok(TaskDiffSummary { commits, diff, files_changed, insertions, deletions, untracked })
 }
 
+/// The numbers from a task's diff, without the diff.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct TaskDiffStat {
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+    /// New files, counted separately because their line counts are estimated
+    /// (see `count_untracked`), not measured by git.
+    pub untracked: usize,
+}
+
+/// A task's change summary, cheap enough to run for every card on the board.
+///
+/// `task_diff` already computes these numbers, but it also carries the entire
+/// unified diff and spawns one `git diff --no-index` PER untracked file. For
+/// the compare view, opened deliberately for one task, that is the right
+/// trade. For a board that polls every visible task it is not: a task with
+/// forty new files would be forty processes, times every card, on a timer.
+///
+/// So this runs exactly two git processes per repo and reads untracked files
+/// directly instead of shelling out for each one.
+#[tauri::command]
+async fn task_diff_stat(id: String) -> Result<TaskDiffStat, String> {
+    tauri::async_runtime::spawn_blocking(move || task_diff_stat_inner(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Lines added by new files, counted by READING them rather than by asking
+/// git to render each one as a diff.
+///
+/// Deliberately approximate, and the reason is worth stating: this counts
+/// newlines, so a file with no trailing newline is one short, and a binary
+/// file has no meaningful line count at all. Binaries are skipped (a NUL in
+/// the first 8KB is the same test git uses to decide a file is binary) and so
+/// is anything over the cap, because a card showing "+3,000,000" from one
+/// vendored bundle tells you less than showing nothing.
+///
+/// The file count is exact either way; only the line count is an estimate.
+fn count_untracked(wt: &Path) -> (usize, usize) {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let list = git(&["ls-files", "--others", "--exclude-standard", "-z"], wt).unwrap_or_default();
+    let mut files = 0usize;
+    let mut lines = 0usize;
+    for rel in list.split('\0').filter(|s| !s.is_empty()) {
+        files += 1;
+        let path = wt.join(rel);
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() || meta.len() > MAX_BYTES { continue; }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let head = &bytes[..bytes.len().min(8192)];
+        if head.contains(&0) { continue; }   // binary, same probe git uses
+        lines += bytes.iter().filter(|b| **b == b'\n').count();
+    }
+    (files, lines)
+}
+
+/// Sum one repo's `git diff --numstat <base>` into the running totals.
+fn numstat_into(wt: &Path, base_branch: &str, out: &mut TaskDiffStat) {
+    // Same merge-base resolution as task_diff: diffing from the base's TIP
+    // degrades the moment the base advances (issue #22).
+    let Some(base) = diff_base_ref(wt, base_branch).map(|resolved| {
+        git(&["merge-base", &resolved, "HEAD"], wt)
+            .ok()
+            .map(|mb| mb.trim().to_string())
+            .filter(|mb| !mb.is_empty())
+            .unwrap_or(resolved)
+    }) else { return };
+    // Working tree against the base, not HEAD against it: an agent usually
+    // leaves its work uncommitted, and base..HEAD would report nothing.
+    let Ok(numstat) = git(&["--no-pager", "diff", "--numstat", &base], wt) else { return };
+    for line in numstat.lines().filter(|l| !l.trim().is_empty()) {
+        let mut cols = line.split('\t');
+        // Binary files emit `-\t-`, which parse to 0 and still count as a file.
+        out.insertions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+        out.deletions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+        out.files_changed += 1;
+    }
+}
+
+pub(crate) fn task_diff_stat_inner(id: String) -> Result<TaskDiffStat, String> {
+    let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    let mut out = TaskDiffStat::default();
+
+    let host = PathBuf::from(&w.path);
+    if host.exists() {
+        numstat_into(&host, &w.base_branch, &mut out);
+        let (files, lines) = count_untracked(&host);
+        out.untracked += files;
+        out.files_changed += files;
+        out.insertions += lines;
+    }
+
+    // Multi-repo: every member the TASK created. A RepoRoot member is the
+    // project's live checkout, shared with every other task and with whatever
+    // the user is doing by hand, so its changes are not this task's work and
+    // counting them would attribute a colleague's uncommitted edit to an
+    // agent. Worktree members are this task's alone.
+    for m in &w.composition {
+        if !matches!(m.mode, MemberMode::Worktree) { continue; }
+        let p = PathBuf::from(&m.path);
+        if !p.exists() { continue; }
+        numstat_into(&p, &m.branch, &mut out);
+        let (files, lines) = count_untracked(&p);
+        out.untracked += files;
+        out.files_changed += files;
+        out.insertions += lines;
+    }
+
+    Ok(out)
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct SendDiffResult {
     pub tracked_files: usize,
@@ -24157,7 +24269,7 @@ pub fn run() {
             task_set_right_tabs, task_set_right_tab_session_id,
             task_grep_start, task_grep_cancel, task_find_backend,
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
-            task_diff, task_files, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
+            task_diff, task_diff_stat, task_files, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
             detect_forges, task_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
@@ -24544,6 +24656,69 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
 
 #[cfg(test)]
 mod tests {
+
+    // ───────── the board's cheap change summary (task_diff_stat) ─────────
+    //
+    // The line count for UNTRACKED files is the only estimate in that
+    // command, and the only part with a rule worth pinning: git is not asked,
+    // the files are read. These cover what that buys and what it costs.
+
+    #[test]
+    fn untracked_lines_are_counted_by_reading_the_files() {
+        let dir = std::env::temp_dir().join(format!("termic-churn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A git repo, because count_untracked asks git which files are new.
+        assert!(super::git(&["init", "-q"], &dir).is_ok());
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "only\n").unwrap();
+
+        let (files, lines) = super::count_untracked(&dir);
+        assert_eq!(files, 2, "both new files counted");
+        assert_eq!(lines, 4, "3 + 1 newlines");
+
+        // .gitignore is honoured: an ignored file is not this task's work.
+        std::fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(dir.join("ignored.txt"), "x\ny\n").unwrap();
+        let (files, _) = super::count_untracked(&dir);
+        assert_eq!(files, 3, "a.txt, b.txt and .gitignore itself, never ignored.txt");
+
+        // A binary contributes a FILE but no lines: counting newlines in a
+        // PNG is a number that means nothing, and it would dominate the card.
+        std::fs::write(dir.join("c.bin"), [0x89, 0x50, 0x00, 0x0a, 0x0a, 0x0a]).unwrap();
+        let (files, lines_with_bin) = super::count_untracked(&dir);
+        assert_eq!(files, 4);
+        assert_eq!(lines_with_bin, 4 + 1, "only .gitignore's line was added, not the binary's");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_without_a_trailing_newline_is_counted_short() {
+        // Stated as a test rather than left as a surprise: this counts
+        // newlines, so the last unterminated line is not counted. That is the
+        // accepted cost of not spawning a git process per file.
+        let dir = std::env::temp_dir().join(format!("termic-churn-nl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(super::git(&["init", "-q"], &dir).is_ok());
+        std::fs::write(dir.join("a.txt"), "no trailing newline").unwrap();
+        let (files, lines) = super::count_untracked(&dir);
+        assert_eq!(files, 1);
+        assert_eq!(lines, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_with_no_repo_reports_nothing_rather_than_failing() {
+        let dir = std::env::temp_dir().join(format!("termic-churn-norepo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        let (files, lines) = super::count_untracked(&dir);
+        assert_eq!((files, lines), (0, 0), "no repo means no answer, not a panic");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn restored_window_must_fit_entirely_on_monitor() {

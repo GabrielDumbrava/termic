@@ -235,6 +235,13 @@ export default {
     unknownProject: "Unknown project",
     showColumn: "Always show {{name}}",
     hideColumn: "Stop always showing {{name}}",
+    churnFiles_one: "{{count}} file",
+    churnFiles_other: "{{count}} files",
+    churnTip: "+{{added}} / -{{removed}} across {{files}}, against {{base}}",
+    churnTipUntracked: "{{count}} of them new (line counts estimated)",
+    prOpenOn: "Open {{id}} on {{forge}}",
+    prChecksFailing: "checks failing",
+    prChecksPending: "checks running",
   },
   activity: {
     windowTitle: "Activity",

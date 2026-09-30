@@ -9,6 +9,9 @@
 // racing the fake agent's sub-second busy window here would be the flaky
 // version of the same assertion.
 
+import { execSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   archiveTask,
   clickByText,
@@ -365,6 +368,95 @@ describe("board view", () => {
       (document.querySelector(`[data-board-hide-column="${col}"]`) as HTMLElement).click();
     }, pin);
     await waitVisible(`[data-board-hidden-column="${pin}"]`);
+  });
+
+  // The card's third row: what the task produced, and where it is on the
+  // forge. Both were invisible on the board before, which meant deciding
+  // whether a task was worth opening required opening it.
+  describe("the card's change summary and PR chip", () => {
+    it("shows the churn once the task's worktree actually has changes", async () => {
+      await clickByText("Kanban");
+      await waitVisible('[data-testid="board-view"]');
+      // No changes yet, so no churn: the row is absent rather than showing
+      // zeros. A card that says "+0 -0 0 files" is noise on every new task.
+      await waitVisible(CARD(t4));
+      const before = await browser.execute(
+        (id) => !!document.querySelector(`[data-board-task-id="${id}"] [data-testid="board-card-churn"]`),
+        t4,
+      );
+      expect(before).toBe(false);
+
+      // A real file in the real worktree, so this exercises the git path
+      // rather than a store write. Three lines, one new file.
+      const path = await browser.execute(
+        (id) => window.__termic!.useApp.getState().tasks.find((w: any) => w.id === id)?.path ?? "",
+        t4,
+      ) as string;
+      expect(path).toBeTruthy();
+      writeFileSync(join(path, "churn-probe.txt"), "one\ntwo\nthree\n");
+
+      try {
+        // The measurement is demand-driven with a staleness floor, so drop
+        // this task's entry and let the card ask again on its next render.
+        await browser.execute((id) => {
+          window.__termic!.useDiffStat.getState().invalidate(id);
+        }, t4);
+        await waitVisible(`${CARD(t4)} [data-testid="board-card-churn"]`);
+        const text = await browser.execute(
+          (id) => document.querySelector(
+            `[data-board-task-id="${id}"] [data-testid="board-card-churn"]`,
+          )?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+          t4,
+        );
+        // +3 from the new file's three lines, and one file. The deletions
+        // span is omitted entirely at zero rather than printed as "-0".
+        expect(text).toContain("+3");
+        expect(text).toContain("1 file");
+        expect(text).not.toContain("-0");
+        await snap("board-card-churn.png");
+      } finally {
+        execSync(`rm -f "${join(path, "churn-probe.txt")}"`);
+      }
+    });
+
+    it("renders a PR chip that carries the state, and never opens the task", async () => {
+      // The store is the seam here on purpose: a real PR would need a forge.
+      // What is under test is the card, not the lookup.
+      await browser.execute((id) => {
+        window.__termic!.useApp.setState((s: any) => ({
+          tasks: s.tasks.map((w: any) => w.id === id
+            ? { ...w, pr_url: "https://github.com/acme/repo/pull/42", pr_number: 42, pr_provider: "github" }
+            : w),
+        }));
+      }, t2);
+      await waitVisible(`${CARD(t2)} [data-testid="board-card-pr"]`);
+      const chip = await browser.execute((id) => {
+        const el = document.querySelector(
+          `[data-board-task-id="${id}"] [data-testid="board-card-pr"]`,
+        ) as HTMLElement | null;
+        return { text: el?.textContent?.trim() ?? "", state: el?.dataset.prState ?? "" };
+      }, t2);
+      expect(chip.text).toContain("#42");
+      // No lookup has resolved, so it is an identity and not a state yet.
+      expect(chip.state).toBe("unknown");
+
+      // Clicking the chip must not activate the task behind it: the card is
+      // itself a button, and a PR link that also navigates is a trap.
+      const activeBefore = await browser.execute(
+        () => window.__termic!.useApp.getState().activeTaskId ?? null,
+      );
+      await browser.execute((id) => {
+        (document.querySelector(
+          `[data-board-task-id="${id}"] [data-testid="board-card-pr"]`,
+        ) as HTMLElement).click();
+      }, t2);
+      const activeAfter = await browser.execute(
+        () => window.__termic!.useApp.getState().activeTaskId ?? null,
+      );
+      expect(activeAfter).toBe(activeBefore);
+      await waitVisible('[data-testid="board-view"]');
+      await snap("board-card-pr.png");
+    });
   });
 
   // A pin is a SETTING. It was this view's state first, so leaving Kanban and

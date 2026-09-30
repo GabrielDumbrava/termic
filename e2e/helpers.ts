@@ -72,6 +72,10 @@ export interface TermicApi {
   /** PR/MR store (src/store/pr.ts). Specs seed `byTask` directly to render
    *  card states without a real forge/network. */
   usePr: { getState: () => any; setState: (p: any) => void };
+  /** Per-task change summaries (src/store/diffStat.ts). Demand-driven with a
+   *  staleness floor, so a spec that changes a worktree calls `invalidate`
+   *  rather than waiting the floor out. */
+  useDiffStat: { getState: () => any; setState: (p: any) => void };
   /** One pass of the background PR status poller (GH #281): the real one
    *  ticks on a multi-minute cadence and has no on-screen trigger. */
   prStatusPassNow: () => Promise<void>;
