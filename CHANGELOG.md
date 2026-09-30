@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.11.1] - 2026-09-30
+## [1.11.2] - 2026-09-30
 
 A kanban board over every task, and multi-repo tasks pick their own members.
 
@@ -98,6 +98,10 @@ A kanban board over every task, and multi-repo tasks pick their own members.
 - **The YOLO checkbox named something no agent shows you.** It now uses the
   agent's own word for the mode it turns on (bypass permissions for claude,
   full access for codex), with the exact flag on hover.
+- **Dismissing the update card left "Check for updates" with nothing to
+  show.** The check reported an update in a toast and then displayed no card
+  and no pill, because both hide the version you dismissed. Asking for a check
+  now brings it back.
 
 ## [1.10.0] - 2026-09-28
 

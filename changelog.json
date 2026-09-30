@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "1.11.1",
+      "version": "1.11.2",
       "date": "2026-09-30",
       "summary": "A kanban board over every task, and multi-repo tasks pick their own members."
     },
