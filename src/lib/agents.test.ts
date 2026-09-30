@@ -327,6 +327,26 @@ describe("decideResume", () => {
     expect(d({ isAgent: false }).kind).toBe("fresh");
   });
 
+  // Reported: a second Codex tab in a task made resumes land on the wrong
+  // conversation. `resume --last` / `--continue` mean "the newest session in
+  // this cwd", which identifies a conversation only while the cwd holds one.
+  // Measured on codex 0.154.0: from a directory with seven sessions, `codex
+  // exec resume --last` took the newest of the seven (and ignored a newer one
+  // from another cwd, so the cwd filter itself is real).
+  it("will not cwd-resume once a second tab runs the same cli", () => {
+    const one = { idCapable: false, captureCapable: true, hasResumableHistory: true };
+    expect(d(one).kind).toBe("cwd-resume");
+    expect(d({ ...one, siblingSameCli: true }).kind).toBe("fresh");
+  });
+
+  it("still prefers this tab's OWN stored id over going fresh", () => {
+    // The sibling only rules out the cwd guess. An id belongs to one tab, so
+    // it stays correct however many tabs share the directory.
+    expect(d({
+      idCapable: true, hasResumableHistory: true, siblingSameCli: true, storedUuid: "u-1",
+    }).kind).toBe("resume-id");
+  });
+
   it("primary tab with a resume override uses it", () => {
     const r = d({ resumeOverride: "--resume {WORKSPACE_NAME}" });
     expect(r).toEqual({ kind: "override", override: "--resume {WORKSPACE_NAME}" });

@@ -1014,6 +1014,22 @@ export function decideResume(opts: {
   /** A resume attempt for this tab just rapid-exited → skip the stored
    *  uuid / cwd-resume and start fresh on the immediate retry. */
   failedResume: boolean;
+  /** Does another tab in this task already run this same cli?
+   *
+   *  This is what makes cwd-resume unsafe even in a worktree. `resume --last`
+   *  (codex) and `--continue` (opencode) mean "the most recent session in this
+   *  directory", which identifies a conversation only while the directory holds
+   *  ONE of them. A second Codex tab in the same task puts a second conversation
+   *  in the same cwd, and then "most recent" is whichever tab spoke last, not
+   *  this tab's.
+   *
+   *  Measured on codex 0.154.0: run from a directory with seven recorded
+   *  sessions, `codex exec resume --last` took the newest of the seven, and
+   *  ignored a newer session belonging to a different cwd. So the cwd filter is
+   *  real (which is why this is safe with one tab) and the "newest wins" rule is
+   *  real (which is why it is not safe with two). Reported as a new Codex tab
+   *  resuming a different session, seemingly at random. */
+  siblingSameCli?: boolean;
 }): ResumeDecision {
   if (!opts.isAgent) return { kind: "fresh" };
 
@@ -1040,7 +1056,15 @@ export function decideResume(opts: {
   // Cwd-based resume: worktree only (repo-root's shared cwd would lasso
   // unrelated sessions), primary tab only, and only when there's a real
   // session on disk and we're not retrying a just-failed resume.
-  if (!opts.isRepoRoot && opts.isPrimary && opts.hasResumableHistory && !opts.failedResume) {
+  //
+  // ...and only while this cli has ONE tab in the task. With a second one the
+  // cwd holds two conversations and "the most recent in this directory" stops
+  // meaning "this tab's" (see `siblingSameCli`). Fresh is the honest answer
+  // there: resuming the wrong conversation is worse than starting a new one,
+  // and the tab's own id, once its hook or capture reports one, takes over
+  // through the resume-id path above.
+  if (!opts.isRepoRoot && opts.isPrimary && opts.hasResumableHistory
+      && !opts.failedResume && !opts.siblingSameCli) {
     return { kind: "cwd-resume" };
   }
   return { kind: "fresh" };

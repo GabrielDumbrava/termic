@@ -2613,6 +2613,12 @@ const captureArmedRef = useRef(false);
       storedUuid,
       resumeOverride: task.resume_override ?? undefined,
       failedResume: failedResumeRef.current,
+      // Another tab of this same cli in this task means the cwd holds more than
+      // one conversation, which is what makes `resume --last` a coin flip. Read
+      // from the live snapshot: the "+" tab that creates the ambiguity may have
+      // been added after this pane mounted.
+      siblingSameCli: taskTabsNow.some(t =>
+        t.id !== tab.id && t.type === "terminal" && (t as TerminalTab).cli === tab.cli),
     });
     // The agent's own picker, once, right after a stored id failed (see
     // pickerNextRef). It replaces every resume path for this one spawn: no
