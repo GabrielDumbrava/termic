@@ -90,7 +90,11 @@ describe("tab management", () => {
     // Retried until the tab EXISTS: a click into Radix's remount does
     // nothing and leaves the menu open, which is how this case (and the eight
     // built on its tab) fails on the Linux runner.
-    await clickMenuItemUntilReady("Terminal", async () => (await tabCount()) === 2,
+    // `>=`, not `===`. A retrying click can only ever ADD tabs, so an exact
+    // count turns one duplicated click into a condition that can never be
+    // satisfied again. The helper now waits for the result before retrying,
+    // and this is the second half of that: a monotonic condition.
+    await clickMenuItemUntilReady("Terminal", async () => (await tabCount()) >= 2,
       { reopen: openPlusMenu });
     expect(await activeTab()).not.toBe(agentTabId);
 

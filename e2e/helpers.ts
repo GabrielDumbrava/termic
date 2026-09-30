@@ -1806,9 +1806,29 @@ export async function clickMenuItemUntilReady(
   let reopens = 0;
   let reopenErr = "";
   let clicks = 0;
+  /** After a click, how long to wait for the RESULT before deciding the click
+   *  was swallowed and clicking again. */
+  const POST_CLICK_GRACE_MS = 2_000;
   await browser.waitUntil(
     async () => {
       if (await ready()) return true;
+      // A click that lands CLOSES the menu, and so does a click that is
+      // swallowed, so "the menu is gone" does not mean "nothing happened".
+      // Without this grace the loop treats an accepted click as a lost one,
+      // reopens, and clicks again: with a `ready()` that tests an exact count
+      // (`tabCount() === 2`, the shape every caller here uses) the second
+      // click overshoots to 3 and the condition can NEVER become true again.
+      // The retry then spends its whole timeout making the failure worse, and
+      // reports "never produced its result" about an action that ran 31 times.
+      // That is the Linux flake this helper was added to cure, caused by the
+      // cure.
+      if (clicks > 0) {
+        const deadline = Date.now() + POST_CLICK_GRACE_MS;
+        while (Date.now() < deadline) {
+          if (await ready()) return true;
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
       // Nothing to click: the menu closed under the last attempt. Put it back
       // before spending another poll on an empty document.
       const present = await browser.execute((t) =>
@@ -1867,6 +1887,13 @@ export async function clickMenuItemUntilReady(
         const a = document.activeElement as HTMLElement | null;
         return a ? `${a.tagName}${a.id ? `#${a.id}` : ""}` : "none";
       })(),
+      // Tabs per task, so a failure says whether the action ran and OVERSHOT
+      // an exact-count `ready()` rather than never running. Those want
+      // opposite fixes and the message could not tell them apart.
+      tabs: Object.fromEntries(
+        Object.entries(window.__termic!.useApp.getState().tabs as Record<string, unknown[]>)
+          .map(([k, v]) => [k.slice(0, 8), v.length]),
+      ),
     }), text);
     throw new Error(
       `${e.message}\n  attempts: ${attempts.length} (${clicks} clicked, ${reopens} reopened`
