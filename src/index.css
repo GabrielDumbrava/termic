@@ -114,8 +114,10 @@
      in the sidebar's PR glyph, which broke the "no hex outside @theme" rule
      and left light mode with two colours tuned for a dark background.
      Matched to the forge's own palette so the glyph reads the way the PR
-     page does. Merged is GitHub's purple, open its green; `closed` reuses
-     --color-err and `draft` --color-fg-faint, which already exist. */
+     page does. Merged is GitHub's purple, open its green. `closed` and
+     `draft` both take --color-fg-faint: neither is asking anything of you.
+     A failing build on an OPEN pr takes --color-warn. Nothing on this glyph
+     is ever --color-err, on purpose (see lib/prBadgeAppearance.ts). */
   --color-pr-merged: #a371f7;
   --color-pr-open:   #3fb950;
 

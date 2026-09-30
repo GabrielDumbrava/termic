@@ -23,22 +23,14 @@ export function TaskPrBadge({ task }: { task: Task }) {
   const noun = (pr?.provider ?? task.pr_provider) === "gitlab" ? "MR" : "PR";
   const num = pr?.number ?? task.pr_number;
   const state = pr?.state ?? null;
-  // Failing checks override the state color for an OPEN pr: this glyph is
-  // the only PR signal visible without opening the Git tab, and an all-green
-  // "open" icon next to a red CI failure (visible only in the full card) is
-  // exactly the confusing case - a broken build shouldn't look identical to
-  // a healthy one at a glance. Merged/closed keep their own color; the PR
-  // is already done, so CI at HEAD stops being the thing worth flagging.
+  // Colour comes from prBadgeAppearance, where the rules live and are
+  // unit-tested over the whole state x checks matrix: no red anywhere, a
+  // draft takes no colour at all, and an open pr with failing checks goes
+  // WARN rather than ERR.
   //
-  // A DRAFT never turns red, whatever its checks say. A draft is work the
-  // author has not asked anyone to look at, so red CI on one is expected
-  // rather than alarming, and a rail of red drafts trains the eye to ignore
-  // the colour that is supposed to mean "this needs you". It stays the same
-  // faint grey as every other draft; the tooltip still says the checks fail,
-  // because that is information and not an alarm.
-  // Colour comes from prBadgeAppearance, which is where the "a draft never
-  // turns red" rule lives and is unit-tested. The tooltip still says the checks
-  // fail on a draft, because that is information rather than an alarm.
+  // The tooltip still says the checks fail, on a draft too. That is the split
+  // the colour cannot express: the fact belongs to anyone who hovers, the
+  // alarm colour belongs only to something you are meant to act on.
   const failing = pr?.checks === "failing" && (state === "open" || state === "draft");
   const { color } = prBadgeAppearance(state, pr?.checks ?? null);
   const failingSuffix = failing ? ` · ${t("taskPrBadge.checksFailing")}` : "";
