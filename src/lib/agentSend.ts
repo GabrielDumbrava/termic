@@ -51,8 +51,24 @@ export function sendMessageToPty(ptyId: string, text: string): void {
  *
  *  The CR that submits is deliberately still written separately, after the
  *  delay: it must land OUTSIDE the paste, or it is literal text inside it. */
+/** Long single-line messages are pasted too, not only multi-line ones.
+ *
+ *  Reported from real transcripts: a ~1,650-character queued prompt arrived
+ *  with only its last 281 characters, starting mid-word, and a ~1,300-character
+ *  one arrived as its tail alone. Both were typed unwrapped, as a plain burst
+ *  of keystrokes, which gives the TUI a thousand chances to redraw or reset its
+ *  input box in the middle of the text. As ONE bracketed paste it is a single
+ *  block the agent either takes or does not.
+ *
+ *  The threshold is deliberately low and arbitrary: below it a message fits an
+ *  input box without wrapping and has never been seen to lose its head, and
+ *  keeping short sends byte-identical to what shipped before means the common
+ *  path (a one-line "continue") carries none of this change's risk. */
+const PASTE_OVER_CHARS = 200;
+
 function wrapIfMultiline(text: string): string {
-  return /[\r\n]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text;
+  const paste = /[\r\n]/.test(text) || text.length > PASTE_OVER_CHARS;
+  return paste ? `\x1b[200~${text}\x1b[201~` : text;
 }
 
 /** How long to watch for the typed text to come back before deciding the
@@ -84,7 +100,7 @@ function normalizeEcho(s: string): string {
  *  picker ("Is this a project you created or one you trust?", highlighted
  *  default `No, exit`), which the quiet heuristic reads as a ready agent:
  *  no echo there, echo in a real input box, in every run. */
-async function waitForEcho(ptyId: string, text: string): Promise<boolean> {
+async function waitForEcho(ptyId: string, text: string, windowMs = ECHO_WINDOW_MS): Promise<boolean> {
   const want = normalizeEcho(text).slice(0, ECHO_PREFIX_CHARS);
   // Nothing distinctive to look for (whitespace-only). Not a failure: fall
   // through to sending, which is what we did before this existed.
@@ -98,7 +114,7 @@ async function waitForEcho(ptyId: string, text: string): Promise<boolean> {
       // unbounded string here would grow with a streaming agent.
       seen = (seen + normalizeEcho(dec.decode(bytes, { stream: true }))).slice(-4096);
     });
-    const deadline = Date.now() + ECHO_WINDOW_MS;
+    const deadline = Date.now() + windowMs;
     while (Date.now() < deadline) {
       if (seen.includes(want)) return true;
       await sleep(40);
@@ -122,7 +138,7 @@ async function waitForEcho(ptyId: string, text: string): Promise<boolean> {
 export function deliverMessage(
   ptyId: string,
   text: string,
-  opts: { verifyEcho?: boolean } = {},
+  opts: { verifyEcho?: boolean; echoWindowMs?: number } = {},
 ): Promise<void> {
   const textBytes = Array.from(new TextEncoder().encode(wrapIfMultiline(text)));
   // Resolve only after BOTH the text AND the Enter (CR) have been written, so
@@ -137,13 +153,27 @@ export function deliverMessage(
     // machine is slow, which is when the coalescing this guards against is
     // most likely.
     const wroteAt = Date.now();
-    // Opt-in, and deliberately NOT on by default. The queue only ever sends
-    // after a turn ended, which already proves the agent was at its input
-    // box, so the check would cost every queued message a round trip to
-    // re-establish something known. The FIRST message is the only one typed
-    // into an agent that has never been ready, so it is the only one that can
-    // meet a startup dialog, and it is the only caller that asks for this.
-    if (opts.verifyEcho && !(await waitForEcho(ptyId, text))) {
+    // Opt-in, and still NOT what the queue uses, though the reason has
+    // changed and is worth keeping straight.
+    //
+    // The old reason was that a queued message needs no check because "the
+    // queue only ever sends after a turn ended, which already proves the agent
+    // was at its input box". Transcripts disproved that: work-done can fire
+    // while the agent is still finishing its previous submit, and when that
+    // submit lands the agent CLEARS its input box, taking with it whatever of
+    // the next message had already been typed (see the turn-start guard in
+    // TerminalPane's queue drain, which is the fix).
+    //
+    // The echo still cannot be the gate for those, because of PASTE_OVER_CHARS
+    // above: a long message goes as one bracketed paste, and several agents
+    // show a pasted block as a "[Pasted text #1 +N lines]" chip INSTEAD of the
+    // text. Waiting for that text to come back would time out on a message
+    // that arrived perfectly, and withholding the CR would then lose it for
+    // good. So the echo stays where its premise holds: the FIRST message typed
+    // into an agent that has never been ready, short enough not to be pasted,
+    // where "no echo" really does mean "this is a selection list, not an input
+    // box" and submitting would answer a dialog instead of sending a prompt.
+    if (opts.verifyEcho && !(await waitForEcho(ptyId, text, opts.echoWindowMs))) {
       // The text went nowhere. Withhold the CR: on a selection list it would
       // confirm the highlighted option, and claude's is `No, exit`, so the
       // submit that was meant to deliver a prompt kills the agent instead.

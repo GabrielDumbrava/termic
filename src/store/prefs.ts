@@ -101,6 +101,7 @@ const LS_FIND_IN_FILES_REGEX = "findInFilesRegex";
 const LS_FIND_IN_FILES_MATCH_CASE = "findInFilesMatchCase";
 const LS_BRANCH_PREFIX = "branchPrefix";
 const LS_QUEUE_MIN_INTERVAL = "queueMinIntervalMs";
+const LS_QUEUE_STALL_MS = "queueStallMs";
 const LS_SHORTCUTS     = "shortcutBindings";
 const LS_PANE_DIM      = "splitPaneDim";
 const LS_PANE_DIM_AMT  = "splitPaneDimAmount";
@@ -846,6 +847,21 @@ interface PrefsState {
    *  next queued message waits out the remainder. Default 10000 (10s). 0
    *  disables the floor. Applies to "Send now" too. */
   queueMinIntervalMs: number;
+  /** How long an agent may look BUSY with nothing coming out of its PTY before
+   *  a queued message is delivered anyway. Milliseconds.
+   *
+   *  The queue drains on work-done, so a work-done that never arrives is a
+   *  queue that never drains: reported as an agent that "got stuck in a state
+   *  and never received messages from other agents". The existing backstop
+   *  clears a stuck spinner after twenty minutes and only for work-done-capable
+   *  agents with a live PTY, which for a handoff between agents is
+   *  indistinguishable from never.
+   *
+   *  Measured on OUTPUT, not on the clock: an agent that is really working
+   *  prints something (a spinner tick, a token), so total silence is the honest
+   *  signal that the done was missed. Default 240000 (4 minutes). 0 disables
+   *  it, which restores the old behaviour exactly. */
+  queueStallMs: number;
   /** Resolved keyboard shortcut bindings (defaults merged with the user's
    *  overrides). Read live by `useShortcuts`; edited from the Shortcuts
    *  settings page. */
@@ -930,6 +946,7 @@ interface PrefsState {
   setBranchPrefix: (v: string) => void;
   setOpenWithApp: (p: OpenWithPick) => void;
   setQueueMinIntervalMs: (ms: number) => void;
+  setQueueStallMs: (ms: number) => void;
   setSplitPaneDim: (v: boolean) => void;
   setSplitPaneDimAmount: (v: number) => void;
   /** Rebind a single shortcut. */
@@ -1169,6 +1186,14 @@ const initialOpenWith = parseOpenWithPick(lsGet(LS_OPEN_WITH, ""));
 // Clamp 0–120s. Default 10s — fast loops (or false "done" oscillation)
 // shouldn't fire prompts at the agent faster than this.
 const initialQueueMinInterval = Math.max(0, Math.min(120000, Math.round(lsGetNum(LS_QUEUE_MIN_INTERVAL, 10000))));
+// Clamp 0 (off) or 30s–60min. Default 4 minutes: long enough that an agent
+// thinking quietly is not interrupted, short enough that a handoff from another
+// agent is not lost for the rest of the session.
+const initialQueueStall = (() => {
+  const raw = Math.round(lsGetNum(LS_QUEUE_STALL_MS, 240000));
+  if (raw <= 0) return 0;
+  return Math.max(30000, Math.min(3600000, raw));
+})();
 
 export const usePrefs = create<PrefsState>(set => ({
   language: parseLanguagePref(lsGet(LS_LANGUAGE, "system")),
@@ -1231,6 +1256,7 @@ export const usePrefs = create<PrefsState>(set => ({
   branchPrefix: initialBranchPrefix,
   openWithApp: initialOpenWith,
   queueMinIntervalMs: initialQueueMinInterval,
+  queueStallMs: initialQueueStall,
   shortcuts: loadShortcuts(),
   splitPaneDim: lsGetBool(LS_PANE_DIM, true),
   splitPaneDimAmount: Math.max(0, Math.min(100, Math.round(lsGetNum(LS_PANE_DIM_AMT, 10)))),
@@ -1588,6 +1614,12 @@ export const usePrefs = create<PrefsState>(set => ({
     const clamped = Math.max(0, Math.min(120000, Math.round(ms)));
     try { localStorage.setItem(LS_QUEUE_MIN_INTERVAL, String(clamped)); } catch {}
     set({ queueMinIntervalMs: clamped });
+  },
+  setQueueStallMs: (ms) => {
+    const r = Math.round(ms);
+    const clamped = r <= 0 ? 0 : Math.max(30000, Math.min(3600000, r));
+    try { localStorage.setItem(LS_QUEUE_STALL_MS, String(clamped)); } catch {}
+    set({ queueStallMs: clamped });
   },
   setSplitPaneDim: (v) => {
     try { localStorage.setItem(LS_PANE_DIM, v ? "1" : "0"); } catch {}

@@ -48,6 +48,7 @@ import { useAgentContext } from "@/store/agentContext";
 import { imageFromClipboard, pastePathText } from "@/lib/clipboardImage";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import { deliverMessage } from "@/lib/agentSend";
+import { queueLooksStalled } from "@/lib/queueStall";
 import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { waitForAgentReady } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
@@ -96,6 +97,18 @@ const ESC_INTERRUPT_WINDOW_MS = 3_000;
 // key (opencode ignores Escape outright) keeps painting, so quiet never
 // arrives and the window closes with nothing done, which is the point.
 const INTERRUPT_QUIET_GRACE_MS = 15_000;
+
+/** How long a queued submit gets to be seen starting its turn before the drain
+ *  stops waiting for it.
+ *
+ *  A queued message is held until the agent has been observed WORKING since the
+ *  last one was submitted, because a "done" that arrives before that belongs to
+ *  the previous turn and sending into it truncates (see the guard in
+ *  `sendNextQueued`). This is the ceiling on that wait: past it, the assumption
+ *  is wrong for this agent and a queue that never drains is the worse bug, so
+ *  the message goes. Generous because the thing being waited for is one badge
+ *  transition, not a whole turn. */
+const TURN_START_GRACE_MS = 30_000;
 
 
 /** FNV-1a 32-bit hash of the visible viewport's text content. Cheap enough
@@ -708,6 +721,11 @@ const captureArmedRef = useRef(false);
    *  "Send all now" reads it, to write messages one after another instead of
    *  on top of each other. */
   const lastDeliveryRef = useRef<Promise<unknown>>(Promise.resolve());
+  /** Set when a queued message is submitted, cleared when the agent is next
+   *  seen WORKING. While it is set, the turn our submit should have started has
+   *  not been observed, so a "done" arriving now belongs to the previous turn
+   *  and must not release the next message. See `queuedTurnPending`. */
+  const queuedTurnPendingRef = useRef(false);
   // The scheduled item (GH #300) whose readiness wait + delivery is under way,
   // so a second kick during the wait does not type it twice.
   const scheduledInFlightRef = useRef<string | null>(null);
@@ -775,6 +793,26 @@ const captureArmedRef = useRef(false);
     if (cur.composing && !force) {
       debugLogRef.current?.("queue-held", "user is typing a draft");
       return false;
+    }
+    // Our last queued submit has not been seen to start a turn, so whatever
+    // made this agent look idle is the PREVIOUS turn ending. Writing now is the
+    // truncation bug from the transcripts: the agent is still finishing that
+    // submit, and when it lands it clears its input box and takes the head of
+    // this message with it (a 1,650-character prompt arrived as its last 281
+    // characters, mid-word, and the CR submitted the fragment; a stray CR on
+    // the emptied box then submitted a zero-character prompt).
+    //
+    // Bounded on purpose. If the turn never starts within the grace window the
+    // premise was wrong for this agent, and a queue that waits forever is the
+    // other bug in this same area, so the flag is dropped and the message goes.
+    // `force` ("Send now", "Send all now") ignores all of it: the user asked.
+    if (queuedTurnPendingRef.current && !force) {
+      if (Date.now() - lastQueueSendAtRef.current < TURN_START_GRACE_MS) {
+        debugLogRef.current?.("queue-held", "last submit has not started its turn yet");
+        return false;
+      }
+      debugLogRef.current?.("queue-turn-grace", "turn never started; sending anyway");
+      queuedTurnPendingRef.current = false;
     }
     const q = cur.queue ?? [];
     // A scheduled item (GH #300) is eligible once due whether or not the
@@ -858,6 +896,9 @@ const captureArmedRef = useRef(false);
       lastDeliveryRef.current = deliverMessage(ptyId, head.text).catch(() => {});
     }
     lastQueueSendAtRef.current = Date.now();
+    // The turn this submit should start has not been seen yet. Until the agent
+    // is observed working, any "done" belongs to the turn BEFORE this message.
+    queuedTurnPendingRef.current = true;
     patchTab(task.id, tab.id, { lastInputAt: Date.now() });
     const remaining = head.remaining - 1;
     const nextQueue = remaining <= 0
@@ -905,7 +946,7 @@ const captureArmedRef = useRef(false);
   useEffect(() => {
     const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
     if (!queueActive && !hasDueScheduled(cur?.queue, Date.now())) return;
-    if (cur?.workState === "working") return;
+    if (cur?.workState === "working") { queuedTurnPendingRef.current = false; return; }
     if (cur?.composing) return;
     sendNextQueuedRef.current?.();
   }, [queueActive, queueKick, tabPtyLive, composing, task.id, tab.id]);
@@ -920,6 +961,40 @@ const captureArmedRef = useRef(false);
     if (!forceKickMountedRef.current) { forceKickMountedRef.current = true; return; }
     sendNextQueuedRef.current?.(true);
   }, [queueForceKick]);
+
+  // The turn we were waiting for has started: the next queued message is free
+  // to go when this one finishes. Watched as its own effect rather than folded
+  // into the kick effect, because the clear has to happen on the transition
+  // whether or not anything is queued at that moment.
+  const workStateNow = tab.type === "terminal" ? tab.workState : undefined;
+  useEffect(() => {
+    if (workStateNow === "working") queuedTurnPendingRef.current = false;
+  }, [workStateNow]);
+
+  // Stall watchdog: a queue whose agent never reports work-done again would
+  // otherwise wait forever, which is the reported "agent got stuck and never
+  // received messages from other agents". `queueLooksStalled` holds the rule
+  // (and its unit tests); the interval is slow because nothing here is urgent
+  // and the predicate is comparing minutes.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+      if (!cur || cur.type !== "terminal" || !cur.queueActive || cur.composing) return;
+      if (!queueLooksStalled({
+        hasQueued: !!cur.queue?.length,
+        workState: cur.workState,
+        lastOutputAt: cur.lastOutputAt,
+        lastQueueSendAt: lastQueueSendAtRef.current,
+        now: Date.now(),
+        stallMs: usePrefs.getState().queueStallMs,
+      })) return;
+      debugLogRef.current?.("queue-stall", "agent silent while busy; delivering anyway");
+      // force: the agent still reads as "working", which is the very state this
+      // is overriding, and the throttle floor has long since elapsed anyway.
+      sendNextQueuedRef.current?.(true);
+    }, 15_000);
+    return () => window.clearInterval(id);
+  }, [task.id, tab.id]);
 
   // "Send all now": empty the queue in one pass, awaiting each delivery.
   //

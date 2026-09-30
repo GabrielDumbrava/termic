@@ -37,6 +37,29 @@ describe("deliverMessage", () => {
     await p;
   });
 
+  // Reported from transcripts: a ~1,650-character queued prompt arrived with
+  // only its last 281 characters, starting mid-word, because it was typed as a
+  // plain keystroke burst and the agent cleared its input box partway through
+  // (finishing the PREVIOUS submit). One paste is one block the agent either
+  // takes whole or does not take.
+  it("pastes a long single-line body too, not just a multi-line one", async () => {
+    const body = "x".repeat(201);
+    const p = deliverMessage("pty-long", body);
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    expect(text(writes[0])).toBe(`\x1b[200~${body}\x1b[201~`);
+    await p;
+  });
+
+  it("leaves a short single-line body exactly as it was", async () => {
+    // The common path ("continue", "yes") stays byte-identical to what shipped
+    // before the threshold existed, so it carries none of this change's risk.
+    const body = "x".repeat(200);
+    const p = deliverMessage("pty-short", body);
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    expect(text(writes[0])).toBe(body);
+    await p;
+  });
+
   // The submit has to land OUTSIDE the paste markers, or it is literal text
   // inside the pasted body and nothing is ever sent.
   it("writes the submit CR after the paste ends, never inside it", async () => {
