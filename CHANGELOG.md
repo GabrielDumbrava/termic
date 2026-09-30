@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.11.0] - 2026-09-30
+## [1.11.1] - 2026-09-30
 
 A kanban board over every task, and multi-repo tasks pick their own members.
 
@@ -28,6 +28,20 @@ A kanban board over every task, and multi-repo tasks pick their own members.
 - **Send queued messages now.** "Send all now" empties an agent's queue in one
   pass without waiting for work-done between messages, and each row in the
   queue has its own send icon that jumps that one ahead of the rest.
+- **Start a task from a pull request.** New task, From a PR lists the PRs you
+  opened, or paste a number or a URL for any other. It fetches the branch and
+  cuts a worktree from it, or checks it out in the main checkout, forks
+  included.
+- **Kanban cards show the pull request and what the task changed.** The PR
+  number, its state and its checks, all one link, and beside it the lines
+  added and removed with the file count. Both appear only when there is
+  something to show.
+- **Choose which board columns are always on.** A column in the Inactive list
+  stays on the board once you click it, and an empty one you pinned has an X
+  to send it back. A column with cards in it never offers to hide.
+- **The Linux AppImage can update itself.** It now carries zsync update
+  information, so Gear Lever, AppImageLauncher and AppImageUpdate can see a new
+  version and fetch only the parts that changed.
 
 ### Bug fixes
 - **The Linux AppImage could not start for anyone whose mount enforces file
@@ -57,6 +71,33 @@ A kanban board over every task, and multi-repo tasks pick their own members.
   workflow. Neither means the build failed.
 - Two switches in the New task dialog ("Existing branch" and "New branch
   instead") were still English in every language.
+- **The first message to a freshly spawned agent could be typed and never
+  sent.** Termic waits for the agent to echo the text before pressing Enter, so
+  that it never answers a trust prompt by accident, but it started watching the
+  terminal a moment after typing. If the echo arrived in that gap it was
+  missed, and the message sat in the agent's input box forever.
+- **A column you clicked open on the board hid itself again** as soon as you
+  left the Kanban view and came back.
+- **A pull request no longer turns red at all.** Failing checks on an open PR
+  are orange, a draft has no colour whatever its checks say, and a closed one
+  is grey rather than looking like an error.
+- **The New task dialog changed size as you moved through it.** It jumped
+  between four widths and resized vertically on nearly every click, which moved
+  the Create button out from under the pointer.
+- **The Archived column was empty when the archive limit was Unlimited**, under
+  a badge showing the full count, and clearing the custom limit field stored 0
+  and emptied the column mid-edit. Thanks to
+  [@lymanzhao](https://github.com/lymanzhao).
+- **Dragging a card blanked the other cards of the same project** in every
+  other column and lane, and lit them as drop targets, for as long as you held
+  it. Dropping a card that was archived or deleted mid-drag could also corrupt
+  the task list. Thanks to [@lymanzhao](https://github.com/lymanzhao).
+- **Hovering a drop target lit every row of the Inactive column** instead of
+  the one the card would land in. Thanks to
+  [@lymanzhao](https://github.com/lymanzhao).
+- **The YOLO checkbox named something no agent shows you.** It now uses the
+  agent's own word for the mode it turns on (bypass permissions for claude,
+  full access for codex), with the exact flag on hover.
 
 ## [1.10.0] - 2026-09-28
 
