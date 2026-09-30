@@ -307,8 +307,11 @@ while the board enumerates tasks and was the only surface that showed it, with
 the group header falling back to printing the raw project UUID at the user.
 
 Swimlanes by agent (`task.cli`) are dividers INSIDE a column, sticky while
-the column scrolls, shown only when more than one agent has live tasks; the
-same rule hides project sub-headers on single-project groups. The Archived
+the column scrolls, shown only when more than one agent has live tasks; a
+task whose project left the profile keeps no lane alive either, since lanes
+count visible cards. Project sub-headers are ALWAYS on (GH #318 feedback: on
+a one-project board nothing else names the project, and the header is how a
+card from another project reads at a glance when one appears). The Archived
 column is agent-agnostic, read-only apart from being the drop-to-archive
 target, and links to History in its footer.
 
@@ -334,12 +337,17 @@ then; each card subscribes to its own `selectTaskTabs` slice for its badge.
 `selectorFanout.test.ts` pins all three counts.
 
 Drags mean something or they do not happen. Hand-rolled pointer events, the
-sidebar's pattern; no dnd-kit. Exactly two drags are wired: reorder within a
-same-project group inside one cell (settle, one store write, `task_reorder`,
-whose Rust contract is same-project ids) and drop on the Archived column
-(shared `confirmAndArchive`, so the confirm dialog, delete-branch checkbox,
-open-PR warning and spinner come with it). Every other drop snaps back with
-no write. Restore stays in History; the Archived column links there.
+sidebar's pattern; no dnd-kit. Four drags are wired: reorder within a
+same-project group inside one cell (`task_reorder`, whose Rust contract is
+same-project ids), drop on the Archived column (shared `confirmAndArchive`,
+so the confirm dialog, delete-branch checkbox, open-PR warning and spinner
+come with it), drop on Settled (`clearTaskWorkState`, the focus-clear write
+on every terminal tab) and drop on In review (CreatePrDialog, the same entry
+the command palette uses). Every other drop snaps back with no write, and so
+does a wired one that would be a no-op: nothing to clear, or a main
+checkout. The matrix lives in `boardDropCommand()` in
+[src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts). Restore stays in
+History; the Archived column links there.
 
 The Archived column renders a CAPPED slice, not the whole archive: the most
 recent entries first (the same `archived_at ?? created` sort History uses),
