@@ -711,7 +711,7 @@ export type DragAnchor = "center" | "left" | "right" | "top" | "bottom";
 export async function pointerDrag(
   from: string,
   to: string,
-  opts: { grab?: DragAnchor; land?: DragAnchor; landOn?: string } = {},
+  opts: { grab?: DragAnchor; land?: DragAnchor; landOn?: string; hold?: boolean } = {},
 ): Promise<void> {
   // Every drop in the app is hit-tested with elementFromPoint, so a stray
   // overlay makes the drag silently do nothing. Check first and fail naming
@@ -765,7 +765,7 @@ export async function pointerDrag(
     });
 
   await browser.execute(
-    (fromSel, toSel, grab, land) => {
+    (fromSel, toSel, grab, land, hold) => {
       const src = document.querySelector(fromSel) as HTMLElement | null;
       const dst = document.querySelector(toSel) as HTMLElement | null;
       if (!src) throw new Error(`drag source not found: ${fromSel}`);
@@ -817,12 +817,56 @@ export async function pointerDrag(
         const y = start.y + (dy * i) / STEPS;
         fire("pointermove", x, y, under(x, y));
       }
-      fire("pointerup", end.x, end.y, under(end.x, end.y));
+      // `hold` stops one event short: the pointer stays DOWN over the target,
+      // which is the only way to assert what the rest of the board looks like
+      // mid-gesture. The caller finishes with `pointerRelease`.
+      if (!hold) fire("pointerup", end.x, end.y, under(end.x, end.y));
     },
     from,
     to,
     opts.grab ?? "center",
     opts.land ?? "center",
+    !!opts.hold,
+  );
+}
+
+/**
+ * Finish a `pointerDrag(..., { hold: true })`: move onto `to` and release
+ * there. Separate from the drag itself so a spec can assert what the board
+ * looks like WHILE a card is in hand, which is where a whole class of drag
+ * bugs lives (a preview applied to the wrong group blanks that group's cards
+ * for the length of the gesture and leaves no trace once the pointer is up).
+ *
+ * Releasing somewhere that is not a drop target is the way to end a held drag
+ * without writing anything.
+ */
+export async function pointerRelease(to: string, land: DragAnchor = "center"): Promise<void> {
+  await browser.execute(
+    (toSel, a) => {
+      const dst = document.querySelector(toSel) as HTMLElement | null;
+      if (!dst) throw new Error(`release target not found: ${toSel}`);
+      dst.scrollIntoView({ block: "nearest" });
+      const r = dst.getBoundingClientRect();
+      const ix = Math.max(6, r.width * 0.08), iy = Math.max(6, r.height * 0.08);
+      const p =
+        a === "left" ? { x: r.left + ix, y: r.top + r.height / 2 }
+        : a === "right" ? { x: r.right - ix, y: r.top + r.height / 2 }
+        : a === "top" ? { x: r.left + r.width / 2, y: r.top + iy }
+        : a === "bottom" ? { x: r.left + r.width / 2, y: r.bottom - iy }
+        : { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      const fire = (type: string, x: number, y: number) => {
+        const node = (document.elementFromPoint(x, y) as HTMLElement | null) ?? document.body;
+        node.dispatchEvent(new PointerEvent(type, {
+          clientX: x, clientY: y, button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          pointerType: "mouse", bubbles: true, cancelable: true,
+        }));
+      };
+      fire("pointermove", p.x, p.y);
+      fire("pointerup", p.x, p.y);
+    },
+    to,
+    land,
   );
 }
 

@@ -16,6 +16,7 @@ import {
   ensureActiveTask,
   openTask,
   pointerDrag,
+  pointerRelease,
   requireTermicApi,
   snap,
   waitForAppShell,
@@ -157,6 +158,36 @@ describe("board view", () => {
     const storeOrder = (await projectTaskOrder()) as string[];
     expect(storeOrder.indexOf(t4)).toBeLessThan(storeOrder.indexOf(t1));
     expect(storeOrder.indexOf(t1)).toBeLessThan(storeOrder.indexOf(t2));
+  });
+
+  it("a drag in one lane leaves the project's other lanes rendering", async () => {
+    // The reorder preview used to be keyed by projectId alone. Every OTHER
+    // group of the same project then applied it, matched none of the ids, and
+    // rendered zero cards for the length of the gesture while lighting its own
+    // drop ring. t3 is this project's fakecapture lane, in the same column as
+    // the drag, so it is exactly the group that blanked.
+    //
+    // It has to be asserted mid-drag: on pointerup the preview clears and the
+    // cards come back, which is why a whole-gesture drag sees nothing wrong.
+    expect(await cellCardOrder("fakecapture", "backlog")).toEqual([t3]);
+
+    await pointerDrag(
+      `${LANE_IN("fakeagent", "backlog")} ${CARD(t2)}`,
+      `${LANE_IN("fakeagent", "backlog")} ${CARD(t4)}`,
+      { land: "top", hold: true },
+    );
+    const duringDrag = await cellCardOrder("fakecapture", "backlog");
+    // Release before asserting, so a failure here still ends the gesture and
+    // does not leave the pointer down for every case after it.
+    await pointerRelease(COLUMN("working"));
+    expect(duringDrag).toEqual([t3]);
+
+    // Released over a column that is not a drop target: nothing was written,
+    // so the lane the drag came from is untouched too.
+    await browser.waitUntil(
+      async () => JSON.stringify(await cellCardOrder("fakeagent", "backlog")) === JSON.stringify([t4, t1, t2]),
+      { timeout: 5_000, timeoutMsg: "the held drag wrote an order after releasing off-target" },
+    );
   });
 
   it("dragging to another column snaps back with no dialog and no write", async () => {
