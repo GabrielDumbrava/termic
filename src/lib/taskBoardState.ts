@@ -92,7 +92,10 @@ export function recentArchived(tasks: Task[], limit: number): Task[] {
   return tasks
     .filter(w => w.archived)
     .sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created))
-    .slice(0, Number.isFinite(limit) ? Math.max(0, limit) : 0);
+    // Infinity (the "unlimited" mode) must read as "everything", so the
+    // non-finite branch passes tasks.length — slice(0, 0) here once rendered
+    // an empty Archived column under a badge showing the full count.
+    .slice(0, Number.isFinite(limit) ? Math.max(0, limit) : tasks.length);
 }
 
 export type BoardArchiveLimitMode = "default" | "unlimited" | "custom";
@@ -211,4 +214,32 @@ export function boardCellGroups(cellTasks: Task[], projectOrder: string[]): { pr
       // relative order stable.
       return (ai === -1 ? projectOrder.length : ai) - (bi === -1 ? projectOrder.length : bi);
     });
+}
+
+/** Merge the drag preview's order for one same-project group back into the
+ *  project's full id list: non-group tasks keep their relative positions and
+ *  the group lands where its first member sat — the shape the board's drop
+ *  handler and the sidebar drag both write through `task_reorder`.
+ *
+ *  Returns null when the preview has gone stale against `projIds`: any id
+ *  the task list no longer holds (archived, deleted or moved project while
+ *  the drag was in flight), or a group with no members left. Writing a stale
+ *  merge anyway once consumed store slots with dead ids — a live card
+ *  vanished from `tasks`, or `undefined` itself did and the next render
+ *  threw on it. Null is the caller's cue to snap back. */
+export function mergeReorderedGroup(projIds: string[], previewIds: string[]): string[] | null {
+  const live = new Set(projIds);
+  if (!previewIds.every(id => live.has(id))) return null;
+  const groupSet = new Set(previewIds);
+  const merged: string[] = [];
+  let inserted = false;
+  for (const id of projIds) {
+    if (groupSet.has(id)) {
+      if (!inserted) { merged.push(...previewIds); inserted = true; }
+      continue;
+    }
+    merged.push(id);
+  }
+  // Every group member gone mid-drag: nothing left to place the preview at.
+  return inserted ? merged : null;
 }
