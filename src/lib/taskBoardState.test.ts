@@ -3,9 +3,11 @@ import {
   BOARD_ARCHIVE_LIMIT_DEFAULT,
   BOARD_STATE_COLUMNS,
   boardCellGroups,
+  boardColumnCanHide,
   boardDropCommand,
   boardLanes,
   mergeReorderedGroup,
+  parseBoardPinnedColumns,
   recentArchived,
   resolveBoardArchiveLimit,
   taskBoardColumn,
@@ -353,5 +355,62 @@ describe("resolveBoardArchiveLimit", () => {
     // NaN cannot reach the store (the setter guards it), but the resolver
     // still owes recentArchived a finite number.
     expect(resolveBoardArchiveLimit("custom", Number.NaN)).toBe(0);
+  });
+});
+
+describe("parseBoardPinnedColumns", () => {
+  it("round-trips the columns a user pinned", () => {
+    expect(parseBoardPinnedColumns(JSON.stringify(["working", "review"])))
+      .toEqual(["working", "review"]);
+  });
+
+  it("returns board order, not the order they were clicked in", () => {
+    // Otherwise a pin would reorder the board, which is not what clicking
+    // "show me this column" asks for.
+    expect(parseBoardPinnedColumns(JSON.stringify(["settled", "backlog", "working"])))
+      .toEqual(["backlog", "working", "settled"]);
+  });
+
+  it("drops duplicates", () => {
+    expect(parseBoardPinnedColumns(JSON.stringify(["working", "working"]))).toEqual(["working"]);
+  });
+
+  it("drops an unknown column instead of rendering one nothing can fill", () => {
+    // A column id from a future version, or a hand-edited localStorage value.
+    expect(parseBoardPinnedColumns(JSON.stringify(["working", "nope", "archived"])))
+      .toEqual(["working"]);
+  });
+
+  it("survives every shape localStorage can hand back", () => {
+    expect(parseBoardPinnedColumns(null)).toEqual([]);
+    expect(parseBoardPinnedColumns(undefined)).toEqual([]);
+    expect(parseBoardPinnedColumns("")).toEqual([]);
+    expect(parseBoardPinnedColumns("not json")).toEqual([]);
+    expect(parseBoardPinnedColumns(JSON.stringify("working"))).toEqual([]);
+    expect(parseBoardPinnedColumns(JSON.stringify({ working: true }))).toEqual([]);
+    expect(parseBoardPinnedColumns(JSON.stringify([1, null, ["working"]]))).toEqual([]);
+  });
+});
+
+describe("boardColumnCanHide", () => {
+  it("offers the button on a pinned column that has emptied", () => {
+    expect(boardColumnCanHide("working", ["working"], 0)).toBe(true);
+  });
+
+  it("never offers it while the column holds tasks", () => {
+    // The one thing hiding must not do is drop cards out of sight.
+    expect(boardColumnCanHide("working", ["working"], 1)).toBe(false);
+    expect(boardColumnCanHide("working", ["working"], 12)).toBe(false);
+  });
+
+  it("does not offer it on a column that is showing because it has work", () => {
+    // Unpinned and non-empty: it is on the board on its own merits, and it
+    // will leave on its own when the work does.
+    expect(boardColumnCanHide("working", [], 3)).toBe(false);
+    expect(boardColumnCanHide("working", ["review"], 3)).toBe(false);
+  });
+
+  it("is false for an unpinned empty column, which cannot be on screen anyway", () => {
+    expect(boardColumnCanHide("working", [], 0)).toBe(false);
   });
 });

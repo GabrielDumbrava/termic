@@ -233,7 +233,8 @@ export default {
     ageHours: "{{count}}h",
     ageDays: "{{count}}d",
     unknownProject: "Unknown project",
-    showColumn: "Show {{name}}",
+    showColumn: "Always show {{name}}",
+    hideColumn: "Stop always showing {{name}}",
   },
   activity: {
     windowTitle: "Activity",

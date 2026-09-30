@@ -233,7 +233,8 @@ export default {
     ageHours: "{{count}} 小时",
     ageDays: "{{count}} 天",
     unknownProject: "未知项目",
-    showColumn: "显示{{name}}",
+    showColumn: "始终显示{{name}}",
+    hideColumn: "不再始终显示{{name}}",
   },
   activity: {
     windowTitle: "活动",

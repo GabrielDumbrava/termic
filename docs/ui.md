@@ -285,7 +285,27 @@ columns floated mid-window with a screenful of nothing beside them.
 **An EMPTY state column is not rendered**, because columns of nothing push the
 ones with cards off screen (reported with a screenshot of exactly that). The
 hidden ones gather in an **Inactive** column at the right, one ordinary row
-each, name and a zero, click a row to bring its column back for the visit.
+each, name and a zero.
+
+A column is on the board when it **has cards OR is pinned**, and the two
+controls that set the pin are a pair:
+
+- a row in **Inactive** pins that column, so it is always shown, empty or not;
+- the **X** in a pinned column's header unpins it, so it goes back to hiding
+  when it empties.
+
+The X appears only on a column that is pinned AND empty (`boardColumnCanHide`).
+Never on a column holding cards: hiding one would put those cards out of sight,
+which is the single thing this board must not do. An unpinned empty column
+cannot be on screen to carry a button in the first place.
+
+The pin is a **setting** (`prefs.boardPinnedColumns`, localStorage, parsed by
+`parseBoardPinnedColumns`), not view state. It was `useState` in `BoardView`
+first, which meant it died with the unmount: pin a column, leave Kanban, come
+back, and it was hidden again. That was reported as the columns disappearing
+"quite random", which is what an invisible lifetime looks like from outside.
+The parser drops unknown ids (a hand-edited value, a column from a future
+build) and returns board order, so a pin can never reorder the board.
 
 That column is not a legend: each row carries the same `data-board-cell` +
 `data-column` a real column does, so a card dropped on a row runs the identical

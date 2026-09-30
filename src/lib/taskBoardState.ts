@@ -243,3 +243,44 @@ export function mergeReorderedGroup(projIds: string[], previewIds: string[]): st
   // Every group member gone mid-drag: nothing left to place the preview at.
   return inserted ? merged : null;
 }
+
+/** Columns the user has chosen to keep on the board even when they are empty.
+ *
+ *  A pin used to be component state ("show me that one now"), which meant it
+ *  died the moment BoardView unmounted: click a column open in the Inactive
+ *  list, switch away from Kanban and back, and it was gone again. Reported as
+ *  "quite random", which is what a lifetime you cannot see looks like. It is a
+ *  SETTING now, so the question it answers is "which columns do I always want
+ *  on this board", not "which one am I looking at right now".
+ *
+ *  Parsed defensively because it comes back from localStorage, where anything
+ *  can be: a hand-edited value, a column id from a future version, a duplicate
+ *  written by a older build. Unknown ids are dropped rather than rendered as
+ *  an empty column nothing can ever fill, and the result is always in board
+ *  order so a pin cannot reorder the board. */
+export function parseBoardPinnedColumns(raw: string | null | undefined): BoardStateColumn[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  const wanted = new Set(parsed.filter((c): c is string => typeof c === "string"));
+  // Filtering the canonical list, rather than the input, gives dedupe and
+  // board order for free.
+  return BOARD_STATE_COLUMNS.filter(c => wanted.has(c));
+}
+
+/** Whether a shown column offers a "hide this" button.
+ *
+ *  Only a PINNED and EMPTY column does. A column with tasks in it is on screen
+ *  because it has work, not because of the pin, so hiding it would drop cards
+ *  out of sight: that is the one thing the board must not do. An unpinned
+ *  empty column cannot be showing at all (it would be in the Inactive list),
+ *  so the button would be unreachable anyway; the check is written out because
+ *  the two conditions mean different things and only one of them is obvious. */
+export function boardColumnCanHide(
+  column: BoardStateColumn,
+  pinned: readonly BoardStateColumn[],
+  taskCount: number,
+): boolean {
+  return taskCount === 0 && pinned.includes(column);
+}

@@ -359,5 +359,65 @@ describe("board view", () => {
     await waitVisible(`[data-board-cell][data-column="${pin}"]:not([data-board-hidden-column])`);
     await waitGone(`[data-board-hidden-column="${pin}"]`);
     await snap("board-hidden-columns.png");
+
+    // Put it back, so the cases after this one see the fixture's own shape.
+    await browser.execute((col) => {
+      (document.querySelector(`[data-board-hide-column="${col}"]`) as HTMLElement).click();
+    }, pin);
+    await waitVisible(`[data-board-hidden-column="${pin}"]`);
+  });
+
+  // A pin is a SETTING. It was this view's state first, so leaving Kanban and
+  // coming back silently undid it, which is what "they disappear again, quite
+  // random" was: a lifetime tied to a mount you cannot see.
+  it("a pinned column survives leaving the board, and only offers to hide while empty", async () => {
+    await clickByText("Kanban");
+    await waitVisible('[data-testid="board-view"]');
+    const emptyCol = await browser.execute(() => {
+      const el = document.querySelector("[data-board-hidden-column]");
+      return el ? (el as HTMLElement).dataset.boardHiddenColumn ?? null : null;
+    }) as string | null;
+    if (!emptyCol) throw new Error("no empty column to pin: the fixture has changed shape");
+
+    await browser.execute((col) => {
+      (document.querySelector(`[data-board-hidden-column="${col}"]`) as HTMLElement).click();
+    }, emptyCol);
+    await waitVisible(`[data-board-cell][data-column="${emptyCol}"]:not([data-board-hidden-column])`);
+    // Empty and pinned, so it carries the control that undoes the pin.
+    await waitVisible(`[data-board-hide-column="${emptyCol}"]`);
+    await snap("board-pinned-column.png");
+
+    // The regression: leave the board entirely and come back.
+    await ensureActiveTask(t1);
+    await waitGone('[data-testid="board-view"]', 5_000);
+    await clickByText("Kanban");
+    await waitVisible('[data-testid="board-view"]');
+    await waitVisible(`[data-board-cell][data-column="${emptyCol}"]:not([data-board-hidden-column])`);
+
+    // It is stored, not just remembered in a closure: the pref is what the
+    // next launch reads.
+    const stored = await browser.execute(
+      () => window.__termic!.usePrefs.getState().boardPinnedColumns,
+    ) as string[];
+    expect(stored).toContain(emptyCol);
+
+    // A column holding cards must NOT offer to hide: the button would put
+    // those cards out of sight, which is the one thing the board must not do.
+    // backlog holds this spec's tasks.
+    await waitVisible('[data-board-cell][data-column="backlog"]');
+    const hideOnFull = await browser.execute(
+      () => !!document.querySelector('[data-board-hide-column="backlog"]'),
+    );
+    expect(hideOnFull).toBe(false);
+
+    // And the X puts it back, which is the other half of the pair.
+    await browser.execute((col) => {
+      (document.querySelector(`[data-board-hide-column="${col}"]`) as HTMLElement).click();
+    }, emptyCol);
+    await waitVisible(`[data-board-hidden-column="${emptyCol}"]`);
+    const after = await browser.execute(
+      () => window.__termic!.usePrefs.getState().boardPinnedColumns,
+    ) as string[];
+    expect(after).not.toContain(emptyCol);
   });
 });

@@ -41,7 +41,9 @@ import { applyLanguage, parseLanguagePref, LS_LANGUAGE, type LanguagePref } from
 import {
   BOARD_ARCHIVE_LIMIT_DEFAULT,
   parseBoardArchiveLimitMode,
+  parseBoardPinnedColumns,
   type BoardArchiveLimitMode,
+  type BoardStateColumn,
 } from "@/lib/taskBoardState";
 
 /** The two readouts an agent's footer chip can carry. */
@@ -90,6 +92,7 @@ const LS_TASK_EXPAND_MODE = scoped("taskExpandMode");
 const LS_HIDE_INACTIVE_PROJECTS = scoped("hideInactiveProjects");
 const LS_BOARD_ARCHIVE_LIMIT_MODE = scoped("boardArchiveLimitMode");
 const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
+const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_BRANCH_AS_TASK_NAME = "useBranchAsTaskName";
 const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
 const LS_CTRL_TAB_MODE = "ctrlTabMode";
@@ -779,6 +782,10 @@ interface PrefsState {
   /** The custom cap, used only while boardArchiveLimitMode is "custom";
    *  taken as-is (no bounds by design). */
   boardArchiveLimit: number;
+  /** Columns kept on the board even when empty. A pin is a SETTING, not a
+   *  this-visit toggle: it used to be BoardView state and did not survive the
+   *  view unmounting, which read as the column randomly disappearing. */
+  boardPinnedColumns: BoardStateColumn[];
   /** When true (GH #260), a WORKTREE task is labelled by its branch
    *  everywhere it is named in the UI, instead of by the title typed at
    *  creation. A week-old task's typed name goes stale; the branch is what
@@ -938,6 +945,7 @@ interface PrefsState {
   setHideInactiveProjects: (v: boolean) => void;
   setBoardArchiveLimitMode: (m: BoardArchiveLimitMode) => void;
   setBoardArchiveLimit: (n: number) => void;
+  setBoardPinnedColumns: (cols: readonly BoardStateColumn[]) => void;
   setUseBranchAsTaskName: (v: boolean) => void;
   setDoubleShiftMode: (v: DoubleShiftMode) => void;
   setCtrlTabMode: (v: CtrlTabMode) => void;
@@ -1161,6 +1169,7 @@ const initialBoardArchiveLimit = (() => {
   const n = lsGetNum(LS_BOARD_ARCHIVE_LIMIT, BOARD_ARCHIVE_LIMIT_DEFAULT);
   return Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
 })();
+const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
 const initialUseBranchAsTaskName = lsGet(LS_BRANCH_AS_TASK_NAME, "") === "1";
 // Absent means never set, and the gesture ships on, left-Shift only.
 const initialDoubleShiftMode: DoubleShiftMode = (() => {
@@ -1248,6 +1257,7 @@ export const usePrefs = create<PrefsState>(set => ({
   hideInactiveProjects: initialHideInactiveProjects,
   boardArchiveLimitMode: initialBoardArchiveLimitMode,
   boardArchiveLimit: initialBoardArchiveLimit,
+  boardPinnedColumns: initialBoardPinnedColumns,
   useBranchAsTaskName: initialUseBranchAsTaskName,
   doubleShiftMode: initialDoubleShiftMode,
   ctrlTabMode: initialCtrlTabMode,
@@ -1579,6 +1589,13 @@ export const usePrefs = create<PrefsState>(set => ({
     const v = Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
     try { localStorage.setItem(LS_BOARD_ARCHIVE_LIMIT, String(v)); } catch {}
     set({ boardArchiveLimit: v });
+  },
+  setBoardPinnedColumns: (cols) => {
+    // Normalised through the same parser the initial read uses, so the stored
+    // value and the in-memory one can never disagree about order or dupes.
+    const v = parseBoardPinnedColumns(JSON.stringify(cols));
+    try { localStorage.setItem(LS_BOARD_PINNED_COLUMNS, JSON.stringify(v)); } catch {}
+    set({ boardPinnedColumns: v });
   },
   setUseBranchAsTaskName: (v) => {
     try { localStorage.setItem(LS_BRANCH_AS_TASK_NAME, v ? "1" : "0"); } catch {}

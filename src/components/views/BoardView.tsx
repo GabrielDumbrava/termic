@@ -32,7 +32,7 @@
 
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Archive, Check, GitPullRequest, Zap } from "lucide-react";
+import { Archive, Check, GitPullRequest, X, Zap } from "lucide-react";
 import { EMPTY_TABS, selectTaskTabs, useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
@@ -47,6 +47,7 @@ import { taskWorkBadge, type WorkStatePrefs } from "@/lib/taskWorkState";
 import {
   BOARD_STATE_COLUMNS,
   boardCellGroups,
+  boardColumnCanHide,
   boardDropCommand,
   boardLanes,
   mergeReorderedGroup,
@@ -228,9 +229,22 @@ export function BoardView() {
     () => recentArchived(archivedAll, resolveBoardArchiveLimit(boardArchiveLimitMode, boardArchiveLimitCustom)),
     [archivedAll, boardArchiveLimitMode, boardArchiveLimitCustom],
   );
-  /** Columns the user has pinned open from the hidden strip, for this view's
-   *  lifetime only: a pin is a "show me that one now", not a setting. */
-  const [pinnedCols, setPinnedCols] = useState<readonly BoardStateColumn[]>([]);
+  /** Columns the user keeps on the board even when they are empty. A PREF,
+   *  not view state: as component state the pin died with the unmount, so
+   *  clicking a column open and then leaving Kanban and coming back lost it,
+   *  which is what "it disappears again, quite random" was. */
+  const pinnedCols = usePrefs(s => s.boardPinnedColumns);
+  const setBoardPinnedColumns = usePrefs(s => s.setBoardPinnedColumns);
+  const pinColumn = useCallback(
+    (c: BoardStateColumn) => setBoardPinnedColumns(
+      pinnedCols.includes(c) ? pinnedCols : [...pinnedCols, c],
+    ),
+    [pinnedCols, setBoardPinnedColumns],
+  );
+  const unpinColumn = useCallback(
+    (c: BoardStateColumn) => setBoardPinnedColumns(pinnedCols.filter(x => x !== c)),
+    [pinnedCols, setBoardPinnedColumns],
+  );
   const colTasks = useMemo(() => {
     const cols: Record<BoardStateColumn, Task[]> = { backlog: [], attention: [], working: [], review: [], settled: [] };
     for (const w of liveTasks) {
@@ -496,6 +510,7 @@ export function BoardView() {
                 dragTarget={drag?.target ?? null}
                 dragSourceId={drag?.taskId ?? null}
                 dragHint={col === "settled" ? !!drag?.canSettle : col === "review" ? !!drag?.canCreatePr : false}
+                onHide={boardColumnCanHide(col, pinnedCols, colTasks[col].length) ? unpinColumn : null}
                 onCardPointerDown={onCardPointerDown}
                 onCardClick={onCardClick}
               />
@@ -542,20 +557,26 @@ export function BoardView() {
               )}
             </section>
 
-            {/* What is not on screen, and how to get it back. A thin rail
-                rather than a menu: it has to say the columns still exist (a
-                board that silently drops "Working" reads as a bug) without
-                costing the width the hiding just bought. Click one to pin it
-                open for this visit; it is not a setting. */}
             {/* Inactive columns: one ordinary column holding the ones with
                 nothing in them, rather than a thin rail of vertical text (the
-                first shape, and it read as a glitch). Each row is still that
-                column's own drop target, carrying the `data-board-cell` +
-                `data-column` the drag handler reads, so hiding a column never
-                takes its command with it: Settled clears the work state and In
-                review opens the PR dialog, and both are emptiest exactly when
-                you want to drop into them. Click a row to bring its column
-                back for this visit. */}
+                first shape, and it read as a glitch). It has to say the
+                columns still exist, because a board that silently drops
+                "Working" reads as a bug, without costing the width the hiding
+                just bought.
+
+                Each row is still that column's own drop target, carrying the
+                `data-board-cell` + `data-column` the drag handler reads, so
+                hiding a column never takes its command with it: Settled
+                clears the work state and In review opens the PR dialog, and
+                both are emptiest exactly when you want to drop into them.
+
+                Clicking a row PINS that column, and a pin is a setting that
+                outlives the view (`prefs.boardPinnedColumns`). It was this
+                component's state first, which meant leaving Kanban and coming
+                back silently undid it. The pair of controls is the whole
+                feature: this list decides what is always shown, and the X on
+                an empty pinned column's header decides what goes back to
+                being hidden when it empties. */}
             {hiddenCols.length > 0 && (
               <section
                 data-testid="board-hidden-columns"
@@ -579,7 +600,7 @@ export function BoardView() {
                       data-board-cell
                       data-column={c}
                       aria-label={t("board.showColumn", { name: t(COL_LABEL[c]) })}
-                      onClick={() => setPinnedCols(prev => prev.includes(c) ? prev : [...prev, c])}
+                      onClick={() => pinColumn(c)}
                       className={cn(
                         "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px]",
                         "text-[var(--color-fg-faint)] transition-colors",
@@ -662,7 +683,7 @@ function groupByLane(tasks: Task[], laneIds: string[]): { lane: string; tasks: T
 // render stops at BoardView itself. Before the memo, a drag over a 50-card
 // board reconciled every column, group and card at input frequency.
 
-const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTasks, projectOrder, projectById, projectAccent, ctx, preview, dragTarget, dragSourceId, dragHint, onCardPointerDown, onCardClick }: {
+const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTasks, projectOrder, projectById, projectAccent, ctx, preview, dragTarget, dragSourceId, dragHint, onHide, onCardPointerDown, onCardClick }: {
   column: BoardStateColumn;
   laneIds: string[];
   /** The column's cards, straight from the memoized colTasks map. Split
@@ -679,6 +700,11 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
    *  command (drop-on-Settled / drop-on-In-review); shows the dashed hint
    *  the whole drag, the way the Archived column advertises itself. */
   dragHint: boolean;
+  /** Set only when this column is on the board BECAUSE it is pinned and has
+   *  nothing in it. Null on a column holding tasks, so the button cannot put
+   *  cards out of sight, and null on an unpinned one, which is not showing at
+   *  all. `boardColumnCanHide` owns that rule. */
+  onHide: ((c: BoardStateColumn) => void) | null;
   onCardPointerDown: (e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => void;
   onCardClick: (w: Task) => void;
 }) {
@@ -708,6 +734,21 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
         >
           {count}
         </span>
+        {/* Undo the pin. Present only on an empty pinned column, so the
+            button never removes a column with cards in it. No confirm: it
+            puts the column back in the Inactive list, one click away. */}
+        {onHide && (
+          <button
+            type="button"
+            data-board-hide-column={column}
+            aria-label={t("board.hideColumn", { name: t(COL_LABEL[column]) })}
+            title={t("board.hideColumn", { name: t(COL_LABEL[column]) })}
+            onClick={() => onHide(column)}
+            className="-mr-1 shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
       </header>
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pb-2.5">
         {dragHint && (
