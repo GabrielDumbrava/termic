@@ -1295,22 +1295,20 @@ export function NewTaskDialog() {
       // gutter, so N columns is N*base - (N-1)*0.5rem (content = N*(base-2.5)
       // + (N-1)*2rem gutter, + 2.5rem padding). Everything is in REM so,
       // whatever the root font-size (14px here), each flex-1 column resolves to
-      // the SAME width as the single-column form — the left never changes, only
-      // columns are added.
-      //
-      // Only the literals below exist; a computed `max-w-[${n}rem]` would not
-      // survive Tailwind's source scan. The three-column case is only ever
-      // 36rem-based: issue mode is single-repo-git only (no 3xl) and turns
-      // import mode off (no 2xl), so 3*36 - 1 = 107rem is the one width it
-      // needs. That is wider than most screens, which is fine — max-width, so
-      // it shrinks, exactly as the 95.5rem multi+sandbox case already does.
-      className={
-        issueMode && sandbox
-          ? "max-w-[107rem]"
-          : issueMode || sandbox
-            ? (isMulti ? "max-w-[95.5rem]" : importMode || checkoutMode ? "max-w-[83.5rem]" : "max-w-[71.5rem]")
-            : (isMulti ? "max-w-3xl" : importMode || checkoutMode ? "max-w-2xl" : "max-w-xl")
-      }
+      // ONE width, always. It used to be a six-way ternary (issue+sandbox,
+      // issue-or-sandbox times multi/import/checkout, then three more for the
+      // plain form), so the dialog jumped between four visible widths as you
+      // clicked through the sources, and PR mode was not in the matrix at all,
+      // which is how a FOURTH column appeared. Two columns of ~36rem, fixed,
+      // whatever is showing. Still a max-width, so it shrinks on a small
+      // screen exactly as before.
+      // Two widths, and they depend on exactly ONE thing: whether there is a
+      // right column. One fixed width would leave the plain form sprawling
+      // across an empty dialog; six (the old matrix: issue+sandbox, then
+      // issue-or-sandbox times multi/import/checkout, then three more) made
+      // the dialog jump as you clicked through the sources, and PR mode was
+      // not in it at all, which is how a FOURTH column appeared.
+      className={prMode || issueMode || sandbox ? "max-w-[72rem]" : "max-w-xl"}
       // A long worktree form (sandbox panel, multi-repo members, …) can
       // exceed the viewport — pin Cancel/Create to the bottom instead of
       // letting them scroll away with the fields (the user has to be able
@@ -1337,15 +1335,13 @@ export function NewTaskDialog() {
         onSubmit={(e) => { e.preventDefault(); submit(); }}
         className="mt-1.5 flex flex-col gap-4"
       >
-      {/* Columns row: the left form, then up to two more columns — the issue
-          picker when starting from an issue, the sandbox config when a cage is
-          enabled. Left is flex-1 (can't overflow); so is every added column,
-          and the dialog max-width (above) is sized in REM so each column
-          resolves to the SAME width whichever of them are showing.
-
-          Issues sit BEFORE sandbox because picking one writes into the form
-          beside it (name, branch, prompt), so the two want to be adjacent;
-          the cage is set-and-forget. */}
+      {/* Two columns, never more. Left is the form. Right is whatever context
+          the chosen source needs (the PR picker or the issue list) with the
+          sandbox config stacked UNDER it, rather than each claiming a column
+          of its own and pushing the dialog wider, which is how a FOURTH column
+          appeared. The picker goes on top because choosing an issue or a PR
+          writes into the form beside it (name, branch, prompt), so the two
+          want to be adjacent; the cage is set-and-forget. */}
       <div className="flex">
       <div className="flex min-w-0 flex-1 flex-col gap-4">
         {/* Every field uses the same structure: label on its own line, optional
@@ -1353,49 +1349,6 @@ export function NewTaskDialog() {
             the segmented controls next to the label and put hints on the same
             line as the label — both caused the spacing weirdness + wrapped
             hint text. */}
-        {/* Worktree picker — replaces the branch fields in import mode. */}
-        {importMode && (
-          <Field label={t("newTask.existingWorktreeLabel")} hint={t("newTask.existingWorktreeHint")}>
-            {importLoading ? (
-              <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.scanningWorktrees")}
-              </div>
-            ) : importList.length === 0 ? (
-              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-                <Trans ns="dialogs" i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
-              </div>
-            ) : (
-              <div className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
-                {importList.map(wt => (
-                  <button
-                    key={wt.path}
-                    type="button"
-                    onClick={() => pickImport(wt)}
-                    title={wt.path}
-                    className={cn(
-                      "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
-                      importSelected === wt.path && "bg-[var(--color-accent-deep)]/10",
-                    )}
-                  >
-                    <FolderGit2 className={cn("h-4 w-4 shrink-0", importSelected === wt.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13px] text-[var(--color-fg)]">
-                        {wt.branch || <span className="italic text-[var(--color-fg-dim)]">{t("newTask.detached", { head: wt.head })}</span>}
-                      </div>
-                      <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{wt.path}</div>
-                    </div>
-                    {importSelected === wt.path && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </Field>
-        )}
-
-        {/* Worktree vs repo-root toggle. Repo root hides the branch fields
-            (and, for multi, the per-member list: every member runs live) and
-            creates in the repo's live checkout. Non-git projects can't
-            worktree, so the Worktree button is disabled there. */}
         {/* Two levels, top to bottom: WHAT kind of task, then WHERE it comes
             from. They were a segmented control plus four buttons in the title
             line, which read as five unrelated switches; as tabs and sub-tabs
@@ -1493,6 +1446,47 @@ export function NewTaskDialog() {
               : (isMulti ? t("newTask.descRootMulti") : t("newTask.descRootSingle"))}
           </p>
         </div>
+
+        {/* The worktree being adopted, UNDER the tabs. It rendered above them,
+            which put the answer before the question: you saw a worktree
+            selector and only then the row saying what kind of task this is. */}
+        {importMode && (
+          <Field label={t("newTask.existingWorktreeLabel")} hint={t("newTask.existingWorktreeHint")}>
+            {importLoading ? (
+              <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.scanningWorktrees")}
+              </div>
+            ) : importList.length === 0 ? (
+              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
+                <Trans ns="dialogs" i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
+              </div>
+            ) : (
+              <div className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
+                {importList.map(wt => (
+                  <button
+                    key={wt.path}
+                    type="button"
+                    onClick={() => pickImport(wt)}
+                    title={wt.path}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
+                      importSelected === wt.path && "bg-[var(--color-accent-deep)]/10",
+                    )}
+                  >
+                    <FolderGit2 className={cn("h-4 w-4 shrink-0", importSelected === wt.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] text-[var(--color-fg)]">
+                        {wt.branch || <span className="italic text-[var(--color-fg-dim)]">{t("newTask.detached", { head: wt.head })}</span>}
+                      </div>
+                      <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{wt.path}</div>
+                    </div>
+                    {importSelected === wt.path && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </Field>
+        )}
 
         {/* Name + branch fields grouped tightly (gap-2, vs. gap-4 between
             fields elsewhere): the branch is DERIVED from the name (see
@@ -2023,10 +2017,17 @@ export function NewTaskDialog() {
           Picking a row fills Name, Branch and Initial prompt on the left, all
           of which stay editable. That is the whole point of it being beside
           the form rather than above it: you see what the choice did. */}
+      {/* THE right column: at most one contextual pane (PR or issue, never
+          both, since choosing a source turns the other off) and the sandbox
+          config beneath it. Previously each of these was its own flex-1
+          column, so a PR pane plus an issue pane plus a cage made four
+          columns and a dialog wider than most screens. */}
+      {(prMode || issueMode || sandbox) && (
+        <div className="ml-8 flex min-w-0 flex-1 flex-col gap-6 overflow-y-auto border-l border-[var(--color-border-soft)] pl-6">
       {prMode && (
         <div
           data-testid="pr-column"
-          className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6"
+          className="flex min-w-0 flex-col gap-3"
         >
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
             {t("newTask.prColumnTitle")}
@@ -2111,7 +2112,7 @@ export function NewTaskDialog() {
         <div
           data-testid="issue-column"
           data-issue-picked={issueSelected ? String(issueSelected.number) : undefined}
-          className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6"
+          className="flex min-w-0 flex-col gap-3"
         >
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
             {t("newTask.issueColumnTitle")}
@@ -2217,7 +2218,7 @@ export function NewTaskDialog() {
           it matches the left; the dialog is sized to 2x base). Rendered ONLY
           when a cage is enabled, so there's no ghost width/height when off. */}
       {sandbox && (
-        <div className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6">
+        <div className="flex min-w-0 flex-col gap-3">
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
             {t("newTask.sandboxConfigTitle")}
           </div>
@@ -2266,6 +2267,8 @@ export function NewTaskDialog() {
               {t("newTask.enforceFsNote")}
             </p>
           )}
+        </div>
+      )}
         </div>
       )}
       </div>{/* end columns row */}

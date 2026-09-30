@@ -472,15 +472,32 @@ open issues" and mean something else entirely.
 
 ### The issue picker is a COLUMN, not a field
 
-It sits beside the form as a second pane, the same treatment the sandbox config
-gets, and the two compose: with both open the dialog is three columns (see the
-`className` width math in `NewTaskDialog.tsx` - N columns is `N*base - (N-1)*0.5`
-rem, and only literal Tailwind classes survive the source scan, so each width is
-written out). Issues come BEFORE sandbox because picking one writes into the
-fields beside it; the cage is set-and-forget.
+It sits beside the form as a second pane, the same treatment the PR picker and
+the sandbox config get.
 
 It was inline above the form first. That put a 220px scrolling list inside a
 dialog you were already scrolling, and hid the effect of a pick below the fold.
+
+### The new-task dialog has TWO columns and TWO widths
+
+Left is the form. Right is whatever context the chosen source needs (the issue
+list, or the PR picker) with the sandbox config stacked **under** it. Nothing
+gets a third column.
+
+The dialog's width depends on exactly one thing: whether that right column
+exists. `max-w-xl` without it, `max-w-[72rem]` with it.
+
+Both rules are there because the obvious composition is wrong. Each pane used
+to own a column and carry its own `ml-8 border-l pl-6`, and the width was a
+six-way ternary over (issue AND sandbox), (issue OR sandbox) x (multi, import,
+checkout). So the dialog jumped between four visible widths as you clicked
+through the sources, and when the PR picker arrived it was not in the matrix at
+all, which is how a FOURTH column appeared. A per-pane column does not scale:
+every new source is another multiplication. A single stacked right column is
+the same layout whatever is in it.
+
+One fixed width for both cases is not the answer either. The plain form is one
+narrow column, and at 72rem it sprawls across an empty dialog.
 
 ### A pick fills the form; it does not send anything
 
