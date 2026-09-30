@@ -8,7 +8,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
-  SandboxMode, TaskDiffSummary, CliInstallStatus, McpStatus, BranchContext, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
+  SandboxMode, TaskDiffSummary, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
   ForgeCliStatus, PrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
 } from "./types";
@@ -896,6 +896,19 @@ export const projectForgeProvider = (projectId: string) =>
  *  task exists). Network-bound via the forge CLI. */
 export const projectForgeIssues = (projectId: string, limit?: number) =>
   invoke<IssueLookup>("project_forge_issues", { projectId, limit: limit ?? null });
+
+/** YOUR open PRs for a project's repo, or one PR by number. See `ForgePr` for
+ *  why the list is only yours. */
+export const projectForgePrs = (projectId: string, opts?: { limit?: number; number?: number }) =>
+  invoke<PrPickList>("project_forge_prs", {
+    projectId, limit: opts?.limit ?? null, number: opts?.number ?? null,
+  });
+
+/** Fetch a PR's head into a local branch and get its name back, so the
+ *  existing check-out-a-branch worktree path can take it from there. */
+export const projectFetchPrBranch = (
+  projectId: string, number: number, headRef: string, crossRepository: boolean,
+) => invoke<string>("project_fetch_pr_branch", { projectId, number, headRef, crossRepository });
 /** Push the branch (sets upstream if needed) + create the PR/MR, then
  *  return the fresh lookup. */
 export const taskPrCreate = (id: string, title: string, body: string, base: string, draft: boolean) =>

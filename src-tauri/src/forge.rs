@@ -972,6 +972,111 @@ fn parse_github_issues(v: &serde_json::Value) -> Vec<ForgeIssue> {
         .collect()
 }
 
+/// One pull request, enough for the picker and for composing a prompt.
+///
+/// Deliberately NOT a general PR search. The picker lists only the signed-in
+/// user's own open PRs, because "every open PR" is unusable at real scale: the
+/// maintainer's day job has ~1,300 of them, and a list that long is slower to
+/// fetch, slower to read and never what you wanted anyway. Anything else is
+/// reached by typing its number, which is one API call rather than a page.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ForgePr {
+    pub provider: String,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub body: String,
+    pub author: String,
+    /// The PR's source branch name, which is what the worktree gets called.
+    pub head_ref: String,
+    /// True when the head lives in a FORK. `refs/pull/<n>/head` is fetched the
+    /// same way either way, but the local branch is named differently to avoid
+    /// colliding with a same-named branch of our own.
+    pub cross_repository: bool,
+    pub draft: bool,
+    /// RFC3339 UTC, for "updated 3 days ago" style ordering.
+    pub updated_at: String,
+}
+
+const PR_JSON_FIELDS: &str =
+    "number,title,url,body,author,headRefName,isCrossRepository,isDraft,updatedAt";
+
+/// The signed-in user's own open PRs. See `ForgePr` for why it is only theirs.
+pub fn pr_list_mine(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
+    let cli = cli_for_provider(provider);
+    let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    match provider {
+        GITLAB => Err(ForgeError::Other(
+            "Picking a merge request is not wired up for GitLab yet. Paste the number instead.".into(),
+        )),
+        _ => {
+            let n = limit.to_string();
+            let o = run(
+                &bin,
+                &["pr", "list", "--author", "@me", "--state", "open", "--limit", &n,
+                  "--json", PR_JSON_FIELDS],
+                Some(cwd),
+            )
+            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            if !o.status.success() {
+                return Err(classify_failure(GITHUB, &o));
+            }
+            let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+                .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
+            Ok(parse_github_prs(&v))
+        }
+    }
+}
+
+/// One PR by number, for the "paste a number" path. The number may be typed,
+/// pasted with a `#`, or pasted as a whole URL; the caller has already reduced
+/// it to a number.
+pub fn pr_by_number(provider: &str, cwd: &Path, number: u64) -> Result<Option<ForgePr>, ForgeError> {
+    let cli = cli_for_provider(provider);
+    let bin = resolve_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    if provider == GITLAB {
+        return Err(ForgeError::Other(
+            "Opening a merge request by number is not wired up for GitLab yet.".into(),
+        ));
+    }
+    let n = number.to_string();
+    let o = run(&bin, &["pr", "view", &n, "--json", PR_JSON_FIELDS], Some(cwd))
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        let err = stderr_of(&o).to_lowercase();
+        // "no pull requests found" is an answer, not a failure: the number is
+        // simply wrong, and the picker says so without a red banner.
+        if err.contains("no pull requests found") || err.contains("could not resolve") || err.contains("not found") {
+            return Ok(None);
+        }
+        return Err(classify_failure(GITHUB, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
+    // `pr view` returns one object; `pr list` an array. Reuse one parser.
+    Ok(parse_github_prs(&serde_json::Value::Array(vec![v])).into_iter().next())
+}
+
+fn parse_github_prs(v: &serde_json::Value) -> Vec<ForgePr> {
+    v.as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .map(|i| ForgePr {
+            provider: GITHUB.into(),
+            number: i["number"].as_u64().unwrap_or(0),
+            title: i["title"].as_str().unwrap_or("").trim().to_string(),
+            url: i["url"].as_str().unwrap_or("").to_string(),
+            body: i["body"].as_str().unwrap_or("").trim().to_string(),
+            author: i["author"]["login"].as_str().unwrap_or("").to_string(),
+            head_ref: i["headRefName"].as_str().unwrap_or("").to_string(),
+            cross_repository: i["isCrossRepository"].as_bool().unwrap_or(false),
+            draft: i["isDraft"].as_bool().unwrap_or(false),
+            updated_at: norm_time(i["updatedAt"].as_str().unwrap_or("")),
+        })
+        .filter(|p| p.number > 0)
+        .collect()
+}
+
 fn gitlab_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
     // The REST API, not `glab issue list`: the CLI's JSON output has moved
     // around across versions, while the notes/issues endpoints have not.
@@ -1129,6 +1234,56 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(provider_for_remote("https://gitlab.example.io/foo/bar.git"), Some(GITLAB));
         assert_eq!(provider_for_remote("https://bitbucket.org/foo/bar"), None);
         assert_eq!(provider_for_remote(""), None);
+    }
+
+    #[test]
+    fn github_pr_parsing() {
+        // Synthetic, transcribed shape, never a paste: placeholder owners and
+        // branch names only (see CLAUDE.md on fixtures).
+        let v: serde_json::Value = serde_json::from_str(r#"[
+            {"number": 12, "title": "  Fix the login redirect  ", "url": "https://github.com/acme/web/pull/12",
+             "body": " needs a second pair of eyes ", "author": {"login": "alice"},
+             "headRefName": "fix-login", "isCrossRepository": false, "isDraft": false,
+             "updatedAt": "2026-09-30T08:00:00Z"},
+            {"number": 13, "title": "Bump deps", "url": "https://github.com/acme/web/pull/13",
+             "body": "", "author": {"login": "bob"},
+             "headRefName": "deps", "isCrossRepository": true, "isDraft": true,
+             "updatedAt": "2026-09-29T08:00:00Z"},
+            {"number": 0, "title": "malformed", "author": {"login": "x"}}
+        ]"#).unwrap();
+        let prs = parse_github_prs(&v);
+        // The malformed row (no real number) is dropped, exactly as the issue
+        // parser drops its own.
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].number, 12);
+        assert_eq!(prs[0].title, "Fix the login redirect");   // trimmed
+        assert_eq!(prs[0].body, "needs a second pair of eyes");
+        assert_eq!(prs[0].author, "alice");
+        assert_eq!(prs[0].head_ref, "fix-login");
+        assert!(!prs[0].cross_repository);
+        assert!(!prs[0].draft);
+        // The fork + draft row, which is what decides the local branch name
+        // and the picker's badge.
+        assert!(prs[1].cross_repository);
+        assert!(prs[1].draft);
+        assert_eq!(prs[1].head_ref, "deps");
+    }
+
+    #[test]
+    fn a_single_pr_view_parses_like_a_list_of_one() {
+        // `gh pr view` returns ONE object where `pr list` returns an array.
+        // pr_by_number wraps it so both go through the same parser; this pins
+        // that the wrap works, because the by-number path is the one a person
+        // reaches for when the picker does not list what they want.
+        let one: serde_json::Value = serde_json::from_str(r#"
+            {"number": 99, "title": "Paste me", "url": "https://github.com/acme/web/pull/99",
+             "body": "b", "author": {"login": "alice"}, "headRefName": "paste-me",
+             "isCrossRepository": false, "isDraft": false, "updatedAt": "2026-09-30T08:00:00Z"}
+        "#).unwrap();
+        let prs = parse_github_prs(&serde_json::Value::Array(vec![one]));
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 99);
+        assert_eq!(prs[0].head_ref, "paste-me");
     }
 
     #[test]

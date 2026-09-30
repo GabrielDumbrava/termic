@@ -2544,6 +2544,26 @@ describe("start a task from an issue", () => {
     if (taskId) await archiveTask(taskId);
   });
 
+  // Starting a task from a PULL REQUEST. The list is only YOUR open PRs and
+  // anything else is reached by number, because "every open PR" does not scale
+  // (the maintainer's work repo has ~1,300). Like the issue cases beside it,
+  // this asserts the parts that do not need a live gh: the no-forge answer,
+  // and the number parsing that decides what gets looked up.
+  it("reports no pull requests for a repo that is not on a forge", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const res = await browser.execute(async () => {
+      const t = window.__termic!;
+      const proj = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
+      return await t.invoke("project_forge_prs", { projectId: proj.id, limit: null, number: null });
+    }) as { status: string; prs: unknown[]; message: string };
+    // A status the dialog can draw a sentence from, never a thrown error: the
+    // fixture pushes to a local bare repo, which is not a failure.
+    expect(["no-remote", "unsupported-remote"]).toContain(res.status);
+    expect(res.prs).toEqual([]);
+    expect(res.message.length).toBeGreaterThan(0);
+  });
+
   it("resolves the fixture repo as NOT a forge, so no issue UI is offered", async () => {
     await waitForAppShell();
     await requireTermicApi();

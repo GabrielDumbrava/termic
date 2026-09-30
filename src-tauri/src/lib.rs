@@ -13077,6 +13077,132 @@ fn issue_lookup_blocking(project_id: &str, limit: u32) -> Result<IssueLookup, St
     }
 }
 
+#[derive(Serialize)]
+struct PrPickList {
+    provider: Option<String>,
+    remote_url: String,
+    status: String,
+    message: String,
+    prs: Vec<forge::ForgePr>,
+}
+
+/// The signed-in user's own open PRs for a PROJECT, and the by-number lookup
+/// beside it. Same shape as `issue_lookup_blocking`, including its habit of
+/// reporting "no remote" / "cli missing" as a STATUS rather than an error: the
+/// New Task dialog draws a sentence, never a red banner, for a repo that simply
+/// has no forge.
+fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>) -> Result<PrPickList, String> {
+    let p = load_projects_all()
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or("no project")?;
+    let cwd = PathBuf::from(&p.root_path);
+    let (provider, remote_url) = forge::provider_for_repo(&cwd, &detect_default_remote(&cwd));
+    let none = |status: &str, message: String| PrPickList {
+        provider: None,
+        remote_url: remote_url.clone(),
+        status: status.into(),
+        message,
+        prs: Vec::new(),
+    };
+    if remote_url.is_empty() {
+        return Ok(none("no-remote", "No git remote configured, so there are no pull requests to pull from.".into()));
+    }
+    let Some(provider) = provider else {
+        return Ok(none("unsupported-remote", format!("Remote {remote_url} is not a GitHub or GitLab host.")));
+    };
+    let with = |status: &str, message: String, prs: Vec<forge::ForgePr>| PrPickList {
+        provider: Some(provider.to_string()),
+        remote_url: remote_url.clone(),
+        status: status.into(),
+        message,
+        prs,
+    };
+    let result = match number {
+        // One number: `pr view`. Not found is a status, not an error, because
+        // a mistyped number is the ordinary case on this path.
+        Some(n) => forge::pr_by_number(provider, &cwd, n).map(|o| o.into_iter().collect::<Vec<_>>()),
+        None => forge::pr_list_mine(provider, &cwd, limit),
+    };
+    match result {
+        Ok(prs) if prs.is_empty() && number.is_some() => {
+            Ok(with("not-found", format!("No pull request #{} in this repo.", number.unwrap_or(0)), Vec::new()))
+        }
+        Ok(prs) => Ok(with("ok", String::new(), prs)),
+        Err(forge::ForgeError::CliMissing(cli)) => Ok(with(
+            "cli-missing",
+            format!("The {cli} CLI is not installed. Install it (e.g. `brew install {cli}`) to start a task from a pull request."),
+            Vec::new(),
+        )),
+        Err(forge::ForgeError::Auth(msg)) => Ok(with("cli-unauthed", msg, Vec::new())),
+        Err(forge::ForgeError::Other(msg)) => Ok(with("error", msg, Vec::new())),
+    }
+}
+
+#[tauri::command]
+async fn project_forge_prs(project_id: String, limit: Option<u32>, number: Option<u64>) -> Result<PrPickList, String> {
+    let limit = limit.unwrap_or(30).clamp(1, 100);
+    tauri::async_runtime::spawn_blocking(move || pr_picker_blocking(&project_id, limit, number))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Fetch a PR's head into a LOCAL branch and return its name, so the existing
+/// "check out an existing branch into a worktree" path can do the rest.
+///
+/// `refs/pull/<n>/head` is the universal spelling: GitHub publishes it for a
+/// fork's PR exactly as for a branch in the repo itself, which is what makes
+/// this one code path instead of two. (It is also what `gh pr checkout` fetches
+/// for a fork.) Nothing is checked out here and no worktree is made: this only
+/// puts the commits and a branch pointer in the repo.
+#[tauri::command]
+async fn project_fetch_pr_branch(
+    project_id: String,
+    number: u64,
+    head_ref: String,
+    cross_repository: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let p = load_projects_all()
+            .into_iter()
+            .find(|p| p.id == project_id)
+            .ok_or("no project")?;
+        let repo = PathBuf::from(&p.root_path);
+        let remote = detect_default_remote(&repo);
+        // A fork's branch name is not ours to claim: two contributors both
+        // opening `fix-login` would collide, and so would a fork branch named
+        // after one of our own. Prefix those; keep the plain name for a PR
+        // whose head is in this repo, which is what a person expects to see.
+        let base = if head_ref.trim().is_empty() {
+            format!("pr-{number}")
+        } else if cross_repository {
+            format!("pr-{number}-{}", head_ref.trim())
+        } else {
+            head_ref.trim().to_string()
+        };
+        // An existing branch of that name is not overwritten: a fetch with `+`
+        // would rewrite whatever the user had there, which for a same-repo PR
+        // is plausibly their own in-progress work.
+        let taken = git(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{base}")], &repo).is_ok();
+        let branch = if taken { format!("pr-{number}") } else { base };
+        let taken2 = git(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], &repo).is_ok();
+        if taken2 {
+            // Already fetched once: leave it alone and let the caller check it
+            // out. Re-fetching would either fail or move a branch the user may
+            // have committed onto.
+            return Ok(branch);
+        }
+        git(
+            &["fetch", &remote, &format!("refs/pull/{number}/head:refs/heads/{branch}")],
+            &repo,
+        )
+        .map_err(|e| format!("could not fetch pull request #{number}: {e}"))?;
+        Ok(branch)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Which forge (if any) a project's repo is hosted on. Cached and NETWORK
 /// FREE - one `git remote get-url` per repo per 5 minutes, then a map read.
 /// This is what every forge surface gates on, so it is safe to call on each
@@ -23999,7 +24125,7 @@ pub fn run() {
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
             detect_forges, task_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
-            project_forge_issues, project_forge_provider,
+            project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch,
             task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             scratch_list, scratch_read, scratch_write, scratch_set_meta, scratch_delete,

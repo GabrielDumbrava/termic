@@ -14,7 +14,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { defaultCliFirst, visibleCliIds, isTerminalCli, agentDisplayName } from "@/lib/agents";
-import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches, projectBranchContext, dockerImageStatus, type DockerImageStatus } from "@/lib/ipc";
+import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches, projectBranchContext, dockerImageStatus, type DockerImageStatus, projectForgePrs, projectFetchPrBranch} from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
 import { seedPromptWhenReady, SETUP_SPAWN_DEADLINE_MS } from "@/lib/seedPrompt";
 import { MAX_PROMPT_CHARS } from "@/lib/deepLink";
@@ -22,12 +22,12 @@ import { withCreateLock } from "@/lib/createLock";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { uniqueBranch, derivedBranch } from "@/lib/quickTask";
 import { cn } from "@/lib/utils";
-import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X } from "lucide-react";
+import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X, GitPullRequest} from "lucide-react";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
 import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
-import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext, type Settings } from "@/lib/types";
+import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext, type Settings, type PrPickList, type ForgePr } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuePrompt, issueBranch, issueTaskName } from "@/lib/issuePrompt";
@@ -405,6 +405,16 @@ export function NewTaskDialog() {
   const [checkoutBranch, setCheckoutBranch] = useState("");
   const [checkoutRefs, setCheckoutRefs] = useState<BranchContext | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  // Pull request mode. Deliberately not a general PR browser: the list is only
+  // YOUR open PRs, and anything else is reached by typing its number. "Every
+  // open PR" does not scale (1,300 of them on the maintainer's work repo), and
+  // a list that long is slower to fetch, slower to read and rarely the one you
+  // came for.
+  const [prMode, setPrMode] = useState(false);
+  const [prLookup, setPrLookup] = useState<PrPickList | null>(null);
+  const [prLoading, setPrLoading] = useState(false);
+  const [prQuery, setPrQuery] = useState("");
+  const [prBusy, setPrBusy] = useState(0);
   // Resume-args override, set at create so it applies from the FIRST spawn.
   // Exactly the field the task menu's "Resume override" edits
   // (Task.resume_override, task_set_resume_override): same storage, same
@@ -820,6 +830,81 @@ export function NewTaskDialog() {
     setErr(null);
   }
 
+  function enterPrs() {
+    if (!projectId) return;
+    setPrMode(true);
+    setImportMode(false);
+    setImportSelected(null);
+    if (issueMode) exitIssues();
+    setCheckoutMode(false);
+    setErr(null);
+    setPrQuery("");
+    setPrLoading(true);
+    projectForgePrs(projectId)
+      .then(setPrLookup)
+      .catch(e => setErr(String(e)))
+      .finally(() => setPrLoading(false));
+  }
+
+  function exitPrs() {
+    setPrMode(false);
+    setPrLookup(null);
+    setPrQuery("");
+    setErr(null);
+  }
+
+  /** A pasted "123", "#123" or a full PR URL, reduced to a number. Returns 0
+   *  for anything else, which the caller reports rather than guessing at. */
+  function parsePrQuery(raw: string): number {
+    const t = raw.trim();
+    const fromUrl = t.match(/\/pull\/(\d+)/) ?? t.match(/\/merge_requests\/(\d+)/);
+    const n = Number(fromUrl ? fromUrl[1] : t.replace(/^#/, ""));
+    return Number.isInteger(n) && n > 0 ? n : 0;
+  }
+
+  /** Turn a PR into a branch this repo has, then hand over to the ordinary
+   *  check-out-a-branch flow: nothing about worktree creation is special here,
+   *  and reusing that path means the PR route inherits everything it already
+   *  handles. */
+  async function pickPr(pr: ForgePr) {
+    if (!projectId) return;
+    setPrBusy(b => b + 1);
+    setErr(null);
+    try {
+      const branch = await projectFetchPrBranch(projectId, pr.number, pr.head_ref, pr.cross_repository);
+      // Re-read the refs: the branch was created a moment ago, so the context
+      // fetched when the dialog opened does not know it yet and the branch
+      // field would flag its own fresh branch as unknown.
+      const refs = await projectBranchContext(projectId).catch(() => null);
+      if (refs) setCheckoutRefs(refs);
+      setCheckoutBranch(branch);
+      setPrMode(false);
+      setCheckoutMode(true);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPrBusy(b => b - 1);
+    }
+  }
+
+  async function pickPrByNumber() {
+    if (!projectId) return;
+    const n = parsePrQuery(prQuery);
+    if (!n) { setErr(t("newTask.prNumberUnparsed")); return; }
+    setPrBusy(b => b + 1);
+    setErr(null);
+    try {
+      const found = await projectForgePrs(projectId, { number: n });
+      setPrLookup(found);
+      const pr = found.prs[0];
+      if (pr) await pickPr(pr);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPrBusy(b => b - 1);
+    }
+  }
+
   // Adopt an existing worktree. No worktree-add / file-copy / setup
   // script, so this skips the streaming phases entirely.
   /** Flip into issue mode and fetch. Re-fetches on every entry so a freshly
@@ -1193,6 +1278,23 @@ export function NewTaskDialog() {
               {!forgeCliReady && (
                 <span className="text-[var(--color-fg-faint)]">{t("newTask.needsCli", { cli: forgeCli })}</span>
               )}
+            </button>
+          )}
+          {/* Only in worktree mode: a PR becomes a branch, and a branch becomes
+              a worktree. In main-checkout mode there is nowhere to put it. */}
+          {canIssues && forgeProvider && mode === "worktree" && !prMode && !issueMode && !importMode && !checkoutMode && (
+            <button type="button" data-testid="from-pr-toggle" onClick={enterPrs} {...dialogTitleAction}>
+              <GitPullRequest className="h-3.5 w-3.5" />
+              {t("newTask.fromPr", { forge: forgeProvider === "gitlab" ? "GitLab" : "GitHub" })}
+              {!forgeCliReady && (
+                <span className="text-[var(--color-fg-faint)]">{t("newTask.needsCli", { cli: forgeCli })}</span>
+              )}
+            </button>
+          )}
+          {prMode && (
+            <button type="button" data-testid="from-pr-exit" onClick={exitPrs} {...dialogTitleAction}>
+              <Plus className="h-3.5 w-3.5" />
+              {t("newTask.prExit")}
             </button>
           )}
           {canIssues && issueMode && (
@@ -1898,6 +2000,90 @@ export function NewTaskDialog() {
           Picking a row fills Name, Branch and Initial prompt on the left, all
           of which stay editable. That is the whole point of it being beside
           the form rather than above it: you see what the choice did. */}
+      {prMode && (
+        <div
+          data-testid="pr-column"
+          className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6"
+        >
+          <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
+            {t("newTask.prColumnTitle")}
+          </div>
+          <p className="-mt-1 text-[12px] leading-snug text-[var(--color-fg-dim)]">
+            {t("newTask.prColumnIntro")}
+          </p>
+
+          {/* The number box comes FIRST, and is always available. It is the
+              path that works on a repo with thousands of open PRs, and the one
+              you use for somebody else's PR, so it is not buried under a list
+              that may not contain what you want. */}
+          <div className="flex items-center gap-2">
+            <input
+              data-testid="pr-number-input"
+              value={prQuery}
+              onChange={e => setPrQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void pickPrByNumber(); } }}
+              placeholder={t("newTask.prNumberPlaceholder")}
+              autoComplete="off" autoCorrect="off" spellCheck={false}
+              className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+            />
+            <Button variant="ghost" size="sm" disabled={!prQuery.trim() || prBusy > 0} onClick={() => void pickPrByNumber()}>
+              {t("newTask.prOpen")}
+            </Button>
+          </div>
+
+          {prLoading ? (
+            <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+              <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingPrs")}
+            </div>
+          ) : prLookup && prLookup.status !== "ok" && prLookup.status !== "not-found" ? (
+            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+              {prLookup.message}
+            </div>
+          ) : prLookup?.status === "not-found" ? (
+            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+              {prLookup.message}
+            </div>
+          ) : (prLookup?.prs.length ?? 0) === 0 ? (
+            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+              {t("newTask.prNoneOfYours")}
+            </div>
+          ) : (
+            <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+              {(prLookup?.prs ?? []).map(pr => (
+                <li key={pr.number}>
+                  <button
+                    type="button"
+                    data-testid="pr-row"
+                    data-pr-number={pr.number}
+                    disabled={prBusy > 0}
+                    onClick={() => void pickPr(pr)}
+                    className="flex w-full flex-col gap-0.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-60"
+                  >
+                    <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg)]">
+                      <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">#{pr.number}</span>
+                      <span className="min-w-0 truncate">{pr.title}</span>
+                      {pr.draft && (
+                        <span className="shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10.5px] text-[var(--color-fg-faint)]">
+                          {t("newTask.prDraft")}
+                        </span>
+                      )}
+                    </span>
+                    <span className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">
+                      {pr.head_ref}{pr.cross_repository ? ` · ${t("newTask.prFork")}` : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {prBusy > 0 && (
+            <div className="flex items-center gap-2 text-[12px] text-[var(--color-fg-faint)]">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent)]" /> {t("newTask.prFetching")}
+            </div>
+          )}
+        </div>
+      )}
+
       {issueMode && (
         <div
           data-testid="issue-column"

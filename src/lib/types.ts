@@ -1205,6 +1205,40 @@ export interface IssueLookup {
   issues: ForgeIssue[];
 }
 
+/** One pull request offered by the New Task picker. Mirrors `ForgePr` in
+ *  src-tauri/src/forge.rs.
+ *
+ *  The picker lists only YOUR open PRs, and anything else is reached by
+ *  number: "every open PR" is unusable on a real repo (1,300 of them at the
+ *  maintainer's day job), so a long list would be slower to fetch, slower to
+ *  read and rarely what was wanted. */
+export interface ForgePr {
+  provider: "github" | "gitlab";
+  number: number;
+  title: string;
+  url: string;
+  body: string;
+  author: string;
+  /** The PR's source branch, which names the worktree. */
+  head_ref: string;
+  /** Head lives in a fork, so the local branch is prefixed to avoid claiming
+   *  a name that is not ours. */
+  cross_repository: boolean;
+  draft: boolean;
+  updated_at: string;
+}
+
+/** One PR-picker round-trip. `not-found` is the by-number path's "no such
+ *  PR", which is an answer rather than a failure. Mirrors `PrPickList` in
+ *  src-tauri/src/lib.rs. */
+export interface PrPickList {
+  provider: "github" | "gitlab" | null;
+  remote_url: string;
+  status: "ok" | "not-found" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
+  message: string;
+  prs: ForgePr[];
+}
+
 /** One PR poll round-trip: provider resolution + snapshot, or the exact
  *  reason there isn't one (drives the PR card's hint copy). Mirrors
  *  `PrLookup` in src-tauri/src/lib.rs. */
