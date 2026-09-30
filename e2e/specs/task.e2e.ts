@@ -1676,6 +1676,16 @@ describe("check out an existing branch", () => {
           mainCheckoutOffered: [...(dlg?.querySelectorAll("button") ?? [])].some(
             (b) => b.textContent?.trim() === "Main checkout" && !(b as HTMLButtonElement).disabled,
           ),
+          // The task type and the source the dialog will actually act on.
+          // Read from the form's own attributes, NOT from which tab looks
+          // filled: `getComputedStyle` on a `transition-colors` tab returns
+          // the INTERPOLATED value while the transition runs, so a colour
+          // assertion here reported the previous tab as selected and only in
+          // the full-suite timing, where the probe lands inside those 150ms.
+          mode: dlg?.querySelector("#new-task-form")?.getAttribute("data-task-mode")
+            ?? document.querySelector("#new-task-form")?.getAttribute("data-task-mode"),
+          source: dlg?.querySelector("#new-task-form")?.getAttribute("data-task-source")
+            ?? document.querySelector("#new-task-form")?.getAttribute("data-task-source"),
         };
       });
 
@@ -1685,6 +1695,12 @@ describe("check out an existing branch", () => {
     expect(inMode.labels).not.toContain("Branch name");
     // The answer is always a worktree, so Main checkout cannot be picked.
     expect(inMode.mainCheckoutOffered).toBe(false);
+    // The forced answer is a worktree, so that is the tab that must be filled.
+    // This source IS a worktree, so that is what the dialog must be set to.
+    // Main checkout being disabled (above) and the task type actually being a
+    // worktree are two different claims, and only this one reaches the task.
+    expect(inMode.mode).toBe("worktree");
+    expect(inMode.source).toBe("branch");
     await snap("checkout-branch-mode.png");
 
     await clickWhenVisible('[data-testid="checkout-branch-exit"]');

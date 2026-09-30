@@ -437,7 +437,18 @@ export default {
     yoloHintOn: "Nothing cages the agent: it runs every command without asking. Change it later from the task menu.",
     yoloHintOff: "The agent asks before running commands. The default is set in Settings → Sandbox.",
     yoloAutoCaged: "Auto-on inside the sandbox",
-    yoloSkipPrompts: "Skip permission prompts",
+    // The agent's own name for the mode, picked by `lib/yoloModeName.ts` from
+    // the flag we actually pass. `yoloSkipPrompts` is the fallback for an
+    // agent whose flag we do not recognise, and it describes the effect
+    // instead of naming a mode, because a made-up proper noun reads as
+    // authoritative.
+    yoloSkipPrompts: "Run every command without asking",
+    yoloModeBypassPermissions: "Bypass permissions mode",
+    yoloModeFullAccess: "Full access (bypass approvals)",
+    yoloModeAllowAllTools: "Allow all tools",
+    yoloModeAutoApprove: "Auto-approve every command",
+    yoloModeYolo: "YOLO mode",
+    yoloModeDangerous: "Dangerous permission mode",
     basePlaceholder: "origin/master",
     baseUnknown: "This link asked to branch from \"{{base}}\", which this repo has no ref for. Creating will only work if it exists on the remote.",
     defaultCli: "Default CLI",

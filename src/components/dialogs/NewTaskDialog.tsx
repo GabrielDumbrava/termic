@@ -22,6 +22,7 @@ import { withCreateLock } from "@/lib/createLock";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { uniqueBranch, derivedBranch } from "@/lib/quickTask";
 import { cn } from "@/lib/utils";
+import { yoloModeName } from "@/lib/yoloModeName";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X, GitPullRequest} from "lucide-react";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
@@ -372,6 +373,22 @@ export function NewTaskDialog() {
   // first as "auto" and hides for the second.
   const yoloCaged = isTaskCaged({ sandbox_mode: sandboxMode, docker_sandbox_enabled: dockerWanted });
   const yoloApplies = !isTerminalCli(cli);
+  // Name the mode the way the chosen agent names it. "Skip permission prompts"
+  // described something none of them shows you: claude calls it bypass
+  // permissions MODE and prints a banner, not a prompt. The t() calls are
+  // spelled out rather than built from the token so `usedKeys.test.ts` can see
+  // them, and so a missing translation is a test failure and not a key
+  // rendered into the dialog.
+  const yoloArgs = agents.find(a => a.id === cli)?.capabilities?.yolo_args;
+  const yoloMode = yoloModeName(yoloArgs);
+  const yoloModeLabel =
+    yoloMode === "bypassPermissions" ? t("newTask.yoloModeBypassPermissions")
+    : yoloMode === "fullAccess" ? t("newTask.yoloModeFullAccess")
+    : yoloMode === "allowAllTools" ? t("newTask.yoloModeAllowAllTools")
+    : yoloMode === "autoApprove" ? t("newTask.yoloModeAutoApprove")
+    : yoloMode === "yolo" ? t("newTask.yoloModeYolo")
+    : yoloMode === "dangerous" ? t("newTask.yoloModeDangerous")
+    : t("newTask.yoloSkipPrompts");
   const yoloArg = yoloForCreate(yolo, selection, yoloApplies);
   // Import mode (issue #5): instead of branching a fresh worktree, adopt
   // one that already exists on disk. Only offered for single-repo git
@@ -1289,26 +1306,28 @@ export function NewTaskDialog() {
       // The "where does this task come from" choices moved OUT of the title
       // line and into sub-tabs under Task type: four of them crowded the header
       // and read as unrelated chrome when they are one question.
-      // Widen the dialog to fit what's inside. Base width per mode (xl 36rem /
-      // 2xl 42rem / 3xl 48rem) sizes the single-column form. Each extra column
-      // (sandbox config, issue picker) is equal (flex-1) plus a 2rem (ml-8)
-      // gutter, so N columns is N*base - (N-1)*0.5rem (content = N*(base-2.5)
-      // + (N-1)*2rem gutter, + 2.5rem padding). Everything is in REM so,
-      // whatever the root font-size (14px here), each flex-1 column resolves to
-      // ONE width, always. It used to be a six-way ternary (issue+sandbox,
-      // issue-or-sandbox times multi/import/checkout, then three more for the
-      // plain form), so the dialog jumped between four visible widths as you
-      // clicked through the sources, and PR mode was not in the matrix at all,
-      // which is how a FOURTH column appeared. Two columns of ~36rem, fixed,
-      // whatever is showing. Still a max-width, so it shrinks on a small
-      // screen exactly as before.
       // Two widths, and they depend on exactly ONE thing: whether there is a
       // right column. One fixed width would leave the plain form sprawling
       // across an empty dialog; six (the old matrix: issue+sandbox, then
       // issue-or-sandbox times multi/import/checkout, then three more) made
       // the dialog jump as you clicked through the sources, and PR mode was
       // not in it at all, which is how a FOURTH column appeared.
-      className={prMode || issueMode || sandbox ? "max-w-[72rem]" : "max-w-xl"}
+      //
+      // The HEIGHT is fixed for the same reason, and it has to be fixed rather
+      // than merely capped: every source swaps a different-length block into
+      // the left column (a branch list, a PR list, an issue hint, nothing at
+      // all), so an auto-height dialog resized vertically on every tab click,
+      // moving Create out from under the pointer.
+      //
+      // A share of the WINDOW with a ceiling, not a fixed rem and not plain
+      // vh. `80vh` alone turns a tall display into a skyscraper with one short
+      // form floating in it; a fixed rem overflows a laptop. The `max-h` on
+      // Content still applies under it, so a very short window shrinks instead
+      // of clipping.
+      className={cn(
+        "h-[min(80vh,54rem)]",
+        prMode || issueMode || sandbox ? "max-w-[72rem]" : "max-w-xl",
+      )}
       // A long worktree form (sandbox panel, multi-repo members, …) can
       // exceed the viewport — pin Cancel/Create to the bottom instead of
       // letting them scroll away with the fields (the user has to be able
@@ -1333,6 +1352,12 @@ export function NewTaskDialog() {
       <form
         id="new-task-form"
         onSubmit={(e) => { e.preventDefault(); submit(); }}
+        // The two answers the whole dialog is shaped by. Exposed because the
+        // e2e was reduced to inferring the task type from a computed
+        // background colour, which is a test that fails for the wrong reason
+        // the moment the styling changes.
+        data-task-mode={mode}
+        data-task-source={source}
         className="mt-1.5 flex flex-col gap-4"
       >
       {/* Two columns, never more. Left is the form. Right is whatever context
@@ -1985,6 +2010,11 @@ export function NewTaskDialog() {
               data-testid="new-task-yolo"
               data-yolo-state={yoloCaged ? "auto" : yolo ? "on" : "off"}
               data-yolo-held={yoloHeld ?? undefined}
+              data-yolo-mode={yoloMode ?? undefined}
+              // The flag itself, on hover. Whatever we call the mode, this is
+              // what gets appended to the command line, and it is the only
+              // thing here that cannot be out of date.
+              title={yoloArgs?.length ? yoloArgs.join(" ") : undefined}
               className={cn(
                 "flex w-fit items-center gap-2 text-[13px] select-none",
                 yoloCaged
@@ -2001,7 +2031,7 @@ export function NewTaskDialog() {
                 className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0 disabled:cursor-default"
               />
               <Zap className="h-3.5 w-3.5 shrink-0" fill={yoloCaged || yolo ? "currentColor" : "none"} />
-              {yoloCaged ? t("newTask.yoloAutoCaged") : t("newTask.yoloSkipPrompts")}
+              {yoloCaged ? t("newTask.yoloAutoCaged") : yoloModeLabel}
             </label>
           </Field>
         )}

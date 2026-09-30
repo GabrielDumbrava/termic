@@ -1045,3 +1045,34 @@ Two lessons, not one:
 directories and anything owner-executable, 0644 for the rest) and FAILS the
 build if any entry is left unreadable or unexecutable for `other`, because the
 same class of defect arrives with any new bundled file.
+
+## `getComputedStyle` during a transition returns the value mid-flight
+
+An e2e probe read `getComputedStyle(tab).backgroundColor` to decide which of
+two tabs was selected. It reported the WRONG tab, stably, in the full-suite run
+and the RIGHT one in the single-test run. That combination reads exactly like a
+real state bug that only some orderings reach, and it was written up as one.
+
+It is neither. The tabs carry `transition-colors` (150ms). `getComputedStyle`
+returns the resolved value at the instant it is called, which during a
+transition is the INTERPOLATED value, not the target. The full suite arrives at
+the probe a few milliseconds after the click; the single test arrives later,
+after the transition has finished. Same app, same state, different sample time.
+
+Two things to take from it:
+
+**Assert STATE, not the paint of state.** The dialog now exposes
+`data-task-mode` / `data-task-source` on its form and the spec reads those. A
+colour assertion is testing the animation as much as the app, and it fails for
+a reason that has nothing to do with the behaviour under test.
+
+**A control has to reproduce the failing condition.** The control here probed
+immediately and again 500ms later, got identical values, and was taken as
+ruling the transition out. It ran in the single-test timing, where BOTH samples
+were already settled: it never exercised the case it was built to explain.
+Confirming a theory in a run that does not fail proves nothing.
+
+The narrow exception stays valid: when the defect IS the paint (a themed
+`border-color` that never repaints in WKWebView, ## A radio dot moves and the
+highlight does not), the computed value is the only evidence there is. Read it
+after the transition has had time to finish, never straight after the click.
