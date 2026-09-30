@@ -868,6 +868,7 @@ export function EditTaskDialog() {
             </div>
             <Field label={t("newTask.allowedPathsLabel")} hint={t("editTask.allowedPathsHint")}>
               <textarea
+                data-testid="sandbox-rw-paths"
                 value={sbRw}
                 onChange={e => setSbRw(e.target.value)}
                 rows={3}
@@ -880,6 +881,7 @@ export function EditTaskDialog() {
             {selMode !== "enforce-fs" && (
               <Field label={t("newTask.allowedHostsLabel")} hint={t("editTask.allowedHostsHint")}>
                 <textarea
+                  data-testid="sandbox-allowed-hosts"
                   value={sbHosts}
                   onChange={e => setSbHosts(e.target.value)}
                   rows={3}
