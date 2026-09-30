@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.11.2] - 2026-09-30
+## [1.11.3] - 2026-09-30
 
 A kanban board over every task, and multi-repo tasks pick their own members.
 
@@ -102,6 +102,10 @@ A kanban board over every task, and multi-repo tasks pick their own members.
   show.** The check reported an update in a toast and then displayed no card
   and no pill, because both hide the version you dismissed. Asking for a check
   now brings it back.
+- **A Kanban column scrolled sideways** when a card carried a long pull
+  request line and a large change summary, clipping the file count off the
+  right edge of every card in that column. The card's bottom row wraps now,
+  and a column never scrolls sideways.
 
 ## [1.10.0] - 2026-09-28
 
