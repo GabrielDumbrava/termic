@@ -534,6 +534,38 @@ jobs:
             ln -sfn "$rel" "$link"
           done
 
+          # Canonical modes before repacking. Everything inside the image is
+          # owned by root, so the user who runs it is OTHER: a file without
+          # o+x is a file they cannot execute. tauri-bundler ships
+          # AppRun.wrapped as 0770 (rwxrwx---), which the AppImage catalog's
+          # test caught as "AppRun: line 12: AppRun.wrapped: Permission
+          # denied" under firejail, and which every release since Linux
+          # support landed has carried (verified against the published 1.9.1
+          # and 1.10.0 artifacts with unsquashfs). A plain `./Termic.AppImage`
+          # usually survives it because squashfuse does not enforce the mode
+          # for the mounting user, so this stayed invisible: any stricter
+          # mount (firejail, `default_permissions`, an extract-then-run as a
+          # different user) fails outright.
+          #
+          # Normalized wholesale rather than by name, so the next file that
+          # arrives with a private mode is fixed too: 0755 for directories and
+          # anything already executable by its owner, 0644 for the rest.
+          # gschemas.compiled ships 0666 for the same kind of reason.
+          find squashfs-root -type d -exec chmod 0755 {} +
+          find squashfs-root -type f -perm -u+x -exec chmod 0755 {} +
+          find squashfs-root -type f ! -perm -u+x -exec chmod 0644 {} +
+          # And fail loud if anything is still unreachable for `other`, which
+          # is what shipping this again would look like.
+          BAD=$(
+            find squashfs-root \( -type f -o -type d \) ! -perm -o+r -print
+            find squashfs-root -type f -perm -u+x ! -perm -o+x -print
+          )
+          if [ -n "$BAD" ]; then
+            echo "::error::AppDir entries a normal user cannot read or execute:"
+            echo "$BAD"
+            exit 1
+          fi
+
           rm -f "$NAME"
           ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run -n squashfs-root "$NAME"
           rm -rf squashfs-root

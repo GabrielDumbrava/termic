@@ -1012,3 +1012,36 @@ ever has. `Dialog` documents the same trick for the opposite symptom, blurry
 text, and `Spinner` for a third, a rotating ring that orbits its own centre.
 All three are one rule: **if an element is going to be composited, composite
 it always, not just while something is animating.**
+
+## A mode squashfuse ignores, firejail enforces
+
+Every Termic AppImage from the first one to 1.10.0 shipped `AppRun.wrapped` as
+**0770**, `rwxrwx---`. Everything inside an AppImage is owned by root, so the
+person who runs it is `other`, and `other` had no execute bit. The file the
+type-2 `AppRun` script `exec`s on its last line was, on paper, not executable
+by anyone who would ever run it.
+
+It never showed up, for a reason worth knowing: a plain `./Termic.AppImage`
+mounts through **squashfuse**, which does not enforce the stored mode for the
+user who owns the mount, so the exec succeeds anyway. The mode only bites where
+something checks it: `firejail --appimage` (which is what the
+[AppImage catalog's test](https://github.com/AppImage/appimage.github.io) runs,
+and how this was found, in a PR that tagged the maintainer), a mount with
+`default_permissions`, or `--appimage-extract` followed by a run as a different
+user. Those report `AppRun: line 12: AppRun.wrapped: Permission denied` and
+nothing else, which reads like a corrupt image rather than a permission.
+
+Two lessons, not one:
+
+- **A packaging mode is not tested by the app starting on your machine.** The
+  loosest consumer of the artifact is the one you measure with, and it hid a
+  defect in every release for months.
+- **Read the artifact, do not reason about the build.** `unsquashfs -o <ELF
+  end> -ll <file>.AppImage` lists every mode in a published AppImage, and the
+  offset is `e_shoff + e_shnum * e_shentsize` from its ELF header. That took a
+  minute and replaced three plausible theories about which step dropped the bit.
+
+`release.yml` now normalizes the whole AppDir before repacking (0755 for
+directories and anything owner-executable, 0644 for the rest) and FAILS the
+build if any entry is left unreadable or unexecutable for `other`, because the
+same class of defect arrives with any new bundled file.
