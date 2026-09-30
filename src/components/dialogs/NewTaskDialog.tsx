@@ -1403,7 +1403,10 @@ export function NewTaskDialog() {
             always render (never conditionally hidden) so the dialog does not
             change shape as you move through it. */}
         <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-1 border-b border-[var(--color-border)]">
+          {/* Full width, half each: this is the first and biggest choice in
+              the dialog, and a pair of small underlined labels read as chrome
+              rather than as the fork they are. */}
+          <div className="flex items-stretch gap-1 rounded-lg bg-[var(--color-bg)] p-1">
             {([
               ["repo_root", "task-type-main", t("newTask.mainCheckout"), Link2],
               ["worktree", "task-type-worktree", t("newTask.worktree"), GitBranch],
@@ -1427,11 +1430,11 @@ export function NewTaskDialog() {
                   title={disabled && m === "repo_root" ? t("newTask.mainCheckoutNotForSource") : undefined}
                   onClick={() => chooseMode(m)}
                   className={cn(
-                    "-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-[12.5px] transition-colors",
+                    "flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-[13px] font-medium transition-colors",
                     on
-                      ? "border-[var(--color-accent)] text-[var(--color-fg)]"
-                      : "border-transparent text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                    disabled && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
+                      ? "bg-[var(--color-accent-deep)] text-white"
+                      : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                    disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-[var(--color-fg-dim)]",
                   )}
                 >
                   <Icon className="h-3.5 w-3.5" /> {label}
@@ -1445,7 +1448,11 @@ export function NewTaskDialog() {
               in, while an issue or a PR seeds either kind. */}
           <div className="flex flex-wrap items-center gap-1">
             {([
-              ["new", "checkout-branch-exit", t("newTask.sourceNew"), true],
+              // "New branch" is only true of a worktree. In the main checkout
+              // there is no branch to cut, so the default source is a blank
+              // task, which is also the wording the old exit button used.
+              ["new", "checkout-branch-exit",
+                mode === "worktree" ? t("newTask.sourceNew") : t("newTask.blankInstead"), true],
               ["branch", "checkout-branch-toggle", t("newTask.sourceBranch"), mode === "worktree" && canImport],
               ["import", "source-import", t("newTask.sourceImport", { count: importList.length }),
                 mode === "worktree" && canImport && importList.length > 0],
@@ -1475,56 +1482,17 @@ export function NewTaskDialog() {
               </span>
             )}
           </div>
-        </div>
 
-        {!importMode && !checkoutMode && (
-          <div className="flex flex-col gap-1.5">
-            {/* Label + toggle share one row (not label-above-control like
-                every other Field) — this is the field people re-adjust most
-                often, so it's the one worth the extra vertical inch back. */}
-            <div className="flex items-center justify-between gap-3">
-              <label className="text-[13px] font-medium text-[var(--color-fg)]">{t("newTask.taskType")}</label>
-              <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
-                <button
-                  type="button"
-                  data-testid="task-type-main"
-                  onClick={() => chooseMode("repo_root")}
-                  className={cn(
-                    "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
-                    mode === "repo_root"
-                      ? "bg-[var(--color-accent-deep)] text-white"
-                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                  )}
-                >
-                  <Link2 className="h-3.5 w-3.5" /> {t("newTask.mainCheckout")}
-                </button>
-                <button
-                  type="button"
-                  data-testid="task-type-worktree"
-                  onClick={() => chooseMode("worktree")}
-                  disabled={!canWorktree}
-                  className={cn(
-                    "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors disabled:opacity-40",
-                    mode === "worktree"
-                      ? "bg-[var(--color-accent-deep)] text-white"
-                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                  )}
-                >
-                  <GitBranch className="h-3.5 w-3.5" /> {t("newTask.worktree")}
-                </button>
-              </div>
-            </div>
-            <p className="text-[12px] text-[var(--color-fg-faint)]">
-              {mode === "worktree"
-                ? (isMulti
-                    ? t("newTask.descWorktreeMulti")
-                    : t("newTask.descWorktreeSingle"))
-                : (isMulti
-                    ? t("newTask.descRootMulti")
-                    : t("newTask.descRootSingle"))}
-            </p>
-          </div>
-        )}
+          {/* The one line that says what the choice above MEANS. It used to
+              live under a second, duplicate task-type control below; the
+              control is gone (two of them on one screen, one of them carrying
+              the same data-testid) and its sentence moved here. */}
+          <p className="text-[12px] text-[var(--color-fg-faint)]">
+            {mode === "worktree"
+              ? (isMulti ? t("newTask.descWorktreeMulti") : t("newTask.descWorktreeSingle"))
+              : (isMulti ? t("newTask.descRootMulti") : t("newTask.descRootSingle"))}
+          </p>
+        </div>
 
         {/* Name + branch fields grouped tightly (gap-2, vs. gap-4 between
             fields elsewhere): the branch is DERIVED from the name (see

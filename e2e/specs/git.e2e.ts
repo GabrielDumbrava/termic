@@ -2697,8 +2697,10 @@ describe("the route into an issue task", () => {
     // The column's own heading is uppercased in CSS, and innerText returns it
     // transformed - so assert on the hint below it, which is not.
     await waitForText("Open issues, most recently updated first.");
-    // And the rest of the form is right there beside it.
-    await waitForText("Task type");
+    // And the rest of the form is right there beside it. The task type is the
+    // tab row now (the duplicate "Task type" field below it is gone), so this
+    // asserts the tab rather than a label that no longer exists.
+    await waitVisible('[data-testid="task-type-worktree"]');
     await waitForText("Default CLI");
   });
 
@@ -2709,7 +2711,9 @@ describe("the route into an issue task", () => {
   });
 
   it("drops back to a blank form, split and all", async () => {
-    await clickByText("Blank task instead");
+    // The source sub-tab, not the old title-line button: leaving issue mode is
+    // now "pick a different source" rather than a dedicated exit.
+    await clickWhenVisible('[data-source-tab="new"]');
     await waitGone('[data-testid="issue-column"]');
     // The dialog stays open on the ordinary form rather than closing under
     // the user: they still wanted a task, just not from an issue.
