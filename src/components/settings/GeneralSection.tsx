@@ -8,8 +8,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { settingsSave } from "@/lib/ipc";
-import type { Settings } from "@/lib/types";
+import { settingsSave, desktopIntegrationStatus, desktopIntegrationAdd, desktopIntegrationRemove } from "@/lib/ipc";
+import type { Settings, DesktopIntegration } from "@/lib/types";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -212,6 +212,11 @@ export function GeneralSection() {
         <ForgeStatusBlock />
       </Block>
 
+      {/* Linux AppImage only, and the row is ABSENT elsewhere rather than
+          disabled: on macOS and Windows the bundle and the installer register
+          everything this writes. */}
+      <DesktopEntryBlock />
+
       {/* Personal file-tree excludes. Hide noise (caches, venvs, build
           output) from the "All files" tree across every project on this
           machine. Per-project, team-shared excludes live in each repo's
@@ -332,6 +337,78 @@ export function GeneralSection() {
 /** Install + auth status for the forge CLIs (gh / glab). PR features are
  *  CLI-backed by design (no tokens stored in termic), so this block is
  *  where users learn what to install and how to sign in. */
+/** The Linux AppImage's launcher entry, icon and `termic://` handler.
+ *
+ *  Reads its state from the FILESYSTEM every time it opens rather than from a
+ *  pref: the user can delete the entry, and AppImageLauncher or Gear Lever can
+ *  write one, so a remembered boolean would be a claim the system disagrees
+ *  with. That is also why the button is never "on/off" but "create"/"remove".
+ */
+function DesktopEntryBlock() {
+  const { t } = useTranslation("settings");
+  const [st, setSt] = useState<DesktopIntegration | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => { desktopIntegrationStatus().then(setSt).catch(() => setSt(null)); }, []);
+
+  // Not an AppImage (or not Linux): the whole block is absent.
+  if (!st?.available) return null;
+
+  const run = async (fn: () => Promise<DesktopIntegration>) => {
+    setBusy(true); setErr("");
+    try { setSt(await fn()); }
+    catch (e) { setErr(String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Block id="setting-desktop-entry">
+      <div className="text-[14px] font-medium">{t("general.desktop.title")}</div>
+      <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+        {st.integrated
+          ? <Trans t={t} i18nKey="general.desktop.doneHint" components={{ 1: <code className="font-mono" /> }} />
+          : <Trans
+              t={t}
+              i18nKey="general.desktop.hint"
+              values={{ path: st.desktop_path }}
+              components={{ 1: <code className="font-mono" /> }}
+            />}
+      </div>
+      {st.integrated && (
+        // The path it points AT, because an AppImage that has been moved since
+        // is the one way this silently stops working, and the fix is to press
+        // the button again.
+        <div className="mt-1 text-[12px] text-[var(--color-fg-faint)]">
+          {t("general.desktop.movedHint", { path: st.appimage_path })}
+        </div>
+      )}
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          variant={st.integrated ? "ghost" : "primary"}
+          disabled={busy}
+          data-testid="desktop-entry-toggle"
+          onClick={() => run(st.integrated ? desktopIntegrationRemove : desktopIntegrationAdd)}
+        >
+          {busy
+            ? t("general.desktop.busy")
+            : st.integrated ? t("general.desktop.remove") : t("general.desktop.add")}
+        </Button>
+        {st.integrated && !busy && (
+          <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-ok)]">
+            <CircleCheck className="h-3.5 w-3.5" /> {t("general.desktop.done")}
+          </span>
+        )}
+      </div>
+      {err && (
+        <div className="mt-2 text-[12.5px] text-[var(--color-err)]">
+          {t("general.desktop.failed", { error: err })}
+        </div>
+      )}
+    </Block>
+  );
+}
+
 function ForgeStatusBlock() {
   const { t } = useTranslation("settings");
   const forges = usePr(s => s.forges);

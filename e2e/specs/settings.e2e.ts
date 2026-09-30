@@ -216,6 +216,29 @@ describe("settings rail", () => {
     ["cli", "CLI & MCP", "Enable CLI"],
   ];
 
+  // The Linux AppImage's launcher entry. The e2e binary is never an AppImage
+  // (no $APPIMAGE), so the row must be ABSENT here, on every platform this
+  // suite runs on including the Linux job.
+  //
+  // That is the assertion worth having: the feature writes into the user's
+  // ~/.local/share, and a row offering to do that on a build where it cannot
+  // work is how someone ends up with a desktop entry pointing at nothing. It
+  // is gated on the environment, not on the OS, and this is what pins that.
+  it("hides the desktop-entry row on a build that is not an AppImage", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
+    await waitForText("Repos directory");
+    const state = await browser.execute(() => ({
+      row: !!document.querySelector('[data-testid="desktop-entry-toggle"]'),
+      block: !!document.querySelector("#setting-desktop-entry"),
+    }));
+    expect(state.row).toBe(false);
+    expect(state.block).toBe(false);
+    // And the backend agrees, rather than the row merely failing to render.
+    const st = await browser.execute(async () => await window.__termic!.invoke("desktop_integration_status"));
+    expect((st as { available: boolean }).available).toBe(false);
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
   describe("choosing a language server", () => {
     // The Django lesson made concrete: the fix for a server answering badly is
     // a DIFFERENT server, and until now the resolution order was ours alone.

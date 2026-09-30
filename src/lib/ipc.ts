@@ -8,7 +8,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
-  SandboxMode, TaskDiffSummary, TaskDiffStat, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
+  SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
   ForgeCliStatus, PrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
 } from "./types";
@@ -658,6 +658,11 @@ export const taskDiff     = (id: string) => invoke<TaskDiffSummary>("task_diff",
  *  for MANY tasks: `taskDiff` also ships the whole unified diff and spawns a
  *  git process per untracked file. */
 export const taskDiffStat = (id: string) => invoke<TaskDiffStat>("task_diff_stat", { id });
+/** Linux AppImage only; answers `available: false` everywhere else rather
+ *  than throwing, so the caller asks the same question on every platform. */
+export const desktopIntegrationStatus = () => invoke<DesktopIntegration>("desktop_integration_status");
+export const desktopIntegrationAdd    = () => invoke<DesktopIntegration>("desktop_integration_add");
+export const desktopIntegrationRemove = () => invoke<DesktopIntegration>("desktop_integration_remove");
 export const taskSendDiffToMain = (id: string) =>
   invoke<{ tracked_files: number; untracked_files: number }>("task_send_diff_to_main", { id });
 

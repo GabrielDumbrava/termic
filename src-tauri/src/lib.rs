@@ -48,6 +48,13 @@ mod forge;
 mod mcp_server;
 // Row shapes + OS-agnostic logic (subtree walk, cpu_ratio, label_for,
 // signal_from_name) shared by every `procmon` variant below.
+// Linux AppImage desktop integration (menu entry + icon + `termic://`
+// handler). Compiled everywhere, ACTIVE only on a Linux AppImage: the file is
+// plain std, and gating it by target meant its format tests never ran on the
+// machine they were written on. `appimage_path()` holds the one cfg, so every
+// other platform reports "unavailable" through the same path.
+mod linux_desktop;
+
 mod procmon_common;
 // macOS: real libproc/mach FFI. Linux: /proc. Everything else: a stub that
 // answers "unsupported on this OS" — see procmon_other.rs's module doc.
@@ -10964,6 +10971,63 @@ pub(crate) fn task_diff_inner(id: String) -> Result<TaskDiffSummary, String> {
 }
 
 /// The numbers from a task's diff, without the diff.
+/// Desktop integration, Linux AppImage only.
+///
+/// Three commands rather than a toggle, because "is it on" is read from the
+/// FILESYSTEM every time: the user can delete the entry, and another tool can
+/// write one, so a remembered boolean would be a claim about the system the
+/// system disagrees with.
+///
+/// On macOS and Windows these answer "unavailable" rather than being absent,
+/// so the frontend asks the same question everywhere and hides one row.
+#[derive(Clone, Debug, Serialize)]
+pub struct DesktopIntegration {
+    pub available: bool,
+    pub integrated: bool,
+    pub appimage_path: String,
+    pub desktop_path: String,
+}
+
+const DESKTOP_ID: &str = "termic";
+const DESKTOP_NAME: &str = "Termic";
+const DESKTOP_SCHEME: &str = "termic";
+
+fn to_integration(s: linux_desktop::DesktopStatus) -> DesktopIntegration {
+    DesktopIntegration {
+        available: s.available,
+        integrated: s.integrated,
+        appimage_path: s.appimage_path,
+        desktop_path: s.desktop_path,
+    }
+}
+
+#[tauri::command]
+async fn desktop_integration_status() -> Result<DesktopIntegration, String> {
+    tauri::async_runtime::spawn_blocking(|| to_integration(linux_desktop::status(DESKTOP_ID)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Writes the entry + icon. Async + spawn_blocking: it shells out to the cache
+/// refreshers, and a synchronous command doing that blocks the webview.
+#[tauri::command]
+async fn desktop_integration_add() -> Result<DesktopIntegration, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        linux_desktop::integrate(DESKTOP_ID, DESKTOP_NAME, DESKTOP_SCHEME).map(to_integration)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn desktop_integration_remove() -> Result<DesktopIntegration, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        linux_desktop::remove(DESKTOP_ID).map(to_integration)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct TaskDiffStat {
     pub files_changed: usize,
@@ -24269,7 +24333,8 @@ pub fn run() {
             task_set_right_tabs, task_set_right_tab_session_id,
             task_grep_start, task_grep_cancel, task_find_backend,
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
-            task_diff, task_diff_stat, task_files, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
+            task_diff, task_diff_stat, task_files,
+            desktop_integration_status, desktop_integration_add, desktop_integration_remove, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
             detect_forges, task_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,

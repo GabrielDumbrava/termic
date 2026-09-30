@@ -363,6 +363,14 @@ export default {
     addFromDisk: "Add repo from disk",
     diskHint: "Adds the folder as a member of this project only (no standalone project). A plain folder works too: we confirm after you pick it, then it mounts as the main checkout only (no worktree).",
   },
+    desktopEntry: {
+      title: "Add Termic to your applications menu?",
+      message: "An AppImage is a single file, so running it adds no launcher entry, no icon, and no handler for termic:// links. Termic can write a desktop entry into your home directory ({{path}}). It will not move or change the AppImage itself.\n\nYou can do this later, or undo it, in Settings, General.",
+      confirm: "Add it",
+      cancel: "Not now",
+      done: "Termic is in your applications menu.",
+      failed: "Could not write the desktop entry: {{error}}",
+    },
   newTask: {
     titleMultiRoot: "New multi-repo task in the main checkout",
     titleMulti: "New multi-repo task",

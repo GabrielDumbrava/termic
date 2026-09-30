@@ -56,6 +56,17 @@ export default {
       signedInAs: "已登录为 <1>{{account}}</1>",
       probing: "正在检测 CLI…",
     },
+    desktop: {
+      title: "桌面项",
+      hint: "AppImage 是单个文件：运行它不会添加启动器项、图标，也不会注册 <1>termic://</1> 链接的处理程序。此操作会在你的主目录中写入一个桌面项（{{path}}），不会移动 AppImage。",
+      add: "创建桌面项",
+      remove: "移除桌面项",
+      done: "Termic 已在你的应用程序菜单中。",
+      doneHint: "移除后，菜单项与 <1>termic://</1> 链接都会一并消失。",
+      busy: "处理中…",
+      failed: "无法写入桌面项：{{error}}",
+      movedHint: "该项指向 {{path}}。如果你移动了 AppImage，请重新创建。",
+    },
     hidden: {
       title: "隐藏的文件（个人）",
       hint: "在这台机器的所有项目中，「全部文件」树会隐藏这些模式。可以直接选预设，也可以自行添加。团队共享、按仓库的排除规则请使用项目的 <1>.termic.yaml</1>（设置 → 项目）。",

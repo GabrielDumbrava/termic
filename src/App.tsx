@@ -19,6 +19,7 @@ import { initAgentStatePush } from "@/lib/cliAgentState";
 import { initTrayAttention } from "@/lib/trayAttention";
 import { initActivityTitleBridge } from "@/lib/activityTitleBridge";
 import { initDeepLinks } from "@/lib/deepLink";
+import { maybePromptDesktopEntry } from "@/lib/desktopEntryPrompt";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
@@ -93,6 +94,12 @@ export function App() {
     // one into a chat that is already open and idle. Writes nothing when
     // nothing is due.
     void loaded.then(() => initScheduledTicker());
+    // Linux AppImage only: offer to add a launcher entry, once ever. A no-op
+    // on every other platform and on a build that is not an AppImage, and it
+    // asks only once whatever the answer, so it cannot become a thing that
+    // greets you at every launch. After loadAll so it does not compete with
+    // the first paint.
+    void loaded.then(() => maybePromptDesktopEntry());
     // CLI install detection runs at startup + when Settings → Agent CLIs
     // opens (AgentsSection drives the latter). Deliberately NOT on every
     // window focus — `loadAll` re-runs on focus, detection does not.

@@ -362,6 +362,14 @@ export default {
     addFromDisk: "从磁盘添加仓库",
     diskHint: "仅将该文件夹添加为此项目的成员（不注册为独立项目）。普通文件夹也可以：选择后我们会向你确认，然后它仅挂载为主检出（无工作树）。",
   },
+    desktopEntry: {
+      title: "将 Termic 添加到应用程序菜单？",
+      message: "AppImage 是单个文件，运行它不会添加启动器项、图标，也不会注册 termic:// 链接的处理程序。Termic 可以在你的主目录中写入一个桌面项（{{path}}），不会移动或修改 AppImage 本身。\n\n你之后也可以在「设置 → 常规」中进行此操作或撤销它。",
+      confirm: "添加",
+      cancel: "暂不",
+      done: "Termic 已在你的应用程序菜单中。",
+      failed: "无法写入桌面项：{{error}}",
+    },
   newTask: {
     titleMultiRoot: "在主检出中新建多仓库任务",
     titleMulti: "新建多仓库任务",

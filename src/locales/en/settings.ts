@@ -57,6 +57,17 @@ export default {
       signedInAs: "Signed in as <1>{{account}}</1>",
       probing: "Probing CLIs…",
     },
+    desktop: {
+      title: "Desktop entry",
+      hint: "An AppImage is a single file: running it does not add a launcher entry, an icon, or a handler for <1>termic://</1> links. This writes a desktop entry into your home directory ({{path}}). It does not move the AppImage.",
+      add: "Create desktop entry",
+      remove: "Remove desktop entry",
+      done: "Termic is in your applications menu.",
+      doneHint: "Remove this and the menu entry and <1>termic://</1> links go with it.",
+      busy: "Working…",
+      failed: "Could not write the desktop entry: {{error}}",
+      movedHint: "The entry points at {{path}}. If you move the AppImage, create it again.",
+    },
     hidden: {
       title: "Hidden files (personal)",
       hint: "Patterns hidden from the \"All files\" tree across every project on this machine. Pick a preset or add your own. For team-shared, per-repo excludes, use a project's <1>.termic.yaml</1> (Settings → Projects).",

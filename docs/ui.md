@@ -33,6 +33,28 @@ Sections share `Controls.tsx`: `Toggle`, `ListField`, `Block` (hairline + spacin
 
 Deep links (`openSettings(tab, repoId, highlight)`) hard-code a tab name, so moving a setting between pages means updating its callers. Live ones: the markdown-preview banner (`general` + `load-remote-images`), the command palette's settings list, and the shortcuts help dialog.
 
+### The Linux desktop-entry row is absent, not disabled
+
+Settings, General grows a "Desktop entry" block ONLY when `$APPIMAGE` is set
+and points at a file that still exists. On macOS, on Windows, on a `.deb` and
+in a dev build the block does not render at all.
+
+Absent rather than greyed out because the thing it offers cannot be
+half-done: it writes into the user's own `~/.local/share`, and a row offering
+that on a build where `Exec=` would point at nothing is how somebody ends up
+with a broken launcher entry. `settings.e2e.ts` pins the absence, and checks
+the backend agrees rather than the row merely failing to render.
+
+The button is "Create"/"Remove", never a toggle, because the state is read
+from the filesystem every time the page opens. A toggle implies we own the
+value; we do not, since the user can delete the file and Gear Lever or
+AppImageLauncher can write one.
+
+The first-run ask (`src/lib/desktopEntryPrompt.ts`) happens ONCE ever, and
+records that it happened BEFORE the answer: quitting mid-dialog, or a failed
+write, must not turn it into a prompt that greets you at every launch.
+Settings owns the question after that.
+
 ### Settings text runs the full width of the pane
 
 **Never put `max-w-prose`, `max-w-md` or any other width cap on body text in a

@@ -1563,6 +1563,20 @@ export interface TaskDiffSummary {
   untracked: number;
 }
 
+/** `desktop_integration_*`: the Linux AppImage's launcher entry.
+ *
+ *  `available` is false on macOS and Windows (the bundle and the installer
+ *  register the scheme there) and on any Linux build that is not an AppImage,
+ *  so the UI hides the row rather than offering something that would fail.
+ *  `integrated` is read from the filesystem on every call, never remembered:
+ *  the user can delete the entry and another tool can write one. */
+export interface DesktopIntegration {
+  available: boolean;
+  integrated: boolean;
+  appimage_path: string;
+  desktop_path: string;
+}
+
 /** `task_diff_stat`: the numbers from a task's diff, without the diff. Cheap
  *  enough to poll for every card on the board (two git processes per repo).
  *  `insertions` folds in an ESTIMATE for untracked files: newlines counted by
