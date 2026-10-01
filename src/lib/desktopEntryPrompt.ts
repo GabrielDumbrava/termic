@@ -12,7 +12,7 @@
 // resent, and Settings is where an unanswered question belongs after the
 // first time.
 
-import { desktopIntegrationStatus, desktopIntegrationAdd } from "@/lib/ipc";
+import { desktopIntegrationStatus, desktopIntegrationAdd, settingsLoad } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { i18n } from "@/lib/i18n";
 
@@ -25,16 +25,29 @@ function markAsked() {
   try { localStorage.setItem(LS_ASKED, "1"); } catch { /* private mode */ }
 }
 
+/** Record that the question has been put, so nothing asks again. The welcome
+ *  wizard calls this too: it asks in its own last step, and a user who has
+ *  answered there must not meet this dialog on the next launch. */
+export function markDesktopEntryAsked(): void { markAsked(); }
+
 /** Decide whether to ask, without any of the IO. Exported for the test: the
- *  rule is four conditions and every one of them has a way of being wrong. */
+ *  rule is five conditions and every one of them has a way of being wrong. */
 export function shouldPrompt(i: {
   available: boolean;
   integrated: boolean;
   alreadyAsked: boolean;
+  /** `settings.welcomed`. False means the first-launch wizard is about to
+   *  run, or is running. */
+  welcomed: boolean;
 }): boolean {
   if (!i.available) return false;   // not a Linux AppImage
   if (i.integrated) return false;   // already done, by us or by Gear Lever
   if (i.alreadyAsked) return false; // answered once; Settings owns it now
+  // The wizard owns first launch. It opens on the same startup this runs on
+  // and blocks Escape, so asking here would put a second modal in front of a
+  // brand new user, on top of a dialog they cannot dismiss. The wizard asks
+  // in its own last step instead.
+  if (!i.welcomed) return false;
   return true;
 }
 
@@ -46,9 +59,14 @@ export function shouldPrompt(i: {
  *  user does it from Settings instead. */
 export async function maybePromptDesktopEntry(): Promise<void> {
   if (asked()) return;
-  let st;
-  try { st = await desktopIntegrationStatus(); } catch { return; }
-  if (!shouldPrompt({ available: st.available, integrated: st.integrated, alreadyAsked: false })) return;
+  let st, welcomed = true;
+  try {
+    st = await desktopIntegrationStatus();
+    welcomed = !!(await settingsLoad()).welcomed;
+  } catch { return; }
+  if (!shouldPrompt({
+    available: st.available, integrated: st.integrated, alreadyAsked: false, welcomed,
+  })) return;
 
   // Recorded BEFORE the answer, not after. If the app is closed while the
   // dialog stands, or the write throws, the question has still been put to

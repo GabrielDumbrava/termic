@@ -714,6 +714,8 @@ export default {
     step2Title: "启用智能体钩子",
     step3Title: "选择你的主题",
     step4Title: "希望 Termic 添加哪些项目？",
+    desktopEntryTitle: "将 Termic 添加到应用程序菜单",
+    desktopEntryHint: "AppImage 是单个文件，运行它不会添加启动器项、图标，也不会注册 termic:// 链接的处理程序。此操作会在你的主目录中写入一个桌面项。之后可以在「设置 → 常规」中更改。",
     stepAria: "第 {{n}} 步",
     adding: "正在添加…",
     addProjectsOne: "添加 {{count}} 个项目",
