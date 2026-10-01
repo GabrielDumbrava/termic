@@ -50,10 +50,22 @@ from the filesystem every time the page opens. A toggle implies we own the
 value; we do not, since the user can delete the file and Gear Lever or
 AppImageLauncher can write one.
 
-The first-run ask (`src/lib/desktopEntryPrompt.ts`) happens ONCE ever, and
-records that it happened BEFORE the answer: quitting mid-dialog, or a failed
-write, must not turn it into a prompt that greets you at every launch.
-Settings owns the question after that.
+Two places ask, and they do not overlap. The welcome wizard carries it as an
+unticked checkbox on its last step, for a user who is new. The standalone
+prompt (`src/lib/desktopEntryPrompt.ts`) covers everyone who is not, and
+stands down while `settings.welcomed` is false, because both are modal and
+the wizard blocks Escape: without that, a brand new Linux user met a second
+dialog stacked on one they could not dismiss.
+
+Either way the question is asked ONCE ever, and the fact that it was asked is
+recorded BEFORE the answer: quitting mid-dialog, or a failed write, must not
+turn it into something that greets you at every launch. Settings owns it
+after that.
+
+The wizard's checkbox is UNTICKED. It writes into the user's own
+`~/.local/share`, and a pre-ticked box is opt-out however visible it is. The
+cost is real and accepted: most people will not notice it, which is what the
+Settings row and the standalone prompt are for.
 
 ### Settings text runs the full width of the pane
 
