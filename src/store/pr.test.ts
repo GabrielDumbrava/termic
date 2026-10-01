@@ -33,6 +33,7 @@ import {
   usePr, newCommentsSince, commentPromptFor, watchTickNow, openPrArchiveWarning,
   pollableTasks, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus,
   prFocusEligible,
+  mergeAlreadyHandled,
 } from "@/store/pr";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
@@ -962,5 +963,36 @@ describe("refresh on focus", () => {
     await Promise.resolve();
     expect(ipc.taskPrStatus).not.toHaveBeenCalled();
     stopPrRefreshOnFocus();
+  });
+});
+
+// ── follow-ups to #351 ────────────────────────────────────────────────
+
+describe("merge bookkeeping survives the key gaining a provider segment", () => {
+  // The key went from `prMergeHandled:<task>:<number>` to
+  // `prMergeHandled:<task>:<provider>:<number>`. Without a legacy read, every
+  // merge already handled reads as unhandled exactly ONCE after the upgrade:
+  // a toast, a notification, and under `on_pr_merge: "archive"` an archive of
+  // a task the user deliberately kept.
+  beforeEach(() => { localStorage.clear(); });
+
+  it("treats a merge handled under the old key as handled", () => {
+    localStorage.setItem("prMergeHandled:t1:7", "1");
+    expect(mergeAlreadyHandled("t1", "github", 7)).toBe(true);
+  });
+
+  it("still reads the new key", () => {
+    localStorage.setItem("prMergeHandled:t1:github:7", "1");
+    expect(mergeAlreadyHandled("t1", "github", 7)).toBe(true);
+  });
+
+  it("does not confuse a different task or number", () => {
+    localStorage.setItem("prMergeHandled:t1:7", "1");
+    expect(mergeAlreadyHandled("t2", "github", 7)).toBe(false);
+    expect(mergeAlreadyHandled("t1", "github", 8)).toBe(false);
+  });
+
+  it("says nothing is handled when nothing is stored", () => {
+    expect(mergeAlreadyHandled("t1", "github", 7)).toBe(false);
   });
 });

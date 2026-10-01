@@ -75,6 +75,23 @@ export function forgeInstallCmd(p: ForgeProvider | null | undefined): string {
   return installCommand(forgeCli(p));
 }
 
+/** Single-quote a value for a command line the AGENT will run in its shell.
+ *
+ *  These builders return a STRING that is typed into a prompt and that the
+ *  agent is told to execute, so every interpolated value is shell input, not
+ *  an argv element. `azureRemoteParts` percent-DECODES each path segment, so
+ *  a remote containing `%27` yields a literal `'` and closes the quote: a
+ *  crafted remote on a repo somebody clones is enough to append a command of
+ *  their choosing. The Rust side has no such exposure (it builds argv), and
+ *  CreatePrDialog already escapes its branch this way for the same reason.
+ *
+ *  `'\''` is the standard close-reopen form, the only way to get a literal
+ *  quote inside single quotes.
+ */
+export function shellArg(v: string): string {
+  return `'${v.replace(/'/g, `'\\''`)}'`;
+}
+
 /** The command that lists every thread on an ADO pull request - the
  *  azure-devops extension has no `repos pr comment` subcommand, so this
  *  REST route through `az devops invoke` is the only CLI path. It needs
@@ -90,8 +107,8 @@ export function azurePrThreadsCommand(remoteUrl: string, number: number): string
   // "My Project" is legal ADO and an unquoted space would split the
   // `key=value` token into two argv entries.
   return `az devops invoke --area git --resource pullRequestThreads ` +
-    `--route-parameters 'project=${i.project}' 'repositoryId=${i.repo}' pullRequestId=${number} ` +
-    `--org '${i.org}' --api-version 7.1`;
+    `--route-parameters ${shellArg(`project=${i.project}`)} ${shellArg(`repositoryId=${i.repo}`)} pullRequestId=${number} ` +
+    `--org ${shellArg(i.org)} --api-version 7.1`;
 }
 
 /** The command that lists a work item's comments. `az boards work-item
@@ -102,8 +119,8 @@ export function azureWorkItemCommentsCommand(remoteUrl: string, id: number): str
   const i = azureRemoteParts(remoteUrl);
   if (!i) return null;
   return `az devops invoke --area wit --resource comments ` +
-    `--route-parameters 'project=${i.project}' workItemId=${id} ` +
-    `--org '${i.org}' --api-version 7.1-preview.4`;
+    `--route-parameters ${shellArg(`project=${i.project}`)} workItemId=${id} ` +
+    `--org ${shellArg(i.org)} --api-version 7.1-preview.4`;
 }
 
 /** (orgUrl, project, repo) out of an ADO remote. Mirrors

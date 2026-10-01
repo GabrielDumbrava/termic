@@ -260,9 +260,18 @@ export const usePr = create<PrStore>((set, get) => ({
         providerByProject: { ...s.providerByProject, [projectId]: r.provider ?? null },
       }));
     } catch {
-      // Treat an unresolvable project as "not a forge": rendering forge UI
-      // we cannot back up is worse than rendering none.
-      set(s => ({ providerByProject: { ...s.providerByProject, [projectId]: null } }));
+      // Treat an unresolvable project as "not a forge": rendering forge UI we
+      // cannot back up is worse than rendering none.
+      //
+      // But NEVER overwrite an answer we already have. Without the old
+      // early-out, two dialogs resolving the same project can land out of
+      // order, so one transient invoke failure would replace a good "azure"
+      // with null, and CreatePrDialog reads null as "this repo isn't on any
+      // forge" and disables draft-with-agent until relaunch. A first failure
+      // still records null, which is the honest answer when nothing is known.
+      set(s => (s.providerByProject[projectId]
+        ? s
+        : { providerByProject: { ...s.providerByProject, [projectId]: null } }));
     }
   },
 }));
@@ -702,13 +711,22 @@ const mergeHandled = new Set<string>();
  *  the CLI. */
 const mergeKey = (taskId: string, provider: ForgeProvider | null, number: number) =>
   `prMergeHandled:${taskId}:${provider}:${number}`;
-function mergeAlreadyHandled(taskId: string, provider: ForgeProvider | null, number: number): boolean {
+export function mergeAlreadyHandled(taskId: string, provider: ForgeProvider | null, number: number): boolean {
   // The in-memory key must carry provider + number too: keying it on the
   // task alone swallowed the merge of a SECOND PR opened on the same task
   // within one session (and skipped the persisted marker, so it
   // re-announced on next launch).
   if (mergeHandled.has(`${taskId}:${provider}:${number}`)) return true;
-  try { return localStorage.getItem(mergeKey(taskId, provider, number)) === "1"; } catch { return false; }
+  try {
+    if (localStorage.getItem(mergeKey(taskId, provider, number)) === "1") return true;
+    // The key gained its `provider` segment after shipping, so every merge
+    // already handled under the old spelling would read as unhandled exactly
+    // once on upgrade: a toast, a desktop notification, and under
+    // `on_pr_merge: "archive"` an archive of a task the user had chosen to
+    // keep. Reading the legacy key costs one lookup and only ever on the
+    // miss path.
+    return localStorage.getItem(`prMergeHandled:${taskId}:${number}`) === "1";
+  } catch { return false; }
 }
 function rememberMergeHandled(taskId: string, provider: ForgeProvider | null, number: number) {
   mergeHandled.add(`${taskId}:${provider}:${number}`);

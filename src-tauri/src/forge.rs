@@ -2686,7 +2686,7 @@ code.internal.acme.com configured to use ssh protocol.\n";
              "comments": [
                 {"id": 1, "commentType": "text", "isDeleted": false, "content": " looks wrong ",
                  "publishedDate": "2026-06-11T10:00:00Z",
-                 "author": {"id": "u1", "uniqueName": "alice@x.io", "displayName": "Alice"}},
+                 "author": {"id": "u1", "uniqueName": "alice@example.com", "displayName": "Alice"}},
                 {"id": 2, "commentType": "system", "content": "Alice voted 10",
                  "publishedDate": "2026-06-11T10:01:00Z",
                  "author": {"id": "sys"}}
@@ -2695,18 +2695,18 @@ code.internal.acme.com configured to use ssh protocol.\n";
              "comments": [
                 {"id": 3, "commentType": "text", "content": "inline nit",
                  "publishedDate": "2026-06-11T10:02:00+02:00",
-                 "author": {"id": "u9", "uniqueName": "mallory@x.io"}}
+                 "author": {"id": "u9", "uniqueName": "mallory@example.com"}}
              ]},
             {"id": 12, "isDeleted": true,
              "comments": [{"id": 4, "commentType": "text", "content": "gone",
                           "author": {"id": "u1"}}]}
         ]}"#).unwrap();
-        let trusted: HashSet<String> = ["u1".to_string(), "alice@x.io".to_string()].into_iter().collect();
+        let trusted: HashSet<String> = ["u1".to_string(), "alice@example.com".to_string()].into_iter().collect();
         let out = parse_azure_threads(&v, &trusted);
         // System comment dropped, deleted thread dropped, inline keeps its path.
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].id, "t10c1");
-        assert_eq!(out[0].author, "alice@x.io");
+        assert_eq!(out[0].author, "alice@example.com");
         assert_eq!(out[0].body, "looks wrong");
         assert_eq!(out[0].kind, "comment");
         assert!(out[0].trusted);
@@ -2727,7 +2727,7 @@ code.internal.acme.com configured to use ssh protocol.\n";
             "creationDate": "2026-07-02T09:30:00Z",
             "sourceRefName": "refs/heads/feat/flags",
             "isDraft": true,
-            "createdBy": {"uniqueName": "bob@x.io", "displayName": "Bob"},
+            "createdBy": {"uniqueName": "bob@example.com", "displayName": "Bob"},
             "repository": {"webUrl": "https://dev.azure.com/o/Proj/_git/widgets"},
             "url": "https://dev.azure.com/o/_apis/git/repositories/r/pullRequests/13"
         }"#).unwrap();
@@ -2738,7 +2738,7 @@ code.internal.acme.com configured to use ssh protocol.\n";
         // Browser URL hangs off the repo's webUrl, not the _apis route.
         assert_eq!(pr.url, "https://dev.azure.com/o/Proj/_git/widgets/pullrequest/13");
         assert_eq!(pr.head_ref, "feat/flags");
-        assert_eq!(pr.author, "bob@x.io");
+        assert_eq!(pr.author, "bob@example.com");
         assert!(pr.draft);
         assert!(!pr.cross_repository);
         assert_eq!(pr.updated_at, "2026-07-02T09:30:00Z");
@@ -2796,7 +2796,7 @@ code.internal.acme.com configured to use ssh protocol.\n";
                 "System.Description": "<div>It breaks.<br>Hard.</div>",
                 "System.Tags": "bug; p1",
                 "System.CommentCount": 3,
-                "System.CreatedBy": {"uniqueName": "bob@x.io"},
+                "System.CreatedBy": {"uniqueName": "bob@example.com"},
                 "System.ChangedDate": "2026-07-01T10:00:00Z"}},
             {"id": 0, "fields": {}}
         ]"#).unwrap();
@@ -2807,7 +2807,7 @@ code.internal.acme.com configured to use ssh protocol.\n";
         // The API URL is rewritten to the browser page.
         assert_eq!(out[0].url, "https://dev.azure.com/o/_workitems/edit/42");
         assert_eq!(out[0].body, "It breaks.\nHard.");
-        assert_eq!(out[0].author, "bob@x.io");
+        assert_eq!(out[0].author, "bob@example.com");
         assert_eq!(out[0].comments, 3);
         assert_eq!(out[0].labels, vec!["bug".to_string(), "p1".to_string()]);
         assert_eq!(out[0].updated_at, "2026-07-01T10:00:00Z");
@@ -2937,7 +2937,7 @@ code.internal.acme.com configured to use ssh protocol.\n";
             {"id": 10, "comments": [
                 {"id": 1, "commentType": "text", "content": "no date",
                  "lastUpdatedDate": "2026-06-12T09:00:00Z",
-                 "author": {"id": "u1", "uniqueName": "a@x.io"}}
+                 "author": {"id": "u1", "uniqueName": "a@example.com"}}
             ]}
         ]}"#).unwrap();
         let out = parse_azure_threads(&v, &HashSet::new());

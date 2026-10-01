@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  forgeName, forgeCli, prNoun, prNounShort, prRef, prLabel, prLabelShort,
-  forgeLoginCmd, forgeInstallCmd, azurePrThreadsCommand,
-  azureWorkItemCommentsCommand, issueNoun,
-} from "./forge";
+import { azurePrThreadsCommand, azureWorkItemCommentsCommand, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, issueNoun, prLabel, prLabelShort, prNoun, prNounShort, prRef, shellArg } from "./forge";
 
 describe("forge naming", () => {
   it("names all three providers", () => {
@@ -126,5 +122,107 @@ describe("azureWorkItemCommentsCommand", () => {
 
   it("returns null for non-ADO remotes", () => {
     expect(azureWorkItemCommentsCommand("https://github.com/a/b", 21)).toBeNull();
+  });
+});
+
+// ── shell safety for agent-run commands ───────────────────────────────
+
+describe("shellArg", () => {
+  it("quotes a plain value", () => {
+    expect(shellArg("myorg")).toBe("'myorg'");
+  });
+
+  it("survives a value containing a single quote", () => {
+    // The close-reopen form. Anything else leaves the quote open and the
+    // rest of the line is read as shell.
+    expect(shellArg("o'x")).toBe(`'o'\\''x'`);
+  });
+
+  it("leaves shell metacharacters inert inside the quotes", () => {
+    for (const v of ["a;rm -rf /", "a`id`", "a$(id)", "a|sh", "a&b", "a>f"]) {
+      const q = shellArg(v);
+      expect(q.startsWith("'") && q.endsWith("'")).toBe(true);
+      // Nothing between the outer quotes terminates them.
+      expect(q.slice(1, -1).includes("'")).toBe(false);
+    }
+  });
+});
+
+/** Split a command line the way a POSIX shell would: single quotes and
+ *  backslash escapes, which is everything these builders emit.
+ *
+ *  Written out rather than asserted on substrings, because the correct escape
+ *  `'\''` legitimately CONTAINS the sequence a substring test would forbid,
+ *  so the first version of this test failed on a fix that worked. Parsing it
+ *  tests the property that matters: the hostile text stays one argument. */
+function shellSplit(line: string): string[] {
+  const out: string[] = [];
+  let cur = "", inQ = false, started = false, k = 0;
+  const flush = () => { if (started || cur) { out.push(cur); cur = ""; started = false; } };
+  while (k < line.length) {
+    const c = line[k];
+    if (inQ) {                       // inside '': everything literal till the close
+      if (c === "'") inQ = false; else cur += c;
+      k++; continue;
+    }
+    if (c === "\\" && k + 1 < line.length) { cur += line[k + 1]; started = true; k += 2; continue; }
+    if (c === "'") { inQ = true; started = true; k++; continue; }
+    if (/\s/.test(c)) { flush(); k++; continue; }
+    cur += c; k++;
+  }
+  flush();
+  if (inQ) throw new Error(`unbalanced quote: ${line}`);
+  return out;
+}
+
+describe("azure command builders are injection-safe", () => {
+  // The reachable attack: azureRemoteParts percent-DECODES each path
+  // segment, so %27 in a remote becomes a literal quote. These strings are
+  // typed into a prompt the agent is instructed to RUN, so a closed quote
+  // is an executed command. Cloning a repo with a crafted remote is enough.
+  const evil = "https://dev.azure.com/o/p%27%3B%20id%3B%27x/_git/r";
+
+  it("keeps a crafted remote inside ONE argument in the threads command", () => {
+    const argv = shellSplit(azurePrThreadsCommand(evil, 7)!);
+    // The whole hostile segment is a single token, quotes balanced.
+    expect(argv).toContain("project=p'; id;'x");
+    // And nothing the attacker wrote became a word of its own.
+    expect(argv).not.toContain("id;");
+    expect(argv.filter(a => a.startsWith("project="))).toHaveLength(1);
+  });
+
+  it("keeps a crafted remote inside ONE argument in the work-item command", () => {
+    const argv = shellSplit(azureWorkItemCommentsCommand(evil, 7)!);
+    expect(argv).toContain("project=p'; id;'x");
+    expect(argv).not.toContain("id;");
+  });
+
+  it("shows what the unescaped build would have done", () => {
+    // The control, in the test itself. Interpolating the decoded value
+    // straight into single quotes closes them, and the shell reads the rest
+    // as words of its own: `id;` becomes a command, which is the whole bug.
+    const naive = `az devops invoke --route-parameters 'project=p'; id;'x'`;
+    const argv = shellSplit(naive);
+    // The one value split into TWO words: the quote closed after `p`, and
+    // everything the attacker wrote past it is now separate shell input.
+    expect(argv).toContain("project=p;");
+    expect(argv).toContain("id;x");
+    expect(argv).not.toContain("project=p'; id;'x");     // never one literal
+  });
+
+  it("still produces the ordinary command for an ordinary remote", () => {
+    const cmd = azurePrThreadsCommand("https://dev.azure.com/myorg/proj/_git/repo", 42);
+    expect(cmd).toContain("'project=proj'");
+    expect(cmd).toContain("'repositoryId=repo'");
+    expect(cmd).toContain("pullRequestId=42");
+    // `org` is the full org URL, not the bare name.
+    expect(cmd).toContain("--org 'https://dev.azure.com/myorg'");
+  });
+
+  it("keeps a legitimate space in a project name quoted", () => {
+    // "My Project" is legal ADO and was the reason for quoting in the first
+    // place; the escape must not have broken it.
+    const cmd = azurePrThreadsCommand("https://dev.azure.com/myorg/My%20Project/_git/repo", 1);
+    expect(cmd).toContain("'project=My Project'");
   });
 });
