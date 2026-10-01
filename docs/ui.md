@@ -62,10 +62,12 @@ recorded BEFORE the answer: quitting mid-dialog, or a failed write, must not
 turn it into something that greets you at every launch. Settings owns it
 after that.
 
-The wizard's checkbox is UNTICKED. It writes into the user's own
-`~/.local/share`, and a pre-ticked box is opt-out however visible it is. The
-cost is real and accepted: most people will not notice it, which is what the
-Settings row and the standalone prompt are for.
+The wizard's checkbox is TICKED by default; the standalone prompt still needs
+a real click. The difference is deliberate: the prompt interrupts someone
+mid-use, while the wizard is a setup flow they opened on purpose, with the
+box, its label and what it does all on screen before Finish. Unticked, almost
+nobody noticed it. It is never hidden or implied, and Settings → General
+reverses it.
 
 ### Settings text runs the full width of the pane
 

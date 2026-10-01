@@ -54,7 +54,13 @@ export function WelcomeDialog() {
   // user would otherwise meet two prompts at once (see lib/desktopEntryPrompt,
   // which stands down until `welcomed`).
   const [desktopAvailable, setDesktopAvailable] = useState(false);
-  const [wantDesktopEntry, setWantDesktopEntry] = useState(false);
+  // TICKED by default, here and only here. The standalone prompt for an
+  // existing install still requires an actual click, because it interrupts
+  // someone mid-use; this is a setup flow the user opened on purpose, the box
+  // is on screen with its own explanation, and unticking it is one click
+  // before Finish. Unticked, almost nobody would notice it and the feature
+  // would exist for the handful of people who read every checkbox.
+  const [wantDesktopEntry, setWantDesktopEntry] = useState(true);
 
   // Step 1 (repos) state.
   const [dir, setDir] = useState("");
@@ -243,11 +249,11 @@ export function WelcomeDialog() {
         />
       )}
 
-      {/* Unticked by default. It writes into the user's own
-          ~/.local/share, and a pre-ticked box is opt-OUT however visible it
-          is. The cost is that most people will not notice it; Settings →
-          General carries the same action, and the standalone prompt catches
-          everyone who is not new. */}
+      {/* Ticked by default: see the state above for why this one differs from
+          the standalone prompt. It still writes into the user's own
+          ~/.local/share, so it is never hidden or implied: the box, its
+          label and what it does are all on screen before Finish, and
+          Settings → General reverses it. */}
       {step === 4 && desktopAvailable && (
         <label
           data-testid="welcome-desktop-entry"
