@@ -1334,7 +1334,7 @@ export function NewTaskDialog() {
       // to see and press Create without scrolling to find it).
       stickyFooter={
         <>
-          {err && <p className="mb-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
+          {err && <p className="mb-2 max-h-32 overflow-auto whitespace-pre-wrap break-words text-[13.5px] text-[var(--color-err)]">{err}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" type="button" onClick={close}>{t("common:cancel")}</Button>
             <Button

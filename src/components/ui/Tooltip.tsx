@@ -34,7 +34,14 @@ export function Tip({ content, children, side = "top", delay = 0, align = "cente
             className={cn(
               // Body-sized 13.5px text (no more squinty tooltips), generous
               // padding so the label isn't crammed against the border.
-              "z-[100] rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2.5 py-1.5 text-[13.5px] text-[var(--color-fg)] shadow-lg",
+              // max-width keeps long content (e.g. a task-create error)
+              // wrapped inside the viewport instead of one clipped line;
+              // break-words covers the unbroken tokens paths contain;
+              // max-h + overflow stops a multi-line error growing past
+              // the viewport top/bottom with no way to read it; pre-wrap
+              // keeps git stderr's line structure instead of collapsing
+              // it into one paragraph.
+              "z-[100] max-w-[min(640px,calc(100vw-2rem))] max-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2.5 py-1.5 text-[13.5px] text-[var(--color-fg)] shadow-lg",
               "data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0",
             )}
           >

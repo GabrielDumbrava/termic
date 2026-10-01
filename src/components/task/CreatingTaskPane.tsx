@@ -64,7 +64,7 @@ export function CreatingTaskPane({ id }: { id: string }) {
         )}
       </div>
       {isError && pending.err && (
-        <p className="shrink-0 border-b border-[var(--color-border-soft)] px-4 py-2 text-[13px] text-[var(--color-err)]">
+        <p className="max-h-[40%] shrink-0 overflow-auto whitespace-pre-wrap break-words border-b border-[var(--color-border-soft)] px-4 py-2 text-[13px] text-[var(--color-err)]">
           {pending.err}
         </p>
       )}
