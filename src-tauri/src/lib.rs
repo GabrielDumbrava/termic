@@ -573,8 +573,9 @@ pub struct Task {
     /// Multi-repo composition. Empty for single-repo tasks (the
     /// usual case — `path` already points at the worktree of the one
     /// project this task belongs to). For tasks created
-    /// under a `ProjectType::Multi` project this lists the host repo
-    /// + every member with its resolved on-disk path. The PTY spawn
+    /// under a `ProjectType::Multi` project this lists every NON-host
+    /// member with its resolved on-disk path — the host is not a member,
+    /// `task.path` is already its worktree. The PTY spawn
     /// + sandbox profile generator iterate this list when populated.
     #[serde(default)]
     pub composition: Vec<TaskMember>,
@@ -809,10 +810,9 @@ impl Task {
     }
 }
 
-/// One entry in a multi-repo task's composition. The host repo
-/// itself is the first member (its `path` is the task wrapper
-/// dir, which IS a git worktree of the host); subsequent entries are
-/// the user-picked member repos worktree'd or symlinked inside it.
+/// One entry in a multi-repo task's composition: a user-picked member
+/// repo worktree'd or symlinked inside the task wrapper dir. The host
+/// repo is NOT in this list — the task's own `path` is its worktree.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TaskMember {
@@ -7062,8 +7062,8 @@ pub struct CreateMultiArgs {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateMultiMember {
-    /// Canonical path of the host member this per-task spec applies
-    /// to — matches an entry in `Project.members[].root_path`.
+    /// Canonical path of the member repo this per-task spec applies
+    /// to — matches an entry in the host project's `members[].root_path`.
     pub root_path: String,
     /// Dir name inside the wrapper. Defaults to the member's `name` —
     /// pinned at create time so renames don't break the task layout.
@@ -11699,6 +11699,16 @@ fn git_repo_status(name: String, dir_name: String, kind: &str, p: &Path) -> GitR
     }
 }
 
+/// The task's member checkouts that are real dirs on disk — the one place
+/// the "which members can we operate on" contract lives. Skips empty paths,
+/// paths that no longer exist, and a member whose path IS the host's (only
+/// legacy records can carry that; composition lists non-host members).
+fn on_disk_members(w: &Task) -> impl Iterator<Item = &TaskMember> {
+    w.composition
+        .iter()
+        .filter(|m| !m.path.is_empty() && m.path != w.path && Path::new(&m.path).exists())
+}
+
 #[tauri::command]
 async fn task_git_status(id: String) -> Result<GitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -11710,14 +11720,12 @@ async fn task_git_status(id: String) -> Result<GitStatus, String> {
             .unwrap_or_else(|| w.name.clone());
         let mut repos = vec![git_repo_status(host_name, String::new(), "host", Path::new(&w.path))];
 
-        for m in &w.composition {
-            let member_path = Path::new(&m.path);
-            if !member_path.exists() { continue; }
+        for m in on_disk_members(&w) {
             let kind = match m.mode {
                 MemberMode::Worktree => "worktree",
                 MemberMode::RepoRoot => "repo_root",
             };
-            repos.push(git_repo_status(m.dir_name.clone(), m.dir_name.clone(), kind, member_path));
+            repos.push(git_repo_status(m.dir_name.clone(), m.dir_name.clone(), kind, Path::new(&m.path)));
         }
 
         let total_changed = repos.iter().map(|r| r.changed).sum();
@@ -12083,6 +12091,49 @@ async fn task_git_update(id: String, dir_name: String, mode: UpdateMode) -> Resu
         let cwd = repo_cwd(&w, &dir_name)?;
         let base = repo_base_branch(&w, &dir_name, &load_projects_all());
         git_update_repo(&cwd, mode, &base)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Per-repo outcome of `task_git_update_all`. The batch never aborts on one
+/// repo's failure — the UI summarizes them all.
+#[derive(Serialize)]
+struct UpdateAllItem {
+    /// Display name: project name for the host, dir_name for a member.
+    name: String,
+    /// Set when the update ran to a verdict (possibly a conflicted one).
+    result: Option<UpdateResult>,
+    /// Set when the update could not start: no upstream, detached HEAD,
+    /// missing remote, a merge that never got off the ground.
+    error: Option<String>,
+}
+
+/// Bulk "Update" for multi-repo tasks: runs the same `git_update_repo` the
+/// per-repo menu uses over the host plus every on-disk member — each against
+/// its OWN base branch (`repo_base_branch`) — sequentially, collecting every
+/// outcome.
+#[tauri::command]
+async fn task_git_update_all(id: String, mode: UpdateMode) -> Result<Vec<UpdateAllItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<UpdateAllItem>, String> {
+        let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let projects = load_projects_all();
+        let host_name = projects.iter()
+            .find(|p| p.id == w.project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| w.name.clone());
+        // The same repo set task_git_status enumerates: host, then members
+        // whose checkout is on disk.
+        let mut repos = vec![(String::new(), host_name, PathBuf::from(&w.path))];
+        for m in on_disk_members(&w) {
+            repos.push((m.dir_name.clone(), m.dir_name.clone(), PathBuf::from(&m.path)));
+        }
+        Ok(repos.iter().map(|(dir, name, cwd)| {
+            match git_update_repo(cwd, mode, &repo_base_branch(&w, dir, &projects)) {
+                Ok(result) => UpdateAllItem { name: name.clone(), result: Some(result), error: None },
+                Err(e) => UpdateAllItem { name: name.clone(), result: None, error: Some(e) },
+            }
+        }).collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -13147,30 +13198,38 @@ pub struct PrLookup {
     pub pr: Option<forge::PrStatus>,
 }
 
-fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
-    let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
-    let cwd = PathBuf::from(&w.path);
-    // Cached, no network: a poll on a non-forge repo must cost a hashmap
-    // read, not a subprocess, because the PR card polls every task the user
-    // opens the Git tab on.
-    let (provider, remote_url) = forge::provider_for_repo(&cwd, &detect_default_remote(&cwd));
+/// The shared lookup body: resolve the repo's forge off its default remote,
+/// find the branch's PR (falling back to `known_number`), and map every
+/// failure onto the status vocabulary the card renders. `known_*` are the
+/// stored identity a TASK record carries - member lookups pass None, because
+/// a member resolves by branch only (its checkout's HEAD IS the member
+/// branch) and nothing persists a member identity anywhere.
+fn pr_lookup_at(
+    cwd: &Path,
+    known_number: Option<u64>,
+    known_provider: Option<&str>,
+) -> PrLookup {
+    // No network, no forge CLI: provider resolution is a cached lookup, and
+    // detecting the default remote is one `git remote` subprocess - the
+    // cheap floor a poll on a non-forge repo should cost.
+    let (provider, remote_url) = forge::provider_for_repo(cwd, &detect_default_remote(cwd));
     if remote_url.is_empty() {
-        return Ok(PrLookup {
+        return PrLookup {
             provider: None,
             remote_url,
             status: "no-remote".into(),
             message: "No git remote configured. Push the repo to GitHub, GitLab, or Azure DevOps first.".into(),
             pr: None,
-        });
+        };
     }
     let Some(provider) = provider else {
-        return Ok(PrLookup {
+        return PrLookup {
             provider: None,
             remote_url: remote_url.clone(),
             status: "unsupported-remote".into(),
             message: format!("Remote {} is not a GitHub, GitLab, or Azure DevOps host.", forge::remote_for_display(&remote_url)),
             pr: None,
-        });
+        };
     };
     // Resolve by BRANCH first, and only fall back to the stored number.
     //
@@ -13189,38 +13248,23 @@ fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
     // `pr_provider` unset is a legacy task that predates the field - trust
     // its stored number under the CURRENT provider (a stale cross-forge
     // number just comes back "not found" and degrades to None).
-    let known_number = w.pr_number
-        .filter(|_| w.pr_provider.as_deref().map_or(true, |p| p == provider));
-    let by_branch = forge::pr_status(provider, &cwd, None);
+    let known_number =
+        known_number.filter(|_| known_provider.map_or(true, |p| p == provider));
+    let by_branch = forge::pr_status(provider, cwd, None);
     let resolved = match by_branch {
         Ok(Some(pr)) => Ok(Some(pr)),
-        Ok(None) if known_number.is_some() => forge::pr_status(provider, &cwd, known_number),
+        Ok(None) if known_number.is_some() => forge::pr_status(provider, cwd, known_number),
         other => other,
     };
     match resolved {
-        Ok(pr) => {
-            // Cache the identity on the task record so future polls
-            // (and the next app launch) can resolve by number.
-            if let Some(ref p) = pr {
-                if w.pr_number != Some(p.number) || w.pr_provider.as_deref() != Some(provider) {
-                    let mut list = load_tasks_all();
-                    if let Some(wm) = list.iter_mut().find(|x| x.id == id) {
-                        wm.pr_url = Some(p.url.clone());
-                        wm.pr_number = Some(p.number);
-                        wm.pr_provider = Some(provider.to_string());
-                        let _ = save_task(wm);
-                    }
-                }
-            }
-            Ok(PrLookup {
-                provider: Some(provider.to_string()),
-                remote_url,
-                status: "ok".into(),
-                message: String::new(),
-                pr,
-            })
-        }
-        Err(forge::ForgeError::CliMissing(cli)) => Ok(PrLookup {
+        Ok(pr) => PrLookup {
+            provider: Some(provider.to_string()),
+            remote_url,
+            status: "ok".into(),
+            message: String::new(),
+            pr,
+        },
+        Err(forge::ForgeError::CliMissing(cli)) => PrLookup {
             provider: Some(provider.to_string()),
             remote_url,
             status: "cli-missing".into(),
@@ -13229,22 +13273,81 @@ fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
                 if provider == forge::GITLAB { "merge requests" } else { "pull requests" }
             )),
             pr: None,
-        }),
-        Err(forge::ForgeError::Auth(msg)) => Ok(PrLookup {
+        },
+        Err(forge::ForgeError::Auth(msg)) => PrLookup {
             provider: Some(provider.to_string()),
             remote_url,
             status: "cli-unauthed".into(),
             message: msg,
             pr: None,
-        }),
-        Err(forge::ForgeError::Other(msg)) => Ok(PrLookup {
+        },
+        Err(forge::ForgeError::Other(msg)) => PrLookup {
             provider: Some(provider.to_string()),
             remote_url,
             status: "error".into(),
             message: msg,
             pr: None,
-        }),
+        },
     }
+}
+
+fn pr_lookup_blocking(id: &str) -> Result<PrLookup, String> {
+    let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    let lookup = pr_lookup_at(Path::new(&w.path), w.pr_number, w.pr_provider.as_deref());
+    // Cache the identity on the task record so future polls (and the next
+    // app launch) can resolve by number.
+    if let (Some(p), Some(provider)) = (&lookup.pr, lookup.provider.as_deref()) {
+        if w.pr_number != Some(p.number) || w.pr_provider.as_deref() != Some(provider) {
+            let mut list = load_tasks_all();
+            if let Some(wm) = list.iter_mut().find(|x| x.id == id) {
+                wm.pr_url = Some(p.url.clone());
+                wm.pr_number = Some(p.number);
+                wm.pr_provider = Some(provider.to_string());
+                let _ = save_task(wm);
+            }
+        }
+    }
+    Ok(lookup)
+}
+
+/// A member's PR/MR lookup inside a multi-repo task: the `PrLookup`
+/// payload plus which member it belongs to. `composition` holds members
+/// only — the host is the task's own `path`, already polled by
+/// `task_pr_status` (`m.path != w.path` is kept as a defensive filter for
+/// records that predate that contract).
+#[derive(Serialize)]
+pub struct MemberPrLookup {
+    pub dir_name: String,
+    /// The member's LIVE branch (`git branch --show-current`), not the
+    /// frozen `m.branch`: a `task_git_checkout` moves a worktree's HEAD
+    /// without updating the record, and repo_root members freeze "".
+    /// The PR resolves by that same HEAD, so the label must match it.
+    pub branch: String,
+    #[serde(flatten)]
+    pub lookup: PrLookup,
+}
+
+fn member_pr_lookups(id: &str) -> Result<Vec<MemberPrLookup>, String> {
+    let w = load_tasks_all().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    Ok(on_disk_members(&w)
+        .map(|m| {
+            let cwd = Path::new(&m.path);
+            // Frozen `m.branch` is the create-time value; read HEAD like
+            // GitRepo.branch does so the row can't label a PR with a
+            // branch the lookup didn't resolve. Falls back to the frozen
+            // name on detached HEAD / unreadable repo.
+            let branch = git(&["branch", "--show-current"], cwd)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| m.branch.clone());
+            MemberPrLookup {
+                dir_name: m.dir_name.clone(),
+                branch,
+                lookup: pr_lookup_at(cwd, None, None),
+            }
+        })
+        .collect())
 }
 
 /// One issue-list round-trip: provider resolution + the open issues, or
@@ -13509,6 +13612,16 @@ async fn project_forge_issues(project_id: String, limit: Option<u32>) -> Result<
 #[tauri::command]
 async fn task_pr_status(id: String) -> Result<PrLookup, String> {
     tauri::async_runtime::spawn_blocking(move || pr_lookup_blocking(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Live PR/MR status for each non-host member of a multi-repo task. Same
+/// cadence contract as `task_pr_status` (the pr store folds it into the
+/// task's refresh) - one forge CLI call per member with a forge remote.
+#[tauri::command]
+async fn task_member_pr_status(id: String) -> Result<Vec<MemberPrLookup>, String> {
+    tauri::async_runtime::spawn_blocking(move || member_pr_lookups(&id))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -24409,9 +24522,9 @@ pub fn run() {
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_diff_stat, task_files,
             desktop_integration_status, desktop_integration_add, desktop_integration_remove, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
-            task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
+            task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_all, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare, task_git_blame, task_git_commit_meta, task_git_commit_offset,
-            detect_forges, task_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
+            detect_forges, task_pr_status, task_member_pr_status, task_pr_create, task_pr_comments, task_set_pr_watch, task_set_pr_comments_seen,
             project_forge_issues, project_forge_provider, project_forge_prs, project_fetch_pr_branch, project_git_checkout,
             task_file_diff, task_file_diff_sides, task_file_read, file_read_external, clipboard_image_save, clipboard_image_capture, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
@@ -30035,6 +30148,67 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn on_disk_members_skips_absent_host_and_empty_paths() {
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        let mut ws = task_with_member("api", host.path(), member.path());
+        let push = |ws: &mut Task, dir_name: &str, path: String| ws.composition.push(TaskMember {
+            dir_name: dir_name.into(),
+            mode: MemberMode::RepoRoot,
+            path,
+            ..Default::default()
+        });
+        // A member pointing at the host itself: only legacy records can
+        // carry this (composition lists non-host members) — it must not be
+        // operated on twice.
+        push(&mut ws, "dup", host.path().to_string_lossy().into_owned());
+        // A member whose checkout vanished from disk.
+        push(&mut ws, "gone", member.path().join("nope").to_string_lossy().into_owned());
+        // An empty path.
+        push(&mut ws, "empty", String::new());
+        let dirs: Vec<_> = on_disk_members(&ws).map(|m| m.dir_name.as_str()).collect();
+        assert_eq!(dirs, vec!["api"]);
+    }
+
+    #[test]
+    fn member_pr_lookups_labels_rows_with_the_live_branch() {
+        with_scratch_data_dir(|_| {
+            let host = tempdir().unwrap();
+            let member_dir = tempdir().unwrap();
+            let member = member_dir.path().to_path_buf();
+            git_init_with_commit(&member);
+            git_set_identity(&member);
+            // The frozen member branch is the create-time value; the row
+            // must name the branch the lookup actually used (live HEAD).
+            git(&["checkout", "-q", "-b", "feat-live"], &member).unwrap();
+            let mut ws = a_task("t1", ProfileId::Root);
+            ws.path = host.path().to_string_lossy().into_owned();
+            ws.composition = vec![
+                TaskMember {
+                    dir_name: "api".into(),
+                    mode: MemberMode::RepoRoot,
+                    path: member.to_string_lossy().into_owned(),
+                    branch: "stale".into(),
+                    ..Default::default()
+                },
+                // A member whose checkout vanished is skipped entirely.
+                TaskMember {
+                    dir_name: "gone".into(),
+                    mode: MemberMode::RepoRoot,
+                    path: member.join("nope").to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+            ];
+            crate::save_task(&ws).unwrap();
+            let rows = member_pr_lookups("t1").unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].dir_name, "api");
+            assert_eq!(rows[0].branch, "feat-live");
+            assert_eq!(rows[0].lookup.status, "no-remote");
+        });
     }
 
     #[test]

@@ -7,9 +7,9 @@ import type { AgentUsage, StatusLineOwner } from "@/lib/agentUsage";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
-  ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
+  ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, UpdateAllItem, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
-  ForgeCliStatus, ForgeProvider, PrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
+  ForgeCliStatus, ForgeProvider, PrLookup, MemberPrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
@@ -876,6 +876,10 @@ export const taskGitCheckout = (id: string, dirName: string, branch: string) =>
  *  base branch (`merge` / `rebase`). Fetches first; auto-stashes local work. */
 export const taskGitUpdate = (id: string, dirName: string, mode: UpdateMode) =>
   invoke<UpdateResult>("task_git_update", { id, dirName, mode });
+/** Run `task_git_update` across the host and every member repo; never aborts
+ *  on one repo's failure — each item carries its own result or error. */
+export const taskGitUpdateAll = (id: string, mode: UpdateMode) =>
+  invoke<UpdateAllItem[]>("task_git_update_all", { id, mode });
 /** Branch + upstream + base for the update menu. Resolved on dropdown-open. */
 export const taskGitUpdateInfo = (id: string, dirName: string) =>
   invoke<UpdateInfo>("task_git_update_info", { id, dirName });
@@ -896,6 +900,13 @@ export const detectForges = () =>
  *  the forge CLI - poll at a slow cadence (the pr store owns this). */
 export const taskPrStatus = (id: string) =>
   invoke<PrLookup>("task_pr_status", { id });
+/** Per-member PR/MR lookups for a multi-repo task - one entry per on-disk
+ *  NON-host composition member (the host is `task_pr_status`'s own lookup;
+ *  a member whose checkout vanished produces no entry). Same
+ *  per-member cost as a task lookup, so it rides inside the pr store's
+ *  refresh rather than polling on its own. */
+export const taskMemberPrStatus = (id: string) =>
+  invoke<MemberPrLookup[]>("task_member_pr_status", { id });
 /** Which forge a project's repo is hosted on, or null. Cached in Rust and
  *  network-free, so callers may treat it as cheap. */
 export const projectForgeProvider = (projectId: string) =>

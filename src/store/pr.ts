@@ -38,10 +38,10 @@
 // tab nobody is looking at isn't something anyone asked to see.
 
 import { create } from "zustand";
-import type { ForgeCliStatus, ForgeProvider, PrComment, PrLookup, QueueItem, TerminalTab, Task } from "@/lib/types";
+import type { ForgeCliStatus, ForgeProvider, MemberPrLookup, PrComment, PrLookup, QueueItem, TerminalTab, Task } from "@/lib/types";
 import { azurePrThreadsCommand, forgeName, prLabel, prLabelShort, prNoun, prNounShort, prRef } from "@/lib/forge";
 import {
-  detectForges, notify, openPath, ptyWrite, taskPrComments, taskPrStatus,
+  detectForges, notify, openPath, ptyWrite, taskMemberPrStatus, taskPrComments, taskPrStatus,
   taskSetPrCommentsSeen, taskSetPrWatch, projectForgeProvider,
 } from "@/lib/ipc";
 import { workDoneCapable } from "@/lib/agents";
@@ -60,6 +60,10 @@ export interface PrEntry {
   /** Wall-clock ms of the last completed refresh - drives the cadence
    *  guard so tab-switching doesn't hammer the forge. */
   fetchedAt: number;
+  /** Per-member lookups for a multi-repo task's NON-host members (the host
+   *  is `lookup` itself - its worktree is the task path). Undefined on
+   *  single-repo tasks and until the first refresh lands. */
+  members?: MemberPrLookup[];
 }
 
 const EMPTY: PrEntry = Object.freeze({ lookup: null, loading: false, fetchedAt: 0 }) as PrEntry;
@@ -118,35 +122,89 @@ export const usePr = create<PrStore>((set, get) => ({
     if (!force && Date.now() - cur.fetchedAt < MIN_REFRESH_MS) return;
     set(s => ({ byTask: { ...s.byTask, [taskId]: { ...cur, loading: true } } }));
     try {
-      const lookup = await taskPrStatus(taskId);
+      // `composition` lists NON-host members only; the host is the task's
+      // own path, covered by taskPrStatus. A main checkout never polls a
+      // host PR (its branch is the user's live work, and persisting a
+      // found PR could auto-archive the task on an unrelated merge) but
+      // still gets member rows.
+      const task = useApp.getState().tasks.find(t => t.id === taskId);
+      // Independent calls, awaited together: each lands on its own
+      // spawn_blocking, so serializing them would double the latency.
+      // By-branch only for members: a member carries no persisted identity.
+      // A member call that fails keeps the previous list rather than
+      // blanking the rows for the rest of the cadence window.
+      const hasMembers = (task?.composition?.length ?? 0) > 0;
+      const [hostRes, memberRes] = await Promise.allSettled([
+        task?.is_main_checkout ? Promise.resolve(cur.lookup) : taskPrStatus(taskId),
+        hasMembers ? taskMemberPrStatus(taskId) : Promise.resolve(undefined),
+      ]);
+      // Each leg keeps what it can: a member failure keeps the previous
+      // list rather than blanking the rows for the rest of the cadence
+      // window, and good member data survives a failed HOST call (the two
+      // can sit on different forges/CLIs).
+      const members = memberRes.status === "fulfilled"
+        ? memberRes.value
+        : (console.error("task_member_pr_status failed:", memberRes.reason),
+          get().byTask[taskId]?.members);
+      // Edit Task mid-poll: the fetched list describes the OLD member set
+      // (Rust enumerated the record it found at call time). Better to drop
+      // it than show rows for a member the task no longer has - the next
+      // refresh repopulates from the new composition.
+      const memberKey = (t?: Task) => JSON.stringify((t?.composition ?? []).map(m => m.dir_name));
+      const membersOut = memberKey(useApp.getState().tasks.find(t => t.id === taskId)) === memberKey(task)
+        ? members
+        : undefined;
+      if (hostRes.status === "rejected") {
+        console.error("task_pr_status failed:", hostRes.reason);
+        // Keep the stale lookup; record the attempt so a broken setup does
+        // not retry in a tight loop. Member results still land.
+        set(s => ({
+          byTask: { ...s.byTask, [taskId]: { ...(s.byTask[taskId] ?? EMPTY), members: membersOut, loading: false, fetchedAt: Date.now() } },
+        }));
+        return;
+      }
+      const lookup = hostRes.value;
       const prev = get().byTask[taskId]?.lookup;
+      // A concurrent setLookup() (e.g. a PR that just finished creating in
+      // the dialog) lands mid-flight here - keep its lookup rather than
+      // clobbering it with the snapshot we fetched before it existed.
+      const raced = prev !== cur.lookup;
       set(s => ({
-        byTask: { ...s.byTask, [taskId]: { lookup, loading: false, fetchedAt: Date.now() } },
+        byTask: { ...s.byTask, [taskId]: {
+          lookup: raced && s.byTask[taskId] ? s.byTask[taskId].lookup : lookup,
+          members: membersOut, loading: false, fetchedAt: Date.now() } },
       }));
-      maybeHandleMerged(taskId, prev, lookup);
-      maybeHandleOpened(taskId, prev, lookup);
-      // Rust persists the PR identity onto the task record the moment this
-      // lookup resolves one, but the STORE only learned it from loadAll()
-      // (launch / window focus). `watchedTasks` gates on `pr_number` +
-      // `pr_provider`, so until that happened a PR discovered in THIS
-      // session was never watched: the bell rendered as armed and no
-      // comment ever queued.
-      //
-      // Patch the three fields rather than calling loadAll(): a full reload
-      // from inside a poll is re-entrant (it can kick off more refreshes)
-      // and replaces every task object, which fans out through every
-      // mounted task's selectors. Guarded on the transition, so a steady
-      // poll of an already-known PR writes nothing at all - see
-      // docs/performance.md bear trap 8 on unchanged store writes.
-      const found = lookup.pr;
-      if (found) {
-        const known = useApp.getState().tasks.find(t => t.id === taskId);
-        if (known && (known.pr_number !== found.number || known.pr_provider !== found.provider)) {
-          useApp.setState(st => ({
-            tasks: st.tasks.map(t => t.id === taskId
-              ? { ...t, pr_number: found.number, pr_provider: found.provider, pr_url: found.url }
-              : t),
-          }));
+      // `lookup` is the previous (possibly null) snapshot on the
+      // main-checkout path - no host poll ran, so the handlers below
+      // self-neutralize (prev === next). A raced write's lookup wins the
+      // state too, so its transitions are the NEXT refresh's business, not
+      // this stale snapshot's.
+      if (lookup && !raced) {
+        maybeHandleMerged(taskId, prev, lookup);
+        maybeHandleOpened(taskId, prev, lookup);
+        // Rust persists the PR identity onto the task record the moment this
+        // lookup resolves one, but the STORE only learned it from loadAll()
+        // (launch / window focus). `watchedTasks` gates on `pr_number` +
+        // `pr_provider`, so until that happened a PR discovered in THIS
+        // session was never watched: the bell rendered as armed and no
+        // comment ever queued.
+        //
+        // Patch the three fields rather than calling loadAll(): a full reload
+        // from inside a poll is re-entrant (it can kick off more refreshes)
+        // and replaces every task object, which fans out through every
+        // mounted task's selectors. Guarded on the transition, so a steady
+        // poll of an already-known PR writes nothing at all - see
+        // docs/performance.md bear trap 8 on unchanged store writes.
+        const found = lookup.pr;
+        if (found) {
+          const known = useApp.getState().tasks.find(t => t.id === taskId);
+          if (known && (known.pr_number !== found.number || known.pr_provider !== found.provider)) {
+            useApp.setState(st => ({
+              tasks: st.tasks.map(t => t.id === taskId
+                ? { ...t, pr_number: found.number, pr_provider: found.provider, pr_url: found.url }
+                : t),
+            }));
+          }
         }
       }
     } catch (err) {
@@ -160,7 +218,9 @@ export const usePr = create<PrStore>((set, get) => ({
   },
 
   setLookup: (taskId, lookup) => set(s => ({
-    byTask: { ...s.byTask, [taskId]: { lookup, loading: false, fetchedAt: Date.now() } },
+    // Spread the old entry so a create-seed doesn't drop `members` on a
+    // multi-repo task until the next refresh window.
+    byTask: { ...s.byTask, [taskId]: { ...s.byTask[taskId], lookup, loading: false, fetchedAt: Date.now() } },
   })),
 
   setWatch: async (taskId, watch) => {
@@ -293,14 +353,21 @@ async function statusPass() {
 // however often you switch. Once a lookup finds the PR, `refresh` records
 // the identity and the background tick keeps it fresh from then on.
 
+/** Does this task have any PR/MR surface worth polling? A normal task's
+ *  host branch; a main checkout has none of its own, but multi-repo MEMBERS
+ *  are real checkouts whose PRs still resolve (refresh() skips the host
+ *  lookup itself, so callers only need this one test). */
+export const prRelevant = (t: Task) =>
+  !t.is_main_checkout || (t.composition?.length ?? 0) > 0;
+
 /** Would a PR lookup mean anything for this task? The background poller's
- *  own exclusions: a main checkout has no branch of its own, and a plain
- *  folder has no forge. */
+ *  own exclusions: a plain folder has no forge, and a repo-less checkout
+ *  (main checkout with no members) has nothing to resolve. */
 export function prFocusEligible(taskId: string | null): taskId is string {
   if (!taskId) return false;
   const app = useApp.getState();
   const t = app.tasks.find(w => w.id === taskId);
-  if (!t || t.archived || t.is_main_checkout) return false;
+  if (!t || t.archived || !prRelevant(t)) return false;
   return !app.projects.find(p => p.id === t.project_id)?.non_git;
 }
 

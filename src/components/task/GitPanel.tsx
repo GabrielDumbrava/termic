@@ -29,7 +29,7 @@ import {
   ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare, Loader2, GitBranch, GitMerge, RotateCw, FileText,
 } from "lucide-react";
 import type { Task, GitStatus, GitRepo, GitFile, UpdateMode, UpdateInfo } from "@/lib/types";
-import { taskStage, taskUnstage, taskCommit, taskDiscard, taskGitBranches, taskGitCheckout, taskGitUpdate, taskGitUpdateInfo, taskGitPush } from "@/lib/ipc";
+import { taskStage, taskUnstage, taskCommit, taskDiscard, taskGitBranches, taskGitCheckout, taskGitUpdate, taskGitUpdateAll, taskGitUpdateInfo, taskGitPush } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
@@ -46,7 +46,7 @@ import { CopyPathItems } from "./CopyPathItems";
 import { HistoryPanel, ScopePicker } from "./HistoryPanel";
 import { ComparePanel } from "./ComparePanel";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
-import { PrCard } from "./PrCard";
+import { PrCard, MemberPrRows } from "./PrCard";
 import { usePr } from "@/store/pr";
 
 // Per-side status → glyph / fill / ink / label, shared with Compare (GH #208)
@@ -476,6 +476,9 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
     return (
       <div className="flex h-full flex-col">
         {!task.is_main_checkout && <PrCard task={task} />}
+        {/* Members are their own checkouts - they keep their rows even on a
+            main-checkout task (only the HOST card is wrong there). */}
+        <MemberPrRows task={task} />
         {!nonGit && <BranchBar task={task} branch={status.repos[0]?.branch ?? task.branch} dir="" />}
         <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
           {nonGit
@@ -543,6 +546,11 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           never a PR/MR whose head is that branch, so there's nothing here
           worth polling for. */}
       {!task.is_main_checkout && <PrCard task={task} />}
+      {/* Multi-repo members each carry their own PR/MR - the task card
+          above only ever polls the host worktree. Members are their own
+          checkouts, so they keep their rows even on a main-checkout task
+          (where only the host card is hidden). */}
+      <MemberPrRows task={task} />
       {/* 0. Repo sub-tabs (wrapping pills). OUTERMOST of the three controls
           here: which repo you are looking at is what the branch bar and all
           three sub-tabs below are ABOUT, so it cannot sit inside them. */}
@@ -594,6 +602,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           task={task}
           branch={repo?.branch ?? task.branch}
           dir={dir}
+          multi={repos.length > 1}
           right={<div className="relative ml-auto flex min-w-[30%] flex-1 items-center">
             <Search className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
             <input
@@ -852,10 +861,12 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
 // rebase) via task_git_update. Conflicts are surfaced as error toasts, not
 // swallowed - the op is left in progress for the user to resolve in the
 // terminal.
-function BranchBar({ task, branch, dir, right }: {
+function BranchBar({ task, branch, dir, multi, right }: {
   task: Task;
   branch: string;
   dir: string;
+  /** More than one repo on this task — offers the "all repos" update items. */
+  multi?: boolean;
   /** Rendered on the right of the same row. The branch chip is one short
    *  control on a full-width row, so the filter rides with it rather than
    *  spending a row of its own in a panel that drags down to 220px. */
@@ -918,6 +929,38 @@ function BranchBar({ task, branch, dir, right }: {
         } else {
           pushToast(t("gitPanel.updated", { branch: r.branch, target: r.target }));
         }
+      })
+      .catch(e => pushToast(String(e), "error"))
+      .finally(() => setUpdating(false));
+  };
+
+  // Same op across the host and every member repo, one summary toast. A repo
+  // the mode can't serve (no upstream for pull, no base for merge/rebase)
+  // reports its own reason — the batch does not stop at it.
+  const runUpdateAll = (mode: UpdateMode) => {
+    if (updating || switching) return;
+    setUpdating(true);
+    taskGitUpdateAll(task.id, mode)
+      .then(items => {
+        setBranches(null);   // stale after an update - reload on next open
+        setInfo(null);
+        useApp.getState().bumpFsRevision(task.id);
+        const bad = items.filter(i => i.error || i.result?.conflicted || i.result?.stash_conflicted);
+        if (bad.length === 0) {
+          const updated = items.filter(i => i.result && !i.result.up_to_date).length;
+          pushToast(t(updated === 0
+            ? "gitPanel.allUpToDate"
+            : updated === items.length
+              ? "gitPanel.updatedAll"
+              : "gitPanel.updatedSome", { updated, count: items.length }));
+          return;
+        }
+        const conflictKey = mode === "rebase" ? "gitPanel.rebaseConflict" : "gitPanel.mergeConflict";
+        const detail = bad.map(i => `${i.name}: ${i.error?.replace(/[.;]+$/, "") ?? t(
+          i.result!.conflicted ? conflictKey : "gitPanel.stashConflict",
+          { branch: i.result!.branch, target: i.result!.target },
+        )}`).join("; ");
+        pushToast(t("gitPanel.updateAttention", { bad: bad.length, total: items.length, detail }), "error", { ttlMs: 8000 });
       })
       .catch(e => pushToast(String(e), "error"))
       .finally(() => setUpdating(false));
@@ -1023,6 +1066,24 @@ function BranchBar({ task, branch, dir, right }: {
                   </>
                 );
               })()}
+              {multi && (
+                <>
+                  <DropdownLabel>{t("gitPanel.allRepos")}</DropdownLabel>
+                  <DropdownItem onSelect={() => runUpdateAll("pull")} className="items-center">
+                    <ArrowDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
+                    <span className="truncate text-[12px]">{t("gitPanel.pullAll")}</span>
+                  </DropdownItem>
+                  <DropdownItem onSelect={() => runUpdateAll("merge")} className="items-center">
+                    <GitMerge className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
+                    <span className="truncate text-[12px]">{t("gitPanel.mergeAll")}</span>
+                  </DropdownItem>
+                  <DropdownItem onSelect={() => runUpdateAll("rebase")} className="items-center">
+                    <RotateCw className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
+                    <span className="truncate text-[12px]">{t("gitPanel.rebaseAll")}</span>
+                  </DropdownItem>
+                  <DropdownSeparator />
+                </>
+              )}
               {!branches || branches.length === 0 ? (
                 <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">{t("gitPanel.noBranches")}</div>
               ) : (

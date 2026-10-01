@@ -10,7 +10,7 @@ import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Pop
 import { useUI } from "@/store/ui";
 import { EMPTY_TABS, isUserWatching, useApp } from "@/store/app";
 import { logWorkState } from "@/lib/workStateLog";
-import { usePr } from "@/store/pr";
+import { usePr, prRelevant } from "@/store/pr";
 import {
   QUIET_MS, SAMPLE_MS, SCROLLBACK_STABLE_SAMPLES, SETTLE_SAMPLES,
 } from "@/lib/settleTiming";
@@ -2920,11 +2920,12 @@ const captureArmedRef = useRef(false);
         // Launching a task is exactly the moment its PR/MR status is worth
         // knowing, not something to wait on the user opening the Git tab
         // for - only the primary agent tab counts as "the task launched",
-        // and only for a task that could ever have one (main checkouts
-        // never do, see GitPanel). Unforced: the store's own 30s floor still
+        // and only for a task with any PR surface (a main checkout has no
+        // host PR of its own, but member repos still can - see GitPanel).
+        // Unforced: the store's own 30s floor still
         // applies, so a crash-looping agent respawning repeatedly doesn't
         // turn this into a hammer.
-        if (isAgent && isPrimaryTab && !task.is_main_checkout) {
+        if (isAgent && isPrimaryTab && prRelevant(task)) {
           usePr.getState().refresh(task.id);
         }
         // If the spawn survives RESUME_FAILURE_MS without exiting, we

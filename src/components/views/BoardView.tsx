@@ -65,9 +65,10 @@ import { groupOf } from "@/lib/projectGroups";
 import { accentCss } from "@/lib/accents";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import { taskReorder } from "@/lib/ipc";
+import { forgeName } from "@/lib/forge";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import type { Agent, Project, Tab, Task, TaskDiffStat, TerminalTab } from "@/lib/types";
+import type { Agent, MemberPrLookup, Project, Tab, Task, TaskDiffStat, TerminalTab } from "@/lib/types";
 import type { TFunction } from "i18next";
 
 /** Everything a card needs that is the SAME for every card, hoisted so N
@@ -977,18 +978,30 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
   // folds only `state` into its key, and widening that would re-render every
   // column whenever any task's check count moved.
   const pr = usePr(s => s.byTask[w.id]?.lookup?.pr ?? null);
+  const members = usePr(s => s.byTask[w.id]?.members);
   const stat = useDiffStat(s => s.byTask[w.id]?.stat ?? null);
   const request = useDiffStat(s => s.request);
 
   // Ask for a measurement when this card mounts, and again whenever the card
   // re-renders past the staleness floor. `request` is a no-op on a fresh
   // answer, so this is not a poll: a board nobody has open measures nothing.
-  useEffect(() => { request(w.id); });
+  // Multi-repo cards also ask for member PRs - the task lookup covers the
+  // host worktree only, and `composition` holds members only, so without
+  // this a board card would wait for someone to open the task's Git tab.
+  // Unforced: the pr store's floor still caps it.
+  useEffect(() => {
+    request(w.id);
+    if ((w.composition?.length ?? 0) > 0) void usePr.getState().refresh(w.id);
+  });
 
   const url = pr?.url ?? w.pr_url ?? "";
   const num = pr?.number ?? w.pr_number ?? 0;
   const changed = (stat?.files_changed ?? 0) > 0;
-  if (!url && !changed) return null;
+  // Same "forge-backed only" rule as MemberPrRows in the Git tab: a member
+  // whose remote resolved to nothing termic can query has no PR story to
+  // tell, and an error/cli-missing row would read as "no PR".
+  const memberRows = members?.filter(m => m.status === "ok") ?? [];
+  if (!url && !changed && !memberRows.length) return null;
 
   const { color } = prBadgeAppearance(pr?.state ?? null, pr?.checks ?? null);
   const noun = pr?.provider === "gitlab" ? "MR" : "PR";
@@ -1005,24 +1018,83 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
     : "";
 
   return (
-    // WRAPS, and every child can shrink. A 280px column cannot always hold
-    // "#18495 - checks failing" and "+356 -21 12 files" on one line, and when
-    // it could not, the row overflowed and gave the whole COLUMN a horizontal
-    // scrollbar with the file counts clipped off the right edge. Shipped that
-    // way in 1.11.2. Wrapping costs a second line on the widest cards and
-    // nothing on the rest.
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-      {url && (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      {(url || changed) && (
+        // WRAPS, and every child can shrink. A 280px column cannot always hold
+        // "#18495 - checks failing" and "+356 -21 12 files" on one line, and when
+        // it could not, the row overflowed and gave the whole COLUMN a horizontal
+        // scrollbar with the file counts clipped off the right edge. Shipped that
+        // way in 1.11.2. Wrapping costs a second line on the widest cards and
+        // nothing on the rest.
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+          {url && (
+            <button
+              type="button"
+              data-no-drag
+              data-testid="board-card-pr"
+              data-pr-state={pr?.state ?? "unknown"}
+              title={t("board.prOpenOn", { id, forge })}
+              // stopPropagation, or the click also activates the task behind it.
+              onClick={e => { e.stopPropagation(); openPath(url).catch(() => {}); }}
+              onPointerDown={e => e.stopPropagation()}
+              className="flex min-w-0 items-center gap-1 rounded px-1 py-px text-[10.5px] hover:bg-[var(--color-bg-3)]"
+              style={{ color }}
+            >
+              <PrIcon className="h-3 w-3 shrink-0" />
+              <span className="shrink-0 tabular-nums">{id}</span>
+              {checkNote && <span className="truncate">· {checkNote}</span>}
+            </button>
+          )}
+          {changed && <BoardChurn task={w} stat={stat!} />}
+        </div>
+      )}
+      {/* Multi-repo members, one compact row each (monocode's workstream
+          rows): member repo + branch on the left, its own PR chip on the
+          right. Capped like the member list itself - the "+N more" line is
+          the hint that the task fans out further than the card can say. */}
+      {memberRows.slice(0, 3).map(m => <BoardMemberRow key={m.dir_name} m={m} />)}
+      {memberRows.length > 3 && (
+        <span className="text-[10.5px] text-[var(--color-fg-faint)]">
+          {t("board.memberMore", { count: memberRows.length - 3 })}
+        </span>
+      )}
+    </div>
+  );
+});
+
+/** One non-host member's row on a board card: `repo · branch` plus the
+ *  member's own PR chip (state colour + check note) when a lookup resolved
+ *  one. A member whose forge answered "no PR" keeps the bare row - on a
+ *  multi-repo task that IS the answer, not missing data. */
+function BoardMemberRow({ m }: { m: MemberPrLookup }) {
+  const { t } = useTranslation("chrome");
+  const pr = m.pr;
+  const { color } = prBadgeAppearance(pr?.state ?? null, pr?.checks ?? null);
+  const noun = pr?.provider === "gitlab" ? "MR" : "PR";
+  const id = pr ? `${noun === "MR" ? "!" : "#"}${pr.number}` : "";
+  const PrIcon =
+    pr?.state === "merged" ? GitMerge
+    : pr?.state === "closed" ? GitPullRequestClosed
+    : pr?.state === "draft" ? GitPullRequestDraft
+    : GitPullRequest;
+  const checkNote =
+    pr?.checks === "failing" ? t("board.prChecksFailing")
+    : pr?.checks === "pending" ? t("board.prChecksPending")
+    : "";
+  return (
+    <div className="flex min-w-0 items-center gap-1.5" data-testid="board-member-row">
+      <span className="min-w-0 flex-1 truncate text-[10.5px] text-[var(--color-fg-dim)]">
+        {m.dir_name}
+        {m.branch ? <span className="font-mono text-[var(--color-fg-faint)]"> · {m.branch}</span> : null}
+      </span>
+      {pr && (
         <button
           type="button"
           data-no-drag
-          data-testid="board-card-pr"
-          data-pr-state={pr?.state ?? "unknown"}
-          title={t("board.prOpenOn", { id, forge })}
-          // stopPropagation, or the click also activates the task behind it.
-          onClick={e => { e.stopPropagation(); openPath(url).catch(() => {}); }}
+          title={t("board.prOpenOn", { id, forge: forgeName(pr.provider) })}
+          onClick={e => { e.stopPropagation(); openPath(pr.url).catch(() => {}); }}
           onPointerDown={e => e.stopPropagation()}
-          className="flex min-w-0 items-center gap-1 rounded px-1 py-px text-[10.5px] hover:bg-[var(--color-bg-3)]"
+          className="flex shrink-0 items-center gap-1 rounded px-1 py-px text-[10.5px] hover:bg-[var(--color-bg-3)]"
           style={{ color }}
         >
           <PrIcon className="h-3 w-3 shrink-0" />
@@ -1030,10 +1102,9 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
           {checkNote && <span className="truncate">· {checkNote}</span>}
         </button>
       )}
-      {changed && <BoardChurn task={w} stat={stat!} />}
     </div>
   );
-});
+}
 
 /** `+N -M · k files`, in the same tokens the compare view uses. */
 function BoardChurn({ task: w, stat }: { task: Task; stat: TaskDiffStat }) {
