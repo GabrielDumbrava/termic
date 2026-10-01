@@ -25,9 +25,10 @@ import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, projectAdd, agentHooksStatus, agentHooksInstall, agentHooksRemove, agentHooksAutoGet, agentHooksAutoSet, agentHooksPlan } from "@/lib/ipc";
+import { desktopIntegrationStatus, desktopIntegrationAdd, discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, projectAdd, agentHooksStatus, agentHooksInstall, agentHooksRemove, agentHooksAutoGet, agentHooksAutoSet, agentHooksPlan } from "@/lib/ipc";
 import { usePr } from "@/store/pr";
 import { azurePatLoginCmd, forgeInstallCmd, forgeLoginCmd, forgeName } from "@/lib/forge";
+import { markDesktopEntryAsked } from "@/lib/desktopEntryPrompt";
 import { Checkbox } from "@/components/ui/Checkbox";
 import type { AgentHookStatus, CliInfo, DiscoveredRepo, HookPlan } from "@/lib/types";
 import { useApp } from "@/store/app";
@@ -48,6 +49,13 @@ export function WelcomeDialog() {
   const open = useUI(s => s.welcomeOpen);
   const close = useUI(s => s.closeWelcome);
   const [step, setStep] = useState<Step>(0);
+
+  // Linux AppImage only: offer the launcher entry here rather than as a
+  // separate dialog. Both are modal and this one blocks Escape, so a brand new
+  // user would otherwise meet two prompts at once (see lib/desktopEntryPrompt,
+  // which stands down until `welcomed`).
+  const [desktopAvailable, setDesktopAvailable] = useState(false);
+  const [wantDesktopEntry, setWantDesktopEntry] = useState(false);
 
   // Step 1 (repos) state.
   const [dir, setDir] = useState("");
@@ -100,6 +108,13 @@ export function WelcomeDialog() {
     if (typeof sel === "string") setDir(sel);
   }
 
+  useEffect(() => {
+    if (!open) return;
+    desktopIntegrationStatus()
+      .then(st => setDesktopAvailable(st.available && !st.integrated))
+      .catch(() => setDesktopAvailable(false));
+  }, [open]);
+
   async function finish(skipRepos: boolean) {
     setBusy(true);
     try {
@@ -109,6 +124,19 @@ export function WelcomeDialog() {
         repos_dir: skipRepos ? "" : dir.trim(),
         welcomed: true,
       });
+      // The launcher entry, if they ticked it. Marked asked either way: they
+      // have been shown the question, and the standalone prompt must not put
+      // it to them again on the next launch. Best-effort, like the project
+      // adds below: a failed write must not block finishing setup, and
+      // Settings → General has the same button.
+      if (desktopAvailable) {
+        markDesktopEntryAsked();
+        if (wantDesktopEntry) {
+          await desktopIntegrationAdd().catch(err => {
+            console.error("desktop entry failed:", err);
+          });
+        }
+      }
       // Create projects for every path the user ticked in step 4.
       // Best-effort: log failures but don't block wizard close (the
       // user can re-add via the dashboard's Add project button).
@@ -214,6 +242,30 @@ export function WelcomeDialog() {
           selected={selectedPaths}
           setSelected={setSelectedPaths}
         />
+      )}
+
+      {/* Unticked by default. It writes into the user's own
+          ~/.local/share, and a pre-ticked box is opt-OUT however visible it
+          is. The cost is that most people will not notice it; Settings →
+          General carries the same action, and the standalone prompt catches
+          everyone who is not new. */}
+      {step === 4 && desktopAvailable && (
+        <label
+          data-testid="welcome-desktop-entry"
+          className="mt-4 flex cursor-pointer items-start gap-2 rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-3 py-2.5"
+        >
+          <Checkbox
+            checked={wantDesktopEntry}
+            onChange={setWantDesktopEntry}
+            className="mt-0.5"
+          />
+          <span className="min-w-0">
+            <span className="block text-[13px] font-medium">{t("welcome.desktopEntryTitle")}</span>
+            <span className="mt-0.5 block text-[12px] text-[var(--color-fg-dim)]">
+              {t("welcome.desktopEntryHint")}
+            </span>
+          </span>
+        </label>
       )}
 
       {/* Skip alone on the far left, away from the pair you use to move

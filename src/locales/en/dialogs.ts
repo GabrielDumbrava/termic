@@ -717,6 +717,8 @@ export default {
     step2Title: "Enable agent hooks",
     step3Title: "Pick your theme",
     step4Title: "Which projects should Termic add?",
+    desktopEntryTitle: "Add Termic to your applications menu",
+    desktopEntryHint: "An AppImage is a single file, so running it adds no launcher entry, no icon, and no handler for termic:// links. This writes a desktop entry in your home directory. You can change it later in Settings, General.",
     stepAria: "Step {{n}}",
     adding: "Adding…",
     addProjectsOne: "Add {{count}} project",

@@ -278,6 +278,37 @@ mod tests {
         });
     }
 
+    /// The requirement in one test: this appears on Linux and nowhere else.
+    ///
+    /// `$APPIMAGE` is just an environment variable, so a parent process can
+    /// set it on any OS, and the availability check must not be "is this
+    /// variable present". Points at a file that really exists, so the only
+    /// thing left refusing it is the target.
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn a_non_linux_build_is_unavailable_even_with_appimage_set() {
+        let real = std::env::current_exe().expect("test binary has a path");
+        temp_env_set("APPIMAGE", &real.to_string_lossy(), || {
+            assert!(appimage_path().is_none(), "macOS/Windows must never offer this");
+            let st = status("termic");
+            assert!(!st.available);
+            assert_eq!(st.appimage_path, "");
+        });
+    }
+
+    /// And the mirror, so the gate is pinned from both sides: on Linux the
+    /// same conditions DO make it available. Without this the test above is
+    /// satisfied by a function that always returns None.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_linux_build_with_a_real_appimage_is_available() {
+        let real = std::env::current_exe().expect("test binary has a path");
+        temp_env_set("APPIMAGE", &real.to_string_lossy(), || {
+            assert_eq!(appimage_path().as_deref(), Some(real.as_path()));
+            assert!(status("termic").available);
+        });
+    }
+
     #[test]
     fn a_relative_appimage_path_is_refused() {
         temp_env_set("APPIMAGE", "Termic.AppImage", || {
