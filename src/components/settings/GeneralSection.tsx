@@ -22,10 +22,10 @@ import { LINK_CLICK_MODIFIER as CLICK_MOD } from "@/lib/previewBrowser";
 import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
 import { cn, cleanLines } from "@/lib/utils";
 import { usePr } from "@/store/pr";
+import { azurePatLoginCmd, forgeInstallCmd, forgeLoginCmd, forgeName } from "@/lib/forge";
 import { CircleCheck, CircleX, RefreshCw } from "lucide-react";
 import { IS_MAC } from "@/lib/shortcuts";
 import { Tip } from "@/components/ui/Tooltip";
-import { installCommand } from "@/lib/platform";
 import type { LanguagePref } from "@/lib/i18n";
 
 export function GeneralSection() {
@@ -334,8 +334,8 @@ export function GeneralSection() {
 }
 
 
-/** Install + auth status for the forge CLIs (gh / glab). PR features are
- *  CLI-backed by design (no tokens stored in termic), so this block is
+/** Install + auth status for the forge CLIs (gh / glab / az). PR features
+ *  are CLI-backed by design (no tokens stored in termic), so this block is
  *  where users learn what to install and how to sign in. */
 /** The Linux AppImage's launcher entry, icon and `termic://` handler.
  *
@@ -439,20 +439,24 @@ function ForgeStatusBlock() {
         {(forges ?? []).map(f => (
           <div key={f.id} className="flex items-center gap-2.5 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-2">
             <span className="w-24 shrink-0 text-[13px] font-medium text-[var(--color-fg)]">
-              {f.provider === "gitlab" ? "GitLab" : "GitHub"}
+              {forgeName(f.provider)}
               <span className="ml-1.5 font-mono text-[11px] text-[var(--color-fg-faint)]">{f.id}</span>
             </span>
             {!f.found ? (
               <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
                 <CircleX className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
                 {t("general.forge.notInstalled")}
-                <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px]">{installCommand(f.id)}</code>
+                <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px]">{forgeInstallCmd(f.provider)}</code>
               </span>
             ) : !f.authed ? (
               <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-warn)]">
                 <CircleX className="h-3.5 w-3.5" />
                 {t("general.forge.notSignedIn")}
-                <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px] text-[var(--color-fg)]">{f.id} auth login</code>
+                <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px] text-[var(--color-fg)]">{forgeLoginCmd(f.provider)}</code>
+                {f.provider === "azure" && (
+                  <Trans ns="common" i18nKey="forgePatHint" values={{ cmd: azurePatLoginCmd }}
+                    components={{ code: <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px] text-[var(--color-fg)]" /> }} />
+                )}
               </span>
             ) : (
               <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">

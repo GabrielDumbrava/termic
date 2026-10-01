@@ -3195,7 +3195,7 @@ describe("docker command preview", () => {
     await clickWhenVisible('[data-testid="docker-dockerfile-status"]');
   });
 
-  it("wires the shared gh / glab login into every container", async () => {
+  it("wires the shared gh / glab / az login into every container", async () => {
     // The forge CLIs are only useful if their config dir survives `--rm`,
     // and the preview is the one place that claim is checkable without
     // running a container. Asserted through the real argv rather than the
@@ -3205,8 +3205,10 @@ describe("docker command preview", () => {
       document.querySelector('[data-testid="docker-preview-argv"]')?.textContent ?? "");
     expect(argv).toContain("/root/.config/gh");
     expect(argv).toContain("/root/.config/glab-cli");
+    expect(argv).toContain("/root/.azure");
     expect(argv).toContain("GH_CONFIG_DIR=/root/.config/gh");
     expect(argv).toContain("GLAB_CONFIG_DIR=/root/.config/glab-cli");
+    expect(argv).toContain("AZURE_CONFIG_DIR=/root/.azure");
     // Shared, not per-agent: the host side is docker-forge, never the
     // docker-agents/<agent> tree the config-dir mounts use.
     expect(argv).toContain("docker-forge");

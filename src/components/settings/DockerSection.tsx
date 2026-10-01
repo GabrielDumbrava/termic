@@ -1027,7 +1027,7 @@ function SharedDirsRow({ dirs, onChange }: { dirs: string[]; onChange: (next: st
             <Trans
               t={t}
               i18nKey="docker.persisted.sharedEmpty"
-              components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+              components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" />, 5: <code className="font-mono" /> }}
             />
           </span>
         )}
@@ -1037,7 +1037,7 @@ function SharedDirsRow({ dirs, onChange }: { dirs: string[]; onChange: (next: st
           <Trans
             t={t}
             i18nKey="docker.persisted.sharedWhy"
-            components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+            components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" />, 5: <code className="font-mono" /> }}
           />
         </span>
       </div>

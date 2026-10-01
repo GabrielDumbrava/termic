@@ -239,7 +239,7 @@ export function CommandPalette() {
     // would be a lot of git for a row.
     cmds.push({
       id: "new-task-issue", section: "Task", label: t("commandPalette.cmd.newTaskIssue"),
-      icon: CircleDot, keywords: "github gitlab ticket bug create worktree",
+      icon: CircleDot, keywords: "github gitlab azure work item ticket bug create worktree",
       run: act(() => useUI.getState().openProjectPicker("issue")),
     });
     cmds.push({
@@ -394,7 +394,7 @@ export function CommandPalette() {
       });
       cmds.push({
         id: "create-pr", section: "Agent", label: t("commandPalette.cmd.createPr"),
-        icon: GitPullRequest, keywords: "pr mr merge request github gitlab",
+        icon: GitPullRequest, keywords: "pr mr merge request github gitlab azure",
         run: act(() => useUI.getState().openCreatePr(task.id)),
       });
     }

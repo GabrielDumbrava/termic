@@ -66,6 +66,18 @@ const POLL_MS = 150;
  *  - `lost`     the tab dropped its PTY; there is nothing to type into. */
 export type AgentReadyOutcome = "ready" | "settled" | "deadline" | "blocked" | "lost";
 
+/** Does this CLI's hook layer own the STARTUP-readiness report? Hooks
+ *  installed is necessary but not sufficient: codex's sessionStart fires on
+ *  the first prompt submit, not at TUI boot (measured on 0.159.2: the TUI
+ *  sits at a live composer with no hook until input lands), so its ready
+ *  signal is structurally absent exactly when seeding needs it - gating on
+ *  it withholds every first message as `blocked`. Falling back to the
+ *  painted-and-quiet heuristic is still picker-safe: the typed text never
+ *  echoes into a selection dialog, so deliverMessage's verifyEcho refuses. */
+export function hooksOwnStartupReadiness(cli: string | undefined, hooksInstalled: boolean): boolean {
+  return hooksInstalled && cli !== "codex";
+}
+
 /** Plain setTimeout, not window.setTimeout: this module is unit-tested
  *  outside a DOM environment, and the handle is never kept. */
 export const sleep = (ms: number) => new Promise<void>(r => { setTimeout(r, ms); });

@@ -2,8 +2,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   issueRef, issueFetchCommand, issueTaskName, issueBranch, issueContext, buildIssuePrompt,
+  buildIssuesPrompt,
 } from "./issuePrompt";
-import { WORK_ISSUE_PROMPT } from "./builtinPrompts";
+import { WORK_ISSUE_PROMPT, WORK_ISSUES_PROMPT } from "./builtinPrompts";
 import { usePromptLibrary } from "@/store/prompts";
 import type { ForgeIssue } from "./types";
 
@@ -45,14 +46,26 @@ describe("issue naming", () => {
     expect(b).toBe("issue-21-one-two-three-four-five-six");
   });
 
-  it("uses # for both providers (GitLab reserves ! for merge requests)", () => {
+  it("uses # for all providers (GitLab and ADO reserve ! for PRs)", () => {
     expect(issueRef(issue())).toBe("#21");
     expect(issueRef(issue({ provider: "gitlab" }))).toBe("#21");
+    expect(issueRef(issue({ provider: "azure" }))).toBe("#21");
   });
 
   it("picks the right CLI for the fetch command", () => {
     expect(issueFetchCommand(issue())).toBe("gh issue view 21 --comments");
     expect(issueFetchCommand(issue({ provider: "gitlab" }))).toBe("glab issue view 21 --comments");
+    // `az boards work-item show` cannot return comments - the agent needs
+    // the wit/comments invoke route, project spelled out from the remote.
+    const azureCmd = issueFetchCommand(issue({ provider: "azure" }), "https://dev.azure.com/o/proj/_git/repo");
+    expect(azureCmd).toContain("--area wit");
+    expect(azureCmd).toContain("workItemId=21");
+    expect(azureCmd).toContain("project=proj");
+    // No remote to parse: the --detect placeholder stands in.
+    const noRemote = issueFetchCommand(issue({ provider: "azure" }));
+    expect(noRemote).toContain("project=PROJECT");
+    expect(noRemote).toContain("--detect");
+    expect(noRemote).toContain("7.1-preview.4");
   });
 });
 
@@ -95,6 +108,21 @@ describe("issueContext", () => {
 
   it("uses GitLab wording for a GitLab issue", () => {
     expect(issueContext(issue({ provider: "gitlab" }))).toContain("GitLab issue #21");
+  });
+
+  it("uses work item + tag wording for Azure DevOps", () => {
+    const c = issueContext(issue({ provider: "azure", labels: ["bug"] }), 4000, "https://dev.azure.com/o/proj/_git/repo");
+    expect(c).toContain("Azure DevOps work item #21");
+    expect(c).toContain("Tags: bug");
+    expect(c).toContain("workItemId=21");
+    expect(c).toContain("--org 'https://dev.azure.com/o'");
+  });
+
+  it("points a truncated azure body at work-item show, not the comments route", () => {
+    // The wit/comments invoke returns only comments - a truncated
+    // description must name the command that can actually return it.
+    const c = issueContext(issue({ provider: "azure", body: "y".repeat(9000) }));
+    expect(c).toContain("body truncated, read the rest with `az boards work-item show --id 21 --detect`");
   });
 });
 
@@ -177,5 +205,103 @@ describe("buildIssuePrompt", () => {
       expect(p).toBe(buildIssuePrompt(issue()));
       expect(p).not.toContain("[body truncated");
     });
+  });
+});
+
+describe("buildIssuesPrompt", () => {
+  const i2 = (n: number, title: string) => issue({ number: n, title });
+
+  beforeEach(() => {
+    // Same as buildIssuePrompt's: the library persists to localStorage, so
+    // an edit in one case must not leak into the next.
+    try { localStorage.clear(); } catch { /* ignore */ }
+    usePromptLibrary.getState().restoreBuiltins();
+    usePromptLibrary.getState().resetPrompt("builtin:work-issue");
+  });
+
+  it("carries every pick's context under ONE instructions tail", () => {
+    const p = buildIssuesPrompt([i2(1, "first"), i2(2, "second")]);
+    expect(p).toContain("GitHub issue #1: first");
+    expect(p).toContain("GitHub issue #2: second");
+    // One ask for N subjects - the instruction body appears exactly once.
+    expect(p.split("Work on the issue").length - 1).toBe(1);
+  });
+
+  it("is identical to the single-issue builder for one pick", () => {
+    expect(buildIssuesPrompt([issue()], 8000)).toBe(buildIssuePrompt(issue(), 8000));
+  });
+
+  it("splits the character budget across picks so the whole still fits", () => {
+    const huge = i2(9, "huge");
+    huge.body = "x".repeat(20000);
+    const one = buildIssuePrompt(huge, 2000);
+    const two = buildIssuesPrompt([huge, i2(10, "also huge")], 2000);
+    // Each issue gets roughly half the budget of a solo prompt, and the
+    // result stays bounded rather than double the cap.
+    expect(two.length).toBeLessThan(one.length * 1.5);
+    expect(two).toContain("#9: huge");
+    expect(two).toContain("#10: also huge");
+  });
+
+  it("honours the cap itself, however many picks or how small it is", () => {
+    const many = Array.from({ length: 30 }, (_, i) => {
+      const x = i2(i + 1, `pick ${i + 1}`);
+      x.body = "x".repeat(5000);
+      return x;
+    });
+    const tailLen = `\n\n---\n\n${WORK_ISSUES_PROMPT.trim()}`.length;
+    for (const cap of [2000, 8000]) {
+      expect(buildIssuesPrompt(many, cap).length).toBeLessThanOrEqual(cap);
+    }
+    // Smaller than the tail alone: the cap is unsatisfiable, so the
+    // instructions still survive whole - they are the ask; context gives.
+    const p = buildIssuesPrompt(many, 10);
+    expect(p.length).toBeLessThanOrEqual(tailLen);
+    expect(p).toContain("Work on the issues above.");
+  });
+
+  it("returns nothing for no picks rather than a bare separator", () => {
+    expect(buildIssuesPrompt([])).toBe("");
+  });
+
+  it("uses the plural instructions for several picks", () => {
+    const p = buildIssuesPrompt([i2(1, "first"), i2(2, "second")]);
+    expect(p).toContain("Work on the issues above.");
+    expect(p).toContain("Do not close the issues");
+    expect(p).not.toContain("the issue above");
+  });
+
+  it("names work items, not issues, for azure picks", () => {
+    const p = buildIssuesPrompt([i2(1, "a"), i2(2, "b")].map(i => ({ ...i, provider: "azure" as const })));
+    expect(p).toContain("Work on the work items above.");
+    expect(p).toContain("a work item is unclear");
+    expect(p).toContain("Do not close the work items");
+    expect(p).not.toContain("the issues above");
+  });
+
+  it("keeps a user-edited builtin verbatim even when the picks are plural", () => {
+    usePromptLibrary.getState().updatePrompt("builtin:work-issue", {
+      body: "Just fix the one thing.",
+    });
+    const p = buildIssuesPrompt([i2(1, "a"), i2(2, "b")]);
+    expect(p).toContain("Just fix the one thing.");
+    expect(p).not.toContain("Work on the issues");
+  });
+});
+
+describe("prompt safety", () => {
+  it("strips control bytes from issue text, which lands in a bracketed paste", () => {
+    const c = issueContext(issue({
+      title: "x \u001b[2J cleared",
+      body: "line one\u001b[201~ rest\nstill here\u0007bell",
+      url: "https://x/1\u001f",
+      labels: ["bug\u001b"],
+    }));
+    // ESC[201~ is the paste terminator: surviving, it would end the paste
+    // early and let the rest - including \r - land as live keystrokes.
+    expect(c).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    // Real newlines in a body are the prompt's own structure - kept.
+    expect(c).toContain("still here");
+    expect(c).toContain("rest\n");
   });
 });

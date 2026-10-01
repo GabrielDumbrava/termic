@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { desktopIntegrationStatus, desktopIntegrationAdd, discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, projectAdd, agentHooksStatus, agentHooksInstall, agentHooksRemove, agentHooksAutoGet, agentHooksAutoSet, agentHooksPlan } from "@/lib/ipc";
 import { usePr } from "@/store/pr";
+import { azurePatLoginCmd, forgeInstallCmd, forgeLoginCmd, forgeName } from "@/lib/forge";
 import { markDesktopEntryAsked } from "@/lib/desktopEntryPrompt";
 import { Checkbox } from "@/components/ui/Checkbox";
 import type { AgentHookStatus, CliInfo, DiscoveredRepo, HookPlan } from "@/lib/types";
@@ -39,7 +40,7 @@ import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2, Flower2, GitPullRe
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import type { DelegatedWork } from "@/lib/delegatedWork";
-import { dragRegion, appRegionStyle, installCommand, IS_MAC } from "@/lib/platform";
+import { dragRegion, appRegionStyle, IS_MAC } from "@/lib/platform";
 
 type Step = 0 | 1 | 2 | 3 | 4;
 
@@ -419,7 +420,8 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
  *  design (termic stores no tokens), so a missing `gh` is not a bug the
  *  user can debug from inside the app unless we tell them here. Same
  *  found-green / missing-gray language as the agent rows above: most
- *  people have one forge, not both, and a wall of red reads as failure. */
+ *  people have one forge, not all three, and a wall of red reads as
+ *  failure. */
 function ForgeRows() {
   const { t } = useTranslation("dialogs");
   const forges = usePr(s => s.forges);
@@ -440,16 +442,19 @@ function ForgeRows() {
             <GitPullRequest className="h-4 w-4" />
           </span>
           <span className={cn("min-w-[60px]", !f.authed && "text-[var(--color-fg-dim)]")}>
-            {f.provider === "gitlab" ? "GitLab" : "GitHub"}
+            {forgeName(f.provider)}
           </span>
           {!f.found ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
               <span className="font-mono">{f.id}</span> {t("welcome.notInstalled")} ·{" "}
-              <span className="font-mono">{installCommand(f.id)}</span>
+              <span className="font-mono">{forgeInstallCmd(f.provider)}</span>
             </span>
           ) : !f.authed ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
-              {t("welcome.signedOut")} · <span className="font-mono">{f.id} auth login</span>
+              {t("welcome.signedOut")} · <span className="font-mono">{forgeLoginCmd(f.provider)}</span>
+              {f.provider === "azure" && (
+                <Trans ns="common" i18nKey="forgePatHint" values={{ cmd: azurePatLoginCmd }} components={{ code: <span className="font-mono" /> }} />
+              )}
             </span>
           ) : (
             <span className="truncate font-mono text-[12px] text-[var(--color-fg-dim)]" title={f.path}>

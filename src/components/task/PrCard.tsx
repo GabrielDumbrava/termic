@@ -17,6 +17,7 @@ import {
   CircleCheck, CircleX, ExternalLink, RefreshCw, Plus, Bell, BellOff,
 } from "lucide-react";
 import type { PrStatus, Task } from "@/lib/types";
+import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, prRef } from "@/lib/forge";
 import { openPath } from "@/lib/ipc";
 import { usePr, watchTickNow } from "@/store/pr";
 import { useApp } from "@/store/app";
@@ -25,11 +26,11 @@ import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { useAlignedSpin } from "@/hooks/useAlignedSpin";
-import { installCommand } from "@/lib/platform";
 
 const POLL_MS = 60_000;
 /** CLI re-probe cadence while the card is blocked on a missing / signed-out
- *  CLI. Four subprocesses a pop, so this is minutes, not seconds. */
+ *  CLI. ~7 subprocesses a pop (version + auth per forge CLI, plus az's
+ *  Python startup), so this is minutes, not seconds. */
 const PROBE_MS = 5 * 60_000;
 
 // State pill: icon + label + color, GitHub's palette (open green, draft
@@ -91,8 +92,14 @@ function ReviewChip({ review }: { review: PrStatus["review"] }) {
     review_required: { color: "var(--color-warn)", label: t("pr.reviewRequired") },
   } as const;
   const { color, label } = map[review];
+  // The one shrinkable item in the row (see the two-row comment below):
+  // "Changes requested" is the widest label here, and at the panel's
+  // 280px default width a fully-populated row would otherwise push the
+  // action buttons off the card's right edge — clipped by the window
+  // itself, where the button isn't even clickable. truncate keeps the
+  // buttons on-screen; the full label stays reachable via title.
   return (
-    <span className="shrink-0 whitespace-nowrap text-[11.5px] leading-none" style={{ color }}>{label}</span>
+    <span title={label} className="min-w-0 truncate text-[11.5px] leading-none" style={{ color }}>{label}</span>
   );
 }
 
@@ -148,8 +155,9 @@ export function PrCard({ task }: { task: Task }) {
   // Same reason, unattended: while the card sits on a "not installed" or
   // "signed out" hint, re-probe so installing the CLI or running
   // `auth login` in another window fixes the card on its own. Deliberately
-  // MUCH slower than the status poll: a probe is four subprocesses (two
-  // CLIs x --version + auth status), and installing a CLI is a rare,
+  // MUCH slower than the status poll: a probe is a handful of
+  // subprocesses (each CLI's version + auth check), and installing a CLI
+  // is a rare,
   // deliberate act, not something worth spending a spawn a minute waiting
   // for. The refresh button covers anyone who does not want to wait.
   const status = entry?.lookup?.status;
@@ -174,19 +182,26 @@ export function PrCard({ task }: { task: Task }) {
   if (!lookup) return null;
   if (lookup.status === "no-remote" || lookup.status === "unsupported-remote") return null;
 
-  const providerLabel = lookup.provider === "gitlab" ? "GitLab" : "GitHub";
-  const prNoun = lookup.provider === "gitlab" ? t("pr.mergeRequest") : t("pr.pullRequest");
+  const providerLabel = forgeName(lookup.provider);
+  const noun = lookup.provider === "gitlab" ? t("pr.mergeRequest") : t("pr.pullRequest");
 
   // ── hint states: the user must see WHY there's no PR data ──
   if (lookup.status !== "ok") {
-    const cli = lookup.provider === "gitlab" ? "glab" : "gh";
+    const cli = forgeCli(lookup.provider);
     const hint =
       lookup.status === "cli-missing" ? {
-        title: t("pr.cliMissingTitle", { provider: providerLabel, noun: prNoun, cli }),
-        body: <Trans ns="panels" i18nKey="pr.cliMissingBody" values={{ install: installCommand(cli), auth: `${cli} auth login` }} components={{ code: <Code /> }} />,
+        // az is two installs (CLI + extension) - the suffix names the second
+        // requirement so {{cli}} stays the bare binary.
+        title: t("pr.cliMissingTitle", {
+          provider: providerLabel, noun, cli,
+          suffix: lookup.provider === "azure" ? t("common:azureCliSuffix") : "",
+        }),
+        body: <Trans ns="panels" i18nKey="pr.cliMissingBody" values={{ install: forgeInstallCmd(lookup.provider), auth: forgeLoginCmd(lookup.provider) }} components={{ code: <Code /> }} />,
       } : lookup.status === "cli-unauthed" ? {
         title: t("pr.signInTitle", { provider: providerLabel }),
-        body: <Trans ns="panels" i18nKey="pr.signInBody" values={{ command: `${cli} auth login` }} components={{ code: <Code /> }} />,
+        body: lookup.provider === "azure"
+          ? <Trans ns="panels" i18nKey="pr.signInBodyAzure" values={{ command: forgeLoginCmd(lookup.provider), alt: azurePatLoginCmd }} components={{ code: <Code /> }} />
+          : <Trans ns="panels" i18nKey="pr.signInBody" values={{ command: forgeLoginCmd(lookup.provider) }} components={{ code: <Code /> }} />,
       } : {
         title: t("pr.unreachable", { provider: providerLabel }),
         body: <span className="break-words">{lookup.message}</span>,
@@ -212,7 +227,7 @@ export function PrCard({ task }: { task: Task }) {
         <div className="flex items-center gap-2">
           <GitPullRequest className="h-4 w-4 shrink-0 -translate-y-px text-[var(--color-fg-faint)]" />
           <span className="min-w-0 flex-1 truncate text-[12.5px] leading-none text-[var(--color-fg-dim)]">
-            {t("pr.noPrYet", { noun: prNoun })}
+            {t("pr.noPrYet", { noun })}
           </span>
           <RefreshBtn spinning={spinning} onClick={doRefresh} />
           <button
@@ -230,7 +245,7 @@ export function PrCard({ task }: { task: Task }) {
   const pr = lookup.pr;
   const { labelKey, color, Icon } = STATE[pr.state];
   const label = t(labelKey);
-  const numberLabel = pr.provider === "gitlab" ? `!${pr.number}` : `#${pr.number}`;
+  const numberLabel = prRef(pr.provider, pr.number);
   // Two rows on purpose. The right panel is narrow, and one row of
   // [pill][title][CI][review][3 buttons] gave the title `flex-1 min-w-0`
   // against six unshrinkable siblings: it collapsed to zero width and the

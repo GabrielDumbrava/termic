@@ -50,7 +50,7 @@ import { setupImeReplacementBridge } from "@/lib/ime";
 import { deliverMessage } from "@/lib/agentSend";
 import { queueLooksStalled } from "@/lib/queueStall";
 import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptReports";
-import { waitForAgentReady } from "@/lib/agentReady";
+import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
 import type { TerminalTab, Task, SandboxMode } from "@/lib/types";
 import { effectiveSandboxMode, isTaskCaged } from "@/lib/types";
@@ -744,7 +744,7 @@ const captureArmedRef = useRef(false);
       logWorkState("scheduled-kept", `cli=${tab.cli} ${why}`);
     };
     try {
-      const hooksOwnReadiness = useApp.getState().agentHooksInstalled[tab.cli] === true;
+      const hooksOwnReadiness = hooksOwnStartupReadiness(tab.cli, useApp.getState().agentHooksInstalled[tab.cli] === true);
       const outcome = force ? "ready" : await waitForAgentReady(getTab, { hooksOwnReadiness });
       if (outcome === "lost" || outcome === "blocked") return keep(`agent not ready (${outcome})`);
       const now = getTab();

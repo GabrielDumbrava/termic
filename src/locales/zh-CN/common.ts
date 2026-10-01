@@ -44,4 +44,8 @@ export default {
   showMore: "展开更多",
   showLess: "收起",
   learnMore: "了解更多",
+  // 跟随在 forge 登录命令后，说明也支持 PAT 认证。
+  forgePatHint: "（或使用 <code>{{cmd}}</code> 通过 PAT 登录）",
+  // 附加在 "需要 az CLI" 之后：az 是一个 CLI 加一个扩展。
+  azureCliSuffix: " + azure-devops 扩展",
 };

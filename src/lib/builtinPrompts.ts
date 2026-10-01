@@ -192,6 +192,24 @@ Report at the end: what the issue actually asked for (including anything only th
 
 Do not close the issue, comment on it, or open a pull request unless I ask. If the issue is unclear, already fixed, or you disagree that it should be done, say so plainly instead of implementing something adjacent.`;
 
+/** The plural form of WORK_ISSUE_PROMPT, used when one task is seeded with
+ *  several issues at once (multi-pick). Written with ONLY plural noun
+ *  phrases ("the issues", "each issue", "an issue") so a provider whose
+ *  noun is not "issue" can be swapped in mechanically - see issuePrompt's
+ *  pluralTail. Keep it in step with the singular text: they say the same
+ *  thing, one per noun number. */
+export const WORK_ISSUES_PROMPT = `Work on the issues above.
+
+1. Read the full discussion on each one before you write anything: run the fetch commands listed above. The comments usually carry the real requirements, constraints the reporters added later, and decisions that contradict the original descriptions. Where a body and a later comment disagree, the comment wins unless a maintainer says otherwise.
+2. Reproduce each problem, or confirm the behavior each issue asks for is genuinely missing, before changing code. If you cannot reproduce one, say so and describe exactly what you tried instead of guessing at a fix.
+3. Restate in 2 or 3 lines what you are going to change and why, then do it. Keep the change scoped to these issues: no drive-by refactors, renames, or unrelated fixes.
+4. Match the project's existing conventions, and add or update the tests that cover the behavior you changed, if the project has a test setup where that is natural.
+5. Run the project's checks and show them passing.
+
+Report at the end: what the issues actually asked for (including anything only the comments said), what you changed, and how to verify it.
+
+Do not close the issues, comment on them, or open pull requests unless I ask. If an issue is unclear, already fixed, or you disagree that it should be done, say so plainly instead of implementing something adjacent.`;
+
 export const FIX_MERGE_CONFLICT_PROMPT = `# Fix the merge conflicts
 
 Resolve the merge conflicts in this repository, or bring the base branch in first if that is what is missing, so the merge or rebase can finish.

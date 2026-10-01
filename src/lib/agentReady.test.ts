@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   waitForAgentReady,
+  hooksOwnStartupReadiness,
   READY_QUIET_MS,
   READY_FLOOR_MS,
   READY_PAINTING_DEADLINE_MS,
@@ -183,5 +184,18 @@ describe("readiness reported by the agent's own hook", () => {
       await vi.advanceTimersByTimeAsync(300);
       expect(await done).toBe("lost");
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("hooksOwnStartupReadiness", () => {
+  it("excludes codex even with hooks installed: its sessionStart fires on the first prompt submit, not at TUI boot", () => {
+    // Measured on 0.159.2: the TUI sits at a live composer with no hook
+    // until input lands, so the ready signal can never arrive in time to
+    // seed the first message - gating on it withheld every seed as blocked.
+    expect(hooksOwnStartupReadiness("codex", true)).toBe(false);
+    expect(hooksOwnStartupReadiness("codex", false)).toBe(false);
+    expect(hooksOwnStartupReadiness("claude", true)).toBe(true);
+    expect(hooksOwnStartupReadiness("claude", false)).toBe(false);
+    expect(hooksOwnStartupReadiness(undefined, true)).toBe(true);
   });
 });

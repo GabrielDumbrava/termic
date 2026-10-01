@@ -110,7 +110,7 @@ export function App() {
     // set before its status is read, so a user who opted in once keeps getting
     // the set that opt-in now means.
     void useApp.getState().syncAgentHooks();
-    // Forge CLI (gh / glab) detection for the PR integrations - same
+    // Forge CLI (gh / glab / az) detection for the PR integrations - same
     // policy as agent CLI detection: startup + Settings visits only.
     void usePr.getState().refreshForges();
     // PR comment watcher: one global slow tick; only workspaces with a
