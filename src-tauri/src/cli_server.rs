@@ -1037,17 +1037,17 @@ pub(crate) fn resolve_project_for_new<'a>(
             return Ok(p);
         }
     }
-    let canon_cwd = canon(cwd);
-    let mut best: Option<&Project> = None;
+    let canon_cwd = crate::canon_str(cwd);
+    let mut best: Option<(&Project, usize)> = None;
     for p in projects {
-        let root = canon(&p.root_path);
+        let root = crate::canon_str(&p.root_path);
         if under(&canon_cwd, &root)
-            && best.is_none_or(|b| canon(&b.root_path).len() < root.len())
+            && best.is_none_or(|(_, len)| len < root.len())
         {
-            best = Some(p);
+            best = Some((p, root.len()));
         }
     }
-    if let Some(p) = best {
+    if let Some((p, _)) = best {
         return Ok(p);
     }
     match host.git_toplevel(cwd) {
@@ -1086,8 +1086,8 @@ pub(crate) fn resolve_project_for_worktree<'a>(
             data: None,
         });
     }
-    let canon_trees: Vec<String> = worktrees.iter().map(|w| canon(w)).collect();
-    if let Some(p) = projects.iter().find(|p| canon_trees.contains(&canon(&p.root_path))) {
+    let canon_trees: Vec<String> = worktrees.iter().map(|w| crate::canon_str(w)).collect();
+    if let Some(p) = projects.iter().find(|p| canon_trees.contains(&crate::canon_str(&p.root_path))) {
         return Ok(p);
     }
     // The first listed tree is the main checkout (or the bare hub): the
@@ -3358,8 +3358,8 @@ fn handle_project_add(id: &str, host: &dyn CliHost, path: &str, non_git: bool) -
         // is marked load-bearing at its lib.rs origin.
         Err(e) if e.contains("project already added") => {
             let (projects, tasks) = host.projects_tasks();
-            let canon_path = canon(path);
-            if let Some(p) = projects.iter().find(|p| canon(&p.root_path) == canon_path) {
+            let canon_path = crate::canon_str(path);
+            if let Some(p) = projects.iter().find(|p| crate::canon_str(&p.root_path) == canon_path) {
                 return Reply::ok(
                     id,
                     ReplyData::ProjectAdd(proto::ProjectAddData {
@@ -3632,12 +3632,6 @@ pub(crate) fn resolve_by_name<'a>(
     }
 }
 
-fn canon(p: &str) -> String {
-    dunce::canonicalize(p)
-        .map(|c| c.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| p.to_string())
-}
-
 fn under(path: &str, base: &str) -> bool {
     // Windows paths use `\`, may arrive with `/` from a POSIX-ish shell,
     // and are case-insensitive: normalize both sides before the prefix test.
@@ -3666,7 +3660,7 @@ pub(crate) fn resolve_by_cwd<'a>(
     tasks: &'a [Task],
     cwd: &str,
 ) -> Result<Option<&'a Task>, proto::ErrorBody> {
-    let cwd = canon(cwd);
+    let cwd = crate::canon_str(cwd);
     let live: Vec<&Task> = tasks.iter().filter(|t| !t.archived).collect();
 
     let best_by = |candidates: &[(&'a Task, String)]| -> (usize, Vec<&'a Task>) {
@@ -3692,11 +3686,11 @@ pub(crate) fn resolve_by_cwd<'a>(
         .copied()
         .filter(|t| !t.is_main_checkout)
         .flat_map(|t| {
-            std::iter::once((t, canon(&t.path))).chain(
+            std::iter::once((t, crate::canon_str(&t.path))).chain(
                 t.composition
                     .iter()
                     .filter(|m| !m.path.is_empty())
-                    .map(move |m| (t, canon(&m.path))),
+                    .map(move |m| (t, crate::canon_str(&m.path))),
             )
         })
         .collect();
@@ -3723,7 +3717,7 @@ pub(crate) fn resolve_by_cwd<'a>(
         .iter()
         .copied()
         .filter(|t| t.is_main_checkout)
-        .map(|t| (t, canon(&t.path)))
+        .map(|t| (t, crate::canon_str(&t.path)))
         .collect();
     let (_, found) = best_by(&main_paths);
     match found.len() {

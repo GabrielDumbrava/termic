@@ -2068,9 +2068,7 @@ fn compute_home_denies(home: &str, user_allowed: &[String], runtime: &[String]) 
 /// Seatbelt evaluates the *canonical* path; a worktree symlinked
 /// somewhere else would otherwise fail writes through the symlink.
 pub(crate) fn canonicalize_or_keep(p: &str) -> String {
-    dunce::canonicalize(p)
-        .map(|c| c.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| p.to_string())
+    crate::canon_str(p)
 }
 
 /// If `task_root` is a git worktree (its `.git` is a regular file

@@ -474,7 +474,7 @@ export function EditTaskDialog() {
       // Pin Cancel/Save like Create — a many-member list can scroll.
       stickyFooter={
         <>
-          {err && <p className="mb-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
+          {err && <p className="mb-2 max-h-32 overflow-auto whitespace-pre-wrap break-words text-[13.5px] text-[var(--color-err)]">{err}</p>}
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)]">
               {(adding.length > 0 || removing.length > 0) && (

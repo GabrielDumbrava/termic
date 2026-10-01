@@ -125,7 +125,12 @@ pub fn remove_link(link: &Path) -> io::Result<()> {
 /// directories fine, so there it is a single call.
 pub fn remove_dir_all_settled(path: &Path) -> io::Result<()> {
     if !cfg!(windows) {
-        return std::fs::remove_dir_all(path);
+        // Parity with the loop below: a dir that vanished between the
+        // caller's exists() and this call is the goal already met.
+        return match std::fs::remove_dir_all(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        };
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut wait = std::time::Duration::from_millis(50);

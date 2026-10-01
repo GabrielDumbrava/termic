@@ -1268,14 +1268,12 @@ fn default_worktrees_base() -> PathBuf {
 /// Resolve `.` and `..` segments LEXICALLY, without touching the filesystem
 /// (the path need not exist yet, and we must not follow symlinks).
 ///
-/// This is load-bearing, not cosmetic. A relative tasks path like `../wt`
-/// resolves to `<repo>/../wt`, and `task_create` decides whether a directory
-/// it finds is a live worktree or a deletable orphan by comparing that string
-/// against `git worktree list --porcelain` — which reports CANONICAL paths.
-/// An unresolved `..` never matches, so a live worktree full of the user's
-/// uncommitted work would be classified as garbage and `remove_dir_all`ed.
-/// Normalizing here keeps the comparison honest (and keeps the path the UI
-/// shows readable).
+/// This is load-bearing, not cosmetic. The containment guards
+/// (`check_tasks_root`'s `starts_with`, the project-root prefix checks)
+/// compare path COMPONENTS, which can't see through `..`: `<repo>/../wt`
+/// reads as inside the repo while actually landing beside it. A relative
+/// tasks path must come back resolved before they decide anything (and
+/// the path the UI shows stays readable).
 fn lexically_normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -1432,7 +1430,7 @@ fn project_tasks_root_default(p: &Project) -> PathBuf {
 /// worktree-creating path goes through this, and the safety check lives
 /// INSIDE it rather than at the call sites so a future third caller cannot
 /// obtain a root that swallows the repo and re-arm `task_create`'s
-/// `remove_dir_all` orphan branch. Takes the already-loaded global so a
+/// orphan-clearing branch. Takes the already-loaded global so a
 /// create doesn't re-read settings.json just for this.
 fn project_tasks_root(default_path: &str, p: &Project) -> Result<PathBuf, String> {
     let root = project_tasks_root_with(default_path, p);
@@ -2550,9 +2548,16 @@ fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
     for (k, v) in inject {
         cmd.env(k, v);
     }
-    let out = cmd.output().with_context(|| format!("git {:?}", args))?;
+    // Space-joined, not {:?}: Debug escapes `\` to `\\`, so on Windows the
+    // error showed every path doubled and read as the cause of the
+    // failure. Whitespace-containing args get quoted so the join stays
+    // readable.
+    let cmd_line = format!("git {}", args.iter().map(|a|
+        if a.contains(char::is_whitespace) { format!("'{a}'") } else { a.to_string() }
+    ).collect::<Vec<_>>().join(" "));
+    let out = cmd.output().with_context(|| cmd_line.clone())?;
     if !out.status.success() {
-        return Err(anyhow!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr)));
+        return Err(anyhow!("{cmd_line} failed: {}", String::from_utf8_lossy(&out.stderr)));
     }
     Ok(out.stdout)
 }
@@ -6301,6 +6306,171 @@ fn canon_str(p: &str) -> String {
         .unwrap_or_else(|_| p.to_string())
 }
 
+/// Is `path` among the `worktree <path>` lines of `git worktree list
+/// --porcelain` output? Compared canonically, not textually: git records
+/// the realpath (forward slashes even on Windows, `C:/x` vs our `C:\x`),
+/// so a raw string compare never matches there — a live worktree then
+/// reads as an orphan dir, gets deleted under its registration, and the
+/// `worktree add` that follows refuses the still-registered path.
+fn worktree_listed(listed: &str, path: &Path) -> bool {
+    let target = canon_str(&path.to_string_lossy());
+    listed.lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|p| canon_str(p) == target)
+}
+
+/// What occupies the worktree slot before `worktree add` needs it —
+/// `None` = absent (or stat failed: leave it, `add` will surface its
+/// own error). `symlink_metadata`, not `exists`: a dangling symlink's
+/// `exists()` is false, but the link itself still holds the slot.
+fn slot_occupant(wt_path: &Path) -> Option<std::fs::FileType> {
+    wt_path.symlink_metadata().ok().map(|m| m.file_type())
+}
+
+/// `wt_path` exists and `worktree add` needs the slot. A live REGISTERED
+/// worktree or a dir of git-tracked files is never ours to delete; an
+/// orphan left by a failed create is. Fails closed on BOTH git calls: an
+/// error is not "not registered"/"not tracked" — reading an unlistable
+/// repo as "orphan" could `remove_dir_all` a live checkout (e.g. every
+/// git call in the repo failing under Windows' dubious-ownership guard,
+/// or `ls-files` alone dying on a corrupt/locked index). And when git
+/// can't run here, the `worktree add` that follows can't succeed anyway.
+/// `advice` is appended to every refusal ("pick a different name…").
+fn clear_orphan_or_refuse(repo: &Path, wt_path: &Path, advice: &str) -> Result<(), String> {
+    let ftype = match slot_occupant(wt_path) {
+        Some(f) => f,
+        None => return Ok(()),
+    };
+    // A symlink at the slot is never the dir itself — unlink the link,
+    // never its target (a dangling link's `exists()` is false, so without
+    // this branch the add would die on "'…' already exists").
+    if ftype.is_symlink() {
+        return fs_link::remove_link(wt_path).map_err(|e|
+            format!("link at {} couldn't be removed: {}.{advice}", wt_path.display(), e));
+    }
+    // A plain file (or socket, or…) holding the slot is the user's — not
+    // a leftover this can clear, and remove_dir_all couldn't take it
+    // anyway.
+    if !ftype.is_dir() {
+        return Err(format!("something that isn't a directory sits at {}.{advice}", wt_path.display()));
+    }
+    let listed = git(&["worktree", "list", "--porcelain"], repo).map_err(|e| e.to_string())?;
+    if worktree_listed(&listed, wt_path) {
+        return Err(format!("a worktree already lives at {}.{advice}", wt_path.display()));
+    }
+    // NEVER delete something git tracks. Reached when the tasks root sits
+    // inside the repo and a task slug collides with a committed directory.
+    // `ls-files` can't speak for a path outside the worktree — it errors
+    // "outside repository", which `git_tracks_path` used to swallow as
+    // "not tracked". Outside IS the right answer; inside, a git error is
+    // not "not tracked" — propagate it, same as the list call above.
+    let wt_canon = canon_str(&wt_path.to_string_lossy());
+    if Path::new(&wt_canon).starts_with(canon_str(&repo.to_string_lossy())) {
+        let tracked = git(&["--no-optional-locks", "ls-files", "--", &wt_canon], repo)
+            .map_err(|e| e.to_string())?;
+        if !tracked.trim().is_empty() {
+            return Err(format!(
+                "{} holds files tracked by git, so it is not a leftover this can clear.{advice}",
+                wt_path.display(),
+            ));
+        }
+    }
+    // Settled delete: a just-killed process lets go of the tree slightly
+    // after TerminateProcess returns, and a failed create's leftover is
+    // exactly the dir that can still be held on Windows.
+    fs_link::remove_dir_all_settled(wt_path).map_err(|e|
+        format!("orphan directory at {} couldn't be removed: {}.{advice}", wt_path.display(), e))
+}
+
+/// The multi-repo arm of `clear_orphan_or_refuse`. The wrapper holds
+/// member worktrees registered in the MEMBER repos — the host's
+/// `worktree list` can't see them — so a non-empty leftover can hide
+/// live member work and is refused. Only a genuinely empty wrapper is
+/// cleared. `repo` is None for a non-git host: its wrapper is a plain
+/// mkdir'd dir, so the registration check is simply skipped.
+/// `advice` is appended to every refusal.
+fn clear_wrapper_or_refuse(repo: Option<&Path>, wt_path: &Path, advice: &str) -> Result<(), String> {
+    let ftype = match slot_occupant(wt_path) {
+        Some(f) => f,
+        None => return Ok(()),
+    };
+    if ftype.is_symlink() {
+        return fs_link::remove_link(wt_path).map_err(|e|
+            format!("link at {} couldn't be removed: {}.{advice}", wt_path.display(), e));
+    }
+    if !ftype.is_dir() {
+        return Err(format!("something that isn't a directory sits at {}.{advice}", wt_path.display()));
+    }
+    if let Some(repo) = repo {
+        let listed = git(&["worktree", "list", "--porcelain"], repo).map_err(|e| e.to_string())?;
+        if worktree_listed(&listed, wt_path) {
+            return Err(format!("a worktree already lives at {}.{advice}", wt_path.display()));
+        }
+    }
+    // Non-empty and unregistered — can't tell member worktrees from
+    // leftovers without asking every member repo. Refuse. (An unreadable
+    // dir fails closed the same way.)
+    if fs::read_dir(wt_path).map(|mut d| d.next().is_some()).unwrap_or(true) {
+        return Err(format!("task wrapper already exists at {}.{advice}", wt_path.display()));
+    }
+    fs_link::remove_dir_all_settled(wt_path).map_err(|e|
+        format!("orphan directory at {} couldn't be removed: {}.{advice}", wt_path.display(), e))
+}
+
+/// Canonical, component-wise "path sits under root". `Path::starts_with`,
+/// never `str::starts_with` — a byte prefix would read `…/tasks2/x` as
+/// under `…/tasks`.
+fn under_root(path: &Path, root: &Path) -> bool {
+    let path = canon_str(&path.to_string_lossy());
+    Path::new(&path).starts_with(canon_str(&root.to_string_lossy()))
+}
+
+/// Is `path` inside the project's managed tasks root? Recorded task
+/// paths can point ANYWHERE — `task_import_worktree` takes an arbitrary
+/// worktree — so restore's auto-clear must only trust paths under the
+/// root we manage.
+fn under_tasks_root(proj: &Project, path: &Path) -> bool {
+    project_tasks_root(&load_settings_in(&proj.profile).default_tasks_path, proj)
+        .map(|root| under_root(path, &root))
+        .unwrap_or(false)
+}
+
+/// `git worktree add`, with one self-heal. A registration can outlive
+/// its directory: the pre-add `prune` is best-effort where it runs at
+/// all (`let _ =`, and some callers never prune), so `add` can still
+/// answer "'…' is a missing but already registered worktree". When the
+/// dir is absent — or exists but EMPTY, which git's add-side validation
+/// calls missing too — that slot is debris: `prune` drops entries whose
+/// gitdir no longer resolves, and `remove --force --force` clears a
+/// gone-dir registration prune can't classify (incl. locked ones — it
+/// must NOT run while a dir exists, so it's absent-only). Then retry
+/// once; the retry still refuses a branch checked out elsewhere —
+/// `add -f` would have overridden that too. The emptiness gate is
+/// load-bearing: a non-empty dir means the registration is live, and
+/// `worktree remove` would delete real files.
+fn worktree_add(repo: &Path, path: &Path, args: &[&str]) -> Result<()> {
+    // The error text includes the echoed command line, so a path that
+    // literally contains "already registered" also trips the heal — the
+    // extra prune/remove/retry on that path is harmless and the real
+    // error still surfaces from the retry.
+    let r = match git(args, repo) {
+        Err(e) if e.to_string().contains("already registered") => {
+            let absent = !path.exists();
+            if !absent && fs::read_dir(path).map(|mut d| d.next().is_some()).unwrap_or(true) {
+                return Err(e); // live non-empty dir — not ours to clear
+            }
+            let _ = git(&["worktree", "prune"], repo);
+            if absent {
+                let p = path.to_string_lossy();
+                let _ = git(&["worktree", "remove", "--force", "--force", &p], repo);
+            }
+            git(args, repo)
+        }
+        r => r,
+    };
+    r.map(|_| ())
+}
+
 /// List the git worktrees of a project's repo that aren't yet tracked as
 /// termic tasks (issue #5). Excludes the main checkout (that's the
 /// "Run in repo" path), bare entries, and any worktree already imported.
@@ -6386,9 +6556,7 @@ fn task_import_worktree(
     // never let the user point at an arbitrary directory.
     let listed = git(&["worktree", "list", "--porcelain"], &repo).map_err(|e| e.to_string())?;
     let wt_canon = canon_str(&wt.to_string_lossy());
-    let registered = listed.lines()
-        .filter_map(|l| l.strip_prefix("worktree "))
-        .any(|p| canon_str(p) == wt_canon);
+    let registered = worktree_listed(&listed, &wt);
     if !registered {
         return Err("that path is not a worktree of this repo".into());
     }
@@ -6582,7 +6750,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     let slug = slugify(&args.name);
     // CRITICAL guard: a name that is all punctuation/whitespace slugifies to
     // "". `wt_root.join("")` == `wt_root`, which `.exists()` reports true, so
-    // the orphan-cleanup `remove_dir_all` below would delete the ENTIRE tasks
+    // the orphan-cleanup delete below would delete the ENTIRE tasks
     // root (every other worktree in the project). Never let an empty slug
     // reach the worktree path math. The frontend also validates, but this is
     // the last line of defense for any caller.
@@ -6612,7 +6780,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // The PROJECT's profile owns the worktrees base. Reading the root's here
     // was a real bug: a second profile's seeded `~/termic/profiles/<slug>/tasks`
     // would be written to settings and then never used.
-    let wt_root = project_tasks_root(&load_settings_in(&proj.profile).default_tasks_path, &proj)?;
+    let wt_root = project_tasks_root(&globals.default_tasks_path, &proj)?;
     fs::create_dir_all(&wt_root).map_err(|e| e.to_string())?;
     let wt_path = wt_root.join(&slug);
 
@@ -6621,32 +6789,12 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
     // a clean slate.
     let _ = git(&["worktree", "prune"], &repo);
 
-    if wt_path.exists() {
-        // Is this an actively-registered worktree, or an orphan directory
-        // from a prior failed create? If orphan, nuke it and continue.
-        let listed = git(&["worktree", "list", "--porcelain"], &repo).unwrap_or_default();
-        let path_str = wt_path.to_string_lossy();
-        let registered = listed.lines().any(|l| {
-            l.strip_prefix("worktree ").map(|p| p == path_str).unwrap_or(false)
-        });
-        if registered {
-            return Err(format!(
-                "a worktree already lives at {} — pick a different name.",
-                wt_path.display()
-            ));
-        }
-        // NEVER delete something git tracks. Reached when the tasks root sits
-        // inside the repo and a task slug collides with a committed directory.
-        if git_tracks_path(&repo, &wt_path) {
-            return Err(format!(
-                "{} holds files tracked by git, so it is not a leftover this can clear. \
-                 Pick a different task name, or move the tasks path outside the repo.",
-                wt_path.display(),
-            ));
-        }
-        fs::remove_dir_all(&wt_path).map_err(|e|
-            format!("orphan directory at {} couldn't be removed: {}", wt_path.display(), e))?;
-    }
+    // Already-claimed target: a live worktree or git-tracked dir refuses,
+    // a failed-create orphan is removed (fail-closed on git errors).
+    clear_orphan_or_refuse(
+        &repo, &wt_path,
+        " Pick a different task name, or move the tasks path outside the repo.",
+    )?;
 
     // Reuse existing branch if present, else create new from base. If the
     // branch is already checked out in another worktree (often the main
@@ -6731,7 +6879,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
             emit_create_progress(&app, &task_id, format!("Branch '{branch}' already exists locally, reusing it."));
         }
         emit_create_progress(&app, &task_id, format!("Adding worktree at {}…", wt_path.display()));
-        git(&add_args, &repo)
+        worktree_add(&repo, &wt_path, &add_args)
     } else {
         // Refresh the remote-tracking base ref first so the new branch is cut
         // from the latest remote commit, not a stale local origin/* (GH #79).
@@ -6772,7 +6920,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         match branch_result {
             Ok(()) => {
                 emit_create_progress(&app, &task_id, format!("Adding worktree at {}…", wt_path.display()));
-                git(&add_args, &repo)
+                worktree_add(&repo, &wt_path, &add_args)
             }
             Err(e) => Err(e),
         }
@@ -7118,7 +7266,9 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     for m in &args.members {
         let hm = host.members.iter().find(|hm| hm.root_path == m.root_path)
             .ok_or_else(|| format!("member not found: {}", m.root_path))?.clone();
-        let dir_name = m.dir_name.clone().unwrap_or_else(|| hm.name.clone());
+        let dir_name = m.dir_name.clone()
+            .map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
+            .unwrap_or_else(|| hm.name.clone());
         // Reject path separators, empty, and the `.`/`..` traversal names.
         // `wrapper.join("..")` would escape the wrapper; today that self-
         // defends (the parent exists + is non-empty, so symlink/worktree-add
@@ -7137,18 +7287,24 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     // resolved tasks root already encodes the `<...>/<host-slug>` half.
     // Settings loaded ONCE here, reused for the sandbox defaults further down.
     let globals = load_settings_in(&host.profile);
-    let wrapper = project_tasks_root(&load_settings_in(&host.profile).default_tasks_path, &host)?.join(&slug);
-    if wrapper.exists() {
-        return Err(format!("a task already exists at {}", wrapper.display()));
+    let host_repo = PathBuf::from(&host.root_path);
+    let wrapper = project_tasks_root(&globals.default_tasks_path, &host)?.join(&slug);
+    if !host.non_git {
+        let _ = git(&["worktree", "prune"], &host_repo);
     }
+    // Same guard as restore: a live worktree refuses, an empty leftover
+    // is cleared — a non-empty one may hide member worktrees the host's
+    // `worktree list` can't see, so it refuses. `None` for a non-git
+    // host: a plain mkdir'd wrapper has no registration to check.
+    clear_wrapper_or_refuse(
+        (!host.non_git).then_some(host_repo.as_path()),
+        &wrapper, " Pick a different task name.")?;
 
     // Ensure the parent dir exists; git worktree add will create the
     // wrapper itself.
     if let Some(parent) = wrapper.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-
-    let host_repo = PathBuf::from(&host.root_path);
     if host.non_git {
         // Non-git host (issue #4): there's no worktree to add. Make the
         // wrapper dir ourselves, then symlink the host's shared knowledge
@@ -7177,7 +7333,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         let branch_exists = git(&["rev-parse", "--verify", &branch], &host_repo).is_ok();
         let create_result = if branch_exists {
             emit_create_progress(&app, &task_id, format!("Adding host worktree at {}…", wrapper.display()));
-            git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo)
+            worktree_add(&host_repo, &wrapper, &["worktree", "add", wrapper.to_str().unwrap(), &branch])
         } else {
             // Refresh the base ref before cutting the host branch (GH #79).
             if do_fetch {
@@ -7189,7 +7345,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
             match git(&["branch", "--no-track", &branch, &base_ref], &host_repo) {
                 Ok(_) => {
                     emit_create_progress(&app, &task_id, format!("Adding host worktree at {}…", wrapper.display()));
-                    git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo)
+                    worktree_add(&host_repo, &wrapper, &["worktree", "add", wrapper.to_str().unwrap(), &branch])
                 }
                 Err(e) => Err(e),
             }
@@ -7598,7 +7754,7 @@ fn materialize_member(
             let mexists = git(&["rev-parse", "--verify", &mbranch], &mrepo).is_ok();
             if mexists {
                 emit_create_progress(app, task_id, format!("Adding member '{dir_name}' worktree on '{mbranch}'…"));
-                git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo)
+                worktree_add(&mrepo, &target, &["worktree", "add", target.to_str().unwrap(), &mbranch])
             } else {
                 // Refresh this member's base ref before cutting its branch,
                 // honoring the member's own remote/base (GH #79).
@@ -7609,7 +7765,7 @@ fn materialize_member(
                 let mbase_ref = resolve_base_ref(&mrepo, &mbase);
                 emit_create_progress(app, task_id, format!("Branching member '{dir_name}' ('{mbranch}') from '{mbase_ref}'…"));
                 git(&["branch", "--no-track", &mbranch, &mbase_ref], &mrepo)
-                    .and_then(|_| git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo))
+                    .and_then(|_| worktree_add(&mrepo, &target, &["worktree", "add", target.to_str().unwrap(), &mbranch]))
             }
             .map_err(|e| format!("member {dir_name} worktree add failed: {e}"))?;
             emit_create_progress(app, task_id, format!("Member '{dir_name}' worktree added."));
@@ -7680,11 +7836,20 @@ fn teardown_member(parent: &Path, m: &TaskMember, projects: &[Project]) -> Resul
             Ok(())
         }
         MemberMode::Worktree => {
-            if let Some(repo_path) = member_repo(m, projects) {
-                let _ = git(&["worktree", "remove", "--force", &m.path], Path::new(&repo_path));
+            let repo_path = member_repo(m, projects);
+            if let Some(repo_path) = &repo_path {
+                if Path::new(&m.path).exists() {
+                    let _ = git(&["worktree", "remove", "--force", &m.path], Path::new(repo_path));
+                }
             }
             if Path::new(&m.path).exists() {
-                fs::remove_dir_all(&m.path).map_err(|e| format!("rm member dir {}: {e}", m.dir_name))?;
+                fs_link::remove_dir_all_settled(Path::new(&m.path))
+                    .map_err(|e| format!("rm member dir {}: {e}", m.dir_name))?;
+            }
+            // Gone — by git, by the settled delete, or before we ran:
+            // drop any leftover registration in the member repo.
+            if let Some(repo_path) = &repo_path {
+                let _ = git(&["worktree", "prune"], Path::new(repo_path));
             }
             Ok(())
         }
@@ -7847,8 +8012,10 @@ fn task_update_members_sync(app: AppHandle, task_id: String, add: Vec<CreateMult
         let dir_name = spec.dir_name.clone()
             .map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
             .unwrap_or_else(|| mp.name.clone());
-        if dir_name.is_empty() || dir_name.contains('/') || dir_name == "." || dir_name == ".." {
-            errs.push(format!("invalid member dir name '{dir_name}'")); continue;
+        // is_plain_name, same as create: `..\x` on Windows would land
+        // the member worktree/symlink OUTSIDE the wrapper.
+        if !is_plain_name(&dir_name) {
+            errs.push(format!("invalid member dir name: {dir_name:?}")); continue;
         }
         // One row per repo, stricter than create's dir_name-only dedupe:
         // the edit UI keys addable rows by root_path and can't express
@@ -10485,8 +10652,13 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
                     };
                     let mut member_git_err: Option<String> = None;
                     if let Some(repo_path) = &repo_path {
-                        if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&repo_path)) {
-                            member_git_err = Some(format!("worktree remove {}: {e}", m.dir_name));
+                        // A dir that's already gone has nothing for
+                        // `remove` to take — and its error ("not a
+                        // working tree") would be spurious anyway.
+                        if Path::new(&m.path).exists() {
+                            if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&repo_path)) {
+                                member_git_err = Some(format!("worktree remove {}: {e}", m.dir_name));
+                            }
                         }
                         if delete_branch && !m.branch.is_empty() && local_branch_exists(Path::new(&repo_path), &m.branch) {
                             if let Err(e) = git(&["branch", "-D", &m.branch], Path::new(&repo_path)) {
@@ -10498,7 +10670,14 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
                         if let Err(e) = fs_link::remove_dir_all_settled(Path::new(&m.path)) {
                             errs.extend(member_git_err.take());
                             errs.push(format!("rm member dir {}: {e}", m.dir_name));
-                        } else if let Some(repo_path) = &repo_path {
+                        }
+                    }
+                    // However the dir went — git's remove, the settled
+                    // delete, or before we ran — drop any leftover
+                    // registration, and the parked error no longer
+                    // counts.
+                    if let Some(repo_path) = &repo_path {
+                        if !Path::new(&m.path).exists() {
                             let _ = git(&["worktree", "prune"], Path::new(repo_path));
                             member_git_err = None;
                         }
@@ -10518,17 +10697,21 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
     let mut git_remove_err: Option<String> = None;
     if let Some(p) = &proj {
         if !p.non_git {
-            if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
-                // What git believes versus what is on disk: a remove that
-                // says "is not a working tree" is otherwise undiagnosable.
-                dlog(&format!(
-                    "[archive] worktree remove {} failed: {e}\n  git worktree list: {}\n  .git pointer: {:?}",
-                    w.path,
-                    git(&["worktree", "list", "--porcelain"], Path::new(&p.root_path))
-                        .unwrap_or_default().replace('\n', " | "),
-                    fs::read_to_string(Path::new(&w.path).join(".git")).ok(),
-                ));
-                git_remove_err = Some(format!("worktree remove: {e}"));
+            // A dir that's already gone has nothing for `remove` to take —
+            // and its error ("not a working tree") would be spurious.
+            if Path::new(&w.path).exists() {
+                if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
+                    // What git believes versus what is on disk: a remove that
+                    // says "is not a working tree" is otherwise undiagnosable.
+                    dlog(&format!(
+                        "[archive] worktree remove {} failed: {e}\n  git worktree list: {}\n  .git pointer: {:?}",
+                        w.path,
+                        git(&["worktree", "list", "--porcelain"], Path::new(&p.root_path))
+                            .unwrap_or_default().replace('\n', " | "),
+                        fs::read_to_string(Path::new(&w.path).join(".git")).ok(),
+                    ));
+                    git_remove_err = Some(format!("worktree remove: {e}"));
+                }
             }
             if delete_branch && !w.branch.is_empty() && local_branch_exists(Path::new(&p.root_path), &w.branch) {
                 if let Err(e) = git(&["branch", "-D", &w.branch], Path::new(&p.root_path)) {
@@ -10541,10 +10724,13 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
         if let Err(e) = fs_link::remove_dir_all_settled(Path::new(&w.path)) {
             errs.extend(git_remove_err.take());
             errs.push(format!("rm worktree dir: {e}"));
-        } else if let Some(p) = proj.as_ref().filter(|p| !p.non_git) {
-            // Git's own remove failed but the directory is gone now: drop
-            // git's record of it too, or the branch stays "checked out" there,
-            // and the failure no longer counts.
+        }
+    }
+    // However the dir went — git's remove, the settled delete, or before
+    // we ran — drop git's record of it (or the branch stays "checked
+    // out" there), and the parked error no longer counts.
+    if let Some(p) = proj.as_ref().filter(|p| !p.non_git) {
+        if !Path::new(&w.path).exists() {
             let _ = git(&["worktree", "prune"], Path::new(&p.root_path));
             git_remove_err = None;
         }
@@ -10648,28 +10834,17 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
             let _ = git(&["worktree", "prune"], &repo);
 
             // Guard: path already claimed by a live worktree.
-            if wt_path.exists() {
-                let listed = git(&["worktree", "list", "--porcelain"], &repo)
-                    .unwrap_or_default();
-                let path_str = wt_path.to_string_lossy();
-                let registered = listed.lines()
-                    .any(|l| l.strip_prefix("worktree ").map(|p| p == path_str).unwrap_or(false));
-                if registered {
-                    return Err(format!("a worktree already lives at {}", wt_path.display()));
-                }
-                // Orphan directory — remove before adding the worktree. Same
-                // tracked-content guard as task_create_sync: a restored task
-                // whose stored path now overlaps committed files must not take
-                // them with it.
-                if git_tracks_path(&repo, &wt_path) {
-                    return Err(format!(
-                        "{} holds files tracked by git, so it is not a leftover this can \
-                         clear. Move or rename it, then restore again.",
-                        wt_path.display(),
-                    ));
-                }
-                fs::remove_dir_all(&wt_path)
-                    .map_err(|e| format!("orphan dir at {}: {e}", wt_path.display()))?;
+            // Same fail-closed guard as task_create_sync — but only
+            // inside the managed tasks root. `wt_path` comes from the
+            // stored record and an imported task's can point anywhere:
+            // outside managed space "orphan" is a guess, not a fact.
+            if under_tasks_root(&proj, &wt_path) {
+                clear_orphan_or_refuse(&repo, &wt_path,
+                    " Move or rename it, then restore again.")?;
+            } else if wt_path.exists() {
+                return Err(format!(
+                    "task directory already exists at {}. Move or rename it, then restore again.",
+                    wt_path.display()));
             }
 
             let branch = list[idx].branch.clone();
@@ -10696,7 +10871,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
             let mut add_args: Vec<&str> = add_flags.to_vec();
             add_args.push(wt_arg);
             add_args.push(&branch);
-            git(&add_args, &repo).map_err(|e| e.to_string())?;
+            worktree_add(&repo, &wt_path, &add_args).map_err(|e| e.to_string())?;
 
             // git-crypt: bridge the key dir into the new worktree's gitdir.
             if has_git_crypt {
@@ -10726,10 +10901,23 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
         }
     } else {
         // ── Multi-repo task ───────────────────────────────────────────
-        let _ = git(&["worktree", "prune"], &repo);
-
-        if wt_path.exists() {
-            return Err(format!("task wrapper already exists at {}", wt_path.display()));
+        if !proj.non_git {
+            let _ = git(&["worktree", "prune"], &repo);
+        }
+        // Member worktrees inside a leftover wrapper are registered in
+        // the MEMBER repos — the host's `worktree list` can't see them —
+        // so only an empty wrapper is cleared; a non-empty one is
+        // refused. And only inside the managed tasks root: an imported
+        // task's path can be anywhere. `None` for a non-git host: a plain
+        // mkdir'd wrapper has no registration to check.
+        if under_tasks_root(&proj, &wt_path) {
+            clear_wrapper_or_refuse(
+                (!proj.non_git).then_some(repo.as_path()),
+                &wt_path, " Move or rename it, then restore again.")?;
+        } else if wt_path.exists() {
+            return Err(format!(
+                "task wrapper already exists at {}. Move or rename it, then restore again.",
+                wt_path.display()));
         }
 
         // Recreate host worktree.
@@ -10750,13 +10938,13 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
             let host_base   = list[idx].base_branch.clone();
             let branch_exists = git(&["rev-parse", "--verify", &host_branch], &repo).is_ok();
             if branch_exists {
-                git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
+                worktree_add(&repo, &wt_path, &["worktree", "add", wt_path.to_str().unwrap(), &host_branch])
                     .map_err(|e| format!("host worktree add: {e}"))?;
             } else {
                 let host_base_ref = resolve_base_ref(&repo, &host_base);
                 git(&["branch", "--no-track", &host_branch, &host_base_ref], &repo)
                     .map_err(|e| format!("recreate host branch: {e}"))?;
-                git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
+                worktree_add(&repo, &wt_path, &["worktree", "add", wt_path.to_str().unwrap(), &host_branch])
                     .map_err(|e| format!("host worktree add: {e}"))?;
             }
         }
@@ -10797,7 +10985,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
                             let mbase_ref = resolve_base_ref(&mr_path, &base_branch);
                             let _ = git(&["branch", "--no-track", &m.branch, &mbase_ref], &mr_path);
                         }
-                        let _ = git(&["worktree", "add", &m.path, &m.branch], &mr_path);
+                        let _ = worktree_add(&mr_path, Path::new(&m.path), &["worktree", "add", &m.path, &m.branch]);
                         // Same per-member copy creation does. Legacy records
                         // (frozen before GH #264) carry an empty override and
                         // fall back to the member repo's `.termic.yaml`.
@@ -10827,6 +11015,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     }
     rehome_ports_if_stolen(&mut list[idx], &snapshot, current_port_range());
     list[idx].archived = false;
+    list[idx].archived_at = None;
     save_task(&list[idx]).map_err(|e| e.to_string())?;
     drop(port_guard);
     let task = list[idx].clone();
@@ -30431,6 +30620,228 @@ mod tests {
         ).trim().to_string()
     }
 
+    /// `worktree list --porcelain` prints git's canonical spelling of a path
+    /// (realpath-resolved; forward slashes on Windows), never the string the
+    /// caller built. A raw `p == wt_path` compare misses every time there —
+    /// a live worktree then reads as an orphan dir and is deleted under its
+    /// registration, so the retried `worktree add` fails. The tempdir form
+    /// (/var → /private/var on macOS) exercises the same divergence on any
+    /// platform: the listed spelling differs from the path passed to add.
+    #[test]
+    fn a_registered_worktree_is_recognized_whichever_way_git_spells_its_path() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let wt = dir.path().join("wt-a");
+        git_worktree_add(&repo, &wt, "task-a");
+
+        let listed = crate::git(&["worktree", "list", "--porcelain"], &repo).unwrap();
+        assert!(crate::worktree_listed(&listed, &wt), "{listed}");
+        // An existing-but-unregistered dir must NOT match — that's the
+        // orphan-cleanup arm, which removes it and continues.
+        let stray = dir.path().join("elsewhere");
+        fs::create_dir(&stray).unwrap();
+        assert!(!crate::worktree_listed(&listed, &stray));
+    }
+
+    /// The dir-gone half of the registered-worktree bug: `worktree add` on
+    /// a path whose dir was deleted but whose registration survives (the
+    /// caller's `prune` is best-effort and may never run) fails "already
+    /// registered". `worktree_add` clears that slot and retries instead
+    /// of erroring.
+    #[test]
+    fn a_worktree_add_self_heals_a_registration_whose_dir_is_gone() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let wt = dir.path().join("wt-a");
+        git_worktree_add(&repo, &wt, "task-a");
+        fs::remove_dir_all(&wt).unwrap();
+
+        let wt_arg = wt.to_string_lossy().into_owned();
+        crate::worktree_add(&repo, &wt, &["worktree", "add", &wt_arg, "task-a"]).unwrap();
+        assert!(wt.join("base.txt").exists(), "retry did not re-add the worktree");
+    }
+
+    /// Git calls an EMPTY existing dir "missing" for add purposes too —
+    /// the same "already registered" refusal, and the same safe heal.
+    #[test]
+    fn a_worktree_add_self_heals_a_registration_on_an_empty_dir() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let wt = dir.path().join("wt-a");
+        git_worktree_add(&repo, &wt, "task-a");
+        fs::remove_dir_all(&wt).unwrap();
+        fs::create_dir(&wt).unwrap();
+
+        let wt_arg = wt.to_string_lossy().into_owned();
+        crate::worktree_add(&repo, &wt, &["worktree", "add", &wt_arg, "task-a"]).unwrap();
+        assert!(wt.join("base.txt").exists(), "retry did not re-add the worktree");
+    }
+
+    /// …but a registration on a NON-empty dir is live: never healed,
+    /// never touched — the refusal surfaces.
+    #[test]
+    fn a_worktree_add_never_heals_a_live_registration() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let wt = dir.path().join("wt-a");
+        git_worktree_add(&repo, &wt, "task-a");
+
+        let wt_arg = wt.to_string_lossy().into_owned();
+        assert!(crate::worktree_add(&repo, &wt, &["worktree", "add", &wt_arg, "task-a"]).is_err());
+        assert!(wt.join("base.txt").exists(), "live worktree was touched");
+    }
+
+    /// The tasks-root gate's compare must be component-wise: a sibling
+    /// sharing the root's basename (`tasks2`) is NOT under `tasks`.
+    /// `str::starts_with` would say it is — that was the bug.
+    #[test]
+    fn under_root_compares_components_not_bytes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let sib = dir.path().join("tasks2");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(sib.join("a")).unwrap();
+
+        assert!(crate::under_root(&root.join("a"), &root));
+        assert!(crate::under_root(&root, &root), "the root itself is under itself");
+        assert!(!crate::under_root(&sib.join("a"), &root),
+            "tasks2/a read as under tasks — byte prefix bug");
+        assert!(!crate::under_root(dir.path(), &root), "root's parent is not under it");
+    }
+
+    /// The central guarantee: a registered worktree is REFUSED, not
+    /// cleared — the whole reason the canonical compare exists.
+    #[test]
+    fn a_registered_worktree_is_refused_not_cleared() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let wt = dir.path().join("wt-a");
+        git_worktree_add(&repo, &wt, "task-a");
+
+        let e = crate::clear_orphan_or_refuse(&repo, &wt, "").unwrap_err();
+        assert!(e.contains("a worktree already lives at"), "{e}");
+        assert!(wt.join("base.txt").exists(), "live worktree was cleared");
+    }
+
+    /// A tasks root INSIDE the repo can collide with committed content:
+    /// that dir is the user's, not an orphan. (A tracked subdir — the
+    /// repo root itself would refuse earlier, as the listed main
+    /// worktree.)
+    #[test]
+    fn a_dir_of_tracked_files_is_not_an_orphan() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let tasks = repo.join("tasks");
+        fs::create_dir(&tasks).unwrap();
+        fs::write(tasks.join("committed.txt"), "tracked").unwrap();
+        for args in [["add", "."].as_slice(),
+                     ["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "x"].as_slice()] {
+            let out = std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap();
+            assert!(out.status.success());
+        }
+
+        let e = crate::clear_orphan_or_refuse(&repo, &tasks, "").unwrap_err();
+        assert!(e.contains("tracked by git"), "{e}");
+        assert!(tasks.join("committed.txt").exists());
+    }
+
+    /// Multi-repo arm: a non-empty wrapper may hide member worktrees the
+    /// host's `worktree list` can't see — refuse, don't clear.
+    #[test]
+    fn a_nonempty_wrapper_is_refused_but_an_empty_one_clears() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+
+        let nonempty = dir.path().join("wrapper-full");
+        fs::create_dir(&nonempty).unwrap();
+        fs::write(nonempty.join("member"), "could be a live worktree").unwrap();
+        let e = crate::clear_wrapper_or_refuse(Some(&repo), &nonempty, "").unwrap_err();
+        assert!(e.contains("task wrapper already exists"), "{e}");
+        assert!(nonempty.join("member").exists(), "non-empty wrapper was cleared");
+
+        let empty = dir.path().join("wrapper-empty");
+        fs::create_dir(&empty).unwrap();
+        crate::clear_wrapper_or_refuse(Some(&repo), &empty, "").unwrap();
+        assert!(!empty.exists(), "empty wrapper survived cleanup");
+    }
+
+    /// A symlink at the slot is unlinked, never followed — even one that
+    /// points at a dir full of precious files.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_at_the_slot_is_unlinked_not_followed() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let target = dir.path().join("real-dir");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("precious.txt"), "keep me").unwrap();
+        let link = dir.path().join("wt-link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        crate::clear_orphan_or_refuse(&repo, &link, "").unwrap();
+        assert!(link.symlink_metadata().is_err(), "link survived");
+        assert!(target.join("precious.txt").exists(), "followed the link");
+    }
+
+    /// A plain file at the slot is the user's — refuse, never delete.
+    #[test]
+    fn a_file_at_the_slot_is_refused_not_deleted() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let f = dir.path().join("wt-a");
+        fs::write(&f, "not a worktree").unwrap();
+
+        let e = crate::clear_orphan_or_refuse(&repo, &f, "").unwrap_err();
+        assert!(e.contains("isn't a directory"), "{e}");
+        assert!(f.exists(), "file was deleted");
+    }
+
+    /// Fails closed: a repo git cannot interrogate must NOT read as "all
+    /// orphan". The cleanup arm ends in remove_dir_all — a live worktree
+    /// or user dir would die with it. (Here: not a repo at all.)
+    #[test]
+    fn a_dir_is_not_an_orphan_when_git_cannot_say() {
+        let dir = tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        fs::create_dir(&wt).unwrap();
+        fs::write(wt.join("precious.txt"), "uncommitted work").unwrap();
+        assert!(crate::clear_orphan_or_refuse(dir.path(), &wt, "").is_err());
+        assert!(wt.join("precious.txt").exists(), "dir deleted under a failed list");
+    }
+
+    /// …and the happy arm: a dir git does not know IS the orphan that
+    /// gets removed so `worktree add` can take the slot.
+    #[test]
+    fn an_unregistered_dir_is_the_orphan_that_gets_removed() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_init_with_commit(&repo);
+        let wt = dir.path().join("stray");
+        fs::create_dir(&wt).unwrap();
+        fs::write(wt.join("x"), "x").unwrap();
+        crate::clear_orphan_or_refuse(&repo, &wt, "").unwrap();
+        assert!(!wt.exists(), "orphan dir survived cleanup");
+    }
+
     /// Resolve a ref (e.g. a branch name) to a SHA in `repo`.
     fn git_rev(repo: &Path, refname: &str) -> String {
         String::from_utf8_lossy(
@@ -30928,7 +31339,7 @@ mod tests {
         // No .git: not a repo, the caller's own message stands.
         assert_eq!(git_open_error(dir.path(), "x", "fatal: not a git repository"), None);
         // Git's ownership check names the command that trusts it.
-        let dubious = "git [\"rev-parse\"] failed: fatal: detected dubious ownership in repository at 'C:/Projects/seat-be'";
+        let dubious = "git rev-parse failed: fatal: detected dubious ownership in repository at 'C:/Projects/seat-be'";
         let msg = git_open_error(Path::new(r"C:\Projects\seat-be"), r"C:\Projects\seat-be", dubious).unwrap();
         assert!(msg.contains("owned by another user account"), "{msg}");
         assert!(msg.contains("git config --global --add safe.directory C:/Projects/seat-be"), "{msg}");
@@ -32302,9 +32713,9 @@ filename f.rs
             PathBuf::from("/Users/x/code/web/.termic/tasks"),
         );
         // `..` escapes to a sibling of the repo, which is a legitimate layout.
-        // It MUST come back lexically resolved: task_create compares this
-        // against `git worktree list`, which reports canonical paths, and a
-        // stray `..` would make it read a live worktree as a deletable orphan.
+        // It MUST come back lexically resolved: the containment guards
+        // compare components, which can't see through `..`, so an
+        // unresolved form would misread which side of the repo it sits on.
         assert_eq!(
             project_tasks_root_with("../wt", &p),
             PathBuf::from("/Users/x/code/wt"),
