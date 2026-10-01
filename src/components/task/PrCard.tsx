@@ -16,7 +16,7 @@ import {
   GitPullRequest, GitPullRequestDraft, GitPullRequestClosed, GitMerge,
   CircleCheck, CircleX, ExternalLink, RefreshCw, Plus, Bell, BellOff,
 } from "lucide-react";
-import type { PrStatus, Task } from "@/lib/types";
+import type { MemberPrLookup, PrStatus, Task } from "@/lib/types";
 import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, prRef } from "@/lib/forge";
 import { openPath } from "@/lib/ipc";
 import { usePr, watchTickNow } from "@/store/pr";
@@ -292,9 +292,9 @@ export function PrCard({ task }: { task: Task }) {
   );
 }
 
-function Card({ children }: { children: ReactNode }) {
+function Card({ children, testId = "pr-card" }: { children: ReactNode; testId?: string }) {
   return (
-    <div data-testid="pr-card" className="shrink-0 border-b border-[var(--color-border-soft)] px-2.5 py-2">
+    <div data-testid={testId} className="shrink-0 border-b border-[var(--color-border-soft)] px-2.5 py-2">
       {children}
     </div>
   );
@@ -366,5 +366,73 @@ function RefreshBtn({ spinning, onClick }: { spinning: boolean; onClick: () => v
           : <RefreshCw className="h-3 w-3" />}
       </button>
     </Tip>
+  );
+}
+
+/** Per-member PR/MR rows for a multi-repo task. The task-level card above
+ *  covers the host worktree (the task's own `path`; `composition` holds
+ *  only NON-host members); these cover the members, each resolved by the
+ *  branch checked out in its own repo. Rendered only for members that
+ *  resolved to a forge-backed result (status "ok"): no-remote/unsupported
+ *  rows are noise, and an error/cli-missing hint would read as "no PR" on
+ *  a compact row - the board card applies the same rule. Renders nothing
+ *  until a refresh landed, so a task whose members were never polled never
+ *  flashes empty rows. A member with no PR keeps the bare name+branch
+ *  row: on a multi-repo task "this repo has no PR yet" is the answer. */
+export function MemberPrRows({ task }: { task: Task }) {
+  const members = usePr(s => s.byTask[task.id]?.members);
+  const refresh = usePr(s => s.refresh);
+  const hasMembers = (task.composition?.length ?? 0) > 0;
+  // PrCard owns the mount/tick polling while it's mounted. On a
+  // main-checkout task it never mounts, so member rows tick for
+  // themselves - refresh() polls only members for such a task. A
+  // main checkout with NO members has no PR surface at all: skip
+  // the interval rather than churn a fresh PrEntry every minute.
+  useEffect(() => {
+    if (!task.is_main_checkout || !hasMembers) return;
+    void refresh(task.id);
+    const t = window.setInterval(() => refresh(task.id, true), POLL_MS);
+    return () => window.clearInterval(t);
+  }, [task.id, task.is_main_checkout, hasMembers, refresh]);
+  if (!members?.length) return null;
+  const rows = members.filter(m => m.status === "ok");
+  if (!rows.length) return null;
+  return (
+    <Card testId="member-pr-rows">
+      {rows.map(m => <MemberPrRow key={m.dir_name} m={m} />)}
+    </Card>
+  );
+}
+
+function MemberPrRow({ m }: { m: MemberPrLookup }) {
+  const { t } = useTranslation("panels");
+  const pr = m.pr;
+  const st = pr ? STATE[pr.state] : null;
+  return (
+    <div className="flex items-center gap-2 py-0.5" data-testid="member-pr-row">
+      <span className="min-w-0 flex-1 truncate text-[12px] leading-none text-[var(--color-fg-dim)]">
+        {m.dir_name}
+        {m.branch ? <span className="font-mono text-[var(--color-fg-faint)]"> · {m.branch}</span> : null}
+      </span>
+      {pr && st ? (
+        <>
+          <Tip content={t("pr.stateTip", { state: t(st.labelKey), provider: forgeName(pr.provider) })} side="bottom">
+            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11.5px] font-medium leading-none" style={{ color: st.color }}>
+              <st.Icon className="h-3 w-3 -translate-y-px" />
+              {prRef(pr.provider, pr.number)}
+            </span>
+          </Tip>
+          <ChecksChip checks={pr.checks} />
+          <Tip content={t("pr.openOn", { provider: forgeName(pr.provider) })} side="bottom">
+            <button
+              onClick={() => openPath(pr.url).catch(() => {})}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+            >
+              <ExternalLink className="h-3 w-3" />
+            </button>
+          </Tip>
+        </>
+      ) : null}
+    </div>
   );
 }

@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/ipc", () => ({
   detectForges: vi.fn().mockResolvedValue([]),
   taskPrStatus: vi.fn(),
+  taskMemberPrStatus: vi.fn().mockResolvedValue([]),
   taskPrComments: vi.fn().mockResolvedValue([]),
   taskSetPrWatch: vi.fn().mockResolvedValue(undefined),
   taskSetPrCommentsSeen: vi.fn().mockResolvedValue(undefined),
@@ -31,13 +32,14 @@ vi.mock("@/lib/archiveTask", () => ({
 import {
   usePr, newCommentsSince, commentPromptFor, watchTickNow, openPrArchiveWarning,
   pollableTasks, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus,
+  prFocusEligible,
 } from "@/store/pr";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import * as ipc from "@/lib/ipc";
 import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
-import type { ForgeProvider, PrLookup, Task, Project } from "@/lib/types";
+import type { ForgeProvider, MemberPrLookup, PrLookup, Task, Project } from "@/lib/types";
 
 const lookupWith = (
   state: "open" | "merged" | "closed" | "draft" | null,
@@ -99,6 +101,169 @@ describe("usePr.refresh", () => {
     vi.mocked(ipc.taskPrStatus).mockRejectedValue(new Error("network"));
     await usePr.getState().refresh("ws1", true);
     expect(usePr.getState().byTask["ws1"].lookup?.pr?.state).toBe("open");
+  });
+
+  it("polls members inside the same refresh for multi-repo tasks", async () => {
+    // composition holds NON-host members only - the host is the task's own
+    // path. A single member is the minimal multi-repo shape and must be
+    // enough to trigger the member call.
+    seedApp("off", {
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    const member: MemberPrLookup = { ...lookupWith("draft", 3), dir_name: "api", branch: "feat" };
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
+    await usePr.getState().refresh("ws1", true);
+    expect(ipc.taskMemberPrStatus).toHaveBeenCalledWith("ws1");
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+  });
+
+  it("skips the member call entirely for single-repo tasks", async () => {
+    seedApp();
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    await usePr.getState().refresh("ws1", true);
+    expect(ipc.taskMemberPrStatus).not.toHaveBeenCalled();
+    expect(usePr.getState().byTask["ws1"].members).toBeUndefined();
+  });
+
+  it("keeps the previous member list when the member call fails", async () => {
+    seedApp("off", {
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
+    await usePr.getState().refresh("ws1", true);
+    vi.mocked(ipc.taskMemberPrStatus).mockRejectedValue(new Error("gone"));
+    await usePr.getState().refresh("ws1", true);
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+  });
+
+  it("polls members but never the host PR for a main-checkout task", async () => {
+    seedApp("off", {
+      is_main_checkout: true,
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
+    await usePr.getState().refresh("ws1", true);
+    // The host repo is the user's live checkout - resolving its PR would
+    // persist a foreign identity and can auto-archive the task on an
+    // unrelated merge. Members still poll normally.
+    expect(ipc.taskPrStatus).not.toHaveBeenCalled();
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+  });
+
+  it("member rows still land when the host lookup fails", async () => {
+    seedApp("off", {
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    // Host and members can sit on different forges/CLIs - a dead host
+    // remote must not freeze the member rows.
+    vi.mocked(ipc.taskPrStatus).mockRejectedValue(new Error("network"));
+    const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
+    await usePr.getState().refresh("ws1", true);
+    expect(usePr.getState().byTask["ws1"].lookup).toBeNull();
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+  });
+
+  it("clears member rows when the task's members are removed", async () => {
+    seedApp("off", {
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([
+      { ...lookupWith("open"), dir_name: "api", branch: "feat" },
+    ]);
+    await usePr.getState().refresh("ws1", true);
+    // Edit Task removed the member - the next refresh must not keep
+    // showing rows for a repo the task no longer has.
+    useApp.setState(s => ({ tasks: s.tasks.map(t => ({ ...t, composition: [] })) }));
+    await usePr.getState().refresh("ws1", true);
+    expect(ipc.taskMemberPrStatus).toHaveBeenCalledTimes(1);
+    expect(usePr.getState().byTask["ws1"].members).toBeUndefined();
+  });
+
+  it("setLookup keeps the member list (PR create must not blank member rows)", async () => {
+    seedApp("off", {
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
+    await usePr.getState().refresh("ws1", true);
+    usePr.getState().setLookup("ws1", lookupWith("draft", 9));
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+  });
+
+  it("a setLookup landing mid-refresh wins over the stale snapshot", async () => {
+    seedApp();
+    let resolveStatus!: (v: PrLookup) => void;
+    vi.mocked(ipc.taskPrStatus).mockImplementation(() => new Promise<PrLookup>(r => { resolveStatus = r; }));
+    const pending = usePr.getState().refresh("ws1", true);
+    usePr.getState().setLookup("ws1", lookupWith("draft", 9));
+    resolveStatus(lookupWith("open", 7));
+    await pending;
+    expect(usePr.getState().byTask["ws1"].lookup?.pr?.number).toBe(9);
+  });
+
+  it("a mid-refresh setLookup keeps its lookup AND still gets the member list", async () => {
+    seedApp("off", {
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    let resolveStatus!: (v: PrLookup) => void;
+    vi.mocked(ipc.taskPrStatus).mockImplementation(() => new Promise<PrLookup>(r => { resolveStatus = r; }));
+    const member: MemberPrLookup = { ...lookupWith("open"), dir_name: "api", branch: "feat" };
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([member]);
+    const pending = usePr.getState().refresh("ws1", true);
+    usePr.getState().setLookup("ws1", lookupWith("draft", 9));
+    resolveStatus(lookupWith("open", 7));
+    await pending;
+    expect(usePr.getState().byTask["ws1"].lookup?.pr?.number).toBe(9);
+    expect(usePr.getState().byTask["ws1"].members).toEqual([member]);
+  });
+
+  it("a raced refresh fires no merge/open handlers on the stale snapshot", async () => {
+    seedApp(); // no on_pr_merge → "ask" mode toasts on open → merged
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    await usePr.getState().refresh("ws1", true);
+    let resolveStatus!: (v: PrLookup) => void;
+    vi.mocked(ipc.taskPrStatus).mockImplementation(() => new Promise<PrLookup>(r => { resolveStatus = r; }));
+    const pending = usePr.getState().refresh("ws1", true);
+    // A write lands mid-flight; the refresh then resolves to "merged".
+    // The transition handlers must compare the NEXT poll against this
+    // lookup, not fire on a superseded snapshot.
+    usePr.getState().setLookup("ws1", lookupWith("open"));
+    resolveStatus(lookupWith("merged"));
+    await pending;
+    expect(useUI.getState().toasts).toHaveLength(0);
+  });
+
+  it("prFocusEligible: a main checkout is eligible only via members", () => {
+    seedApp("off", {
+      is_main_checkout: true,
+      composition: [
+        { dir_name: "api", mode: "worktree", branch: "feat", path: "/x/api" },
+      ],
+    });
+    expect(prFocusEligible("ws1")).toBe(true);
+    seedApp("off", { is_main_checkout: true });
+    expect(prFocusEligible("ws1")).toBe(false);
   });
 });
 

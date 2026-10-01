@@ -242,6 +242,7 @@ export default {
     prOpenOn: "Open {{id}} on {{forge}}",
     prChecksFailing: "checks failing",
     prChecksPending: "checks running",
+    memberMore: "+{{count}} more",
   },
   activity: {
     windowTitle: "Activity",

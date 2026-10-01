@@ -1131,6 +1131,15 @@ export interface UpdateInfo {
   base: string;
 }
 
+/** Per-repo outcome of `task_git_update_all` — one per host/member repo. */
+export interface UpdateAllItem {
+  name: string;
+  /** Set when the update ran to a verdict (possibly a conflicted one). */
+  result: UpdateResult | null;
+  /** Set when the update could not start (no upstream, detached HEAD, …). */
+  error: string | null;
+}
+
 // ───────────────────────────── forge (PRs / MRs) ─────────────────────────────
 
 /** The forges termic talks to. "azure" is Azure DevOps Services (cloud only
@@ -1254,6 +1263,15 @@ export interface PrLookup {
   status: "ok" | "no-remote" | "unsupported-remote" | "cli-missing" | "cli-unauthed" | "error";
   message: string;
   pr: PrStatus | null;
+}
+
+/** A multi-repo task member's PR poll: the `PrLookup` payload plus which
+ *  member it belongs to. Only NON-host members are returned - the host's
+ *  worktree is the task's own `path`, covered by `task_pr_status`. Mirrors
+ *  `MemberPrLookup` in src-tauri/src/lib.rs. */
+export interface MemberPrLookup extends PrLookup {
+  dir_name: string;
+  branch: string;
 }
 
 export interface FileEntry {

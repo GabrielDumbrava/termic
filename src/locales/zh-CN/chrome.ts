@@ -242,6 +242,7 @@ export default {
     prOpenOn: "在 {{forge}} 上打开 {{id}}",
     prChecksFailing: "检查失败",
     prChecksPending: "检查进行中",
+    memberMore: "+{{count}} 个",
   },
   activity: {
     windowTitle: "活动",

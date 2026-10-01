@@ -15,7 +15,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveTask } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { usePr, watchTickNow } from "@/store/pr";
+import { usePr, watchTickNow, prRelevant } from "@/store/pr";
 import { useAlignedSpin } from "@/hooks/useAlignedSpin";
 import {
   taskGitStatus, taskRunScriptStream, repoConfigLoad, repoConfigLoadAt,
@@ -248,7 +248,7 @@ export function RightPanel() {
   const doRefresh = () => {
     refreshGit();
     setFileTreeReload(n => n + 1);
-    if (task && !task.is_main_checkout) {
+    if (task && prRelevant(task)) {
       usePr.getState().refresh(task.id, true);
       watchTickNow();
     }
