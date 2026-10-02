@@ -85,6 +85,23 @@ RUN npm install -g @earendil-works/pi-coding-agent
 # unavailable in the container; a failed build is all of them.
 RUN curl -fsSL https://dev.meta.ai/install.sh | bash \
     || echo "WARNING: muse install failed, Muse Code will be missing from this image"
+# https://cursor.com/cli - curl is the only install path Cursor publishes (no
+# npm package). The installer unpacks a versioned binary into
+# ~/.local/share/cursor-agent/versions/<ver>/ and symlinks ~/.local/bin/
+# cursor-agent (already on PATH above), plus a far-too-generic `agent`.
+# Termic always spawns `cursor-agent`, never `agent`, so the generic symlink
+# cannot shadow or be shadowed by anything.
+#
+# Its CONFIG dir is ~/.cursor, separate from that install tree, which is what
+# lets Docker mount the login without hiding the binary - the grok/devin
+# problem, avoided here by layout rather than by a special case. That
+# separation is also why `state_dirs("cursor")` lists ONLY `.cursor`.
+#
+# NON-FATAL, the same call muse and devin get: it pulls a large binary from a
+# second host, and a hard failure would break every Docker task for everyone,
+# including people who never use Cursor.
+RUN curl -fsSL https://cursor.com/install | bash \
+    || echo "WARNING: cursor-agent install failed, Cursor CLI will be missing from this image"
 # https://devin.ai/docs/cli - curl is the only install path Cognition
 # publishes (no npm package). The binary lands in ~/.local/bin (already on
 # PATH above) and its real assets under ~/.local/share/devin, which is also

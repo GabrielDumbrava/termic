@@ -226,6 +226,29 @@ pub fn login_store(base_id: &str) -> Option<LoginStore> {
         // PATH, which is what lets two accounts be live at once.
         "claude" => Some(ConfigDir { env: "CLAUDE_CONFIG_DIR" }),
         "codex" => Some(ConfigDir { env: "CODEX_HOME" }),
+        // Measured on cursor-agent 2026.10.01-e373342, three ways, because a
+        // signed-out machine cannot show a login MOVING and that is exactly
+        // the case §1b warns reads as a pass.
+        //
+        // 1. `CURSOR_CONFIG_DIR=$(mktemp -d) cursor-agent status` wrote
+        //    `cli-config.json` directly INTO that dir, not into a child, which
+        //    is what makes this ConfigDir rather than ParentDir. (`HOME` and
+        //    `XDG_CONFIG_HOME` both produce a child: `$HOME/.cursor`,
+        //    `$XDG_CONFIG_HOME/cursor`.)
+        // 2. The bundled resolver reads
+        //    `process.env.CURSOR_CONFIG_DIR || process.env.XDG_CONFIG_HOME ||
+        //    <home>/.cursor`, so the variable is first, not a fallback.
+        // 3. The credential is a FILE in that dir (`auth.json`), not a keyring
+        //    item: the install greps zero for `find-generic-password`,
+        //    `SecKeychain` and `keytar`. That is the question §1b says the
+        //    directory probe cannot answer on its own, and it is what makes a
+        //    second account actually separate here rather than two settings
+        //    files over one shared token.
+        //
+        // The binary lives elsewhere (`~/.local/share/cursor-agent`), so this
+        // is not the SelfHostingDir trap: Docker mounting a volume over the
+        // config dir cannot shadow the agent's own executable.
+        "cursor" => Some(ConfigDir { env: "CURSOR_CONFIG_DIR" }),
         // NOT SUPPORTED, and this is a correction rather than an omission.
         //
         // copilot keeps its credential in the OS keyring under a FIXED service
@@ -482,6 +505,14 @@ pub fn state_dirs(agent_id: &str) -> &'static [&'static str] {
         "claude" => &[".claude"],
         "codex" => &[".codex"],
         "copilot" => &[".copilot"],
+        // The CONFIG dir only, deliberately. Cursor's versioned binary lives
+        // in `.local/share/cursor-agent`, and this table is what Docker mounts
+        // from the host: listing it would shadow the cursor-agent the image
+        // installed, which is the exact failure that makes grok and devin
+        // permanent Docker exceptions. Seatbelt gets the binary tree from the
+        // registry's `sandbox_allowed_paths` instead, which Docker does not
+        // read. One dir here is what lets cursor be a KNOWN_SAFE_AGENT.
+        "cursor" => &[".cursor"],
         // agy shares the `.gemini` config shape (Gemini-family CLI) plus
         // its own `.antigravity`.
         "agy" | "antigravity" => &[".gemini", ".antigravity"],

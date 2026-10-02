@@ -114,6 +114,16 @@ export function CustomCommandIcon({ className }: Props) {
   );
 }
 
+// Cursor CLI (`cursor-agent`). Cursor's cube mark, from the same
+// lobehub/icons-static-svg source as the rest of this file (cursor.svg).
+export function CursorIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={cn("inline-block", className)} aria-hidden>
+      <path d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"/>
+    </svg>
+  );
+}
+
 // Muse Code (`muse`) — Meta's terminal coding agent, running Muse Spark.
 // Meta's infinity-loop corporate mark, from the same lobehub/icons-static-svg
 // source as the rest of this file (meta.svg): Muse Code ships no standalone
@@ -149,6 +159,7 @@ export function CliIcon({ cli, className }: { cli: string; className?: string })
     case "opencode": return <OpencodeIcon className={className} />;
     case "pi":       return <PiIcon className={className} />;
     case "muse":     return <MuseIcon className={className} />;
+    case "cursor":   return <CursorIcon className={className} />;
     case "devin":    return <DevinIcon className={className} />;
     case "copilot": return <CopilotIcon className={className} />;
     case "shell":  return <ShellIcon className={className} />;
@@ -177,6 +188,7 @@ export const CLI_BRAND_COLOR: Record<string, string> = {
   opencode: "text-[var(--color-cli-opencode)]",
   pi:       "text-[var(--color-cli-pi)]",
   muse:     "text-[var(--color-cli-muse)]",
+  cursor:   "text-[var(--color-cli-cursor)]",
   devin:    "text-[var(--color-cli-devin)]",
 };
 
@@ -201,5 +213,6 @@ export const CLI_LABEL: Record<string, string> = {
   opencode: "opencode",
   pi:       "pi",
   muse:     "Muse Code",
+  cursor:   "Cursor CLI",
   devin:    "Devin",
 };

@@ -21901,6 +21901,86 @@ fn default_agents() -> Vec<Agent> {
             }),
         },
         Agent {
+            // Cursor CLI (cursor-agent). Installed by cursor.com/install into
+            // ~/.local/share/cursor-agent/versions/<ver>/, symlinked as both
+            // `cursor-agent` and the far too generic `agent` in ~/.local/bin.
+            // We spawn the specific name, never `agent`.
+            //
+            // Measured on 2026.10.01-e373342. Everything below that could be
+            // checked without an account was; what could not is EMPTY rather
+            // than guessed, and said so.
+            id: "cursor".into(),
+            display_name: "cursor".into(),
+            command: "cursor-agent".into(),
+            // No base args. Cursor's own approval prompt is on by default and
+            // stays that way, same call as muse: `--trust` and `--force` are
+            // the user's to make, through the YOLO toggle below.
+            args: vec![],
+            icon_id: "cursor".into(),
+            color: "#6b7280".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                // `--yolo` is documented as an alias for `--force`
+                // ("Run Everything"). Measured as PARSING on 2026.10.01: it
+                // reaches the auth check rather than being rejected as an
+                // unknown option, which is as far as a signed-out probe goes.
+                yolo_args: vec!["--yolo".into()],
+                // No slash command measured for a live approval-mode switch.
+                runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
+                // Cwd-based resume. Measured signed-out: `--continue` in a
+                // fresh repo prints "No previous chats found." and exits,
+                // without reaching the auth check, so the lookup really is
+                // local and scoped to the directory.
+                resume_args: vec!["--continue".into()],
+                // EMPTY, and deliberately. Cursor mints an id through a
+                // separate `create-chat` command rather than accepting one at
+                // launch, which is not the shape `session_id_args` describes,
+                // and `--resume <id>` could only be verified as far as the
+                // auth check on a signed-out machine. Per
+                // docs/adding-an-agent.md §2, empty is the honest default
+                // until someone measures it with an account: a repo-root task
+                // starts fresh, which is the same behaviour every unmeasured
+                // agent has had.
+                session_id_args: vec![],
+                resume_id_args: vec![],
+                // `--resume` with no id is documented as the session picker.
+                // Unmeasured for the three things §2 requires (that it opens
+                // after name_args, that picking REPORTS the id, that leaving
+                // it exits), so it stays empty.
+                resume_picker_args: vec![],
+                name_args: vec![],
+                signals: AgentSignals::default(),
+                match_output: false,
+            },
+            env: std::collections::HashMap::new(),
+            docker_env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                // Config, auth.json and cli-config.json. The resolver is
+                // CURSOR_CONFIG_DIR, then XDG_CONFIG_HOME/cursor, then this.
+                "$HOME/.cursor".into(),
+                // Its own install tree: the versioned binary it re-execs and
+                // the directory it self-updates into. Separate from the config
+                // dir above, which is what makes the ConfigDir login shape
+                // safe for Docker (nothing mounts over the binary).
+                "$HOME/.local/share/cursor-agent".into(),
+            ],
+            sandbox_allowed_hosts: vec![],
+            // Unmeasured: no work-state signals have been CAPTURED for cursor
+            // (docs/adding-an-agent.md §3), so it reports nothing and the tab
+            // relies on the shared heuristics, like every agent before its
+            // hooks were written. False would claim we know it cannot.
+            work_done: true,
+            accounts: Vec::new(),
+            default_account: None,
+            adopted_account: None,
+            auto_switch_account: false,
+            extends: None,
+            kind: "agent".into(),
+            post_launch_capture: None,
+        },
+        Agent {
             // Devin (Cognition). Measured against a live 3000.10.21, not the
             // help text:
             //   --permission-mode dangerous  auto-approves every tool; the

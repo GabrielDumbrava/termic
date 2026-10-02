@@ -215,6 +215,22 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
   // exists, but `--session-id` is an `exec` (headless) flag that the TUI
   // rejects outright, so nothing can mint a termic-owned session for an
   // interactive spawn. Do not "fix" this into claude's two-flag shape.
+  cursor: {
+    command: "cursor-agent", args: [],
+    capabilities: {
+      // Alias for --force ("Run Everything"). Parses on 2026.10.01.
+      yolo_args: ["--yolo"],
+      runtime_yolo_command: "",
+      // Cwd-scoped. Measured signed-out: prints "No previous chats found."
+      // in a fresh repo without reaching the auth check.
+      resume_args: ["--continue"],
+      // No id-based resume until someone measures it with an account:
+      // cursor mints through a separate `create-chat` command rather than
+      // accepting an id at launch, so neither the mint nor the capture shape
+      // is established. See the Rust registry entry.
+      resume_id_args: [],
+    },
+  },
   muse: {
     command: "muse", args: [],
     capabilities: {

@@ -60,6 +60,14 @@ const AGENTS = [
   // it resolved, so an empty relocated root showing both means the login
   // followed. Measured on 3000.10.21.
   { id: "devin",    env: "XDG_DATA_HOME",     probe: ["auth", "status"],                   signedOut: /not logged in/i },
+  // `cursor-agent status` prints "Not logged in" for an empty relocated dir.
+  // The credential is a FILE in that dir (auth.json) rather than a keyring
+  // item - the install greps zero for find-generic-password / SecKeychain /
+  // keytar - so unlike copilot and muse, a signed-out answer here really does
+  // mean the login followed. Measured on 2026.10.01-e373342, signed out, so
+  // what this probe has NOT yet seen is a signed-in install going signed-out;
+  // that is the run that would confirm it end to end.
+  { id: "cursor",   env: "CURSOR_CONFIG_DIR", probe: ["status"],                           signedOut: /not logged in/i },
 ];
 
 const TIMEOUT_MS = 45_000;

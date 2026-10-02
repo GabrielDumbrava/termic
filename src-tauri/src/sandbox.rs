@@ -1680,6 +1680,19 @@ pub fn render_filter_for(task: &Task, agent_override: Option<&str>) -> String {
         // `lookaside.facebook.com` is the launcher's binary download host
         // (MUSE_DOWNLOAD_HOST) — a blocked self-update is what a stale
         // version looks like from the outside.
+        // Measured off the installed bundle (2026.10.01-e373342) rather than
+        // from docs: `api2.cursor.sh` is the default `--endpoint`, `repo42`
+        // is its repo service, and `downloads.cursor.com` is where the
+        // launcher self-updates from. The wildcards cover the staging hosts
+        // in the same bundle (`staging.cursor.sh`, `dev-staging.cursor.sh`)
+        // without listing each, the same shape every arm here uses.
+        "cursor" => hosts.extend([
+            r"^api2\.cursor\.sh$".into(),
+            r"^repo42\.cursor\.sh$".into(),
+            r"^.+\.cursor\.sh$".into(),
+            r"^cursor\.com$".into(),
+            r"^.+\.cursor\.com$".into(),
+        ]),
         "muse" => hosts.extend([
             r"^api\.meta\.ai$".into(),
             r"^dev\.meta\.ai$".into(),
