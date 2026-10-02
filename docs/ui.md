@@ -882,7 +882,15 @@ Standard macOS app semantics, added as a prerequisite for the CLI's windowless d
   Settings › General exposes all three as a select. It has to include "Ask me each time", because ticking "Don't ask again" in the prompt is otherwise a one-way door.
 
   `CloseDialog` is deliberately NOT built on `ConfirmDialog`, which folds dismissal into cancel — whichever action sat on cancel would also fire on Escape. It has three outcomes instead, and **dismissal cancels the close entirely** (window stays as it was), so Esc can neither quit nor be the only route to quitting.
-- **Quit** (⌘Q or the menu-bar item) → the only teardown path: `RunEvent::Exit` → `cleanup_children` SIGKILLs every PTY and script group.
+- **Quit** (⌘Q or the menu-bar item) → the only teardown path: `RunEvent::Exit` → `cleanup_children` SIGKILLs every PTY and script group. It **asks first when quitting would interrupt work**, the way a terminal asks before closing a window with a job running.
+
+  The bar is "you are about to lose work", not "something is running". No live AGENT pty, no prompt, which is the common case of a window full of finished tasks. Live but idle agents get no prompt either: quitting an idle agent loses a process that was doing nothing. A **working** agent, or a **queued message** that would die unsent, gets one. `quit_warning` in `lib.rs` is that rule as a pure function, and the cases that matter are the ones where it stays quiet.
+
+  "Is it busy" comes from the work-state snapshot the WEBVIEW pushes (the same cache the CLI's `wait` reads). When that is missing or stale, the prompt still fires and says it cannot tell: there are processes about to be SIGKILLed and no evidence they are idle, and "I cannot tell" must not resolve silently in favour of destroying the work.
+
+  The alert is NATIVE, not a webview dialog, because the menu-bar Quit happens in windowless mode where there is no window to render one in. It is the only Rust-side `tauri_plugin_dialog` caller, so its copy is English like every other Rust-side message.
+
+  All three user-initiated quits funnel through `confirm_quit_or_exit`: ⌘Q arrives as `ExitRequested` with no code, while the menu-bar Quit and the close prompt's Quit call `app.exit(0)` and so arrive WITH one, indistinguishable from the exit the confirm itself requests. One entry point is what stops the check applying to only one of the three.
 - **Dock icon** click on a windowless app reopens it (`RunEvent::Reopen`). Unhandled before, but moot then: closing the window quit the app outright, so there was nothing to reopen.
 
 This is a deliberate behavior CHANGE, not a bug fix. Previously closing the last window quit Termic and killed every running agent (tao destroys the window → Tauri fires `ExitRequested` → unprevented → exit). The teardown comment in `lib.rs` claimed the app survived a last-window close; that was wrong, verified empirically.

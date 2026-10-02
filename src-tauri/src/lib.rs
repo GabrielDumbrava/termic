@@ -23755,7 +23755,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 "tray_show" => leave_windowless(app),
                 // The user-facing quit besides ⌘Q. app.exit drives
                 // RunEvent::Exit → cleanup_children, so PTYs die with us.
-                "tray_quit" => app.exit(0),
+                // Asks first if an agent is mid-turn, like ⌘Q. Returns true
+                // when a prompt is standing, and the exit then comes from its
+                // callback instead.
+                "tray_quit" => { if !confirm_quit_or_exit(app) { app.exit(0); } }
                 _ => {}
             }
         })
@@ -23881,7 +23884,7 @@ fn window_close_choice(app: AppHandle, action: String, remember: bool) -> Result
         "menubar" => enter_windowless(&app),
         // The user asked for teardown: RunEvent::Exit -> cleanup_children
         // SIGKILLs every PTY, so agents do not outlive the app.
-        "quit" => app.exit(0),
+        "quit" => { if !confirm_quit_or_exit(&app) { app.exit(0); } }
         _ => {}
     }
     Ok(())
@@ -24777,6 +24780,28 @@ pub fn run() {
             if matches!(event, tauri::RunEvent::Exit) {
                 cleanup_children(app);
             }
+            // ⌘Q / tray Quit / the close prompt's Quit all land here first.
+            // Quit is the ONLY thing that tears the app down, so it is the only
+            // place that can ask before killing an agent mid-turn - the way a
+            // terminal asks before closing a window with a job running.
+            //
+            // The prompt is native rather than a webview dialog on purpose:
+            // tray Quit happens in windowless mode, where there is no window to
+            // render one in, and a confirm nobody can see would be worse than
+            // none.
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+                // `code` is set for a programmatic exit (app.exit(n)). Only a
+                // USER-initiated quit is worth a question, and this is also
+                // what stops the exit we trigger ourselves below from being
+                // intercepted a second time.
+                // `code` is None for ⌘Q and the window manager; Some for an
+                // `app.exit(n)` we asked for. The other two quit paths call
+                // confirm_quit_or_exit themselves BEFORE exiting, so by the
+                // time a coded exit reaches here the question has been put.
+                if code.is_none() && confirm_quit_or_exit(app) {
+                    api.prevent_exit();
+                }
+            }
             // Dock-icon click on a windowless app (applicationShouldHandle-
             // Reopen). Unhandled before, but moot then: closing the window
             // quit the app outright, so there was nothing to reopen.
@@ -24796,6 +24821,160 @@ pub fn run() {
 /// PTY children) so quitting the app doesn't leave dev servers or
 /// agent processes running. Also reverts any active spotlight sessions
 /// so main is left clean.
+/// Ask before quitting, if quitting would interrupt work; quit otherwise.
+///
+/// Every user-initiated quit funnels through here: ⌘Q (via `ExitRequested`),
+/// the tray's Quit and the close prompt's Quit. The last two call
+/// `app.exit(0)`, which arrives at `ExitRequested` with a CODE and so cannot
+/// be told apart from the exit this function itself requests. Sharing one
+/// entry point is what stops the check from silently applying to only one of
+/// the three.
+///
+/// Returns true when the quit was deferred behind a prompt, so the caller
+/// knows not to exit itself.
+fn confirm_quit_or_exit(app: &tauri::AppHandle) -> bool {
+    if QUIT_CONFIRMED.load(Ordering::SeqCst) { return false; }
+    let snap = cli_server::global_agent_cache().snapshot();
+    let fresh = snap.age.map(|a| a <= QUIT_STATE_FRESH).unwrap_or(false);
+    let Some(w) = quit_warning(&live_agent_tasks(app), &snap.states, fresh) else {
+        return false;
+    };
+    let msg = quit_warning_message(&w);
+    let handle = app.clone();
+    // Non-blocking: the callback runs on the main thread, and blocking the
+    // event loop here would freeze the alert it is trying to show.
+    use tauri_plugin_dialog::DialogExt;
+    handle.clone().dialog()
+        .message(msg)
+        .title("Quit Termic?")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+            "Quit".into(), "Cancel".into(),
+        ))
+        .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
+        .show(move |quit| {
+            if quit {
+                QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+                handle.exit(0);
+            }
+        });
+    true
+}
+
+/// Tasks that have at least one live AGENT pty.
+///
+/// Agent kind only: an aux shell, a run script or a setup tab is not somebody's
+/// work in progress, and counting them would mean a prompt for every task that
+/// merely has a terminal open.
+/// Set once the user has answered "Quit" so the exit we then request is not
+/// intercepted again. Never reset: there is no "after" to reset it in.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+fn live_agent_tasks(app: &tauri::AppHandle) -> std::collections::BTreeSet<String> {
+    use tauri::Manager;
+    let mut out = std::collections::BTreeSet::new();
+    if let Some(mgr) = app.try_state::<PtyManager>() {
+        let inner = mgr.inner.lock();
+        for slot in inner.values() {
+            let is_agent = slot.role.as_ref().map(|r| r.kind == "agent").unwrap_or(false);
+            if !is_agent { continue; }
+            if slot.child_pid.is_none() { continue; }
+            if let Some(id) = slot.task_id.as_ref() { out.insert(id.clone()); }
+        }
+    }
+    out
+}
+
+/// How old a webview push may be and still describe what is running now.
+/// Generous: the push is driven by state CHANGES, so a room full of idle
+/// agents legitimately goes quiet for a long time.
+const QUIT_STATE_FRESH: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// What quitting right now would interrupt.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QuitWarning {
+    /// Tasks with a live agent PTY. Every one of these is about to be
+    /// SIGKILLed by `cleanup_children`.
+    pub live: usize,
+    /// Of those, how many are mid-turn.
+    pub working: usize,
+    /// Messages queued behind an agent, which die with it unsent.
+    pub queued: usize,
+    /// The work state is a snapshot the WEBVIEW pushes. When it is missing or
+    /// stale we know processes are alive but not whether they are busy, and
+    /// the prompt says so rather than inventing a number.
+    pub known: bool,
+}
+
+/// Should ⌘Q (or the tray's Quit) ask first?
+///
+/// `None` means quit silently. The bar for interrupting someone who asked to
+/// quit is "you are about to lose work", not "something is running": an app
+/// that always asks trains the reflex that dismisses the one prompt that
+/// mattered.
+///
+/// So: no live agent PTY, nothing to lose, never ask. That is the "all are
+/// asleep" case, and it covers the common one of a window full of tasks whose
+/// agents have all finished.
+///
+/// With live PTYs it turns on what the webview last told us. Idle agents are
+/// still not worth a prompt, because quitting an idle agent loses a process
+/// that was doing nothing. A working agent or a queued message IS worth one.
+///
+/// A cache that never arrived or has gone stale is the interesting case, and
+/// it asks. We are about to SIGKILL processes we can see, with no evidence
+/// they are idle, and "I cannot tell" is the one answer that must not be
+/// silently resolved in favour of destroying the work.
+pub(crate) fn quit_warning(
+    live_agent_tasks: &std::collections::BTreeSet<String>,
+    states: &std::collections::HashMap<String, cli_server::TaskAgentState>,
+    cache_fresh: bool,
+) -> Option<QuitWarning> {
+    if live_agent_tasks.is_empty() { return None; }
+    if !cache_fresh {
+        return Some(QuitWarning {
+            live: live_agent_tasks.len(), working: 0, queued: 0, known: false,
+        });
+    }
+    let mut working = 0usize;
+    let mut queued = 0usize;
+    for id in live_agent_tasks {
+        if let Some(st) = states.get(id) {
+            if st.state == "working" { working += 1; }
+            queued += st.queued as usize;
+        }
+    }
+    if working == 0 && queued == 0 { return None; }
+    Some(QuitWarning { live: live_agent_tasks.len(), working, queued, known: true })
+}
+
+/// The alert's body. Separate from the decision so the wording is testable
+/// without a window, and so plurals cannot drift from the numbers.
+pub(crate) fn quit_warning_message(w: &QuitWarning) -> String {
+    let tasks = if w.live == 1 { "1 task".to_string() } else { format!("{} tasks", w.live) };
+    if !w.known {
+        return format!(
+            "{tasks} still have agents running, and Termic cannot tell whether they are busy. \
+             Quitting stops them.",
+        );
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if w.working > 0 {
+        parts.push(if w.working == 1 {
+            "1 agent is working".to_string()
+        } else {
+            format!("{} agents are working", w.working)
+        });
+    }
+    if w.queued > 0 {
+        parts.push(if w.queued == 1 {
+            "1 queued message has not been sent".to_string()
+        } else {
+            format!("{} queued messages have not been sent", w.queued)
+        });
+    }
+    format!("{} in {tasks}. Quitting stops them.", parts.join(", "))
+}
+
 fn cleanup_children(app: &tauri::AppHandle) {
     use tauri::Manager;
     // 0a. Docker containers — `docker rm -f` every termic-labeled container
@@ -25097,6 +25276,110 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
 
 #[cfg(test)]
 mod tests {
+
+    // ───────── ⌘Q asks before it kills work ─────────
+    //
+    // The bar is "you are about to lose work", not "something is running". An
+    // app that always asks trains the reflex that dismisses the one prompt
+    // that mattered, so every case here is really about NOT asking.
+
+    use std::collections::{BTreeSet, HashMap};
+
+    fn tasks(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+    fn state(s: &str, queued: u32) -> crate::cli_server::TaskAgentState {
+        crate::cli_server::TaskAgentState {
+            state: s.into(), tabs: 1, queued, capable: true,
+            tab_states: vec![], hydrated: true,
+        }
+    }
+
+    #[test]
+    fn nothing_running_quits_without_a_word() {
+        // The "all asleep" case the whole feature turns on.
+        assert_eq!(super::quit_warning(&tasks(&[]), &HashMap::new(), true), None);
+    }
+
+    #[test]
+    fn idle_agents_are_not_worth_a_prompt() {
+        // A window full of finished tasks. Their PTYs are alive, but quitting
+        // loses nothing anybody is waiting on.
+        let st = HashMap::from([
+            ("a".to_string(), state("idle", 0)),
+            ("b".to_string(), state("done", 0)),
+            ("c".to_string(), state("waiting", 0)),
+        ]);
+        assert_eq!(super::quit_warning(&tasks(&["a", "b", "c"]), &st, true), None);
+    }
+
+    #[test]
+    fn a_working_agent_asks() {
+        let st = HashMap::from([
+            ("a".to_string(), state("working", 0)),
+            ("b".to_string(), state("idle", 0)),
+        ]);
+        let w = super::quit_warning(&tasks(&["a", "b"]), &st, true).expect("asks");
+        assert_eq!((w.live, w.working, w.queued, w.known), (2, 1, 0, true));
+    }
+
+    #[test]
+    fn a_queued_message_asks_even_though_the_agent_is_idle() {
+        // The queue drains on work-done. Quitting loses the message unsent,
+        // which is work the user typed and will not get back.
+        let st = HashMap::from([("a".to_string(), state("idle", 2))]);
+        let w = super::quit_warning(&tasks(&["a"]), &st, true).expect("asks");
+        assert_eq!((w.working, w.queued), (0, 2));
+    }
+
+    #[test]
+    fn an_unknown_work_state_asks_rather_than_guessing() {
+        // Live PTYs we are about to SIGKILL, and no evidence they are idle.
+        // "I cannot tell" must not resolve silently in favour of destroying
+        // the work.
+        let w = super::quit_warning(&tasks(&["a"]), &HashMap::new(), false).expect("asks");
+        assert!(!w.known);
+        assert_eq!(w.live, 1);
+    }
+
+    #[test]
+    fn a_stale_cache_with_nothing_running_still_quits_silently() {
+        // Staleness only matters when there is something to lose. A headless
+        // launch that never pushed state must not prompt on its way out.
+        assert_eq!(super::quit_warning(&tasks(&[]), &HashMap::new(), false), None);
+    }
+
+    #[test]
+    fn a_task_with_no_pushed_state_counts_as_live_but_not_busy() {
+        // Known-fresh cache that simply has no row for this task: it is not
+        // working and has nothing queued, so it reads as asleep.
+        let st = HashMap::from([("other".to_string(), state("working", 0))]);
+        assert_eq!(super::quit_warning(&tasks(&["a"]), &st, true), None);
+    }
+
+    #[test]
+    fn the_message_counts_what_it_found() {
+        let one = super::QuitWarning { live: 1, working: 1, queued: 0, known: true };
+        assert_eq!(super::quit_warning_message(&one),
+            "1 agent is working in 1 task. Quitting stops them.");
+        let many = super::QuitWarning { live: 3, working: 2, queued: 4, known: true };
+        assert_eq!(super::quit_warning_message(&many),
+            "2 agents are working, 4 queued messages have not been sent in 3 tasks. Quitting stops them.");
+        let queued_only = super::QuitWarning { live: 2, working: 0, queued: 1, known: true };
+        assert_eq!(super::quit_warning_message(&queued_only),
+            "1 queued message has not been sent in 2 tasks. Quitting stops them.");
+    }
+
+    #[test]
+    fn the_unknown_message_does_not_invent_a_number() {
+        // It says what it knows (processes are running) and admits what it
+        // does not, rather than claiming "0 agents working".
+        let w = super::QuitWarning { live: 2, working: 0, queued: 0, known: false };
+        let m = super::quit_warning_message(&w);
+        assert!(m.contains("2 tasks"), "{m}");
+        assert!(m.contains("cannot tell"), "{m}");
+        assert!(!m.contains("0 "), "{m}");
+    }
 
     // ───────── the board's cheap change summary (task_diff_stat) ─────────
     //

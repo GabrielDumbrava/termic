@@ -4163,7 +4163,7 @@ impl AgentCache {
     }
 }
 
-fn global_agent_cache() -> &'static AgentCache {
+pub(crate) fn global_agent_cache() -> &'static AgentCache {
     static CACHE: OnceLock<AgentCache> = OnceLock::new();
     CACHE.get_or_init(AgentCache::new)
 }
