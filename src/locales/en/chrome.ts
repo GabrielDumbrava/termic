@@ -326,6 +326,8 @@ export default {
     cadenceDaily: "Daily at {{time}}",
     cadenceWeekdays: "Weekdays at {{time}}",
     cadenceWeekly: "Every {{day}} at {{time}}",
+    cadenceOnce: "Once on {{date}} at {{time}}",
+    done: "Done",
     next: "Next {{when}}",
     paused: "Paused",
     enabledTip: "Run on schedule",
