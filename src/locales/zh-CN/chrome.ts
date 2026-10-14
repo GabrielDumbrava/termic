@@ -231,7 +231,9 @@ export default {
   },
   taskLocation: {
     main: "主检出",
+    mainBranch: "主检出分支：{{branch}}",
     worktree: "工作树",
+    worktreeBranch: "工作树分支：{{branch}}",
   },
   themePicker: {
     autoBadge: "自动",

@@ -41,6 +41,7 @@ import { agentDisplayName, workDoneCapable } from "@/lib/agents";
 import { effectiveSandboxMode, isSandboxEnforced, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
+import { mainCheckoutBranchState } from "@/lib/taskLocation";
 import { taskLabel, useTaskLabel } from "@/lib/taskLabel";
 import { TaskLabelText } from "@/components/TaskLabelText";
 import { useProfilesSync } from "@/components/ProfileChip";
@@ -2954,6 +2955,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const labelIsBranch = label !== w.name;
 
   const project = useApp(s => s.projects.find(p => p.id === w.project_id) ?? null);
+  const mainCheckoutBranch = w.is_main_checkout
+    ? mainCheckoutBranchState(w.branch, project?.base_branch, project?.remote)
+    : null;
   const spotlightTaskId = useApp(s => s.spotlightTaskId[w.project_id] ?? null);
   const isSpotlighted = spotlightTaskId === w.id;
   // Spotlight is worktree-only: non-repo-root, single-repo, git, spotlight_enabled.
@@ -3296,9 +3300,39 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 title={labelIsBranch ? t("taskNameTitle", { name: w.name }) : undefined}
                 className={cn("font-medium", labelIsBranch && "font-mono text-[12px]")}
               />
-              {/* Which locations get a glyph is the taskLocationIcon pref
+              {/* Which locations get a cue is the taskLocationIcon pref
                   (docs/ui.md "One glyph per meaning"). */}
-              {showLocation && <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />}
+              {showLocation && (w.is_main_checkout ? (
+                mainCheckoutBranch?.kind === "different" ? (
+                  <>
+                    <TaskLocationIcon isMainCheckout branch={mainCheckoutBranch.branch} size="h-3.5 w-3.5" />
+                    <span
+                      data-testid="task-main-branch"
+                      data-branch={mainCheckoutBranch.branch}
+                      title={tChrome("taskLocation.mainBranch", { branch: mainCheckoutBranch.branch })}
+                      className="min-w-0 truncate font-mono text-[11px] text-[var(--color-fg-dim)]"
+                    >
+                      · {mainCheckoutBranch.branch}
+                    </span>
+                  </>
+                ) : mainCheckoutBranch?.kind === "unknown" ? (
+                  <TaskLocationIcon isMainCheckout branch={w.branch} size="h-3.5 w-3.5" />
+                ) : null
+              ) : (
+                <>
+                  <TaskLocationIcon isMainCheckout={false} branch={w.branch} size="h-3.5 w-3.5" />
+                  {w.branch && w.branch !== "HEAD" && !labelIsBranch ? (
+                    <span
+                      data-testid="task-worktree-branch"
+                      data-branch={w.branch}
+                      title={tChrome("taskLocation.worktreeBranch", { branch: w.branch })}
+                      className="min-w-0 truncate font-mono text-[11px] text-[var(--color-fg-dim)]"
+                    >
+                      · {w.branch}
+                    </span>
+                  ) : null}
+                </>
+              ))}
               {w.spawned_by && <SpawnedFromMark task={w} />}
               {/* Mode (sandbox, docker, dangerous YOLO; absent when there is
                   none), inline with the name's other marks. It had a trailing
@@ -4055,18 +4089,16 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The glyphs a `taskLocationIcon` choice puts on task rows, as a sample
- *  beside the option that picks it: link for the main checkout, branch for a
- *  worktree, both split by a hairline. A drawn rule and not a "/" character,
- *  so the row's text stays its label alone (specs and screen readers match on
- *  it). "none" draws nothing, which is the sample. */
+/** The location cues a `taskLocationIcon` choice puts on task rows, as a
+ *  sample beside the option that picks it: a non-default main-branch label,
+ *  the worktree marker, or both split by a hairline. "none" draws nothing. */
 function TaskLocationSamples({ value }: { value: "both" | "main" | "worktree" | "none" }) {
   if (value === "none") return null;
   return (
     <span data-testid="task-location-samples" data-value={value} className="flex shrink-0 items-center gap-1.5">
-      {value !== "worktree" && <TaskLocationIcon isMainCheckout size="h-3.5 w-3.5" />}
+      {value !== "worktree" && <span aria-hidden className="font-mono text-[10px] text-[var(--color-fg-faint)]">topic</span>}
       {value === "both" && <span aria-hidden className="h-3 w-px bg-[var(--color-border)]" />}
-      {value !== "main" && <TaskLocationIcon isMainCheckout={false} size="h-3.5 w-3.5" />}
+      {value !== "main" && <TaskLocationIcon isMainCheckout={false} branch="topic" size="h-3.5 w-3.5" />}
     </span>
   );
 }

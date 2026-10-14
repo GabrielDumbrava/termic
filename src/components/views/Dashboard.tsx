@@ -371,7 +371,7 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
           <span className="min-w-0 shrink font-mono text-[12px] text-[var(--color-fg-dim)] truncate">{w.branch}</span>
         </>
       )}
-      <TaskLocationIcon isMainCheckout={w.is_main_checkout} className="self-center" />
+      <TaskLocationIcon isMainCheckout={w.is_main_checkout} branch={w.branch} className="self-center" />
       {/* No group rail here, so unlike the sidebar EVERY spawned child is
           marked — the sidebar suppresses the mark for a child inside its
           parent's drawn group, whose rail already says it. */}

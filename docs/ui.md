@@ -292,12 +292,15 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   moved again on a row with no PR. Do not put an optional mark in the
   trailing columns. Marks beside the name are ragged by nature, so there
   is nothing there to align.
-- **Location glyphs are a choice.** The tree draws a link for the main
-  checkout and a branch for a worktree by default; the `taskLocationIcon`
-  pref (Settings > Appearance > Sidebar, and a submenu in the Projects
-  list options) narrows that to main checkout only, worktree only, or
-  none, since whichever one you mostly use is noise. Other surfaces (board
-  cards, the dashboard, the breadcrumb) always show both.
+- **Location cues are a choice.** A sidebar worktree gets a branch icon and
+  its branch inline; the icon tooltip names the branch too. A main-checkout
+  task on the project's base branch gets no extra mark, while a different
+  branch gets a link icon and its name inline. The branch is the snapshot read
+  when that task opens; the sidebar does not poll Git. The `taskLocationIcon`
+  pref (Settings > Appearance > Sidebar, and a submenu in the Projects list
+  options) selects the main-checkout cue, the worktree cue, both, or none.
+  Other surfaces (board cards, the dashboard, History, and the breadcrumb)
+  keep both location icons, with branch-aware tooltips.
 - **The PR mark is a choice too.** A task row with a PR draws its number
   (`#367`) by default, in the state's colour; the `taskPrBadge` pref
   (Settings > Appearance > Sidebar, and a submenu in the Projects list
