@@ -16,9 +16,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import {
-  PEER_CHANGED_EVENT, openPath, peerPair, peerPairRequest, peerRefresh, peerRename, peerSetGrant, peerSetName, peerSetNote, peerStatus, peerUnpair,
+  PEER_CHANGED_EVENT, mcpInstallClient, mcpStatus, openPath, peerPair, peerPairRequest, peerRefresh, peerRename, peerSetGrant, peerSetName, peerSetNote, peerStatus, peerUnpair,
 } from "@/lib/ipc";
-import type { NearbyView, PeerGrant, PeerStatus, PeerView } from "@/lib/types";
+import type { McpStatus, NearbyView, PeerGrant, PeerStatus, PeerView } from "@/lib/types";
 import { PeerRoleChips } from "./PeerRoles";
 import { useUI } from "@/store/ui";
 import { Button } from "@/components/ui/Button";
@@ -26,7 +26,7 @@ import { Input } from "@/components/ui/Input";
 import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
 import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/Tooltip";
-import { Info, RefreshCw } from "lucide-react";
+import { Check, Info, RefreshCw, TriangleAlert } from "lucide-react";
 
 /** peer_status, kept fresh by the backend's change event while mounted. */
 function usePeerStatus(): [PeerStatus | null, () => void] {
@@ -96,6 +96,15 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
   const [addressAsked, setAddressAsked] = useState<string | null>(null);
   const [addressCode, setAddressCode] = useState("");
   const [pairing, setPairing] = useState<string | null>(null);
+  // Whether Claude Code or Codex has Termic's MCP server. Pairing is
+  // useless without it (an agent reaches the other computer only through
+  // the peer tools), so Pair stays disabled until one does, or the person
+  // says they wired another agent themselves.
+  const [mcp, setMcp] = useState<McpStatus | null>(null);
+  const [otherAgent, setOtherAgent] = useState(false);
+  const readMcp = useCallback(() => { mcpStatus().then(setMcp).catch(() => setMcp(null)); }, []);
+  useEffect(() => { readMcp(); }, [readMcp]);
+  const agentReady = otherAgent || mcp?.claude_registered === true || mcp?.codex_registered === true;
 
   useEffect(() => {
     if (settings) setEnabled(settings.lan_sharing_enabled === true);
@@ -123,6 +132,7 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
     }
     // settings_save binds or unbinds before it resolves.
     refresh();
+    readMcp();
     if (v) onSharingOn?.();
   }
 
@@ -167,7 +177,7 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
 
   async function requestByAddress() {
     const a = address.trim();
-    if (!a || pairing) return;
+    if (!a || pairing || !agentReady) return;
     setPairing(a);
     const name = await request(a);
     setPairing(null);
@@ -208,6 +218,12 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
 
       {enabled && (
         <Block>
+          <AgentSetup mcp={mcp} ready={agentReady} onChanged={readMcp} onOther={() => setOtherAgent(true)} />
+        </Block>
+      )}
+
+      {enabled && (
+        <Block>
           {/* The one failure that looked like an empty network: the OS
               refusing every discovery send. Said plainly, with the way out. */}
           {status?.network_blocked && (
@@ -233,6 +249,11 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
             <div>
               <div className="text-[14px] font-medium">{t("peers.pair.title")}</div>
               <p className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("peers.pair.how")}</p>
+              {!agentReady && (
+                <p data-testid="peers-pair-locked" className="mt-1 text-[12.5px] font-medium text-[var(--color-warn,inherit)]">
+                  {t("peers.agent.pairLocked")}
+                </p>
+              )}
             </div>
             <Tip content={t("peers.nearby.refresh")} side="top">
               <button
@@ -261,7 +282,7 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
                   key={n.id}
                   n={n}
                   busy={pairing === n.id}
-                  disabled={pairing !== null && pairing !== n.id}
+                  disabled={!agentReady || (pairing !== null && pairing !== n.id)}
                   onRequest={() => request(n.id)}
                   onPair={code => pair(n.id, code)}
                 />
@@ -299,7 +320,7 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
                     variant="secondary"
                     size="md"
                     data-testid="peers-address-request"
-                    disabled={pairing !== null || address.trim() === ""}
+                    disabled={!agentReady || pairing !== null || address.trim() === ""}
                     onClick={() => void requestByAddress()}
                   >
                     {t("peers.nearby.pair")}
@@ -399,6 +420,76 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
           </p>
         )}
       </Block>}
+    </div>
+  );
+}
+
+/** The step pairing cannot skip: Termic's MCP server in the coding agent.
+ *  Loud until done, one quiet line after. */
+function AgentSetup({ mcp, ready, onChanged, onOther }: {
+  mcp: McpStatus | null; ready: boolean; onChanged: () => void; onOther: () => void;
+}) {
+  const { t } = useTranslation("settings");
+  const [installing, setInstalling] = useState<"claude" | "codex" | null>(null);
+
+  async function install(client: "claude" | "codex") {
+    setInstalling(client);
+    try {
+      useUI.getState().pushToast(await mcpInstallClient(client), "success");
+    } catch (e) {
+      useUI.getState().pushToast(String(e), "error");
+    } finally {
+      setInstalling(null);
+      onChanged();
+    }
+  }
+
+  const clients = [mcp?.claude_registered && "Claude Code", mcp?.codex_registered && "Codex"].filter(Boolean).join(", ");
+  const buttons = (variant: "primary" | "secondary") => (
+    <div className="flex shrink-0 gap-2">
+      {(["claude", "codex"] as const).map(c => (
+        <Button
+          key={c}
+          variant={variant}
+          size="sm"
+          data-testid={`peers-agent-add-${c}`}
+          disabled={installing !== null}
+          onClick={() => void install(c)}
+        >
+          {installing === c ? t("mcp.adding") : c === "claude" ? t("mcp.addToClaude") : t("mcp.addToCodex")}
+        </Button>
+      ))}
+    </div>
+  );
+
+  if (ready) {
+    return (
+      <div data-testid="peers-agent-setup" data-ready="true" className="flex items-center justify-between gap-4 text-[12.5px] text-[var(--color-fg-dim)]">
+        <span className="flex items-center gap-1.5">
+          <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
+          {clients ? t("peers.agent.ready", { clients }) : t("peers.agent.other")}
+        </span>
+        {clients && buttons("secondary")}
+      </div>
+    );
+  }
+  return (
+    <div data-testid="peers-agent-setup" data-ready="false" className="rounded-md border border-[var(--color-warn,var(--color-accent))] px-3.5 py-3">
+      <div className="flex items-center gap-1.5 text-[14px] font-semibold">
+        <TriangleAlert className="h-4 w-4 shrink-0 text-[var(--color-warn,var(--color-accent))]" />
+        {t("peers.agent.title")}
+      </div>
+      <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
+        {mcp && mcp.claude_missing.length > 0
+          ? t("peers.agent.missing", { accounts: mcp.claude_missing.join(", ") })
+          : t("peers.agent.why")}
+      </p>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        {buttons("primary")}
+        <button type="button" data-testid="peers-agent-other" className={linkClass} onClick={onOther}>
+          {t("peers.agent.other")}
+        </button>
+      </div>
     </div>
   );
 }

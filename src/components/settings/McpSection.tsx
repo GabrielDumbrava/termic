@@ -38,7 +38,7 @@ import { cn } from "@/lib/utils";
  *  Never `null`: that is the "still reading" sentinel, and a rejection left
  *  there parks the panel on it forever, with no retry and no path to the
  *  could-not-bind copy. */
-const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null, lan_url: null, bind_error: null };
+const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null, lan_url: null, bind_error: null, claude_registered: false, claude_missing: [], codex_registered: false };
 
 /** A copyable monospace block. One component so every snippet shares the
  *  same chrome and copy affordance. */

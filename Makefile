@@ -465,7 +465,7 @@ beta: ## Build the CURRENT BRANCH as Termic Beta (parallel install, shared data 
 	fi; \
 	if [ -n "$$SIGN" ]; then echo "→ Signing with the Developer ID in this keychain"; \
 	else echo "→ No Developer ID in this keychain: ad-hoc signed (macOS forgets its permissions on every rebuild)"; fi; \
-	APPLE_SIGNING_IDENTITY="$$SIGN" VITE_BETA=1 VITE_BETA_INFO="$$BRANCH@$$SHA$$DIRTY" \
+	APPLE_SIGNING_IDENTITY="$${SIGN:--}" VITE_BETA=1 VITE_BETA_INFO="$$BRANCH@$$SHA$$DIRTY" \
 	    npm run tauri build -- --config src-tauri/tauri.beta.conf.json --bundles $(BETA_BUNDLES)
 	$(call quit_keeping_profiles,Termic Beta,com.simion.termic.beta)
 	@./scripts/install-app.sh "Termic Beta" com.simion.termic.beta

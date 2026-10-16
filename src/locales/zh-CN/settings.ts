@@ -334,9 +334,17 @@ export default {
       other: "系统在此网络上阻止了发现功能。请改为按地址配对。",
       open: "打开本地网络设置",
     },
+    agent: {
+      title: "必需：将 Termic 添加到你的编程智能体",
+      why: "你的智能体通过 Termic 的 MCP 工具访问已配对的计算机。在 Claude Code 或 Codex 添加这些工具之前，配对不会起任何作用。请在两台计算机上都完成此步骤。",
+      missing: "Claude Code 已添加，但以下账号尚未添加：{{accounts}}。每个账号都有自己的 MCP 服务器，因此这些账号上的任务无法访问已配对的计算机。“添加到 Claude Code”会将其添加到所有账号。",
+      ready: "Termic 已添加到 {{clients}}。重启正在运行的智能体会话以生效。",
+      other: "我使用其他智能体，并已自行添加 MCP 服务器",
+      pairLocked: "请先在上方将 Termic 添加到你的编程智能体。",
+    },
     enable: {
       label: "在此网络上共享",
-      hintOff: "与另一台计算机上的 Termic 配对，让智能体可以在两台计算机上启动并驱动任务。",
+      hintOff: "与另一台计算机上的 Termic 配对，让智能体可以在两台计算机上启动并驱动任务。需要在两台计算机上都将 Termic 的 MCP 服务器添加到你的编程智能体。",
       hint: "你的其他计算机可以找到这台。已配对的计算机能在这里运行智能体，请只在可信网络上开启。",
     },
     self: {

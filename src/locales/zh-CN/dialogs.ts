@@ -549,6 +549,8 @@ export default {
     title: "已与 {{name}} 配对",
     together: "{{name}} 与这台计算机现在可以在对方那里启动、提示和读取智能体，这相当于以你的身份运行代码。若只想让 {{name}} 回复这里的任务，请在“设置 > 智能体访问”中修改。",
     replaced: "这替换了之前与 {{name}} 的配对。",
+    noAgent: "这台计算机上的编程智能体尚未添加 Termic，因此这里的智能体无法访问 {{name}}。请在“设置 > 智能体访问”中将其添加到 Claude Code 或 Codex。",
+    noAgentOpen: "打开智能体访问",
     nameLabel: "在这台计算机上为它命名",
     nameHint: "只在这里生效，这里的智能体使用这个名称。{{name}} 保留自己的名称。",
     question: "{{name}} 用来做什么？",

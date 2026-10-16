@@ -555,6 +555,8 @@ export default {
     title: "Paired with {{name}}",
     together: "{{name}} and this computer can now start, prompt and read agents on each other, which is running code as you. To let {{name}} only reply to tasks here, change it in Settings, Agent access.",
     replaced: "This replaced the earlier pairing with {{name}}.",
+    noAgent: "Termic is not added to your coding agent on this computer yet, so agents here cannot reach {{name}}. Add it to Claude Code or Codex in Settings, Agent access.",
+    noAgentOpen: "Open Agent access",
     nameLabel: "Name it on this computer",
     nameHint: "Only here, and your agents here use this name. {{name}} keeps its own name.",
     question: "What is {{name}} for?",

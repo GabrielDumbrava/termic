@@ -10,9 +10,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
-import { PEER_PAIRING_EVENT, peerRename, peerSetNote } from "@/lib/ipc";
+import { PEER_PAIRING_EVENT, mcpStatus, peerRename, peerSetNote } from "@/lib/ipc";
 import type { PairingView } from "@/lib/types";
 import { useUI } from "@/store/ui";
+import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -28,6 +29,10 @@ export function PeerPairingDialog() {
   // `peer` argument). Starts as the name it gives itself.
   const [alias, setAlias] = useState("");
   const [aliasTouched, setAliasTouched] = useState(false);
+  // A pairing this side's agents cannot use: no coding agent has Termic's
+  // MCP server, which is the only way an agent here reaches the peer.
+  const [noAgent, setNoAgent] = useState(false);
+  const openSettings = useApp(s => s.openSettings);
 
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -37,6 +42,10 @@ export function PeerPairingDialog() {
       setNote("");
       setAlias(ev.payload.peer_name);
       setAliasTouched(false);
+      setNoAgent(false);
+      mcpStatus()
+        .then(s => setNoAgent(!s.claude_registered && !s.codex_registered))
+        .catch(() => {});
     })
       .then(f => { if (gone) f(); else un = f; })
       .catch(() => {});
@@ -70,6 +79,14 @@ export function PeerPairingDialog() {
         <p data-testid="peer-pair-together" className="text-[12.5px] text-[var(--color-fg-dim)]">
           {t("peerPairing.together", { name })}
         </p>
+        {noAgent && (
+          <div data-testid="peer-pair-no-agent" className="flex items-center justify-between gap-3 rounded-md border border-[var(--color-warn,var(--color-border))] px-3 py-2 text-[12.5px]">
+            <span>{t("peerPairing.noAgent", { name })}</span>
+            <Button variant="secondary" size="sm" onClick={() => { setCurrent(null); openSettings("mcp"); }}>
+              {t("peerPairing.noAgentOpen")}
+            </Button>
+          </div>
+        )}
         {current.replaces_existing && (
           <p data-testid="peer-pair-replaces" className="text-[12.5px] text-[var(--color-fg-dim)]">
             {t("peerPairing.replaced", { name })}

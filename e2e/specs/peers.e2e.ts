@@ -513,6 +513,11 @@ describe("LAN pairing", () => {
     after(() => { server?.close(); });
 
     it("pairs by address with the code the other machine shows, and refuses a wrong one", async () => {
+      // Pair is locked until a coding agent has Termic's MCP server. The
+      // test machine may have neither, so take the "added it myself" way.
+      if (await browser.execute(() => document.querySelector('[data-testid="peers-agent-setup"]')?.getAttribute("data-ready") === "false")) {
+        await clickPresent('[data-testid="peers-agent-other"]');
+      }
       // Folded behind a link: discovery is the normal way in.
       if (!await browser.execute(() => !!document.querySelector('[data-testid="peers-address-input"]'))) {
         await clickPresent('[data-testid="peers-address-toggle"]');

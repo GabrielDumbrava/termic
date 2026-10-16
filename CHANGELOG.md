@@ -4,14 +4,21 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.17.1] - 2026-10-16
+## [1.17.2] - 2026-10-16
 
-macOS now asks for local network access when you turn on sharing.
+Sharing asks for local network access, and pairing makes sure your agent can use it.
 
 ### Bug fixes
 - Turning on Share on this network (Settings, Agent access) now makes macOS
   ask for local network access. Before, a Mac that had never been asked
   stayed blocked without a prompt, and no other computer showed up.
+- Pairing now requires Termic's MCP server in your coding agent. Settings
+  shows it as a required step with Add to Claude Code and Add to Codex, and
+  Pair stays off until it is done; a computer paired without it says so.
+- Add to Claude Code now adds Termic to every Claude account, not just the
+  default one. Each account keeps its own MCP servers, so tasks on a second
+  account could not reach a paired computer.
+- `make beta` builds again on a Mac with no Developer ID, ad-hoc signed.
 
 ## [1.17.0] - 2026-10-15
 

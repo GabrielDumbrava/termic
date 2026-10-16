@@ -2470,6 +2470,14 @@ pub(crate) struct McpStatus {
     lan_url: Option<String>,
     /// Why the endpoint is not bound although the setting is on.
     bind_error: Option<String>,
+    /// Whether a `termic` server is registered with Claude Code (user
+    /// scope, in EVERY claude config dir: the default one and each named
+    /// account's) and with Codex. Pairing reaches the other computer only
+    /// through these tools, so Settings refuses to pair until one is set.
+    claude_registered: bool,
+    /// The claude accounts still missing it while others have it, by name.
+    claude_missing: Vec<String>,
+    codex_registered: bool,
 }
 
 /// Settings-UI probe. Reads the live handle, so it reflects reality
@@ -2492,6 +2500,13 @@ pub(crate) fn mcp_status() -> McpStatus {
         let helper = helper_command(&dir.join(MCP_TOKEN_FILE));
         Some((codex_block(u, &helper), claude_command(u, &helper)))
     });
+    let claude_dirs = claude_config_dirs();
+    let claude_total = claude_dirs.len();
+    let claude_missing: Vec<String> = claude_dirs
+        .into_iter()
+        .filter(|c| !claude_has_termic(c.dir.as_deref()))
+        .map(|c| c.label)
+        .collect();
     McpStatus {
         codex_config: rendered.as_ref().map(|(c, _)| c.clone()),
         claude_command: rendered.as_ref().map(|(_, c)| c.clone()),
@@ -2502,7 +2517,92 @@ pub(crate) fn mcp_status() -> McpStatus {
         url,
         lan_url,
         bind_error,
+        claude_registered: claude_missing.is_empty(),
+        claude_missing: if claude_missing.len() < claude_total { claude_missing } else { Vec::new() },
+        codex_registered: codex_has_termic(),
     }
+}
+
+/// One claude config dir an agent here can run with: `dir` None is claude's
+/// default (~/.claude.json), Some a named account's store or a clone's own
+/// CLAUDE_CONFIG_DIR.
+///
+/// Every one needs the server. A user-scope MCP server lives in that dir's
+/// `.claude.json`, which an account deliberately does NOT share with the
+/// primary (agent_dirs::shared_config_entries: it holds the account
+/// identity), so registering only the default left every task on a second
+/// account without the peer tools. Codex needs no such walk: its accounts
+/// share config.toml by symlink. Profiles need none either: they share the
+/// agent's config dirs, and logins are keyed by name across profiles.
+struct ClaudeDir {
+    label: String,
+    dir: Option<std::path::PathBuf>,
+}
+
+fn claude_config_dirs() -> Vec<ClaudeDir> {
+    let mut out = vec![ClaudeDir { label: "default".into(), dir: None }];
+    let home = dirs::home_dir();
+    let logins = crate::global_dir().ok().map(|d| d.join("logins"));
+    let mut push = |label: String, dir: std::path::PathBuf| {
+        if !out.iter().any(|c| c.dir.as_ref() == Some(&dir)) {
+            out.push(ClaudeDir { label, dir: Some(dir) });
+        }
+    };
+    for pid in crate::profiles_registry().ids() {
+        let agents = crate::load_settings_in(&pid).agents;
+        for a in &agents {
+            if crate::docker::base_agent_id(&agents, &a.id) != "claude" { continue; }
+            if let (Some(raw), Some(home)) = (crate::agent_dirs::resolve_agent(&agents, &a.id)
+                .and_then(|r| r.env.get("CLAUDE_CONFIG_DIR").cloned()), home.as_ref())
+            {
+                let dir = crate::agent_dirs::expand_home(&raw, home);
+                if !dir.as_os_str().is_empty() { push(a.display_name.clone(), dir); }
+            }
+            // Named accounts: <data>/logins/<agent id>/<slug>/, global.
+            let Some(root) = logins.as_ref().map(|l| l.join(&a.id)) else { continue };
+            let Ok(rd) = std::fs::read_dir(&root) else { continue };
+            for e in rd.flatten().filter(|e| e.path().is_dir()) {
+                push(e.file_name().to_string_lossy().into_owned(), e.path());
+            }
+        }
+    }
+    out
+}
+
+/// Where claude keeps a dir's user-scope servers.
+fn claude_json_path(dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    match dir {
+        Some(d) => Some(d.join(".claude.json")),
+        None => dirs::home_dir().map(|h| h.join(".claude.json")),
+    }
+}
+
+/// Is `termic` in that dir's user-scope servers (what Add to Claude Code
+/// writes)? Read-only; an unreadable file is "no".
+fn claude_has_termic(dir: Option<&std::path::Path>) -> bool {
+    claude_json_path(dir)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|doc| claude_doc_has_termic(&doc))
+}
+
+fn claude_doc_has_termic(doc: &serde_json::Value) -> bool {
+    doc.get("mcpServers").and_then(|m| m.get("termic")).is_some()
+}
+
+/// Is `termic` in ~/.codex/config.toml's mcp_servers? Parsed, for the
+/// same quoted-header reason codex_config_with_termic parses.
+fn codex_has_termic() -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    std::fs::read_to_string(home.join(".codex/config.toml"))
+        .is_ok_and(|t| codex_text_has_termic(&t))
+}
+
+fn codex_text_has_termic(text: &str) -> bool {
+    text.parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|doc| doc.get("mcp_servers")?.get("termic").map(|_| ()))
+        .is_some()
 }
 
 /// The live credential, for the Settings "Copy token" affordance only.
@@ -2718,19 +2818,40 @@ fn install_client_inner(client: &str) -> Result<String, String> {
             // (a new port, a helper an older build wrote) gets replaced.
             // Nothing to remove is the first-click case, so its failure is
             // not one.
-            let _ = crate::proc_ctl::command("claude")
-                .args(["mcp", "remove", "termic", "-s", "user"])
-                .env("PATH", crate::shell_env::resolved_path())
-                .output();
-            let out = crate::proc_ctl::command("claude")
-                .args(["mcp", "add-json", "termic", &json, "-s", "user"])
-                .env("PATH", crate::shell_env::resolved_path())
-                .output()
-                .map_err(|e| format!("could not run claude: {e}"))?;
-            if !out.status.success() {
-                return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+            //
+            // Once per claude config dir (see ClaudeDir): each account has
+            // its own .claude.json, and CLAUDE_CONFIG_DIR is how claude's
+            // own CLI is pointed at one, so the lock stays claude's.
+            let run = |args: &[&str], dir: Option<&std::path::Path>| {
+                let mut c = crate::proc_ctl::command("claude");
+                c.args(args).env("PATH", crate::shell_env::resolved_path());
+                if let Some(d) = dir { c.env("CLAUDE_CONFIG_DIR", d); }
+                c.output()
+            };
+            let dirs = claude_config_dirs();
+            let mut failed = Vec::new();
+            for d in &dirs {
+                let _ = run(&["mcp", "remove", "termic", "-s", "user"], d.dir.as_deref());
+                let out = run(&["mcp", "add-json", "termic", &json, "-s", "user"], d.dir.as_deref())
+                    .map_err(|e| format!("could not run claude: {e}"))?;
+                if !out.status.success() {
+                    failed.push(format!("{}: {}", d.label, String::from_utf8_lossy(&out.stderr).trim()));
+                }
             }
-            let mut msg = String::from("Added to Claude Code. Restart any running session to pick it up.");
+            if failed.len() == dirs.len() {
+                return Err(failed.join("; "));
+            }
+            let mut msg = if dirs.len() > 1 {
+                format!(
+                    "Added to Claude Code ({} accounts). Restart any running session to pick it up.",
+                    dirs.len() - failed.len()
+                )
+            } else {
+                String::from("Added to Claude Code. Restart any running session to pick it up.")
+            };
+            if !failed.is_empty() {
+                msg.push_str(&format!(" Could not add it for {}.", failed.join("; ")));
+            }
             // A project-scoped entry of the same name WINS over the user
             // one we just wrote, so reporting plain success would be a
             // lie in that directory: the tools simply would not mount.
@@ -4509,6 +4630,18 @@ command = \"/bin/true\"\n";
             let got = doc["mcp_servers"]["termic"]["http_headers_helper"].as_str().unwrap();
             assert_eq!(got, helper, "helper mangled for {path}");
         }
+    }
+
+    #[test]
+    fn registration_is_read_from_both_clients_configs() {
+        assert!(claude_doc_has_termic(&serde_json::json!({ "mcpServers": { "termic": { "type": "http" } } })));
+        // A project-scoped entry is not the user one the button writes.
+        assert!(!claude_doc_has_termic(&serde_json::json!({ "projects": { "/x": { "mcpServers": { "termic": {} } } } })));
+        assert!(!claude_doc_has_termic(&serde_json::json!({})));
+        assert!(codex_text_has_termic("[mcp_servers.termic]\nurl = \"http://127.0.0.1:1/mcp\"\n"));
+        assert!(codex_text_has_termic("[mcp_servers.\"termic\"]\nurl = \"u\"\n"));
+        assert!(!codex_text_has_termic("[mcp_servers.other]\nurl = \"u\"\n"));
+        assert!(!codex_text_has_termic("not = [valid"));
     }
 
     #[test]

@@ -989,6 +989,13 @@ export interface McpStatus {
   lan_url: string | null;
   /** Why the endpoint is not bound although the setting is on. */
   bind_error: string | null;
+  /** Whether a `termic` server is registered with Claude Code (user
+   *  scope, in every claude config dir: the default and each named
+   *  account's) and with Codex. Pairing is refused until one is. */
+  claude_registered: boolean;
+  /** Claude accounts still missing it while others have it, by name. */
+  claude_missing: string[];
+  codex_registered: boolean;
 }
 
 /** What a paired machine may do on THIS computer. "reply": send a prompt

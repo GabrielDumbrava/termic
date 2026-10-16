@@ -1,9 +1,9 @@
 {
   "versions": [
     {
-      "version": "1.17.1",
+      "version": "1.17.2",
       "date": "2026-10-16",
-      "summary": "macOS now asks for local network access when you turn on sharing."
+      "summary": "Sharing asks for local network access, and pairing makes sure your agent can use it."
     },
     {
       "version": "1.17.0",

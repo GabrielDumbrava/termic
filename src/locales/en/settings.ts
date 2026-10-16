@@ -335,9 +335,17 @@ export default {
       other: "The system is blocking discovery on this network. Pair by address instead.",
       open: "Open Local Network settings",
     },
+    agent: {
+      title: "Required: add Termic to your coding agent",
+      why: "Your agent reaches a paired computer through Termic's MCP tools. Until Claude Code or Codex has them, pairing does nothing. Do this on both computers.",
+      missing: "Claude Code has it, but not on these accounts: {{accounts}}. Each account keeps its own MCP servers, so tasks on them cannot reach a paired computer. Add to Claude Code adds it to every account.",
+      ready: "Termic is added to {{clients}}. Restart running agent sessions to pick it up.",
+      other: "I use another agent and added the MCP server myself",
+      pairLocked: "Add Termic to your coding agent above first.",
+    },
     enable: {
       label: "Share on this network",
-      hintOff: "Pair with Termic on another computer, so agents can start and drive tasks across both.",
+      hintOff: "Pair with Termic on another computer, so agents can start and drive tasks across both. Needs Termic's MCP server added to your coding agent on both computers.",
       hint: "Your other computers can find this one. A paired one can run agents here, so use a network you trust.",
     },
     self: {
