@@ -3434,9 +3434,12 @@ describe("sidebar task filter", () => {
     await expectRows({ [alpha]: true, [beta]: true, [gamma]: true }, "clear");
     const filters = await browser.execute(() => window.__termic!.useUI.getState().taskFilters);
     expect(filters).toEqual({});
-    // Hover may still reveal it, so assert the pin itself, not the opacity.
     await browser.waitUntil(async () => (await pinned()) === "false",
       { timeout: 5_000, timeoutMsg: "the bar stayed pinned after the filter was cleared" });
+    // Not pinned, not hovered, and still drawn: the icon is always visible.
+    await pointerAway();
+    expect(await opacity(TOGGLE())).toBe("1");
+    await snap("task-filter-icon-at-rest.png");
   });
 
   it("says nothing under the active task it keeps on screen", async () => {

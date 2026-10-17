@@ -1692,11 +1692,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             <RollupMarks ids={taskList.map(w => w.id).join(",")} testId="project-marks" />
                           )}
                         </div>
-                        {/* Hover shows the filter (GH #324), the menu and
-                            `+` (docs/ui.md "One glyph per meaning"). An
-                            active filter pins its icon so the user can see
-                            why rows are missing. `+` stays visible because
-                            it's the headline action. */}
+                        {/* The filter (GH #324), the menu and `+` are all
+                            drawn at rest (docs/ui.md "One glyph per
+                            meaning"). An active filter lights its icon so
+                            the user can see why rows are missing. */}
                         <div className="flex items-center gap-0.5">
                           {/* Order: + (create, the headline action), filter, then the
                               project menu at the far right edge, where every other row in

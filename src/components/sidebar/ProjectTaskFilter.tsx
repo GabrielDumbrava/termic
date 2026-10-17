@@ -1,5 +1,6 @@
-// Project-row filter controls (GH #324). The header's hover bar carries ONE
-// filter icon, left of the project menu, lit while any filter is on. It opens
+// Project-row filter controls (GH #324). The header carries ONE filter icon,
+// always visible like the `+` and the project menu beside it, lit while any
+// filter is on. It opens
 // a bar on its own line under the header: the text input, with the
 // notifications bell to its right. Its own line so a long project name keeps
 // its room. The matching itself is in lib/taskFilter.ts; these only edit the
@@ -27,7 +28,8 @@ export function ProjectFilterToggle({ projectId, active, paused = false, reveale
   projectId: string;
   active: boolean;
   paused?: boolean;
-  /** Keep the header's controls visible without hover. */
+  /** The bar is open or the filter is paused. Only reported (`data-pinned`):
+   *  the icon itself no longer depends on it, it is always drawn. */
   revealed: boolean;
   onToggle: () => void;
 }) {
@@ -38,17 +40,13 @@ export function ProjectFilterToggle({ projectId, active, paused = false, reveale
         aria-label={t("taskFilter.tip")}
         aria-pressed={active}
         data-testid={`project-filter-toggle-${projectId}`}
-        // Whether the controls are held open without hover. Specs read this
-        // rather than computed opacity, which also depends on where the real
-        // pointer happens to be.
+        // Whether the bar is held open. Specs read this rather than the
+        // bar's own presence, which also depends on focus.
         data-pinned={revealed}
         data-paused={paused || undefined}
         aria-disabled={paused || undefined}
         className={cn(
           iconBtn,
-          // No fade when pinned open: a state-driven opacity change under
-          // transition-opacity froze at 0 in WKWebView (docs/gotchas.md).
-          revealed ? "opacity-100" : "opacity-0 transition-opacity group-hover:opacity-100",
           active && litBtn,
           paused && "cursor-default hover:bg-transparent hover:text-[var(--color-fg-faint)]",
         )}
