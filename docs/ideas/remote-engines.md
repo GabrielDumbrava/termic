@@ -16,8 +16,9 @@ being designed separately. Pairing as it ships today is documented in
 3. **Machine-to-machine orchestration**, which exists today as LAN
    pairing, plus users asking to see and drive the other machine's
    tasks from one Termic.
-4. **A mobile app** to watch agents, answer their questions and send
-   prompts (GH #165).
+4. **A mobile app that connects to the desktop app** to watch agents,
+   answer their questions and send prompts (GH #165). The desktop is
+   the phone's first target; a server engine is a second.
 
 ## Goals and non-goals
 
@@ -104,7 +105,7 @@ a service), server-rendered screens, accounts, NAT traversal.
 ## Architecture
 
 ```
-   Desktop UI      Phone (PWA)     CLI / MCP     agents on other machines
+   Desktop UI      Phone app       CLI / MCP     agents on other machines
         \               |              |              /
          └──────── one protocol, framed, versioned ───┘
         |               |              |              |
@@ -252,12 +253,21 @@ Three levels, each a separate decision:
   and the agents' session files, read beside the PTY, so the desktop
   keeps a real terminal and nothing takes the agent over. A terminal
   view opens on demand: snapshot, then live bytes.
-- **Reach**: the phone talks to an engine over the paired stream, on
-  the same Wi-Fi or over the user's VPN (the Tailscale app on the phone
+- **The phone connects to the desktop app.** That is the requirement:
+  the agents a user wants to check from the phone are the ones running
+  on their Mac. The desktop's embedded engine is an engine like any
+  other, so the phone pairs with it exactly as two computers pair
+  today, and with a server engine the same way.
+- **Reach**: the paired stream, on the same Wi-Fi (found by mDNS) or
+  over the user's VPN (pair by address; the Tailscale app on both ends
   is the common case).
-- **Client**: a PWA served by the engine is the cheapest first client
-  (opencode and claudecodeui do this). A native app earns its cost when
-  background notifications and a Keychain-held pairing key matter.
+- **The desktop has to be running and awake.** The engine lives in the
+  app (Trade-offs, 5), so a quit app or a sleeping Mac is an offline
+  engine, and the phone says so instead of spinning. Termic can hold a
+  power assertion against idle sleep while a phone is connected, as an
+  option; a closed lid still sleeps. Agents that must keep going with
+  the laptop shut belong on a server engine.
+- **Client**: a Tauri 2 mobile app (Trade-offs, 7).
 - **Notifications are the hard part without a server** (Trade-offs, 6).
 
 ## Trade-offs
@@ -318,13 +328,12 @@ The first version runs no relay. The costs, stated plainly:
 
 - **A phone off the network needs a VPN.** For most users that is
   Tailscale on both ends; Termic documents it and does not depend on it.
-- **No native push notifications.** APNs and FCM need a server holding
-  the provider key, which Termic does not run. Options without one:
-  - Web Push from the engine straight to the browser's push service.
-    The payload is encrypted end to end (RFC 8291), so the push service
-    sees ciphertext. It needs the PWA on a secure origin (HTTPS), which
-    a LAN address is not; `tailscale serve` provides one.
-  - Notifications only while the app is open, which is the floor.
+- **No push notifications.** APNs and FCM need a server holding the
+  provider key, which Termic does not run. The phone shows
+  notifications while the app is open or briefly backgrounded, and
+  catches up on reconnect (rule 5). Web Push sent by the engine itself
+  avoids a server but needs a PWA on an HTTPS origin, which a LAN
+  address is not, so it does not fit a native client.
 - **A machine behind NAT with no VPN and no SSH is unreachable.** That
   is the user's network to fix.
 
@@ -342,8 +351,15 @@ engine and client, never per hop, so that option stays open.
 
 | Option | For | Against |
 |---|---|---|
-| **PWA served by the engine (proposed first)** | no App Store, ships with the engine, one codebase with the desktop UI's React | needs HTTPS for install and push; iOS limits background work |
-| Native app (Expo or Swift) | Keychain, background behaviour, polish | a second codebase; native push needs a server (6) |
+| **Tauri 2 mobile (proposed)** | the desktop's own Rust compiles for iOS and Android: `termic-proto`, `peer_crypto` (SPAKE2, ChaCha20) and the protocol client, unchanged; the same React, Tailwind and xterm.js; WKWebView, whose quirks the desktop already knows; store distribution; Keychain through a plugin | Tauri's mobile side is younger than Expo's: fewer plugins, a rougher build loop, some Swift and Kotlin glue |
+| PWA served by the engine | no App Store | a phone on `http://<LAN address>` is not a secure context, so no `crypto.subtle`, no service worker, no install, no Web Push; the pairing crypto ships as WASM; works well only behind an HTTPS origin such as `tailscale serve` |
+| Expo / React Native | the most mature mobile stack (Happy uses it) | a second UI codebase (not the DOM), a WebView for the terminal anyway, crypto as a native module |
+| Swift and Kotlin | best platform fit | two more codebases |
+
+Whatever the stack, iOS suspends a backgrounded app and its
+connection. That is handled by rule 5 (reconnect, snapshot), not by the
+framework. iOS asks for Local Network access on the first LAN
+connection; a VPN address does not.
 
 ## Phases
 
@@ -371,8 +387,9 @@ Ordered so each step pays off on its own.
    backoff, interest leases. Delivers #82 and the agent server.
 4. **Pairing becomes a stream.** Paired machines' tasks appear in the
    sidebar. The one-shot `/call` is replaced, not kept beside it.
-5. **Mobile.** PWA over the paired stream, transcript view, approvals,
-   terminal on demand.
+5. **Mobile.** A Tauri mobile app paired with the desktop app over the
+   paired stream: task list, transcript, approvals, terminal on demand.
+   Server engines work the same way.
 
 ## Open decisions
 
@@ -385,8 +402,8 @@ Ordered so each step pays off on its own.
    an fd handoff only if that proves not enough.
 3. **Host per project or per task** (open in #82). Leaning per project,
    with a per-task override later.
-4. **Phone notifications**: engine-sent Web Push over a VPN's HTTPS
-   origin, or in-app only.
+4. **Keeping the desktop awake for the phone**: a power assertion
+   while a phone is connected, opt-in or default.
 5. **Linux sandboxing**: Docker only, or a native option (bubblewrap,
    Landlock).
 
