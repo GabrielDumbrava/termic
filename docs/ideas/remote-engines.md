@@ -81,7 +81,7 @@ for cutting.
 
 1. **One engine binary, the same everywhere.** The desktop app embeds
    it; a server runs it alone. There is no second implementation for
-   remote, for servers or for the phone.
+   remote or for servers. The phone runs no engine at all.
 2. **Every screen is a client.** The desktop UI, the phone, the CLI,
    MCP and other machines' agents all talk to an engine the same way,
    including the desktop UI to its own engine.
@@ -216,8 +216,11 @@ by address, which already exists. Termic does not traverse NAT.
 ### Security model
 
 - **Grants per connection.** In-process and SSH clients are the owner.
-  A paired machine is Drive or Reply only, as pairing is today. A phone
-  defaults to Reply only plus answering approvals; Drive is opt-in.
+  A paired machine is Drive or Reply only, as pairing is today. A
+  phone is a remote control: it may prompt, approve, interrupt, start
+  and archive tasks on the engines it is paired with, and nothing is
+  ever executed on it. Opening the app asks for Face ID or the device
+  passcode, because holding the phone is holding that control.
 - **Drive is remote code execution as the user** ([../peers.md](../peers.md)).
   Nothing about this design softens that; it widens who can hold it, so
   the grant UI and the per-machine revocation stay first-class.
@@ -256,8 +259,13 @@ Three levels, each a separate decision:
 - **The phone connects to the desktop app.** That is the requirement:
   the agents a user wants to check from the phone are the ones running
   on their Mac. The desktop's embedded engine is an engine like any
-  other, so the phone pairs with it exactly as two computers pair
-  today, and with a server engine the same way.
+  other, so the phone pairs with it using today's pairing, and with a
+  server engine the same way.
+- **The phone is a remote control, nothing more.** It runs no engine,
+  no agents, no shell and no git. Every action it takes executes on the
+  engine it is connected to. Pairing is one way: the phone drives an
+  engine, an engine never drives the phone, and two computers' mutual
+  pairing does not apply to it.
 - **Reach**: the paired stream, on the same Wi-Fi (found by mDNS) or
   over the user's VPN (pair by address; the Tailscale app on both ends
   is the common case).
