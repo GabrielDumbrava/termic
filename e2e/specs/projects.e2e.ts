@@ -2619,10 +2619,18 @@ describe("new task menu puts the project default first", () => {
       const el = document.querySelector(`[data-testid="project-new-task-${id}"]`) as HTMLElement | null;
       return el ? { hoverOnly: el.dataset.hoverOnly ?? null, opacity: getComputedStyle(el).opacity } : null;
     }, projectId)).toEqual({ hoverOnly: "true", opacity: "0" });
+    // The filter icon goes with it: the `+` under the tasks is the spacer.
+    const filterIcon = () => browser.execute((id) => {
+      const el = document.querySelector(`[data-testid="project-filter-toggle-${id}"]`) as HTMLElement | null;
+      return el ? { hoverOnly: el.dataset.hoverOnly ?? null, opacity: getComputedStyle(el).opacity } : null;
+    }, projectId);
+    expect(await filterIcon()).toEqual({ hoverOnly: "true", opacity: "0" });
     await setMode("empty");
     await browser.waitUntil(async () => (await has()) === "none", { timeoutMsg: "Empty projects still drew it on a busy one" });
     expect(await browser.execute((id) =>
       document.querySelector(`[data-testid="project-new-task-${id}"]`)?.hasAttribute("data-hover-only") ?? null, projectId)).toBe(false);
+    expect(await browser.execute((id) =>
+      document.querySelector(`[data-testid="project-filter-toggle-${id}"]`)?.hasAttribute("data-hover-only") ?? null, projectId)).toBe(false);
     await archiveTask(taskId);
   });
 
