@@ -8,11 +8,11 @@ It replaces the manual setup of binding the MCP endpoint to `0.0.0.0` and
 copying the one master token across, which never rotated and could do
 everything.
 
-**Where this is going** (not decided): pairing is one of four requests,
-with SSH remote agents (#82), a headless agent server and mobile
-(#165), that need one engine owning tasks without a window. That design
-is [ideas/remote-engines.md](ideas/remote-engines.md). Everything below
-is what ships today.
+**Where this is going** (not decided): pairing becoming a live stream
+that a phone app (#165) and other computers use to drive this one, and
+later headless boxes (#82). That design is
+[ideas/remote-control.md](ideas/remote-control.md). Everything below is
+what ships today.
 
 **Off by default.** Nothing listens, nothing is advertised, until the
 user turns on Settings > Agent access > Other computers > "Share on this
