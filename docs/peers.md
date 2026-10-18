@@ -8,6 +8,12 @@ It replaces the manual setup of binding the MCP endpoint to `0.0.0.0` and
 copying the one master token across, which never rotated and could do
 everything.
 
+**Where this is going** (not decided): pairing is one of four requests,
+with SSH remote agents (#82), a headless agent server and mobile
+(#165), that need one engine owning tasks without a window. That design
+is [ideas/remote-engines.md](ideas/remote-engines.md). Everything below
+is what ships today.
+
 **Off by default.** Nothing listens, nothing is advertised, until the
 user turns on Settings > Agent access > Other computers > "Share on this
 network"
@@ -44,7 +50,7 @@ implementation. The master MCP token is never involved.
   the id>` (unique by construction, so no conflict probing). SRV carries
   the listener port; TXT carries `id`, `name` (capped at 63 bytes on a
   character boundary), `ver` (app version), `proto` (CLI wire protocol)
-  and `pv` (peer protocol, currently 1). A records are informational.
+  and `pv` (peer protocol, currently 2). A records are informational.
 - A peer's address is the SOURCE address of its mDNS answer, not its A
   record, so a machine with several interfaces is reached on the one we
   actually heard it on.
@@ -436,6 +442,12 @@ off.
 
 ## Not done / known limits
 
+- Agents on one machine drive the other; a person cannot. A task made
+  on a pair shows in that machine's window only, its terminal cannot be
+  watched or typed into from here, and `attach` is refused. What comes
+  back is text (`task_log`, `task_result`). One request per connection
+  cannot carry a terminal stream.
+- Both ends run the full app. A headless server cannot be a pair.
 - IPv4 only, for discovery and the listener.
 - No TLS, by design (above).
 - The pairing protocol and every call path are covered by Rust tests
