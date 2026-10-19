@@ -2304,6 +2304,9 @@ describe("agent notifications", () => {
     // its 31 lifecycle events registered), so the keystroke is the only
     // evidence, and it is what licenses the title for that single turn.
     it("stops claiming work when the user interrupts, which no hook reports", async () => {
+      // An Escape ends a turn only while the user is watching the tab, and
+      // the suite's window is often unfocused: say which this case means.
+      await setWindowPresence(true);
       await setHooksOwnState("fakeagent", true);
       await reset();
 
@@ -2313,6 +2316,7 @@ describe("agent notifications", () => {
         message: "the long turn never reached the working badge",
       });
 
+      await setWindowPresence(true); // re-read: a real blur since may have cleared it
       await pressEscape(taskId!);
 
       // Localise a failure: if the fixture never reacted, the keystroke never
@@ -2343,6 +2347,7 @@ describe("agent notifications", () => {
     // never arrives and nothing ends: that asymmetry is what makes
     // corroboration safe.
     it("ends an interrupted turn that reports neither a hook nor a title", async () => {
+      await setWindowPresence(true); // see the case above
       await setHooksOwnState("fakeagent", true);
       await reset();
 
@@ -2352,6 +2357,7 @@ describe("agent notifications", () => {
         message: "the silent long turn never reached the working badge",
       });
 
+      await setWindowPresence(true); // re-read: a real blur since may have cleared it
       await pressEscape(taskId!);
 
       await waitForWorkBadgeGone(taskId!, "working", {
@@ -2806,13 +2812,22 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     kill((await stored(id))!);
 
     const before = spawnArgv(id).length;
+    const pickersBefore = pickersReady(id);
     await relaunch(id);
     await waitSpawns(id, before + 2, "no picker spawn followed the failed resume");
     // No --name on the picker: claude would rename whichever session is
     // picked, and a sibling's would then read as this task's.
     expect(spawnArgv(id)[before + 1]).not.toContain("--name");
     await waitForAgentReady(id);
-    await submitToAgent(id, `pick ${theirs}`);
+    // As in the cases above: wait for the picker to listen, then write the
+    // pick in one write. Typing it through xterm raced the new PTY (the
+    // tab's old output made it look ready) and lost the keys.
+    await waitPickerReady(id, pickersBefore + 1);
+    await browser.execute(async (t, line) => {
+      const st = window.__termic!.useApp.getState();
+      const ptyId = (st.tabs[t] ?? [])[0]?.ptyId;
+      await window.__termic!.ipc.ptyWrite(ptyId, [...new TextEncoder().encode(line)]);
+    }, id, `pick ${theirs}\r`);
     await browser.waitUntil(
       async () => (await toasts()).some(m => m.includes('belongs to "e2e-picker-sibling"')),
       { timeout: 10_000, timeoutMsg: "no toast named the task that owns the picked conversation" });

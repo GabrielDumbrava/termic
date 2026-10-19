@@ -45,8 +45,10 @@ export function ProjectFilterToggle({ projectId, active, paused = false, reveale
         data-paused={paused || undefined}
         aria-disabled={paused || undefined}
         className={cn(
-          iconBtn, "transition-opacity",
-          revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          iconBtn,
+          // No fade when pinned open: a state-driven opacity change under
+          // transition-opacity froze at 0 in WKWebView (docs/gotchas.md).
+          revealed ? "opacity-100" : "opacity-0 transition-opacity group-hover:opacity-100",
           active && litBtn,
           paused && "cursor-default hover:bg-transparent hover:text-[var(--color-fg-faint)]",
         )}

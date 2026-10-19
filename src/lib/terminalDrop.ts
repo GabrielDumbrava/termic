@@ -160,11 +160,19 @@ export function startPathDrag(
 // longer would eat a real click that follows the drag.
 function swallowNextClick(): void {
   let timer = 0;
+  // Only the click the browser synthesizes is eaten: it is trusted and
+  // arrives within the same moment. A drag driven by synthetic pointer
+  // events gets no synthesized click, so the guard stayed armed and ate the
+  // next click instead (the e2e "plain click" case), and in a hidden window
+  // the 0ms disarm can run late, so a clock check backs the timer up.
+  const armed = performance.now();
   const kill = (e: MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
+    if (!e.isTrusted) return;
     window.removeEventListener("click", kill, true);
     window.clearTimeout(timer);
+    if (performance.now() - armed > 100) return;
+    e.stopPropagation();
+    e.preventDefault();
   };
   window.addEventListener("click", kill, true);
   timer = window.setTimeout(() => window.removeEventListener("click", kill, true), 0);

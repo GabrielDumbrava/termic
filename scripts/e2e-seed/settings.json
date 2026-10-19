@@ -729,6 +729,8 @@
   "schema_version": 1,
   "fetch_before_create": null,
   "discovery_dismissed": [],
+  "auto_install_hooks": false,
+  "hooks_auto_default_migrated": true,
   "cli_enabled": true,
   "mcp_enabled": true,
   "worktree_symlink_paths": [

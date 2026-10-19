@@ -222,13 +222,24 @@ describe("LAN pairing", () => {
 
   it("opens Other computers with sharing off and nothing listening", async () => {
     await setSharing(false);
-    // MCP off too, so the next case can show sharing turns it on.
+    // Open the page FIRST, then turn MCP off behind it: the next case shows
+    // sharing still turns MCP on when the page's own copy says it is on
+    // (it once decided from that copy, and sharing came on with MCP off).
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("peers" as any));
+    await waitForAttr('[data-testid="peers-toggle"]', "data-enabled", "false");
+    await browser.execute(async () => {
+      const t = window.__termic!;
+      const s = await t.ipc.settingsLoad();
+      await t.ipc.settingsSave({ ...s, mcp_enabled: true });
+    });
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("peers" as any));
+    await waitForAttr('[data-testid="peers-toggle"]', "data-enabled", "false");
     await browser.execute(async () => {
       const t = window.__termic!;
       const s = await t.ipc.settingsLoad();
       await t.ipc.settingsSave({ ...s, mcp_enabled: false });
     });
-    await browser.execute(() => window.__termic!.useApp.getState().openSettings("peers" as any));
     await waitForAttr('[data-testid="peers-toggle"]', "data-enabled", "false");
     const s = await status();
     expect(s.enabled).toBe(false);
@@ -254,7 +265,10 @@ describe("LAN pairing", () => {
     await waitForAttr('[data-testid="peers-toggle"]', "data-enabled", "true");
     // Sharing turns MCP on with it: agents reach a paired computer through
     // this Termic's MCP tools. Saved, bound, and drawn on, not just stored.
-    expect(await browser.execute(async () => (await window.__termic!.ipc.settingsLoad()).mcp_enabled)).toBe(true);
+    // The switch flips before the save resolves: wait for the saved value.
+    await browser.waitUntil(
+      async () => (await browser.execute(async () => (await window.__termic!.ipc.settingsLoad()).mcp_enabled)) === true,
+      { timeout: 5_000, timeoutMsg: "turning sharing on did not save MCP on" });
     await waitFor("MCP binds",
       async (): Promise<{ url: string | null }> => browser.execute(() => window.__termic!.invoke("mcp_status")) as never,
       v => !!v.url);

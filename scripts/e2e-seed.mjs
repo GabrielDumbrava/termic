@@ -305,6 +305,11 @@ export function seed(o = {}) {
   // what a crashed run cannot.
   rmSync(path.join(dataDir, "profiles.json"), { force: true });
   rmSync(path.join(dataDir, "profiles"), { recursive: true, force: true });
+  // settings.json carries `hooks_auto_default_migrated: true` and
+  // `auto_install_hooks: false`: without them the one-time "hooks on by
+  // default" migration (a57a2d3e) wires every real agent CLI on this
+  // machine's PATH at launch, and the scratch profile the settings specs
+  // assume stops being one, depending on what happens to be installed.
   for (const f of ["settings.json", "projects.json"]) {
     writeFileSync(
       path.join(dataDir, f),

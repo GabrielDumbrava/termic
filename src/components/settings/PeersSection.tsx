@@ -16,7 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import {
-  PEER_CHANGED_EVENT, mcpInstallClient, mcpStatus, openPath, peerPair, peerPairRequest, peerRefresh, peerRename, peerSetGrant, peerSetName, peerSetNote, peerStatus, peerUnpair,
+  PEER_CHANGED_EVENT, mcpInstallClient, mcpStatus, openPath, peerPair, peerPairRequest, peerRefresh, peerRename, peerSetGrant, peerSetName, peerSetNote, peerStatus, peerUnpair, settingsLoad,
 } from "@/lib/ipc";
 import type { McpStatus, NearbyView, PeerGrant, PeerStatus, PeerView } from "@/lib/types";
 import { PeerRoleChips } from "./PeerRoles";
@@ -125,7 +125,12 @@ export function PeersSection({ onSharingOn }: { onSharingOn?: () => void } = {})
     // agent through this Termic's MCP tools (peer, peer_call), so pairing
     // with MCP off would pair two machines no agent can use. Turning
     // sharing off leaves MCP alone.
-    const turnOnMcp = v && settings.mcp_enabled !== true;
+    // Decided from disk, like the merge in `patch`: this section's copy
+    // dates from when it mounted, and MCP turned off since (another
+    // section, the CLI, a sync) read as still on, so sharing came on with
+    // MCP off and a paired machine could reach no agent.
+    const onDisk = await settingsLoad().catch(() => settings);
+    const turnOnMcp = v && onDisk.mcp_enabled !== true;
     if (!(await patch(turnOnMcp ? { lan_sharing_enabled: v, mcp_enabled: true } : { lan_sharing_enabled: v }))) {
       setEnabled(!v);
       return;

@@ -448,6 +448,17 @@ right. It took a screenshot to notice and a computed-style assertion to prove.
 Assert the painted colour, not the attribute, wherever selection is carried by
 colour alone.
 
+### `transition-opacity` froze a state-driven fade too
+
+The project filter icon (`ProjectTaskFilter.tsx`) switches `opacity-0` to
+`opacity-100` when a filter pins it, and with `transition-opacity` on it
+computed opacity stayed `0`: a pinned filter's icon was invisible
+(`projects.e2e.ts` "pins the bar"). Removing the transition fixed it,
+restoring it broke it. The fade now applies only while unpinned (the hover
+reveal). So `transition-[color,background-color]` above is not a complete
+defence: when React state flips a property that carries a CSS transition,
+assert the computed value in a spec.
+
 ## An overhanging hit area is clipped out of existence
 
 `overflow: hidden` clips hit testing, not just painting. A child positioned
