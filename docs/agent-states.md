@@ -189,7 +189,11 @@ work-state log as `queue-held ... why=draft in the prompt`, once per hold. While
 not send (except "Send now", which is the user asking) and an agent's
 message queues even on an idle agent. The queue resumes when the draft
 ends: Enter starts the user's turn and its done drains the queue after, and
-a draft cleared on an idle agent wakes the queue at once. It is keystroke
+a draft cleared on an idle agent wakes the queue once the keyboard has
+been quiet for 1.5s (`TYPING_QUIET_MS`). Not at once: a held Backspace
+empties the draft while the key is still repeating, and a message pasted
+the moment it was empty lost its text to the repeats that followed. The
+log says `queue-held ... user still typing`. It is keystroke
 based and so agent-agnostic; a key that clears a draft in only one agent
 (claude's double Escape) leaves the message held until the next Enter,
 which is the safe failure.

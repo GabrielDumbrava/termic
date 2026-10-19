@@ -52,7 +52,7 @@ import { imageFromClipboard, pastePathText, windowsPasteText } from "@/lib/clipb
 import { setupImeReplacementBridge } from "@/lib/ime";
 import { deliverMessage } from "@/lib/agentSend";
 import { queueLooksStalled } from "@/lib/queueStall";
-import { EMPTY_DRAFT, isComposing, nextDraft, type DraftState } from "@/lib/draftTracker";
+import { EMPTY_DRAFT, isComposing, nextDraft, type DraftState, isUserKey, typingHoldMs } from "@/lib/draftTracker";
 import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
@@ -539,7 +539,12 @@ const captureArmedRef = useRef(false);
   // because a draft that is not there is a deadlock: every message for the
   // tab queues and nothing sends until someone presses Enter here.
   const draftRef = useRef<DraftState>(EMPTY_DRAFT);
+  // When the user last pressed a key here, and the retry an automatic send
+  // scheduled for when the keys go quiet (lib/draftTracker, typingHoldMs).
+  const lastKeyAtRef = useRef(0);
+  const quietRetryRef = useRef(0);
   const trackDraft = useCallback((data: string) => {
+    if (isUserKey(data)) lastKeyAtRef.current = Date.now();
     const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
     // Blocked on a prompt of its own (a permission dialog, a question): this
     // key answers that, it is not a character in the input box. Read BEFORE
@@ -801,6 +806,20 @@ const captureArmedRef = useRef(false);
       return false;
     }
     draftHoldLoggedRef.current = false;
+    // The draft is empty, but the keys may still be going: a held Backspace
+    // empties it while the key repeats, and the repeats then deleted what we
+    // typed. Wait for the keyboard to be quiet, and come back when it is.
+    const quietIn = force ? 0 : typingHoldMs(lastKeyAtRef.current, Date.now());
+    if (quietIn > 0) {
+      debugLogRef.current?.("queue-held", `user still typing; ${quietIn}ms to quiet`);
+      if (!quietRetryRef.current) {
+        quietRetryRef.current = window.setTimeout(() => {
+          quietRetryRef.current = 0;
+          sendNextQueuedRef.current?.();
+        }, quietIn + 20);
+      }
+      return true;
+    }
     // Our last queued submit has not been seen to start a turn, so whatever
     // made this agent look idle is the PREVIOUS turn ending. Writing now is the
     // truncation bug from the transcripts: the agent is still finishing that
@@ -957,6 +976,9 @@ const captureArmedRef = useRef(false);
     if (cur?.composing) return;
     sendNextQueuedRef.current?.();
   }, [queueActive, queueKick, tabPtyLive, composing, task.id, tab.id]);
+
+  // A send waiting for the keys to go quiet never outlives the pane.
+  useEffect(() => () => { if (quietRetryRef.current) window.clearTimeout(quietRetryRef.current); }, []);
 
   // "Send now": drain the head immediately on a queueForceKick bump, WITHOUT
   // the mid-turn guard above — the user explicitly asked to advance now.

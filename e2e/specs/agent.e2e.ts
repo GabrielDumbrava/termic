@@ -3466,6 +3466,52 @@ describe("agent messages wait for your draft", () => {
     expect(await logs()).not.toContain("never mindsecond-report");
   });
 
+  // Holding Backspace empties the draft while the key is still repeating.
+  // The held report used to be typed in the moment the draft was empty, and
+  // the repeats that followed deleted it. It waits for the keys to go quiet.
+  it("holding Backspace to clear your draft does not eat the report that follows", async function () {
+    this.timeout(90_000);
+    // An idle agent, as in the report: a busy one holds the queue for its
+    // turn's end anyway, and the case would pass without the fix.
+    await browser.waitUntil(() => browser.execute(
+      (id) => window.__termic!.useApp.getState().tabs[id][0].workState !== "working", taskId), {
+      timeout: 30_000, timeoutMsg: "the previous report's turn never ended",
+    });
+    // The queue's send floor (10s by default) would also hold a report sent
+    // this soon after the previous one, and pass the case without the fix.
+    const floor = await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      const was = p.queueMinIntervalMs;
+      p.setQueueMinIntervalMs(0);
+      return was;
+    });
+    try {
+      await typeIntoAgent(taskId, "abc");
+      await browser.waitUntil(() => browser.execute(
+        (id) => !!window.__termic!.useApp.getState().tabs[id][0].composing, taskId), {
+        timeout: 5_000, timeoutMsg: "the draft was never noticed",
+      });
+      const r = await cliRpc({ cmd: "send", task: NAME, prompt: "backspace-report" });
+      expect(r.data.mode).toBe("queued");
+      // A held key: Backspace every 40ms, well past the three it takes to empty
+      // the draft, the way auto-repeat keeps going until the key is released.
+      for (let i = 0; i < 15; i++) {
+        await typeIntoAgent(taskId, "\x7f");
+        // fixed-wait: this IS the key repeat being modelled, not a wait for state
+        await browser.pause(40);
+      }
+      // The repeats are over and the report has not gone yet: the keys were
+      // never quiet for long enough while they lasted.
+      expect(await queuedCount(taskId)).toBe(1);
+      // Then it goes, whole.
+      await browser.waitUntil(async () => (await queuedCount(taskId)) === 0 && (await echoed("backspace-report")), {
+        timeout: 30_000, timeoutMsg: "the held report did not go once the keys went quiet",
+      });
+    } finally {
+      await browser.execute((ms) => window.__termic!.usePrefs.getState().setQueueMinIntervalMs(ms), floor);
+    }
+  });
+
   // The other direction, and the one that deadlocks: a draft that is NOT
   // there. `composing` true with an empty prompt queues every message another
   // agent sends, and nothing clears it until someone presses Enter in that

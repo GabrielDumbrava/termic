@@ -111,3 +111,28 @@ export function nextDraft(d: DraftState, data: string, answering: boolean): Draf
   if (d.recalled > 0) return d;
   return { text, recalled: 0 };
 }
+
+// ── Waiting for the keyboard to go quiet ──
+//
+// An empty draft is not enough on its own. Holding Backspace to clear a
+// draft empties it while the key is still auto-repeating, so a held message
+// was typed in at once and the remaining repeats deleted it. An automatic
+// send therefore also waits until the user's keys have been quiet for a
+// moment, measured from their last keystroke in that terminal.
+
+/** How long after the user's last keystroke an automatic send waits. */
+export const TYPING_QUIET_MS = 1500;
+
+/** A payload that is the user pressing a key, as opposed to one of xterm's
+ *  automatic replies (a cursor-position report starts with ESC too). A bare
+ *  ESC and the arrow keys are keys; any other ESC sequence is not. */
+export function isUserKey(data: string): boolean {
+  return !data.startsWith("\x1b") || data === "\x1b" || /^\x1b(\[|O)[ABCD]$/.test(data);
+}
+
+/** Ms an automatic send must still wait for the keyboard to go quiet; 0 when
+ *  it may go now (or the user has not typed here at all). */
+export function typingHoldMs(lastKeyAt: number, now: number, quietMs = TYPING_QUIET_MS): number {
+  if (!lastKeyAt) return 0;
+  return Math.max(0, quietMs - (now - lastKeyAt));
+}

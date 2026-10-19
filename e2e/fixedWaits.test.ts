@@ -30,10 +30,11 @@ const SPECS = path.join(__dirname, "specs");
 /** Fixed waits we have accepted, and the clock each file is outlasting. */
 const ALLOWED: Record<string, { count: number; why: string }> = {
   "agent.e2e.ts": {
-    count: 15,
+    count: 16,
     why: "work-state timers the cases exist to prove: SURVIVE_MS, the detached "
       + "grace, RESUME_FAILURE_MS, and several 'no badge / no bell / no respawn' "
-      + "negatives that need a window to fail in",
+      + "negatives that need a window to fail in; and the key-repeat interval of "
+      + "a held Backspace, which the queue's quiet-keys hold has to outlast",
   },
   "credentials.e2e.ts": {
     count: 2,

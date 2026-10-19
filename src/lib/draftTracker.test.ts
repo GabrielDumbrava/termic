@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { EMPTY_DRAFT, isComposing, nextDraft, type DraftState } from "@/lib/draftTracker";
+import { EMPTY_DRAFT, isComposing, isUserKey, nextDraft, TYPING_QUIET_MS, typingHoldMs, type DraftState } from "@/lib/draftTracker";
 
 /** Feed a sequence of onData payloads, none of them answering a prompt. */
 const type = (keys: string[], from: DraftState = EMPTY_DRAFT) =>
@@ -84,6 +84,30 @@ describe("nextDraft", () => {
       expect(nextDraft(EMPTY_DRAFT, k, false)).toEqual(EMPTY_DRAFT);
       const draft = type(["a"]);
       expect(nextDraft(draft, k, false)).toEqual(draft);
+    }
+  });
+});
+
+describe("waiting for the keyboard to go quiet", () => {
+  it("holds an automatic send until the keys have been quiet long enough", () => {
+    const at = 10_000;
+    // A held Backspace: the draft is empty, the key is still repeating.
+    expect(typingHoldMs(at, at + 30)).toBe(TYPING_QUIET_MS - 30);
+    expect(typingHoldMs(at, at + TYPING_QUIET_MS - 1)).toBe(1);
+    expect(typingHoldMs(at, at + TYPING_QUIET_MS)).toBe(0);
+    expect(typingHoldMs(at, at + 60_000)).toBe(0);
+  });
+
+  it("never holds a terminal nobody typed into", () => {
+    expect(typingHoldMs(0, 123_456)).toBe(0);
+  });
+
+  it("counts keys, not xterm's own replies", () => {
+    for (const k of ["a", "\x7f", "\r", "\x15", "\x1b", "\x1b[A", "\x1b[D", "\x1bOB", "pasted text"]) {
+      expect(isUserKey(k), JSON.stringify(k)).toBe(true);
+    }
+    for (const r of ["\x1b[12;40R", "\x1b[?1;2c", "\x1b]11;rgb:0000/0000/0000\x07", "\x1b[I"]) {
+      expect(isUserKey(r), JSON.stringify(r)).toBe(false);
     }
   });
 });
