@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.18.0",
+      "date": "2026-10-20",
+      "summary": "Review tasks get names, pins sit atop the file tree, usage limits read as waiting."
+    },
+    {
       "version": "1.17.2",
       "date": "2026-10-16",
       "summary": "Sharing asks for local network access, and pairing makes sure your agent can use it."

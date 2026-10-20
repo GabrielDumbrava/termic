@@ -4,6 +4,27 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.18.0] - 2026-10-20
+
+Review tasks get names, pins sit atop the file tree, usage limits read as waiting.
+
+### Features
+- Review a PR asks for the task's name and group. The name defaults to the PR's branch and the task files under a Review group, both remembered.
+- The termic CLI and the MCP server can move a task into another task's group (--join) or out of its group (--leave).
+- A tab row's menu gains New above and Mark as unread. A marked tab shows an orange dot until you revisit it, and the mark survives a relaunch.
+- Shift+Enter sends a newline in OpenCode.
+- A pinned folder or file is drawn at the top of the file tree as an ordinary entry, labelled with its path, and expands in place. The separate Pinned section is gone, and the pin glyph shows only on pinned rows, not on every row you hover. Pin from the row's context menu.
+- A Claude tab that hits its usage limit shows as waiting (the dashed ring, "usage limit") instead of spinning, and goes back to work on its own when the window resets.
+- Settings, Agents & Terminals: each agent's card can show its recent hook reports, grouped per tab, with what Termic made of each one and a Copy all button, for checking what the agent actually told Termic.
+- The project filter icon in the sidebar is drawn at rest, like the + beside it.
+
+### Bug fixes
+- Quitting Termic now gives agents a moment to shut down (SIGTERM, then SIGKILL after 1.5s) instead of killing them outright, so they can save and their MCP servers and shells do not linger.
+- A held agent message is no longer pasted while you are still clearing a draft with a held Backspace, which deleted it before it sent.
+- Typing a font size, scrollback or UI scale in Settings no longer snaps to the minimum or maximum mid-keystroke.
+- After dragging a sidebar row, the next real click is no longer swallowed.
+- Turning on Share on this network now reads the MCP setting from disk, so sharing can no longer come on with MCP off.
+
 ## [1.17.2] - 2026-10-16
 
 Sharing asks for local network access, and pairing makes sure your agent can use it.
