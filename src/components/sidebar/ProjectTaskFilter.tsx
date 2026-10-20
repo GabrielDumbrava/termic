@@ -1,5 +1,7 @@
-// Project-row filter controls (GH #324). The header's hover bar carries ONE
-// filter icon, left of the project menu, lit while any filter is on. It opens
+// Project-row filter controls (GH #324). The header carries ONE filter icon,
+// beside the `+` and the project menu, lit while any filter is on. It follows
+// the header `+`: drawn at rest, and hover-only exactly while the `+` under the
+// tasks shows, which is what spaces the projects apart then. It opens
 // a bar on its own line under the header: the text input, with the
 // notifications bell to its right. Its own line so a long project name keeps
 // its room. The matching itself is in lib/taskFilter.ts; these only edit the
@@ -23,12 +25,16 @@ const litBtn = "bg-[var(--color-bg-3)] text-[var(--color-accent)] hover:text-[va
 /** The header's filter icon. Lit while a filter is active (bell or text),
  *  which is what tells the user rows are hidden. Slashed and inert while
  *  paused: the filter exists but the sidebar query has taken over. */
-export function ProjectFilterToggle({ projectId, active, paused = false, revealed, onToggle }: {
+export function ProjectFilterToggle({ projectId, active, paused = false, revealed, hoverOnly, onToggle }: {
   projectId: string;
   active: boolean;
   paused?: boolean;
-  /** Keep the header's controls visible without hover. */
+  /** The bar is open or the filter is paused: keeps the icon drawn even
+   *  when it is otherwise hover-only. */
   revealed: boolean;
+  /** The header `+` is hover-only (the one under the tasks is showing), so
+   *  this is too. */
+  hoverOnly: boolean;
   onToggle: () => void;
 }) {
   const { t } = useTranslation("sidebar");
@@ -38,17 +44,15 @@ export function ProjectFilterToggle({ projectId, active, paused = false, reveale
         aria-label={t("taskFilter.tip")}
         aria-pressed={active}
         data-testid={`project-filter-toggle-${projectId}`}
-        // Whether the controls are held open without hover. Specs read this
-        // rather than computed opacity, which also depends on where the real
-        // pointer happens to be.
+        // Whether the bar is held open. Specs read this rather than the
+        // bar's own presence, which also depends on focus.
         data-pinned={revealed}
+        data-hover-only={hoverOnly || undefined}
         data-paused={paused || undefined}
         aria-disabled={paused || undefined}
         className={cn(
           iconBtn,
-          // No fade when pinned open: a state-driven opacity change under
-          // transition-opacity froze at 0 in WKWebView (docs/gotchas.md).
-          revealed ? "opacity-100" : "opacity-0 transition-opacity group-hover:opacity-100",
+          hoverOnly && (revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100"),
           active && litBtn,
           paused && "cursor-default hover:bg-transparent hover:text-[var(--color-fg-faint)]",
         )}

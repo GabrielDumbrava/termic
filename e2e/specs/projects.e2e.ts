@@ -2619,10 +2619,18 @@ describe("new task menu puts the project default first", () => {
       const el = document.querySelector(`[data-testid="project-new-task-${id}"]`) as HTMLElement | null;
       return el ? { hoverOnly: el.dataset.hoverOnly ?? null, opacity: getComputedStyle(el).opacity } : null;
     }, projectId)).toEqual({ hoverOnly: "true", opacity: "0" });
+    // The filter icon goes with it: the `+` under the tasks is the spacer.
+    const filterIcon = () => browser.execute((id) => {
+      const el = document.querySelector(`[data-testid="project-filter-toggle-${id}"]`) as HTMLElement | null;
+      return el ? { hoverOnly: el.dataset.hoverOnly ?? null, opacity: getComputedStyle(el).opacity } : null;
+    }, projectId);
+    expect(await filterIcon()).toEqual({ hoverOnly: "true", opacity: "0" });
     await setMode("empty");
     await browser.waitUntil(async () => (await has()) === "none", { timeoutMsg: "Empty projects still drew it on a busy one" });
     expect(await browser.execute((id) =>
       document.querySelector(`[data-testid="project-new-task-${id}"]`)?.hasAttribute("data-hover-only") ?? null, projectId)).toBe(false);
+    expect(await browser.execute((id) =>
+      document.querySelector(`[data-testid="project-filter-toggle-${id}"]`)?.hasAttribute("data-hover-only") ?? null, projectId)).toBe(false);
     await archiveTask(taskId);
   });
 
@@ -3434,9 +3442,12 @@ describe("sidebar task filter", () => {
     await expectRows({ [alpha]: true, [beta]: true, [gamma]: true }, "clear");
     const filters = await browser.execute(() => window.__termic!.useUI.getState().taskFilters);
     expect(filters).toEqual({});
-    // Hover may still reveal it, so assert the pin itself, not the opacity.
     await browser.waitUntil(async () => (await pinned()) === "false",
       { timeout: 5_000, timeoutMsg: "the bar stayed pinned after the filter was cleared" });
+    // Not pinned, not hovered, and still drawn: the icon is always visible.
+    await pointerAway();
+    expect(await opacity(TOGGLE())).toBe("1");
+    await snap("task-filter-icon-at-rest.png");
   });
 
   it("says nothing under the active task it keeps on screen", async () => {

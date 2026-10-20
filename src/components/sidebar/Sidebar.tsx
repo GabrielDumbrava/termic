@@ -1692,11 +1692,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             <RollupMarks ids={taskList.map(w => w.id).join(",")} testId="project-marks" />
                           )}
                         </div>
-                        {/* Hover shows the filter (GH #324), the menu and
-                            `+` (docs/ui.md "One glyph per meaning"). An
-                            active filter pins its icon so the user can see
-                            why rows are missing. `+` stays visible because
-                            it's the headline action. */}
+                        {/* The `+`, the filter (GH #324) and the menu are drawn
+                            at rest; the `+` and the filter go hover-only
+                            together while the `+` under the tasks shows
+                            (docs/ui.md "One glyph per meaning"). An active
+                            filter pins its icon so the user can see why
+                            rows are missing. */}
                         <div className="flex items-center gap-0.5">
                           {/* Order: + (create, the headline action), filter, then the
                               project menu at the far right edge, where every other row in
@@ -1782,6 +1783,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             active={filterOn}
                             paused={filterPaused}
                             revealed={menuOpenProjectId === p.id || filterBarOpen || filterPaused}
+                            hoverOnly={headerPlusHoverOnly}
                             // Open (or re-focus) the bar; an open bar with
                             // nothing filtering closes instead.
                             onToggle={() => {

@@ -203,7 +203,7 @@ flipped in one visit; e2e closes it with Escape after.
 
 ## The project row's task filter
 
-The project header's hover carries a filter icon, between `+` and ⋮
+The project header carries a filter icon between `+` and ⋮
 (`sidebar/ProjectTaskFilter.tsx`, GH #324). It opens a bar
 on its OWN line under the header, full width: a text input and a bell.
 Inline in the header, the input left a long project name almost no room.
@@ -231,11 +231,14 @@ CLI rename or a notification arriving moves a row with no extra wiring.
   collapse state: a filter whose results sit behind a chevron reads as
   "nothing matched". Once, not for as long as it is on: forcing it open
   at render made the chevron dead while a filter was up.
-- **The header holds one filter icon while the bar is open**, lit while
-  any filter (text or bell) is on; hover does not reveal it. It sits next to
-  the bar it belongs to: the input, then the bell
-  with its count. An active filter keeps its bar and pins the header's
-  controls; an empty, abandoned bar folds away. A filter whose results sit behind a chevron reads as
+- **The header holds one filter icon, and it follows the header `+`**: drawn
+  at rest in the same faint ink, and hover-only exactly while the `+` under
+  the tasks shows (that `+` is what spaces the projects apart, so the header
+  stays quiet then). Lit while any filter (text or bell) is on, which also
+  keeps it drawn. It opens the
+  bar it belongs to: the input, then the bell
+  with its count. An active filter keeps its bar open; an empty, abandoned
+  bar folds away. A filter whose results sit behind a chevron reads as
   "nothing matched", and the stored collapse is left untouched so
   clearing the filter folds it back.
 - Escape in the input and its clear button both empty it. The feature
