@@ -10729,6 +10729,50 @@ fn graceful_then_kill(victims: &[(Option<u32>, PtyWriter)]) {
     }
 }
 
+#[cfg(all(test, unix))]
+mod graceful_then_kill_tests {
+    use super::*;
+
+    /// Spawned and reaped the way a PTY child is: a waiter thread owns the
+    /// `Child`, so an exited pid really is gone (not a zombie) to the probe.
+    fn spawn_reaped(script: &str) -> u32 {
+        let mut child = std::process::Command::new("sh").arg("-c").arg(script).spawn().unwrap();
+        let pid = child.id();
+        std::thread::spawn(move || { let _ = child.wait(); });
+        pid
+    }
+
+    fn writer() -> PtyWriter {
+        Arc::new(Mutex::new(Box::new(std::io::sink())))
+    }
+
+    #[test]
+    fn an_agent_that_handles_sigterm_shuts_down_itself() {
+        let dir = std::env::temp_dir().join(format!("gtk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mark = dir.join("saved");
+        let pid = spawn_reaped(&format!("trap 'echo saved > {}; exit 0' TERM; while :; do sleep 0.05; done", mark.display()));
+        std::thread::sleep(std::time::Duration::from_millis(200)); // let the trap install
+        let t = std::time::Instant::now();
+        graceful_then_kill(&[(Some(pid), writer())]);
+        assert!(!proc_ctl::pid_alive(pid as i32));
+        assert!(mark.exists(), "the SIGTERM handler never ran: it was killed outright");
+        assert!(t.elapsed() < STOP_GRACE, "waited out the whole grace for a process that had already exited");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_that_ignores_sigterm_is_killed_when_the_grace_runs_out() {
+        let pid = spawn_reaped("trap '' TERM; while :; do sleep 0.05; done");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let t = std::time::Instant::now();
+        graceful_then_kill(&[(Some(pid), writer())]);
+        std::thread::sleep(std::time::Duration::from_millis(200)); // the reaper's turn
+        assert!(!proc_ctl::pid_alive(pid as i32), "still running after the grace");
+        assert!(t.elapsed() >= STOP_GRACE);
+    }
+}
+
 /// Role-tagged counterpart of `stop_task_ptys`, same SIGTERM-then-SIGKILL
 /// contract.
 ///
@@ -26318,7 +26362,9 @@ fn cleanup_children(app: &tauri::AppHandle) {
     use tauri::Manager;
     // 0a. Docker containers — `docker rm -f` every termic-labeled container
     //     (non-fatal). Belt-and-suspenders for the `--rm`-never-fired case
-    //     (crash / SIGKILL) so quitting never orphans a container.
+    //     (crash / SIGKILL) so quitting never orphans a container. An agent
+    //     inside one gets no grace: its `docker run` client holds a TTY, and
+    //     docker only proxies signals without one.
     docker::cleanup_all();
     // 0. Spotlight sessions — revert main for every active session so the
     //    user's repo is left in a clean state after the app exits.
@@ -26369,14 +26415,18 @@ fn cleanup_children(app: &tauri::AppHandle) {
                 proc_ctl::signal_group(pid, proc_ctl::Sig::Kill);}
         }
     }
-    // 2. PTY children (agent CLIs + scratch shells). PtyManager owns
-    //    the registry; iterate every slot and SIGKILL its child pid.
+    // 2. PTY children (agent CLIs + scratch shells): the same SIGTERM, short
+    //    grace, then SIGKILL that archive uses (`graceful_then_kill`), not a
+    //    bare SIGKILL, so an agent gets to save and shut down the way it does
+    //    when its terminal closes. claude 2.1 exits within ~0.8s of a SIGTERM
+    //    (code 143, measured), well inside the grace, so quitting costs about
+    //    that much. The map lock is not held through the wait: each waiter
+    //    thread takes it to remove its own exited slot.
     if let Some(mgr) = app.try_state::<PtyManager>() {
-        let mut inner = mgr.inner.lock();
-        for (_, slot) in inner.drain() {
-            if let Some(pid) = slot.child_pid {
-                proc_ctl::signal_pid(pid as i32, proc_ctl::Sig::Kill);}
-        }
+        let victims: Vec<(Option<u32>, PtyWriter)> =
+            mgr.inner.lock().values().map(|s| (s.child_pid, s.writer.clone())).collect();
+        graceful_then_kill(&victims);
+        mgr.inner.lock().drain();
     }
 }
 

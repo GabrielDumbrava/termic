@@ -1750,7 +1750,7 @@ Standard macOS app semantics, added as a prerequisite for the CLI's windowless d
   Settings › General exposes all three as a select. It has to include "Ask me each time", because ticking "Don't ask again" in the prompt is otherwise a one-way door.
 
   `CloseDialog` is deliberately NOT built on `ConfirmDialog`, which folds dismissal into cancel — whichever action sat on cancel would also fire on Escape. It has three outcomes instead, and **dismissal cancels the close entirely** (window stays as it was), so Esc can neither quit nor be the only route to quitting.
-- **Quit** (⌘Q or the menu-bar item) → the only teardown path: `RunEvent::Exit` → `cleanup_children` SIGKILLs every PTY and script group. It **asks first when quitting would interrupt work**, the way a terminal asks before closing a window with a job running.
+- **Quit** (⌘Q or the menu-bar item) → the only teardown path: `RunEvent::Exit` → `cleanup_children` SIGKILLs every script group and stops every PTY the way archive does (`graceful_then_kill`: SIGTERM, up to `STOP_GRACE` 1.5s for it to exit, then SIGKILL), so an agent saves and shuts down instead of dying mid-write. Claude 2.1 takes ~0.8s. It **asks first when quitting would interrupt work**, the way a terminal asks before closing a window with a job running.
 
   The bar is "you are about to lose work", not "something is running". No live AGENT pty, no prompt, which is the common case of a window full of finished tasks. Live but idle agents get no prompt either: quitting an idle agent loses a process that was doing nothing. A **working** agent, or a **queued message** that would die unsent, gets one. `quit_warning` in `lib.rs` is that rule as a pure function, and the cases that matter are the ones where it stays quiet.
 
