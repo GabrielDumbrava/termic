@@ -43,6 +43,7 @@ import {
   taskLinkSpawn,
   taskGroupJoin,
   taskGroupNew,
+  taskGroupLeave,
   taskGroupUpdate,
 } from "@/lib/ipc";
 import { groupMemberByName, nextGroupColor } from "@/lib/taskGroups";
@@ -816,12 +817,36 @@ async function renameTaskHandler(params: unknown): Promise<null> {
  *  matched a group still following a lead task of that name, were merged, and
  *  every task the second one launched afterwards landed in the first one's
  *  group. Absent means false, so a caller that does not say is not merged.
- *  A task already in a group is renamed, never moved. */
+ *  A task already in a group is renamed, never moved by a name.
+ *
+ *  `join` (another task's id) and `leave` are the explicit moves, the CLI's
+ *  `group --join` / `--leave`: the same calls as the sidebar's Move to group
+ *  and Remove from group. The server has already checked the two tasks share
+ *  a project and that nothing else rides along. */
 export async function setTaskGroupHandler(params: unknown): Promise<null> {
-  const p = params as { taskId?: unknown; name?: unknown; color?: unknown; joinByName?: unknown };
+  const p = params as { taskId?: unknown; name?: unknown; color?: unknown; joinByName?: unknown; join?: unknown; leave?: unknown };
   const taskId = p?.taskId;
   const joinByName = p?.joinByName === true;
   if (typeof taskId !== "string" || !taskId) throw new Error("set_task_group requires a taskId");
+  if (typeof p.join === "string" && p.join) {
+    const target = p.join;
+    await withCreateLock(async () => {
+      // A target in no group leads a new one: give it a colour of its own,
+      // as founding one any other way does.
+      const all = useApp.getState().tasks;
+      const fresh = !all.find(t => t.id === target)?.group;
+      await taskGroupJoin(taskId, target, fresh ? nextGroupColor(all) : null);
+      await useApp.getState().loadAll();
+    });
+    return null;
+  }
+  if (p.leave === true) {
+    await withCreateLock(async () => {
+      await taskGroupLeave(taskId);
+      await useApp.getState().loadAll();
+    });
+    return null;
+  }
   const name = typeof p.name === "string" ? p.name.trim() : undefined;
   const color = typeof p.color === "string" && p.color ? p.color : undefined;
   if (name === undefined && color === undefined) return null;

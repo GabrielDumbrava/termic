@@ -924,9 +924,9 @@ pub(crate) fn dispatch_authenticated(
         Command::Rename { task, project, name, cwd } => {
             handle_rename(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), name)
         }
-        Command::Group { task, project, name, color, cwd, caller_task } => handle_group(
+        Command::Group { task, project, name, color, cwd, caller_task, join, leave } => handle_group(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
-            name.as_deref(), color.as_deref(), caller_task.as_deref(),
+            name.as_deref(), color.as_deref(), caller_task.as_deref(), join.as_deref(), *leave,
         ),
         Command::PadList { task, project, scope, cwd } => handle_pad(
             &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
@@ -3505,7 +3505,17 @@ fn handle_group(
     name: Option<&str>,
     color: Option<&str>,
     caller_task: Option<&str>,
+    join: Option<&str>,
+    leave: bool,
 ) -> Reply {
+    // A move is its own call: renaming or recolouring at the same time would
+    // leave it unclear which group the name was meant for.
+    if (join.is_some() || leave) && (name.is_some() || color.is_some()) {
+        return Reply::err(id, ErrorCode::BadRequest, "--join and --leave move the task; name or colour its group in a separate call");
+    }
+    if join.is_some() && leave {
+        return Reply::err(id, ErrorCode::BadRequest, "pass --join or --leave, not both");
+    }
     if let Some(c) = color {
         if !GROUP_COLORS.contains(&c) {
             return Reply::err(
@@ -3520,7 +3530,46 @@ fn handle_group(
         Ok(t) => t.clone(),
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
-    if name.is_some() || color.is_some() {
+    if join.is_some() || leave {
+        if t.archived {
+            return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
+        }
+        let params = if let Some(target) = join {
+            // Resolved like any task argument, inside the moving task's own
+            // project: a group lives in one project's list.
+            let own = projects.iter().find(|p| p.id == t.project_id).map(|p| p.name.clone());
+            let other = match resolve_task_arg(&projects, &tasks, Some(target), None, None)
+                .or_else(|_| resolve_task_arg(&projects, &tasks, Some(target), own.as_deref(), None))
+            {
+                Ok(o) => o.clone(),
+                Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+            };
+            if other.id == t.id {
+                return Reply::err(id, ErrorCode::BadRequest, "a task cannot join its own group; name another task");
+            }
+            if other.archived {
+                return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", other.name));
+            }
+            if other.project_id != t.project_id {
+                return Reply::err(
+                    id,
+                    ErrorCode::BadRequest,
+                    format!("{} is in another project; a group holds tasks of one project", qualified(&projects, &other)),
+                );
+            }
+            serde_json::json!({ "taskId": t.id, "join": other.id })
+        } else if t.group.is_none() {
+            // Already out: nothing to write, the report below says so.
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({ "taskId": t.id, "leave": true })
+        };
+        if !params.is_null() {
+            if let Err(e) = host.rpc("set_task_group", params, PROJECT_RPC_TIMEOUT) {
+                return Reply::err(id, ErrorCode::Internal, format!("updating the group failed ({e})"));
+            }
+        }
+    } else if name.is_some() || color.is_some() {
         if t.archived {
             return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
         }
@@ -7744,6 +7793,8 @@ mod tests {
             color: color.map(str::to_string),
             cwd: None,
             caller_task: None,
+            join: None,
+            leave: false,
         }
     }
 
@@ -7802,6 +7853,62 @@ mod tests {
         // own, so it is true); name and colour only when given.
         assert_eq!(calls[0].1, serde_json::json!({ "taskId": "w3", "joinByName": true, "name": "Auth refactor" }));
         assert_eq!(calls[1].1, serde_json::json!({ "taskId": "w3", "joinByName": true, "name": "", "color": "pink" }));
+    }
+
+    fn move_cmd(task: &str, join: Option<&str>, leave: bool) -> Command {
+        let mut cmd = group_cmd(task, None, None);
+        if let Command::Group { join: j, leave: l, .. } = &mut cmd {
+            *j = join.map(str::to_string);
+            *l = leave;
+        }
+        cmd
+    }
+
+    #[test]
+    fn group_join_moves_into_the_other_tasks_group_resolved_in_its_own_project() {
+        let host = StubHost::default();
+        host.script_rpc("set_task_group", Ok(serde_json::Value::Null));
+        // "fix-auth" names a task in web AND in api: the moving task's own
+        // project (web) settles which.
+        let reply = handle(&req(move_cmd("w3", Some("fix-auth"), false), Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls[0].1, serde_json::json!({ "taskId": "w3", "join": "w1" }));
+    }
+
+    #[test]
+    fn group_join_refuses_a_task_in_another_project_and_itself() {
+        let host = StubHost::default();
+        let other = handle(&req(move_cmd("w3", Some("api/fix-auth"), false), Some("tok")), &host);
+        assert!(!other.ok);
+        assert!(other.error.unwrap().message.contains("another project"));
+        let own = handle(&req(move_cmd("w3", Some("w3"), false), Some("tok")), &host);
+        assert!(!own.ok);
+        assert!(host.rpc_calls.lock().unwrap().is_empty(), "a refused move writes nothing");
+    }
+
+    #[test]
+    fn group_leave_takes_a_grouped_task_out_and_is_a_no_op_for_an_ungrouped_one() {
+        let mut host = StubHost::default();
+        for t in host.tasks.iter_mut().filter(|t| t.id == "w1" || t.id == "w3") {
+            t.group = Some(crate::TaskGroup { id: "w1".into(), name: None, color: None });
+        }
+        host.script_rpc("set_task_group", Ok(serde_json::Value::Null));
+        assert!(handle(&req(move_cmd("w3", None, true), Some("tok")), &host).ok);
+        assert_eq!(host.rpc_calls.lock().unwrap()[0].1, serde_json::json!({ "taskId": "w3", "leave": true }));
+        // w2 is in no group: nothing to write, and that is not an error.
+        assert!(handle(&req(move_cmd("w2", None, true), Some("tok")), &host).ok);
+        assert_eq!(host.rpc_calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn group_move_is_a_call_of_its_own() {
+        let host = StubHost::default();
+        let mut with_name = move_cmd("w3", Some("w1"), false);
+        if let Command::Group { name, .. } = &mut with_name { *name = Some("Batch".into()); }
+        assert!(!handle(&req(with_name, Some("tok")), &host).ok);
+        assert!(!handle(&req(move_cmd("w3", Some("w1"), true), Some("tok")), &host).ok);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
     }
 
     #[test]

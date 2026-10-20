@@ -2678,6 +2678,8 @@ mod tests {
             color: None,
             cwd: Some("/Users/u".into()),
             caller_task: Some("t1".into()),
+            join: None,
+            leave: false,
         };
         let Command::Group { cwd, caller_task, .. } = sanitize(&cmd) else { unreachable!() };
         assert_eq!((cwd, caller_task), (None, None));

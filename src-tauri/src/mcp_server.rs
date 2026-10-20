@@ -1347,12 +1347,14 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_group",
         cli_verb: "group",
-        description: "Show, name or recolour a task's sidebar group (tasks you create join yours). Name it for the batch of work. An ungrouped task founds its group.",
+        description: "Show, name or recolour a task's sidebar group (tasks you create join yours), or move a task in or out. Name it for the batch of work. An ungrouped task founds its group.",
         params: &[
             P_TASK_SELF,
             P_PROJECT,
             ParamDef { name: "name", json_type: "string", required: false, description: "Group name; \"\" follows the lead task's name.", cli_flag: Some("--name") },
             ParamDef { name: "color", json_type: "string", required: false, description: "red, orange, yellow, green, teal, blue, purple or pink.", cli_flag: Some("--color") },
+            ParamDef { name: "join", json_type: "string", required: false, description: "Move it into this task's group (same project).", cli_flag: Some("--join") },
+            ParamDef { name: "leave", json_type: "boolean", required: false, description: "Take it out of its group.", cli_flag: Some("--leave") },
         ],
         destructive: false,
         read_only: false,
@@ -1365,6 +1367,8 @@ const TOOLS: &[ToolDef] = &[
             // Filled in by `tools_call` from the task header: it is who is
             // asking, not an argument a caller passes.
             caller_task: None,
+            join: arg_str(a, "join")?,
+            leave: arg_bool(a, "leave")?,
         }),
     },
     // Scratchpads: the place for an agent's temporary output. The CLI's
@@ -3966,7 +3970,9 @@ mod tests {
         // peer_call. 92 bytes each; peer_call keeps the rest.
         // 27285: peer_pair takes the 4-digit code the other machine shows in
         // pairing mode (SPAKE2, docs/peers.md); one short param.
-        const RECORDED: usize = 27285;
+        // 27468: task_group moves a task (`join`, `leave`), parity with
+        // `termic group --join/--leave`. Two short params and a clause.
+        const RECORDED: usize = 27468;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

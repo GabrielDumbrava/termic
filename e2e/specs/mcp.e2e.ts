@@ -510,6 +510,45 @@ describe("MCP tools/call: a real task round-trip through the live webview", () =
     }
   });
 
+  // An agent moving a task between groups, which the sidebar's Move to group
+  // could do and the CLI and MCP could not: into another task's group, out
+  // of it, and refused across projects or mixed with a rename.
+  it("moves a task into another task's group and out again", async () => {
+    const made: string[] = [];
+    const groupOf = (id: string) => browser.execute(async (t) =>
+      ((await window.__termic!.ipc.tasksList()) as any[]).find(x => x.id === t)?.group?.id ?? null, id);
+    try {
+      for (const name of ["mcp-move-lead", "mcp-move-mover"]) {
+        const r = await call("task_new", { name, project: "fixture-repo", agent: "fakeagent", noGroup: true });
+        expect(r.isError).toBe(false);
+        made.push(r.structuredContent.task.id);
+      }
+      const [lead, mover] = made;
+      // The lead is in no group yet: joining it starts one, led by it.
+      const joined = await call("task_group", { task: "mcp-move-mover", project: "fixture-repo", join: "mcp-move-lead" });
+      expect(joined.isError).toBe(false);
+      expect(joined.structuredContent.group.id).toBe(lead);
+      expect(await groupOf(mover)).toBe(lead);
+      expect(await groupOf(lead)).toBe(lead);
+      await browser.waitUntil(
+        () => browser.execute(
+          (g, m) => !!document.querySelector(`[data-task-group-id="${g}"] [data-sidebar-task-id="${m}"]`), lead, mover),
+        { timeout: 8_000, timeoutMsg: "the moved task was not drawn inside the group" },
+      );
+      // A move is a call of its own.
+      const mixed = await call("task_group", { task: "mcp-move-mover", project: "fixture-repo", join: "mcp-move-lead", name: "x" });
+      expect(mixed.isError).toBe(true);
+      // Out again; the lead keeps its group.
+      const left = await call("task_group", { task: "mcp-move-mover", project: "fixture-repo", leave: true });
+      expect(left.isError).toBe(false);
+      expect(left.structuredContent.group ?? null).toBeNull();
+      expect(await groupOf(mover)).toBeNull();
+      expect(await groupOf(lead)).toBe(lead);
+    } finally {
+      for (const id of made) await archiveTask(id);
+    }
+  });
+
   it("scratchpads round-trip over MCP, defaulting to the caller's own task", async () => {
     // No `task` anywhere: the X-Termic-Task header says whose, as `termic
     // scratchpad` reads $TERMIC_TASK_ID. The pad is a note for the user,

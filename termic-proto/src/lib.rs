@@ -111,7 +111,11 @@ use std::io::{self, BufRead, Read, Write};
 /// `peer` and run the verb HERE, on the wrong machine, so the bump is not
 /// optional. Two paired apps must ALSO speak the same version to call each
 /// other, for the same reason one hop further away.
-pub const PROTOCOL_VERSION: u32 = 22;
+///
+/// v23: `group` gains `join` (move the task into another task's group) and
+/// `leave` (take it out of its group). A v22 server would drop both and
+/// answer with the group unchanged, which reads as success.
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -675,6 +679,16 @@ pub enum Command {
         /// may have an ungrouped task joined to an existing group by name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller_task: Option<String>,
+        /// v23: move the task into the group of THIS task (a name, id or
+        /// project/name, in the same project). A target in no group founds
+        /// one with it, as the sidebar's Move to group does. Not with
+        /// `name`, `color` or `leave`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        join: Option<String>,
+        /// v23: take the task out of its group. The group carries on with
+        /// its other members. Not with `name`, `color` or `join`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        leave: bool,
     },
     /// List a task's scratchpads. cwd-aware when `task` absent.
     PadList {

@@ -1237,7 +1237,8 @@ disabled, 6 refused, 8 connection lost."
         project: Option<String>,
     },
 
-    /// Show, rename or recolour your task's sidebar group.
+    /// Show, rename or recolour your task's sidebar group, or move a task
+    /// into another group or out of one.
     #[command(
         after_help = "Tasks you create with `new` from inside a task join YOUR task's group: \
 the sidebar draws them as one coloured block, captioned, with your task as \
@@ -1257,6 +1258,11 @@ you create any workers. If its project already has a group with that name, \
 it joins that group instead: give several tasks one --name to put them \
 together.
 
+--join <OTHER> moves the task into OTHER's group (a task in the same \
+project; if OTHER is in no group, the two start one). --leave takes the \
+task out of its group, which carries on with its other members. Either is \
+a move on its own: name or colour the group in a separate call.
+
 Without <TASK>, targets your own task ($TERMIC_TASK_ID), then the current \
 directory.
 
@@ -1264,7 +1270,8 @@ With --output-format json, one object: {\"task\", \"group\": {\"id\", \
 \"name\", \"named\", \"color\", \"members\"}}, group absent when the task \
 is in none.
 
-Exit codes: 0 ok, 1 error (unknown task, unknown colour, archived task), \
+Exit codes: 0 ok, 1 error (unknown task, unknown colour, archived task, \
+--join to a task in another project), \
 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
     )]
     Group {
@@ -1280,6 +1287,12 @@ Exit codes: 0 ok, 1 error (unknown task, unknown colour, archived task), \
         /// Project name, to disambiguate. Requires a task name.
         #[arg(long, requires = "task")]
         project: Option<String>,
+        /// Move the task into this task's group (name, id or project/name).
+        #[arg(long, conflicts_with_all = ["name", "color", "leave"])]
+        join: Option<String>,
+        /// Take the task out of its group.
+        #[arg(long, conflicts_with_all = ["name", "color"])]
+        leave: bool,
     },
 
     /// Archive a task: SIGKILL its live agents, remove its worktree.
@@ -2399,7 +2412,7 @@ outside.",
             )?;
             render(&cli.cmd, format, data).map(Output::ok)
         }
-        Cmd::Group { task, name, color, project } => {
+        Cmd::Group { task, name, color, project, join, leave } => {
             // Same target rule as rename: explicit task, else the caller's
             // own ($TERMIC_TASK_ID), else the cwd the server resolves.
             let target = task.clone().or_else(|| {
@@ -2416,6 +2429,8 @@ outside.",
                     // Who is asking, which is not the same as `task` when an
                     // agent names another task's group.
                     caller_task: parent_task_from_env(),
+                    join: join.clone(),
+                    leave: *leave,
                 },
                 &token,
             )?;

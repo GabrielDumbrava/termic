@@ -223,6 +223,16 @@ same: `task_new` joins your group with no argument and `task_group`
 names it, because the MCP setup Termic installs tells the server which
 task you run in (the headers helper sends your `$TERMIC_TASK_ID`).
 
+To move a task between groups:
+
+    "$TERMIC_CLI" group <task> --join <other>   # into <other>'s group
+    "$TERMIC_CLI" group <task> --leave          # out of its group
+
+`--join` takes a task in the same project; one in no group starts a group
+with it, as the sidebar's Move to group does. `--leave` leaves the rest of
+the group as it is. A move is a call of its own: rename or recolour in
+another. Over MCP: `task_group` with `join` or `leave`.
+
 ### Driving an existing task
 
 - `"$TERMIC_CLI" send <task> -p "<text>"` - prompt the RUNNING
