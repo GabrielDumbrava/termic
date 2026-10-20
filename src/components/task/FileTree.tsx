@@ -338,7 +338,9 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
           />
         );
       })}
-      {rootEntries.map(e => (
+      {/* MOVED to the top, not copied: a pinned entry leaves its place in the
+          listing (here for a root entry, in TreeNode for a nested one). */}
+      {rootEntries.filter(e => !pins.has(e.name)).map(e => (
         <TreeNode
           key={e.name} taskId={taskId} entry={e} depth={0} rel={e.name} root={root}
           expanded={expanded} children_={children} toggle={toggle} revealed={revealedRel} refetch={refetchDir}
@@ -662,7 +664,8 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
       </ContextMenuContent>
       </ContextMenuRoot>
       )}
-      {entry.is_dir && isOpen && kids && kids.map(c => (
+      {/* A pinned child is drawn at the top of the tree instead, never here too. */}
+      {entry.is_dir && isOpen && kids && kids.filter(c => !pins.has(`${rel}/${c.name}`)).map(c => (
         <TreeNode
           key={c.name} taskId={taskId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`} root={root}
           expanded={expanded} children_={children_} toggle={toggle} revealed={revealed} refetch={refetch}

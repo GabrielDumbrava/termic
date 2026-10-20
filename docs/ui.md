@@ -1851,9 +1851,11 @@ keys went with it.
 
 ## Pinned entries in the file tree
 
-A pinned folder or file is drawn at the TOP of the All files tree as an
+A pinned folder or file is MOVED to the top of the All files tree as an
 ordinary tree node: same row, same expand-in-place, the pin glyph on, labelled
-with its whole task-relative path so a nested pin says where it lives. There
+with its whole task-relative path so a nested pin says where it lives, and no
+longer listed in its parent's place (one row per entry; the first cut copied
+it and the tree showed every pin twice). There
 is no Pinned section, no fold state and no jump: the first design was a
 collapsible band of reveal links over the root listing, and a row that has to
 scroll you somewhere else is not quick access to the thing itself. The node

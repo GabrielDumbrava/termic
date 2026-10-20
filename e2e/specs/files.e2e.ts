@@ -1245,6 +1245,10 @@ describe("pin folders for quick access", () => {
       };
     });
     expect(top).toEqual({ path: "e2e-pins/outer/inner", label: "e2e-pins/outer/inner", pin: true });
+    // MOVED, not copied: with its ancestors still expanded, the folder is no
+    // longer listed under outer. One row for it in the whole tree.
+    expect(await browser.execute(() =>
+      document.querySelectorAll('[data-path="e2e-pins/outer/inner"]:not([data-testid="pin-folder"])').length)).toBe(1);
     await snap("pinned-at-top.png");
 
     // Collapse both ancestors, then open the pinned row: its children appear
