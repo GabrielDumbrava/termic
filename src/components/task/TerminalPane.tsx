@@ -806,20 +806,6 @@ const captureArmedRef = useRef(false);
       return false;
     }
     draftHoldLoggedRef.current = false;
-    // The draft is empty, but the keys may still be going: a held Backspace
-    // empties it while the key repeats, and the repeats then deleted what we
-    // typed. Wait for the keyboard to be quiet, and come back when it is.
-    const quietIn = force ? 0 : typingHoldMs(lastKeyAtRef.current, Date.now());
-    if (quietIn > 0) {
-      debugLogRef.current?.("queue-held", `user still typing; ${quietIn}ms to quiet`);
-      if (!quietRetryRef.current) {
-        quietRetryRef.current = window.setTimeout(() => {
-          quietRetryRef.current = 0;
-          sendNextQueuedRef.current?.();
-        }, quietIn + 20);
-      }
-      return true;
-    }
     // Our last queued submit has not been seen to start a turn, so whatever
     // made this agent look idle is the PREVIOUS turn ending. Writing now is the
     // truncation bug from the transcripts: the agent is still finishing that
@@ -854,6 +840,28 @@ const captureArmedRef = useRef(false);
       return false;
     }
     const head = q[idx];
+    // The draft is empty, but the keys may still be going: a held Backspace
+    // empties it while the key repeats, and the repeats then deleted what we
+    // typed. Wait for the keyboard to be quiet, and come back when it is.
+    //
+    // AFTER the pick, never before it. This returns `true`, which fireDone
+    // reads as "a queued message went out, suppress this done". Placed above
+    // the empty-queue check it held with NOTHING to send, so any done that
+    // landed within 1.5s of a keystroke was swallowed on every tab with no
+    // queue at all: the agent's own done after a quick turn, the two-stage
+    // drills, every delegated report. Three agent.e2e cases failed on main
+    // for a day over it.
+    const quietIn = force ? 0 : typingHoldMs(lastKeyAtRef.current, Date.now());
+    if (quietIn > 0) {
+      debugLogRef.current?.("queue-held", `user still typing; ${quietIn}ms to quiet`);
+      if (!quietRetryRef.current) {
+        quietRetryRef.current = window.setTimeout(() => {
+          quietRetryRef.current = 0;
+          sendNextQueuedRef.current?.();
+        }, quietIn + 20);
+      }
+      return true;
+    }
     if (head.notBefore != null) {
       if (scheduledInFlightRef.current) return true;
       scheduledInFlightRef.current = head.id;
