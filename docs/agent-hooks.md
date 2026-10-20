@@ -423,6 +423,25 @@ macOS both likely scratch homes (`/tmp`, `/var/folders/...`) are symlinks under
 install fails with "codex did not report the hooks termic just wrote". Found
 exactly that way.
 
+**The shared daemon runs the hooks, with somebody else's environment.** codex
+≥ 0.157 routes interactive sessions through a background app-server daemon
+that the first TUI auto-starts and every later TUI, in any terminal, attaches
+to. Hooks then run inside the daemon, which inherited the environment of the
+tab that started it: on 2026-10-20 (codex-cli 0.163.0) a daemon from
+2026-10-16 still carried `TERMIC_PTY=/dev/ttys006`, a pty that by then
+belonged to a claude tab. Every codex session's working/done went there, and
+the codex tabs themselves were read from the terminal: five hooks reported
+`trusted` by `hooks/list`, `codex exec` ran all of them, and a tab ran none.
+Three fresh tabs in one task settled it: `--no-daemon` and a `-c` override
+(which the daemon cannot serve, so the session runs in-process) reported
+every hook; the plain tab reported nothing. The `hooks` feature flag was a
+red herring: `codex doctor --all` lists it enabled by default. So termic
+composes `--no-daemon` into every codex spawn (`ALWAYS_SPAWN_ARGS`,
+lib/agents.ts), first available in rust-v0.156.0 (2026-09-22); an older
+codex rejects it at startup, visibly, which beats hooks that write into
+another tab. A daemon the user started elsewhere keeps misrouting ITS
+sessions' hooks until it is restarted.
+
 **Ownership is decided twice**, by the command's `termic-hooks/` prefix AND by
 the file the hook came from. A hook whose command merely looks like ours, in a
 project config someone copied from a dotfiles repo, is a stranger's script;

@@ -162,6 +162,18 @@ describe("spawnArgsForCli", () => {
     expect(flag).toBeLessThan(args.indexOf("resume"));
   });
 
+  it("every codex spawn stays out of the shared daemon, before the resume subcommand", () => {
+    // Hooks run in the daemon with the FIRST tab's environment otherwise;
+    // see ALWAYS_SPAWN_ARGS.
+    for (const opts of [{ yolo: false, resume: false }, { yolo: true, resume: true }, { yolo: false, resume: true, unattended: true }]) {
+      const args = spawnArgsForCli("codex", opts);
+      expect(args).toContain("--no-daemon");
+      if (opts.resume) expect(args.indexOf("--no-daemon")).toBeLessThan(args.indexOf("resume"));
+    }
+    expect(spawnArgsForCli("claude", { yolo: false, resume: false })).not.toContain("--no-daemon");
+    expect(spawnArgsForCli("grok", { yolo: false, resume: false })).not.toContain("--no-daemon");
+  });
+
   it("attended spawns keep the CLI's normal update behavior", () => {
     expect(spawnArgsForCli("codex", { yolo: false, resume: false })).not.toContain("-c");
     expect(spawnArgsForCli("grok", { yolo: false, resume: false })).not.toContain("--no-auto-update");
@@ -221,6 +233,7 @@ describe("spawnArgsForCli", () => {
     })).toEqual([
       "--model", "default",
       "--effort", "low", "--model", "worker",
+      "--no-daemon",
       "resume", "--last",
       "--dangerous",
     ]);
@@ -582,7 +595,7 @@ describe("codex resume", () => {
   });
 
   it("still resumes by cwd for a worktree, where that is the right answer", () => {
-    expect(args({ yolo: false, resume: true })).toEqual(["resume", "--last"]);
+    expect(args({ yolo: false, resume: true })).toEqual(["--no-daemon", "resume", "--last"]);
   });
 
   it("resumes a SPECIFIC session once one has been reported", () => {
@@ -594,12 +607,12 @@ describe("codex resume", () => {
     // `resume <unknown-uuid>` exits with "no rollout found for thread id", so a
     // spawn that invented one would fail every time instead of starting fresh.
     expect(args({ yolo: false, resume: false, sessionUuid: "u-1", resumeKnown: false }))
-      .toEqual([]);
+      .toEqual(["--no-daemon"]);
   });
 
   it("composes with yolo in the order codex accepts", () => {
     expect(args({ yolo: true, resume: true }))
-      .toEqual(["resume", "--last", "--dangerously-bypass-approvals-and-sandbox"]);
+      .toEqual(["--no-daemon", "resume", "--last", "--dangerously-bypass-approvals-and-sandbox"]);
   });
 });
 
@@ -1859,7 +1872,7 @@ describe("per-tab launch overrides", () => {
     } as Agent);
     const agentArgs = ["-c", 'model_reasoning_effort="xhigh"', "--model", "worker"];
     expect(spawnArgsForCli("codex", { yolo: true, resume: true, agentArgs })).toEqual([
-      "--model", "default", ...agentArgs, "resume", "--last", "--dangerously-bypass-approvals-and-sandbox",
+      "--model", "default", ...agentArgs, "--no-daemon", "resume", "--last", "--dangerously-bypass-approvals-and-sandbox",
     ]);
     expect(mockAgents[0].args).toEqual(["--model", "default"]);
     mockAgents.length = 0;

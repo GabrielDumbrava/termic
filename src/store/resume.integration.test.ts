@@ -238,7 +238,8 @@ describe("a second agent ignores the task's resume override", () => {
     const argv = argvFor(plusTab("codex"), task);
     expect(argv).not.toContain("--resume");
     // A new tab must not take the latest conversation in the shared cwd.
-    expect(argv).toEqual([]);
+    // Only termic's own daemon opt-out (ALWAYS_SPAWN_ARGS), nothing of claude's.
+    expect(argv).toEqual(["--no-daemon"]);
   });
 
   it("the task's own agent still gets the override, expanded", () => {

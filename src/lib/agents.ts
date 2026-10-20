@@ -1272,6 +1272,32 @@ export const NAME_ONLY_ON_NEW_SESSION = new Set(["copilot"]);
  *  the injected Enter would launch a curl|sh self-update). Attended spawns
  *  deliberately keep the CLI's normal startup behavior: asking about
  *  updates is fine when someone is watching. */
+/** Extra args composed into EVERY spawn of an agent, attended or not, because
+ *  the agent's own default breaks termic's per-tab contract.
+ *
+ *  codex ≥ 0.157 runs interactive sessions through a shared background
+ *  app-server daemon, auto-started by the first TUI and kept for every later
+ *  one, in any terminal. Hooks then run in the DAEMON, with the environment of
+ *  whichever tab happened to start it: measured 2026-10-20 on 0.163.0, a
+ *  daemon from 2026-10-16 still carried `TERMIC_PTY=/dev/ttys006`, a pty that
+ *  by then belonged to a claude tab, so every codex session's working/done
+ *  landed there and the codex tabs themselves were read from the terminal.
+ *  Three fresh tabs in one task settled it: the two kept out of the daemon
+ *  (`--no-daemon`, or any `-c` override, which the daemon cannot serve)
+ *  reported every hook; the one that attached reported nothing. The hooks
+ *  feature flag was a red herring: `codex doctor --all` lists it enabled.
+ *
+ *  `--no-daemon` is a root-binary global ("run without the shared background
+ *  server, even if it is already running"), first in rust-v0.156.0
+ *  (2026-09-22). An older codex rejects it at startup, which the tab shows;
+ *  that is the trade against hooks that silently write into another tab.
+ *  Composed at spawn, not seeded into Settings args: a seeded default stays
+ *  in every settings file for ever (see the v0.22.x update-check reversal in
+ *  lib.rs). */
+export const ALWAYS_SPAWN_ARGS: Record<string, string[]> = {
+  codex: ["--no-daemon"],
+};
+
 export const UNATTENDED_SPAWN_ARGS: Record<string, string[]> = {
   // Official config key (verified live on codex 0.144.1); `-c` is a global
   // flag, so it composes with the `resume --last` subcommand placed after.
@@ -1392,6 +1418,7 @@ export function spawnArgsForCli(
     ...(opts.agentArgs ?? []),
     // Before the resume block: codex's resume is a subcommand, and these
     // are root-binary globals.
+    ...(ALWAYS_SPAWN_ARGS[builtinBaseId(cli, useApp.getState().agents)] ?? []),
     ...(opts.unattended ? (UNATTENDED_SPAWN_ARGS[cli] ?? []) : []),
     ...resumeBlock,
     // name_args on every primary-tab spawn (worktree or repo-root, mint or
