@@ -25,7 +25,7 @@ function fakeLocalStorage() {
 
 beforeEach(() => {
   vi.stubGlobal("localStorage", fakeLocalStorage());
-  usePinnedFolders.setState({ byProject: {}, sectionCollapsed: false });
+  usePinnedFolders.setState({ byProject: {} });
 });
 
 const pins = (projectId: string) => usePinnedFolders.getState().byProject[projectId];
@@ -158,24 +158,5 @@ describe("prune", () => {
     // Same object identity: a no-op prune must not churn subscribers on
     // every loadAll (see performance.md bear trap 8).
     expect(usePinnedFolders.getState().byProject).toBe(before);
-  });
-});
-
-describe("sectionCollapsed", () => {
-  it("defaults to expanded", () => {
-    expect(usePinnedFolders.getState().sectionCollapsed).toBe(false);
-  });
-
-  it("flips and writes through to its bare (machine-level) key", () => {
-    usePinnedFolders.getState().setSectionCollapsed(true);
-    expect(usePinnedFolders.getState().sectionCollapsed).toBe(true);
-    expect(localStorage.getItem("pinnedSectionCollapsed")).toBe("1");
-    usePinnedFolders.getState().setSectionCollapsed(false);
-    expect(localStorage.getItem("pinnedSectionCollapsed")).toBe("0");
-  });
-
-  it("is a no-op when the value does not change", () => {
-    usePinnedFolders.getState().setSectionCollapsed(false);
-    expect(localStorage.getItem("pinnedSectionCollapsed")).toBeNull();
   });
 });

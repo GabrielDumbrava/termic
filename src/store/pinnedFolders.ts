@@ -26,7 +26,6 @@ import { create } from "zustand";
 import { scoped } from "@/lib/profileScope";
 
 const LS = scoped("pinnedFolders");
-const LS_SECTION = "pinnedSectionCollapsed";
 
 /** Ref-stable default for `byProject[projectId]` selectors, so a project with
  *  no pins doesn't hand subscribers a fresh array on every store read. */
@@ -49,16 +48,8 @@ function save(byProject: ByProject) {
   } catch {}
 }
 
-function loadSectionCollapsed(): boolean {
-  try { return localStorage.getItem(LS_SECTION) === "1"; } catch { return false; }
-}
-
 interface PinnedFoldersState {
   byProject: ByProject;
-  /** The tree's Pinned section folded to its header row. Machine-level UI
-   *  state (not profile data), so a bare localStorage key. */
-  sectionCollapsed: boolean;
-  setSectionCollapsed: (v: boolean) => void;
   pin: (projectId: string, rel: string) => void;
   unpin: (projectId: string, rel: string) => void;
   toggle: (projectId: string, rel: string) => void;
@@ -74,15 +65,6 @@ interface PinnedFoldersState {
 
 export const usePinnedFolders = create<PinnedFoldersState>((set) => ({
   byProject: load(),
-  sectionCollapsed: loadSectionCollapsed(),
-
-  setSectionCollapsed: (v) =>
-    set((s) => {
-      if (s.sectionCollapsed === v) return s;
-      try { localStorage.setItem(LS_SECTION, v ? "1" : "0"); } catch {}
-      return { sectionCollapsed: v };
-    }),
-
   pin: (projectId, rel) =>
     set((s) => {
       const cur = s.byProject[projectId];

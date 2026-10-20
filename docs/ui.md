@@ -1849,23 +1849,27 @@ vertical space and was getting whatever two file lists left over, so it became
 a sub-tab and the collapse flag, the ratio, the divider and their localStorage
 keys went with it.
 
-## Pinned folders in the file tree
+## Pinned entries in the file tree
 
-When the task's project has pinned folders, the All files tree opens with a
-collapsible "Pinned" section over the root listing — a GitPanel-section band
-(tinted header: chevron, label, count) whose rows sit enclosed above a closing
-border and gap, so they never read as the first tree entries — one plain tree
-row per pin showing the task-relative path. A row click is a REVEAL, not a navigation: the ancestors
-expand, the view scrolls to the folder and the row ring-highlights for a
-moment, exactly the reveal an editor breadcrumb asks for — one mechanism, two
-callers. The section folds to its header row (`pinnedSectionCollapsed`,
-machine-level like every collapse flag) and renders nothing at all when the
-project has no pins. Marking has two entries, both on folder rows only: the
-context menu's "Pin folder" / "Unpin folder", and a pin glyph at the row's
-right edge that appears on hover (stays faintly visible on a pinned row, where
-it is the passive indicator). Clicking the glyph toggles the pin without
-expanding the folder; every handler on it stops propagation, `pointerdown`
-included, or the row's drag-to-type eats the click before it happens.
+A pinned folder or file is drawn at the TOP of the All files tree as an
+ordinary tree node: same row, same expand-in-place, the pin glyph on, labelled
+with its whole task-relative path so a nested pin says where it lives. There
+is no Pinned section, no fold state and no jump: the first design was a
+collapsible band of reveal links over the root listing, and a row that has to
+scroll you somewhere else is not quick access to the thing itself. The node
+is resolved from its parent's listing (read on demand), so a pinned file is a
+file; until that read lands, or once the entry is gone, a folder-shaped
+placeholder stands in. Expanding a pinned folder expands the same path in the
+normal tree, because the expanded set is keyed by path, which is the right
+answer: it IS the same folder.
+
+Pinning is the context menu's "Pin", on any row. A PINNED row carries a
+faint pin glyph at its right edge: the passive indicator, and clicking it
+unpins without expanding (every handler on it stops propagation, `pointerdown`
+included, or the row's drag-to-type eats the click before it happens). An
+unpinned row shows no glyph, hovered or not: a version drew one on every folder
+the pointer crossed as an invitation, and a pin appearing on each hovered row
+read as clutter.
 
 Pins are PROJECT state, not task state (`src/store/pinnedFolders.ts`, one
 localStorage key, profile-scoped like every project-id-keyed record): tasks

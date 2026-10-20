@@ -1135,7 +1135,8 @@ describe("pin folders for quick access", () => {
       (sel) => (document.querySelector(sel) as HTMLElement).click(),
       `[data-path="${p}"]`,
     );
-  const pinRowSel = (rel: string) => `[data-testid="pinned-row"][data-pin-path="${rel}"]`;
+  // The pinned entry drawn at the TOP of the tree (an ordinary node, marked).
+  const pinRowSel = (rel: string) => `[data-pinned-root="true"][data-path="${rel}"]`;
   const pinRowExists = (rel: string) =>
     browser.execute((sel) => !!document.querySelector(sel), pinRowSel(rel));
   const clickPinRow = (rel: string) =>
@@ -1154,7 +1155,7 @@ describe("pin folders for quick access", () => {
 
   // Same dispatched right-click the default-app describe uses (a WebDriver
   // right-click never reaches Radix's onContextMenu in this WKWebView). The
-  // row menu is found by its Copy path items, the pinned-row menu by its unpin item
+  // row menu is found by its Copy path items, the pinned row's menu by its Unpin item
   // — menus are scoped by content, never a bare [role="menu"] (they stack,
   // and a closing one lingers).
   const openContextMenu = async (sel: string, marker: string) => {
@@ -1199,7 +1200,7 @@ describe("pin folders for quick access", () => {
 
   const openRowMenu = (rel: string) => openContextMenu(`[data-path="${rel}"]`, "Copy path");
 
-  it("pins a folder from the context menu and the section row jumps back to it", async () => {
+  it("pins a folder from the context menu, and it expands in place at the top", async () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-pins");
@@ -1229,14 +1230,25 @@ describe("pin folders for quick access", () => {
     });
 
     await openRowMenu("e2e-pins/outer/inner");
-    await clickMenuItem("Copy path", "Pin folder");
+    await clickMenuItem("Copy path", "Pin");
     await browser.waitUntil(() => pinRowExists("e2e-pins/outer/inner"), {
-      timeout: 8_000, timeoutMsg: "pinning never produced a section row",
+      timeout: 8_000, timeoutMsg: "pinning never drew the entry at the top",
     });
-    await snap("pinned-section.png");
+    // The pinned row is the FIRST row of the tree, labelled with the whole
+    // task-relative path, and carries the pin glyph.
+    const top = await browser.execute(() => {
+      const row = document.querySelector('[data-path]') as HTMLElement;
+      return {
+        path: row.dataset.path,
+        label: row.textContent?.trim(),
+        pin: !!row.querySelector('[data-testid="pin-folder"][data-pinned="true"]'),
+      };
+    });
+    expect(top).toEqual({ path: "e2e-pins/outer/inner", label: "e2e-pins/outer/inner", pin: true });
+    await snap("pinned-at-top.png");
 
-    // Collapse both ancestors, then jump: the section row must re-expand
-    // the whole path and highlight the folder, or it is not quick access.
+    // Collapse both ancestors, then open the pinned row: its children appear
+    // under IT, in place. No jump, no scroll, no re-expanding the path.
     await clickRow("e2e-pins/outer");
     await clickRow("e2e-pins");
     await browser.waitUntil(
@@ -1244,67 +1256,57 @@ describe("pin folders for quick access", () => {
       { timeout: 8_000, timeoutMsg: "collapsing the ancestors never hid inner" },
     );
     await clickPinRow("e2e-pins/outer/inner");
-    await browser.waitUntil(() => rowExists("e2e-pins/outer/inner"), {
-      timeout: 8_000, timeoutMsg: "clicking the section row never re-expanded the path",
+    await browser.waitUntil(() => rowExists("e2e-pins/outer/inner/note.txt"), {
+      timeout: 8_000, timeoutMsg: "opening the pinned row never listed its children",
     });
-    // The reveal ring is the visible "you are here": box-shadow, while it
-    // lasts (1.6s), so poll rather than assert once.
-    await browser.waitUntil(
-      () =>
-        browser.execute((sel) => {
-          const el = document.querySelector(sel) as HTMLElement | null;
-          return !!el && getComputedStyle(el).boxShadow !== "none";
-        }, `[data-path="e2e-pins/outer/inner"]`),
-      { timeout: 8_000, timeoutMsg: "the revealed folder never got the reveal highlight" },
-    );
-    await snap("pinned-reveal.png");
+    expect(await rowExists("e2e-pins/outer")).toBe(false);
+    await snap("pinned-expanded-in-place.png");
   });
 
-  it("the row's pin toggle marks without expanding", async () => {
+  it("a folder row shows no pin until it is pinned, and the pinned row's pin unpins", async () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = taskId ?? (await openTask("e2e-pins"));
     await ensureActiveTask(taskId);
 
     // At the fixture ROOT, so the row renders no matter what an earlier case
-    // left expanded: this case is about the toggle, not about tree state.
+    // left expanded: this case is about the affordance, not about tree state.
     mkdirSync(path.join(fixture, "e2e-pin-rowdir"), { recursive: true });
     writeFileSync(path.join(fixture, "e2e-pin-rowdir", "kid.txt"), "k\n");
     await browser.execute(
       (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
       taskId,
     );
-    await browser.waitUntil(
-      () =>
-        browser.execute(
-          () => !!document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]'),
-        ),
-      { timeout: 10_000, timeoutMsg: "the folder row (with its pin toggle) never appeared" },
-    );
-
-    const pinToggle = () =>
-      browser.execute(
-        () => (document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]') as HTMLElement).click(),
-      );
-    await pinToggle();
-    await browser.waitUntil(() => pinRowExists("e2e-pin-rowdir"), {
-      timeout: 8_000, timeoutMsg: "the pin toggle never produced a section row",
+    await browser.waitUntil(() => rowExists("e2e-pin-rowdir"), {
+      timeout: 10_000, timeoutMsg: "the folder row never appeared",
     });
-    const pinned = await browser.execute(
-      () =>
-        document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]')
-          ?.getAttribute("data-pinned"),
-    );
-    expect(pinned).toBe("true");
-    // The toggle is not an expand: the folder must stay collapsed. Its child
-    // is on disk, so an accidental toggle() would have revealed it.
-    expect(await rowExists("e2e-pin-rowdir/kid.txt")).toBe(false);
+    const pinIndicator = () =>
+      browser.execute(() => !!document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]'));
+    // Unpinned: nothing to hover into view. A pin on every row the pointer
+    // crossed read as clutter; the context menu is how a folder gets pinned.
+    expect(await pinIndicator()).toBe(false);
 
-    await pinToggle();
+    await openContextMenu('[data-path="e2e-pin-rowdir"]', "Pin");
+    await clickMenuItem("Pin", "Pin");
+    await browser.waitUntil(() => pinRowExists("e2e-pin-rowdir"), {
+      timeout: 8_000, timeoutMsg: "Pin never drew the entry at the top",
+    });
+    expect(await pinIndicator()).toBe(true);
+    // Pinning is not an expand: the folder must stay collapsed. Its child is
+    // on disk, so an accidental toggle() would have revealed it.
+    expect(await rowExists("e2e-pin-rowdir/kid.txt")).toBe(false);
+    await snap("pinned-row-indicator.png");
+
+    // The indicator on a pinned row is the way back out.
+    await browser.execute(
+      () => (document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]') as HTMLElement).click(),
+    );
     await browser.waitUntil(
       async () => (await pinRowExists("e2e-pin-rowdir")) === false,
-      { timeout: 8_000, timeoutMsg: "toggling again never removed the section row" },
+      { timeout: 8_000, timeoutMsg: "clicking the pinned row's pin never removed the section row" },
     );
+    expect(await pinIndicator()).toBe(false);
+    expect(await rowExists("e2e-pin-rowdir/kid.txt")).toBe(false);
   });
 
   it("a pinned row's context menu unpins", async () => {
@@ -1313,51 +1315,14 @@ describe("pin folders for quick access", () => {
     taskId = taskId ?? (await openTask("e2e-pins"));
     await pinViaStore("e2e-pin-menudir");
     await browser.waitUntil(() => pinRowExists("e2e-pin-menudir"), {
-      timeout: 8_000, timeoutMsg: "the seeded pin never produced a section row",
+      timeout: 8_000, timeoutMsg: "the seeded pin never drew the entry at the top",
     });
 
-    await openContextMenu(pinRowSel("e2e-pin-menudir"), "Unpin folder");
-    await clickMenuItem("Unpin folder", "Unpin folder");
+    await openContextMenu(pinRowSel("e2e-pin-menudir"), "Unpin");
+    await clickMenuItem("Unpin", "Unpin");
     await browser.waitUntil(
       async () => (await pinRowExists("e2e-pin-menudir")) === false,
       { timeout: 8_000, timeoutMsg: "the pinned row menu's unpin never removed the row" },
-    );
-  });
-
-  it("the section folds to its header and back", async () => {
-    await waitForAppShell();
-    await requireTermicApi();
-    taskId = taskId ?? (await openTask("e2e-pins"));
-    await pinViaStore("e2e-pin-fold");
-    await browser.waitUntil(() => pinRowExists("e2e-pin-fold"), {
-      timeout: 8_000, timeoutMsg: "the seeded pin never produced a section row",
-    });
-
-    const header = () =>
-      browser.execute(() => {
-        const el = document.querySelector('[data-testid="pinned-section-header"]') as HTMLElement | null;
-        return el ? el.getAttribute("data-collapsed") : null;
-      });
-    const rowCount = () =>
-      browser.execute(() => document.querySelectorAll('[data-testid="pinned-row"]').length);
-
-    // Pins from earlier cases in this describe are still in the record (only
-    // the last case clears the slate), so assert on THIS pin's row, never on
-    // an exact section size.
-    await browser.execute(() =>
-      (document.querySelector('[data-testid="pinned-section-header"]') as HTMLElement).click(),
-    );
-    await browser.waitUntil(
-      async () => (await header()) === "true" && (await rowCount()) === 0,
-      { timeout: 8_000, timeoutMsg: "folding the section never hid its rows" },
-    );
-
-    await browser.execute(() =>
-      (document.querySelector('[data-testid="pinned-section-header"]') as HTMLElement).click(),
-    );
-    await browser.waitUntil(
-      async () => (await header()) === "false" && (await pinRowExists("e2e-pin-fold")),
-      { timeout: 8_000, timeoutMsg: "unfolding the section never brought its rows back" },
     );
   });
 
@@ -1366,8 +1331,8 @@ describe("pin folders for quick access", () => {
     await requireTermicApi();
     taskId = taskId ?? (await openTask("e2e-pins"));
     await ensureActiveTask(taskId);
-    // The folder must EXIST for its row to render (the pin alone only makes a
-    // section row, and this case drives the tree row's context menu).
+    // The folder exists on disk, so the pinned entry resolves to the real
+    // folder rather than the placeholder.
     mkdirSync(path.join(fixture, "e2e-pin-renameme"), { recursive: true });
     await browser.execute(
       (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
@@ -1378,7 +1343,7 @@ describe("pin folders for quick access", () => {
     });
     await pinViaStore("e2e-pin-renameme");
     await browser.waitUntil(() => pinRowExists("e2e-pin-renameme"), {
-      timeout: 8_000, timeoutMsg: "the seeded pin never produced a section row",
+      timeout: 8_000, timeoutMsg: "the seeded pin never drew the entry at the top",
     });
 
     await openRowMenu("e2e-pin-renameme");
@@ -1444,8 +1409,9 @@ describe("pin folders for quick access", () => {
       if (!btn) throw new Error("no Delete button in the confirm dialog");
       (btn as HTMLElement).click();
     });
+    // The TREE row goes; the pinned entry at the top stays, as a placeholder.
     await browser.waitUntil(
-      async () => (await rowExists("e2e-pin-doomed")) === false,
+      () => browser.execute(() => !document.querySelector('[data-path="e2e-pin-doomed"]:not([data-pinned-root]):not([data-testid="pin-folder"])')),
       { timeout: 8_000, timeoutMsg: "the folder was never deleted" },
     );
     // The pin is kept ON PURPOSE: build dirs come straight back, and a row
@@ -1469,8 +1435,8 @@ describe("pin folders for quick access", () => {
     await pinViaStore("e2e-pin-beta");
     const pinOrder = () =>
       browser.execute(() =>
-        [...document.querySelectorAll('[data-testid="pinned-row"]')].map((c) =>
-          c.getAttribute("data-pin-path"),
+        [...document.querySelectorAll('[data-pinned-root="true"]')].map((c) =>
+          c.getAttribute("data-path"),
         ),
       );
     await browser.waitUntil(async () => (await pinOrder()).length === 2, {
