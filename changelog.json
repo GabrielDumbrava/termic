@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "1.18.0",
+      "version": "1.18.1",
       "date": "2026-10-20",
       "summary": "Review tasks get names, pins sit atop the file tree, usage limits read as waiting."
     },

@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.18.0] - 2026-10-20
+## [1.18.1] - 2026-10-20
 
 Review tasks get names, pins sit atop the file tree, usage limits read as waiting.
 
@@ -24,6 +24,8 @@ Review tasks get names, pins sit atop the file tree, usage limits read as waitin
 - Typing a font size, scrollback or UI scale in Settings no longer snaps to the minimum or maximum mid-keystroke.
 - After dragging a sidebar row, the next real click is no longer swallowed.
 - Turning on Share on this network now reads the MCP setting from disk, so sharing can no longer come on with MCP off.
+- A pinned folder or file is moved to the top of the file tree, not copied: it no longer shows a second time in its parent's listing.
+- Codex is launched with --no-daemon. Since codex 0.157 the interactive session ran through a shared background daemon that executed Termic's hooks with the first tab's environment, so codex tabs read as working or done from the terminal, and their reports could land in another tab. Needs codex 0.156 or newer.
 
 ## [1.17.2] - 2026-10-16
 
