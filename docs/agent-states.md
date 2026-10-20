@@ -57,7 +57,20 @@ a body that says which signal it is (`lib/agentHooks.ts`):
 | delegated | `agent delegated: <count> <label> <ids>` | the turn ended but the AGENT has work outstanding |
 | attention | `agent needs your permission: <tool>` | blocked on you |
 | session | `session <id>` | the conversation moved (`/clear`, `/resume`) |
-| usage / context | `usage …`, `ctx …` | the footer readouts, never a badge |
+| usage / context | `usage …`, `ctx …` | the footer readouts, never a badge, with one exception below |
+
+**A window at 100% parks the tab as delegated.** claude gives no hook for a
+usage limit (2.1.304: none of its thirteen notification types is one) and
+prints nothing on the wire while it waits to continue, which is byte-identical
+to a model mid-token. Measured from termic-workstate.log: `agent working`,
+the status line at `usage 100 ...` a second later, then nothing for twenty
+minutes. The status line is the only witness, so a `usage` reading with
+either window at exactly 100 while the tab is `working` sets `delegatedWork`
+to the synthetic `usage_limit` label (state 3, the dashed ring, no bell). It
+is cleared by the next working hook (the agent is generating again) or by a
+reading below 100, and the absolute ceiling still applies on top. A tab with
+a custom status line never gets a reading, never enters this, and keeps the
+old behaviour: that path is guarded on the label, not on the reading.
 
 Only the first five touch the state machine. An agent with no hooks falls back
 to its title, OSC 9 and quiet heuristics, which is the same machine with worse

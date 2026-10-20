@@ -146,6 +146,8 @@ export default {
     shell_other: "{{count}} shells",
     work_one: "{{count}} task",
     work_other: "{{count}} tasks",
+    usage_limit_one: "usage limit",
+    usage_limit_other: "usage limit",
   },
   delegated: {
     titlePartial: "Some work came back, {{held}} still running",

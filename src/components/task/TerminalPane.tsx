@@ -38,7 +38,7 @@ import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld, terminalPassesToApp, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId, sessionHolder } from "@/lib/agentHooks";
-import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
+import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, atUsageLimit, USAGE_LIMIT_WORK, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
 import { lastAgentLine } from "@/lib/resumeTail";
 import { parseUsageBody } from "@/lib/agentUsage";
 import { parseContextBody } from "@/lib/agentContext";
@@ -68,7 +68,7 @@ import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
 import { commandShell, loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, spawnResumeShape, resumeIdArgsForCli, resumePickerArgsForCli, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS, STICKY_DONE_MS, ATTENTION_ECHO_MS, permissionPromptShown, PERMISSION_PROMPT_TAIL_ROWS, builtinBaseId, BUILTIN_OUTPUT_SIGNALS, resolveAgent } from "@/lib/agents";
-import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
+import { recordTitle, recordHook, noteSubmit, noteDone } from "@/lib/agentSignalLog";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
@@ -2250,6 +2250,9 @@ const captureArmedRef = useRef(false);
       // told apart from whatever the agent decided to notify about. See
       // lib/agentHooks.ts and docs/agent-hooks.md.
       const trusted = parts[1] === HOOK_OSC_TITLE;
+      // Kept for Settings (the "Recent hook reports" list), where "did the
+      // hook fire at all" is answerable without opening the log file.
+      if (trusted) recordHook(tab.cli, body, tab.id, `${task.name} / ${tab.title || tab.cli}`);
       // READY shares this OSC id and the trusted title with the attention
       // signal, and is told apart by its body alone. It is NOT attention: it
       // reports that the agent is past its own startup and a typed message
@@ -2411,6 +2414,33 @@ const captureArmedRef = useRef(false);
             ?.find(t => t.id === tab.id) as TerminalTab | undefined)?.sessionId
             || `${task.id}:${tab.id}`,
         );
+        // A tab parked on an exhausted window. The agent has stopped
+        // generating and will resume by itself when the window resets, and
+        // nothing else says so: no hook fires (lib/delegatedWork.ts
+        // `usage_limit`), the wire is silent, and the spinner would run to
+        // the ceiling and then clear to idle, both of them wrong. Shown as
+        // delegated work, the state for "stopped, waiting, will come back".
+        // Measured from termic-workstate.log: `agent working` at 07:50:26Z,
+        // then the status line at 100% a second later and nothing else.
+        //
+        // Both writes are guarded on what the tab already holds, since this
+        // arrives on every status line repaint (bear trap 8). A tab that
+        // never gets a reading (custom status line) never enters here.
+        {
+          const live = useApp.getState().tabs[task.id]
+            ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+          const parked = live?.delegatedWork?.label === "usage_limit";
+          if (atUsageLimit(usage)) {
+            if (live?.workState === "working" && !live.delegatedWork) {
+              logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)}`
+                + " window at 100% while working: parked as delegated until it resets");
+              patchTab(task.id, tab.id, { delegatedWork: USAGE_LIMIT_WORK, delegatedSince: Date.now() });
+            }
+          } else if (parked) {
+            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)} window reset: unparked`);
+            patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
+          }
+        }
         return false;
       }
       // The context window, from whichever transport this agent has (status
@@ -2469,6 +2499,13 @@ const captureArmedRef = useRef(false);
         if (origin === "hook") {
           const live = useApp.getState().tabs[task.id]
             ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+          // A parked tab (usage limit, above) whose agent is working again.
+          // The working EDGE clears delegated work, but a parked tab never
+          // left `working`, so there is no edge: the heartbeat is the signal.
+          if (live?.delegatedWork?.label === "usage_limit") {
+            logWorkState("usage-limit", `cli=${tab.cli} task=${JSON.stringify(task.name)} working again: unparked`);
+            patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
+          }
           const term = termRef.current;
           if (live?.unread?.reason === "attention" && term
             && Date.now() - attnMarkedAtRef.current > ATTENTION_ECHO_MS

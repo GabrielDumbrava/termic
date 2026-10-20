@@ -1653,6 +1653,61 @@ describe("agent signal inspector", () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
   });
 
+  // The hook list answers "did the hook fire at all", which used to need the
+  // work-state log file. Fed through the same module TerminalPane records to.
+  it("lists recent hook reports per tab, newest first, with what each meant", async () => {
+    await browser.execute((a) => window.__termic!.signalLog.resetSignalLog(a), AGENT);
+    await clickInCard("Show recent hook reports…");
+    await browser.waitUntil(async () => (await cardText()).includes("No hook has reported yet"), {
+      timeout: 8_000,
+      timeoutMsg: "the empty state never rendered",
+    });
+    await browser.execute((a) => {
+      const m = window.__termic!.signalLog;
+      m.recordHook(a, "agent working", "tab-a", "storage / claude", 1_000);
+      m.recordHook(a, "usage 100 18 1792492200 1792782000 0", "tab-a", "storage / claude", 2_000);
+      m.recordHook(a, "ctx 98334 1000000", "tab-b", "aria prop / claude", 3_000);
+    }, AGENT);
+    await browser.waitUntil(async () => (await cardText()).includes("usage 100 18"), {
+      timeout: 8_000,
+      timeoutMsg: "the hook rows never rendered",
+    });
+    // One group per tab, most recently active first; rows newest first, each
+    // with the signal termic routed it to.
+    const groups = (await browser.execute(
+      (a) => [...document.querySelectorAll(`[data-agent-card="${a}"] [data-testid="agent-recent-hooks-tab"]`)]
+        .map(g => ({
+          label: (g.firstElementChild as HTMLElement).innerText,
+          rows: [...g.querySelectorAll("tr")].map(tr => [
+            (tr.querySelector("[data-signal]") as HTMLElement).dataset.signal,
+            (tr.lastElementChild as HTMLElement).innerText,
+          ]),
+        })),
+      AGENT,
+    )) as { label: string; rows: [string, string][] }[];
+    expect(groups).toEqual([
+      { label: "aria prop / claude", rows: [["context", "ctx 98334 1000000"]] },
+      { label: "storage / claude", rows: [["usage", "usage 100 18 1792492200 1792782000 0"], ["working", "agent working"]] },
+    ]);
+    // The settings content pane is its own scroll container; put the list in
+    // the middle of it before the capture, or the image shows the card's top.
+    await browser.execute((a) => {
+      const el = document.querySelector(`[data-agent-card="${a}"] [data-testid="agent-recent-hooks"]`) as HTMLElement;
+      let sc: HTMLElement | null = el.parentElement;
+      while (sc && getComputedStyle(sc).overflowY !== "auto" && getComputedStyle(sc).overflowY !== "scroll") sc = sc.parentElement;
+      if (sc) sc.scrollTop = el.offsetTop - sc.offsetTop - sc.clientHeight / 2 + el.clientHeight / 2;
+    }, AGENT);
+    await snap("settings-recent-hooks.png");
+    // Copy all: the button is there once there is something to copy, and
+    // says so after the click. The clipboard itself is not readable here.
+    await clickInCard("Copy all");
+    await browser.waitUntil(async () => (await cardText()).includes("Copied"), {
+      timeout: 4_000, timeoutMsg: "Copy all never confirmed",
+    });
+    await clickInCard("Hide recent hook reports");
+    await browser.execute((a) => window.__termic!.signalLog.resetSignalLog(a), AGENT);
+  });
+
   it("shows observed titles with counts, marked unmatched", async () => {
     await feed(["⠋ demo", "⠋ demo", "⠙ demo", "✳ demo", "Compiling project"]);
     await clickInCard("Show what this agent is emitting…");

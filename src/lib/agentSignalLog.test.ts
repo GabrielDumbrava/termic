@@ -5,7 +5,11 @@ import {
   clearCapture,
   noteDone,
   noteSubmit,
+  hookSignal,
+  hooksAsText,
+  hooksFor,
   observationsFor,
+  recordHook,
   recordTitle,
   resetSignalLog,
   startCapture,
@@ -15,6 +19,38 @@ import {
 import { proposeSignals } from "./signalProposer";
 
 beforeEach(() => resetSignalLog());
+
+describe("recordHook", () => {
+  it("keeps the last 30 reports PER TAB, newest first, most recently active tab first", () => {
+    // A chatty tab's heartbeats must not evict the quiet tab the question is
+    // about, which is what one list per agent did.
+    recordHook("x", "agent working", "quiet", "t / claude", 1);
+    for (let i = 0; i < 40; i++) recordHook("x", `ctx ${i} 1000`, "chatty", "t2 / claude", 10 + i);
+    const groups = hooksFor("x");
+    expect(groups.map(g => g.tabId)).toEqual(["chatty", "quiet"]);
+    expect(groups[0].rows).toHaveLength(30);
+    expect(groups[0].rows[0].body).toBe("ctx 39 1000");
+    expect(groups[0].rows[29].body).toBe("ctx 10 1000");
+    expect(groups[1].rows).toEqual([{ at: 1, body: "agent working", signal: "working", tabId: "quiet", tabLabel: "t / claude" }]);
+    expect(hooksAsText("x")).toContain("t / claude\n");
+    expect(hooksAsText("x")).toMatch(/working\s+agent working/);
+    resetSignalLog("x");
+    expect(hooksFor("x")).toEqual([]);
+  });
+
+  it("says what termic made of each body, and flags one it did not recognise", () => {
+    expect(hookSignal("agent working")).toBe("working");
+    expect(hookSignal("agent done")).toBe("done");
+    expect(hookSignal("agent delegated: 1 subagent a1")).toBe("delegated");
+    expect(hookSignal("agent needs your permission: Bash")).toBe("attention");
+    expect(hookSignal("agent needs your input")).toBe("attention");
+    expect(hookSignal("agent ready for input")).toBe("ready");
+    expect(hookSignal("session 1234")).toBe("session");
+    expect(hookSignal("usage 100 18 1 2 0")).toBe("usage");
+    expect(hookSignal("ctx 98334 1000000")).toBe("context");
+    expect(hookSignal("agent working harder")).toBe("other");
+  });
+});
 
 describe("recordTitle", () => {
   it("counts repeats instead of appending a row per frame", () => {

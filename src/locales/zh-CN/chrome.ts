@@ -146,6 +146,8 @@ export default {
     shell_other: "{{count}} 个 shell",
     work_one: "{{count}} 个任务",
     work_other: "{{count}} 个任务",
+    usage_limit_one: "用量已达上限",
+    usage_limit_other: "用量已达上限",
   },
   delegated: {
     titlePartial: "部分工作已返回，{{held}} 仍在运行",

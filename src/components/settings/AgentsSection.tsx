@@ -25,6 +25,7 @@ import { AgentAccountsRow, AgentAccountsAction } from "@/components/settings/Age
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { SignalInspector } from "./SignalInspector";
 import { AgentHookSource } from "./AgentHookSource";
+import { RecentHooks } from "./RecentHooks";
 import { cn, slugify } from "@/lib/utils";
 import { isTerminalEntry, BUILTIN_TITLE_SIGNALS, builtinBaseId, yoloArgsNote } from "@/lib/agents";
 import { SubSection } from "@/components/settings/SubSection";
@@ -1257,6 +1258,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             </div>
             {tracked && <>
             <AgentHookSource agentId={agent.id} />
+            <RecentHooks agentId={agent.id} />
             <button
               type="button"
               data-testid="agent-state-patterns-toggle"

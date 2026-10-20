@@ -6,6 +6,8 @@ import {
   delegatedChipText,
   DELEGATED_DETACHED_GRACE_MS,
   DELEGATED_LABELS,
+  USAGE_LIMIT_WORK,
+  atUsageLimit,
   type DelegatedWork,
 } from "@/lib/delegatedWork";
 import { HOOK_OSC_DELEGATED_PREFIX, hookOscHandlerData, parseNotifyBody } from "@/lib/agentHooks";
@@ -18,6 +20,22 @@ const onTheWire = (rest: string) => {
     ? parseDelegatedBody(body.slice(HOOK_OSC_DELEGATED_PREFIX.length))
     : null;
 };
+
+describe("a usage limit parks the tab", () => {
+  it("only on a window that reads exactly 100", () => {
+    const w = (p: number) => ({ usedPercent: p, resetsAt: null });
+    expect(atUsageLimit({ session: w(100), weekly: w(18) })).toBe(true);
+    expect(atUsageLimit({ session: w(63), weekly: w(100) })).toBe(true);
+    expect(atUsageLimit({ session: w(99), weekly: w(99) })).toBe(false);
+    // A custom status line sends no windows at all. Missing is not exhausted:
+    // those tabs must keep today's behaviour, not park forever.
+    expect(atUsageLimit({ session: null, weekly: null })).toBe(false);
+  });
+
+  it("waits for the agent rather than putting a clock on it", () => {
+    expect(isAgentOwned(USAGE_LIMIT_WORK)).toBe(true);
+  });
+});
 
 describe("the delegated report on the wire", () => {
   it("reads the bodies the hook generates", () => {

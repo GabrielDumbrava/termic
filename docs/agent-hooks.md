@@ -1198,7 +1198,10 @@ you why it is wrong: "working was requested and refused because the tab is in
 its post-click grace window" and "no working signal ever arrived" leave
 identical state and have opposite causes. `hook-osc` lines record every hook
 OSC on ARRIVAL, since the heartbeat mostly lands on a tab that is already
-working and would otherwise be invisible. The spawn line carries `base`,
+working and would otherwise be invisible. The last twenty trusted bodies per
+agent are also kept in memory (`recordHook` in `lib/agentSignalLog.ts`) and
+shown under "Show recent hook reports" in the agent's card in Settings, so
+"did the hook fire at all" is answerable without the file. The spawn line carries `base`,
 `inherited`, `hooksInstalled` and `hookProven`, which are the first four things
 to check and the easiest to get wrong.
 

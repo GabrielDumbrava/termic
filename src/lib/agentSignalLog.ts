@@ -15,6 +15,10 @@
 // recording costs a Map lookup and a counter bump.
 
 import type { SignalClass } from "./signalProposer";
+import {
+  HOOK_OSC_BODY, HOOK_OSC_DELEGATED_PREFIX, HOOK_OSC_DONE_BODY, HOOK_OSC_READY_BODY,
+  HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY,
+} from "./agentHooks";
 
 /** One distinct title, with how often and how recently it was seen. A
  *  frequency table rather than a log: at spinner rate a chronological list is
@@ -54,6 +58,37 @@ interface CaptureState {
 }
 
 const log = new Map<string, Map<string, TitleObservation>>();
+
+/** What termic makes of a trusted hook body: the signal it is routed to
+ *  (docs/agent-states.md "What the agent can say"), or `other` for a body
+ *  nothing recognises, which is itself the finding. */
+export type HookSignal = "working" | "done" | "delegated" | "attention" | "ready" | "session" | "usage" | "context" | "other";
+
+export function hookSignal(body: string): HookSignal {
+  if (body === HOOK_OSC_WORKING_BODY) return "working";
+  if (body === HOOK_OSC_DONE_BODY) return "done";
+  if (body === HOOK_OSC_READY_BODY) return "ready";
+  if (body.startsWith(HOOK_OSC_DELEGATED_PREFIX)) return "delegated";
+  // "agent needs your input" and "agent needs your permission: <tool>".
+  if (body.startsWith(HOOK_OSC_BODY.slice(0, "agent needs your".length))) return "attention";
+  if (body.startsWith(HOOK_OSC_SESSION_PREFIX)) return "session";
+  if (body.startsWith("usage ")) return "usage";
+  if (body.startsWith("ctx ")) return "context";
+  return "other";
+}
+
+/** One hook report as it arrived: the trusted OSC 777 body, verbatim, and
+ *  the tab it arrived on. */
+export interface HookObservation { at: number; body: string; signal: HookSignal; tabId: string; tabLabel: string }
+
+/** Hook reports kept per agent, grouped by TAB. A LOG, unlike the titles
+ *  above: hooks arrive a few times a turn, not at spinner rate, and the order
+ *  is the diagnosis ("working at 10:50, then only usage heartbeats" is how a
+ *  tab parked on a usage limit reads). Per tab, not per agent, so a chatty
+ *  tab's heartbeats cannot evict the quiet tab the question is about. */
+const MAX_HOOKS_PER_TAB = 30;
+const MAX_TABS_PER_AGENT = 12;
+const hooks = new Map<string, Map<string, HookObservation[]>>();
 let capture: CaptureState | null = null;
 const listeners = new Set<() => void>();
 let notifyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -155,6 +190,48 @@ export function recordTitle(
   notify();
 }
 
+/** Record a trusted hook body for `agentId`. Hot path for the heartbeat, so
+ *  one push and one shift at most. */
+export function recordHook(agentId: string, body: string, tabId: string, tabLabel: string, now = Date.now()): void {
+  if (!agentId || !body) return;
+  let byTab = hooks.get(agentId);
+  if (!byTab) {
+    byTab = new Map();
+    hooks.set(agentId, byTab);
+  }
+  let list = byTab.get(tabId);
+  if (!list) {
+    list = [];
+    byTab.set(tabId, list);
+    if (byTab.size > MAX_TABS_PER_AGENT) {
+      const oldest = byTab.keys().next().value;
+      if (oldest !== undefined) byTab.delete(oldest);
+    }
+  } else {
+    // Re-insert so Map order is least-recently-active first for eviction.
+    byTab.delete(tabId);
+    byTab.set(tabId, list);
+  }
+  list.push({ at: now, body, signal: hookSignal(body), tabId, tabLabel });
+  if (list.length > MAX_HOOKS_PER_TAB) list.shift();
+  notify();
+}
+
+/** Hook reports for one agent: one group per tab, most recently active tab
+ *  first, rows newest first. */
+export function hooksFor(agentId: string): { tabId: string; tabLabel: string; rows: HookObservation[] }[] {
+  return [...(hooks.get(agentId)?.values() ?? [])].reverse()
+    .map(list => ({ tabId: list[list.length - 1].tabId, tabLabel: list[list.length - 1].tabLabel, rows: [...list].reverse() }));
+}
+
+/** The whole list as text, for an issue. */
+export function hooksAsText(agentId: string): string {
+  const hhmmss = (at: number) => new Date(at).toLocaleTimeString([], { hour12: false });
+  return hooksFor(agentId)
+    .map(g => [g.tabLabel, ...g.rows.map(r => `  ${hhmmss(r.at)}  ${r.signal.padEnd(9)}  ${r.body}`)].join("\n"))
+    .join("\n\n");
+}
+
 /** The user pressed Enter in a terminal running `agentId`. Starts the labelled
  *  half of a capture: from here, titles are busy candidates. */
 export function noteSubmit(agentId: string, now = Date.now()): void {
@@ -238,8 +315,8 @@ export function captureSamples(agentId: string): { busy: string[]; idle: string[
 
 /** Test seam + a way for the UI to drop a noisy history. */
 export function resetSignalLog(agentId?: string): void {
-  if (agentId) log.delete(agentId);
-  else log.clear();
+  if (agentId) { log.delete(agentId); hooks.delete(agentId); }
+  else { log.clear(); hooks.clear(); }
   capture = null;
   notify();
 }

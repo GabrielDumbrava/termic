@@ -35,6 +35,13 @@ export const DELEGATED_LABELS = {
    *  `fullyIdle: false`). Treated as agent-owned, which is the safe side: it
    *  waits for the agent instead of announcing over it. */
   work: { one: "task", many: "tasks", agentOwned: true },
+  /** Synthesized by termic, never sent by a hook (so NOT in the Rust list):
+   *  the agent is parked on an exhausted subscription window. claude gives no
+   *  hook for it (2.1.304: none of its thirteen notification types is a rate
+   *  limit) and prints nothing on the wire while it waits, which is
+   *  byte-identical to a model mid-token. Agent-owned: it comes back on its
+   *  own when the window resets, and no grace timer should guess otherwise. */
+  usage_limit: { one: "usage limit", many: "usage limits", agentOwned: true },
 } as const;
 
 export type DelegatedLabel = keyof typeof DELEGATED_LABELS;
@@ -79,6 +86,19 @@ const MAX_IDS = 20;
  *  Not applied to a CARRIED set, which needs no timer at all: see
  *  `delegatedVerdict`. */
 export const DELEGATED_DETACHED_GRACE_MS = 300_000;
+
+/** The one report of `usage_limit`. A constant so every writer compares equal
+ *  and the store bail (docs/performance.md bear trap 8) sees one object. */
+export const USAGE_LIMIT_WORK: DelegatedWork = { label: "usage_limit", count: 1, ids: [] };
+
+/** Is this reading an exhausted window? The ONLY witness termic has for a
+ *  parked agent is its status line, which a custom status line never sends:
+ *  those tabs get no reading at all, so this never fires for them and they
+ *  keep today's behaviour (spin until the ceiling). A missing window is not
+ *  an exhausted one. */
+export function atUsageLimit(u: { session: { usedPercent: number } | null; weekly: { usedPercent: number } | null }): boolean {
+  return u.session?.usedPercent === 100 || u.weekly?.usedPercent === 100;
+}
 
 /** Parse the body of a trusted `agent delegated: ...` OSC.
  *

@@ -117,6 +117,7 @@ export interface TermicApi {
     startCapture: (agentId: string) => void;
     stopCapture: () => void;
     resetSignalLog: (agentId?: string) => void;
+    recordHook: (agentId: string, body: string, tabId: string, tabLabel: string, now?: number) => void;
     observationsFor: (agentId: string) => Array<{ title: string; seen: number }>;
   };
   /** `termic://` deep links (GH #192). `handleDeepLink` takes the raw URL
