@@ -2625,6 +2625,17 @@ describe("new task menu puts the project default first", () => {
       return el ? { hoverOnly: el.dataset.hoverOnly ?? null, opacity: getComputedStyle(el).opacity } : null;
     }, projectId);
     expect(await filterIcon()).toEqual({ hoverOnly: "true", opacity: "0" });
+    // And it REVEALS the way the `+` does: one fading in while the other pops
+    // reads as two controls from two eras. Computed, because an inherited or
+    // global transition would not show in either class list.
+    const reveal = await browser.execute((id) => {
+      const read = (sel: string) => {
+        const cs = getComputedStyle(document.querySelector(sel) as HTMLElement);
+        return `${cs.transitionProperty} ${cs.transitionDuration}`;
+      };
+      return { plus: read(`[data-testid="project-new-task-${id}"]`), filter: read(`[data-testid="project-filter-toggle-${id}"]`) };
+    }, projectId);
+    expect(reveal.filter).toBe(reveal.plus);
     await setMode("empty");
     await browser.waitUntil(async () => (await has()) === "none", { timeoutMsg: "Empty projects still drew it on a busy one" });
     expect(await browser.execute((id) =>

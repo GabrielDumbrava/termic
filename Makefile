@@ -450,6 +450,11 @@ beta: ## Build the CURRENT BRANCH as Termic Beta (parallel install, shared data 
 	@# blocked with the switch showing on (DenyMulticast = 1 in
 	@# /Library/Preferences/com.apple.networkextension.plist). A stable
 	@# identity keeps the grant across rebuilds, as the shipped app does.
+	@# The price is Tauri's "skipping app notarization" warning: a Developer
+	@# ID makes the bundler try to notarize, there is no switch to tell it not
+	@# to (checked in @tauri-apps/cli 2.11.1), and the beta needs none, since
+	@# Gatekeeper only checks a quarantined download. Announced below so it
+	@# does not read as a broken build.
 	@# A freshly pulled commit can add npm deps (tsc then fails with
 	@# TS2307 "Cannot find module"). npm install is a ~1s no-op when
 	@# node_modules is already in sync, so always run it first.
@@ -464,6 +469,7 @@ beta: ## Build the CURRENT BRANCH as Termic Beta (parallel install, shared data 
 	    SIGN="$$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ {print $$2; exit}')"; \
 	fi; \
 	if [ -n "$$SIGN" ]; then echo "→ Signing with the Developer ID in this keychain"; \
+	    echo "→ Tauri will warn 'skipping app notarization': expected. Only a DOWNLOADED app is checked for it; one installed from this machine is not."; \
 	else echo "→ No Developer ID in this keychain: ad-hoc signed (macOS forgets its permissions on every rebuild)"; fi; \
 	APPLE_SIGNING_IDENTITY="$${SIGN:--}" VITE_BETA=1 VITE_BETA_INFO="$$BRANCH@$$SHA$$DIRTY" \
 	    npm run tauri build -- --config src-tauri/tauri.beta.conf.json --bundles $(BETA_BUNDLES)
