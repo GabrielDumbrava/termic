@@ -1121,6 +1121,7 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "resume", json_type: "string", required: false, description: "Session id the agent resumes on its first spawn (agents with id-resume support only).", cli_flag: Some("--resume") },
             ParamDef { name: "sandbox", json_type: "string", required: false, description: "off, monitor, enforce or enforce-fs; default the project's. enforce and enforce-fs deny the new agent this control plane, so it can never report back: ask it for a file in its worktree instead.", cli_flag: Some("--sandbox") },
             ParamDef { name: "yolo", json_type: "boolean", required: false, description: "Skip the agent's permission prompts (its YOLO flag). Unattended tasks need this or an enforcing sandbox, or they stop at the first prompt.", cli_flag: Some("--yolo") },
+            ParamDef { name: "account", json_type: "string", required: false, description: "Agent account (Settings > Agents > credentials) the new task's agent runs on. Only when the user explicitly asked for a specific account; otherwise leave it out and the agent's default is used.", cli_flag: Some("--account") },
             ParamDef { name: "open", json_type: "boolean", required: false, description: "Select the new task in the window and raise it.", cli_flag: Some("--open") },
             P_WAIT,
             P_TIMEOUT,
@@ -1141,6 +1142,7 @@ const TOOLS: &[ToolDef] = &[
             resume: arg_str(a, "resume")?,
             sandbox: arg_str(a, "sandbox")?,
             yolo: arg_bool(a, "yolo")?,
+            account: arg_str(a, "account")?,
             project: arg_str(a, "project")?,
             open: arg_bool(a, "open")?,
             wait: arg_bool(a, "wait")?,
@@ -1194,6 +1196,7 @@ const TOOLS: &[ToolDef] = &[
                 resume: None,
                 sandbox: arg_str(a, "sandbox")?,
                 yolo: arg_bool(a, "yolo")?,
+                account: None,
                 project: arg_str(a, "project")?,
                 open: arg_bool(a, "open")?,
                 wait: arg_bool(a, "wait")?,
@@ -1633,7 +1636,7 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_agents",
         cli_verb: "agents",
-        description: "List the agent CLIs this app can run: the ids task_new and task_tab accept, with whether each is installed and usable. Without this a caller has to guess an agent id and read the refusal.",
+        description: "List the agent CLIs this app can run: the ids task_new and task_tab accept, with whether each is installed and usable, and each agent's named accounts (what task_new's account takes) with the default. Without this a caller has to guess an agent id and read the refusal.",
         params: &[],
         destructive: false,
         read_only: true,
@@ -3972,7 +3975,9 @@ mod tests {
         // pairing mode (SPAKE2, docs/peers.md); one short param.
         // 27468: task_group moves a task (`join`, `leave`), parity with
         // `termic group --join/--leave`. Two short params and a clause.
-        const RECORDED: usize = 27468;
+        // 27788: task_new's `account`, parity with `termic new --account`,
+        // and task_agents listing each agent's accounts (GH #278).
+        const RECORDED: usize = 27788;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -4729,17 +4734,18 @@ command = \"/bin/true\"\n";
 
     #[test]
     fn task_new_takes_the_cli_new_flags() {
-        let Command::New { agent_args, sandbox, yolo, open, from, resume, prompt_ref, parent_task, .. } = build(
+        let Command::New { agent_args, sandbox, yolo, account, open, from, resume, prompt_ref, parent_task, .. } = build(
             "task_new",
             serde_json::json!({
                 "name": "x", "args": ["--effort", "low"], "model": "worker", "sandbox": "monitor",
-                "yolo": true, "open": true, "from": "/w", "resume": "S1", "library": "builtin:review",
+                "yolo": true, "account": "work", "open": true, "from": "/w", "resume": "S1", "library": "builtin:review",
                 "parentTask": "p",
             }),
         ).unwrap() else { panic!() };
         // Composed exactly as `termic new --arg ... --model ...` composes it.
         assert_eq!(agent_args, ["--effort", "low", "--model", "worker"]);
         assert_eq!((sandbox.as_deref(), yolo, open), (Some("monitor"), true, true));
+        assert_eq!(account.as_deref(), Some("work"));
         assert_eq!((from.as_deref(), resume.as_deref(), prompt_ref.as_deref()), (Some("/w"), Some("S1"), Some("builtin:review")));
         assert_eq!(parent_task.as_deref(), Some("p"));
         // noGroup beats an explicit parent AND the caller default.

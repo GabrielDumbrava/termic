@@ -446,6 +446,10 @@ pub enum Command {
         sandbox: Option<String>,
         #[serde(default)]
         yolo: bool,
+        /// Named agent account (GH #278) the task's agent runs on. Absent
+        /// = the agent's default account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
         /// Select the new task in the GUI and raise the window.
@@ -1207,6 +1211,13 @@ pub struct AgentEntry {
     /// single field a caller should branch on, so the enabled/installed
     /// rule cannot drift between the CLI and the tab validator.
     pub usable: bool,
+    /// Named accounts (GH #278), what `new --account` takes. Empty when
+    /// the agent has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<String>,
+    /// Which of `accounts` a task uses without `--account`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2283,6 +2294,7 @@ mod tests {
                 resume: None,
                 sandbox: Some("enforce-fs".into()),
                 yolo: true,
+                account: Some("work".into()),
                 project: Some("web".into()),
                 open: true,
                 wait: true,
@@ -2304,6 +2316,7 @@ mod tests {
                 resume: None,
                 sandbox: None,
                 yolo: false,
+                account: None,
                 project: None,
                 open: false,
                 wait: false,
@@ -2326,6 +2339,7 @@ mod tests {
                 resume: None,
                 sandbox: None,
                 yolo: false,
+                account: None,
                 project: None,
                 open: false,
                 wait: false,
@@ -2348,6 +2362,7 @@ mod tests {
                 resume: Some("018f2c1e-aaaa-bbbb-cccc-1234567890ab".into()),
                 sandbox: None,
                 yolo: false,
+                account: None,
                 project: None,
                 open: false,
                 wait: false,
@@ -2744,6 +2759,8 @@ mod tests {
                     enabled: true,
                     installed: Some(true),
                     usable: true,
+                    accounts: vec!["Work".into(), "Client A".into()],
+                    default_account: Some("Work".into()),
                 }],
             }),
             ReplyData::Prompts(PromptsData {

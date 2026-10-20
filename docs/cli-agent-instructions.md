@@ -195,6 +195,12 @@ Rules that matter:
   sandbox); otherwise the agent stops at its first permission prompt.
   The sandbox costs you the report-back, per the section above: that is
   the trade, pick per task.
+- `--account <name>` (MCP `account`) runs the new task's agent on one of
+  its named accounts (Settings > Agents > credentials). Pass it ONLY when
+  the user explicitly asked for a specific account; otherwise leave it out
+  and the agent's default account is used. Unknown names are refused with
+  the list of known ones. `termic agents` (MCP `task_agents`) lists each
+  agent's accounts and marks the default.
 - Task names must be unique per project; a duplicate name is a clean
   error, so pick a fresh name or archive the old task first.
 

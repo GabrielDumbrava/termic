@@ -151,6 +151,9 @@ Resolved in `pty_spawn`, not in the frontend. Every spawn path lands there (the
 UI, the CLI, MCP), so none of them can forget to thread an account through, and
 a Docker spawn takes the Docker realm because its container reads a different
 store.
+`termic new --account <name>` / MCP `task_new {account}` write the same
+per-task override before the first spawn, so an agent launching tasks can pick
+the account too (the server refuses a name the agent does not have).
 
 **A switch takes effect on the NEXT spawn.** A running process cannot have its
 environment changed underneath it, so the pill says so rather than letting

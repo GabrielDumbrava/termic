@@ -480,6 +480,11 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         /// Skip agent permission prompts (the agent's YOLO flag).
         #[arg(long)]
         yolo: bool,
+        /// Agent account (Settings > Agents > credentials) the task's
+        /// agent runs on. Only when the user explicitly asked for a
+        /// specific account; otherwise leave it out (the agent's default).
+        #[arg(long, value_name = "NAME")]
+        account: Option<String>,
         /// Project name (default: resolved from the current directory).
         #[arg(long)]
         project: Option<String>,
@@ -2506,6 +2511,7 @@ fn execute_new(
         resume,
         sandbox,
         yolo,
+        account,
         project,
         open,
         wait,
@@ -2551,6 +2557,7 @@ fn execute_new(
         resume: resume.clone(),
         sandbox: sandbox.clone(),
         yolo: *yolo,
+        account: account.clone(),
         project: project.clone(),
         open: *open,
         wait: *wait,
@@ -2591,6 +2598,7 @@ fn execute_review(
         resume: None,
         sandbox: sandbox.clone(),
         yolo: *yolo,
+        account: None,
         project: project.clone(),
         open: *open,
         wait: *wait,
@@ -3907,7 +3915,7 @@ mod tests {
         // The full happy form parses.
         assert!(Cli::try_parse_from([
             "termic", "new", "fix-auth", "-p", "fix it", "--agent", "claude", "--worktree",
-            "--base", "develop", "--sandbox", "enforce-fs", "--yolo", "--project", "web",
+            "--base", "develop", "--sandbox", "enforce-fs", "--yolo", "--account", "work", "--project", "web",
             "--arg=--effort", "--arg", "low", "--model", "worker",
             "--open", "--wait", "--timeout", "1h30m",
         ])

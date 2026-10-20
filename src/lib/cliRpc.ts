@@ -38,6 +38,7 @@ import {
   taskImportWorktree,
   taskOpenRepo,
   taskRename,
+  taskSetAccount,
   taskSetYolo,
   tasksList,
   taskLinkSpawn,
@@ -140,6 +141,8 @@ interface NewTaskParams {
   resume?: string;
   sandbox?: string;
   yolo?: boolean;
+  /** Named agent account (GH #278), already validated by the server. */
+  account?: string;
   open?: boolean;
   prompt?: string;
   promptId?: string;
@@ -422,6 +425,8 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   // Before anything mounts, so the first spawn composes the flags in.
   // (The import path carried yolo in the create payload itself.)
   if (!importing && p.yolo) await taskSetYolo(task.id, true).catch(() => {});
+  // Not swallowed: a task on the wrong account spends the wrong budget.
+  if (p.account) await taskSetAccount(task.id, task.cli, p.account);
   if (typeof p.prompt === "string" && p.prompt) markUnattendedSpawn(task.id);
   // Before loadAll, so the row appears already inside its group rather than
   // popping into it a beat later. Cosmetic, so a failure (the parent was
@@ -894,6 +899,8 @@ interface RegistryEntry {
   enabled: boolean;
   installed: boolean | null;
   usable: boolean;
+  accounts: string[];
+  default_account: string | null;
 }
 
 function registryView(): RegistryEntry[] {
@@ -915,6 +922,8 @@ function registryView(): RegistryEntry[] {
       // Terminal entries have nothing to detect; agents defer to the same
       // visibleCliIds the "+" menu filters on.
       usable: terminal ? enabled : usableAgents.has(a.id),
+      accounts: a.accounts ?? [],
+      default_account: a.default_account ?? null,
     };
   });
 }

@@ -591,7 +591,7 @@ pub fn agents_text(a: &AgentsData) -> String {
         .max()
         .unwrap_or(0)
         .max("ID".len());
-    let mut out = format!("{:<idw$} KIND      ENABLED  INSTALLED  USABLE\n", "ID");
+    let mut out = format!("{:<idw$} KIND      ENABLED  INSTALLED  USABLE  ACCOUNTS (* default)\n", "ID");
     for e in &a.agents {
         let installed = match e.installed {
             Some(true) => "yes",
@@ -600,12 +600,17 @@ pub fn agents_text(a: &AgentsData) -> String {
             None => "-",
         };
         out.push_str(&format!(
-            "{:<idw$} {:<9} {:<8} {:<10} {}\n",
+            "{:<idw$} {:<9} {:<8} {:<10} {:<7} {}\n",
             e.id,
             e.kind,
             if e.enabled { "yes" } else { "no" },
             installed,
             if e.usable { "yes" } else { "no" },
+            e.accounts
+                .iter()
+                .map(|a| if e.default_account.as_deref() == Some(a) { format!("{a}*") } else { a.clone() })
+                .collect::<Vec<_>>()
+                .join(", "),
         ));
     }
     out.trim_end().to_string()
@@ -750,9 +755,9 @@ mod tests {
     fn agents_table_distinguishes_unknown_from_missing() {
         let d = AgentsData {
             agents: vec![
-                AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true },
-                AgentEntry { id: "codex".into(), kind: "agent".into(), enabled: true, installed: Some(false), usable: false },
-                AgentEntry { id: "gemini".into(), kind: "agent".into(), enabled: true, installed: None, usable: true },
+                AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true, accounts: vec![], default_account: None },
+                AgentEntry { id: "codex".into(), kind: "agent".into(), enabled: true, installed: Some(false), usable: false, accounts: vec![], default_account: None },
+                AgentEntry { id: "gemini".into(), kind: "agent".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None },
             ],
         };
         let out = agents_text(&d);
@@ -762,6 +767,18 @@ mod tests {
         assert!(gemini.contains(" -  "), "unknown must be a dash: {gemini}");
         let codex = out.lines().find(|l| l.starts_with("codex")).unwrap();
         assert!(codex.contains("no"), "{codex}");
+    }
+
+    #[test]
+    fn agents_table_lists_accounts_and_marks_the_default() {
+        let d = AgentsData {
+            agents: vec![AgentEntry {
+                id: "claude".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true,
+                accounts: vec!["Work".into(), "Client A".into()], default_account: Some("Work".into()),
+            }],
+        };
+        let out = agents_text(&d);
+        assert!(out.contains("Work*, Client A"), "{out}");
     }
 
     #[test]
@@ -775,8 +792,8 @@ mod tests {
     fn agents_table_stays_aligned_when_an_id_is_longer_than_the_header() {
         let d = AgentsData {
             agents: vec![
-                AgentEntry { id: "my-very-long-custom-terminal".into(), kind: "terminal".into(), enabled: true, installed: None, usable: true },
-                AgentEntry { id: "cc".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true },
+                AgentEntry { id: "my-very-long-custom-terminal".into(), kind: "terminal".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None },
+                AgentEntry { id: "cc".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true, accounts: vec![], default_account: None },
             ],
         };
         let out = agents_text(&d);
@@ -813,7 +830,7 @@ mod tests {
     #[test]
     fn new_verbs_carry_no_em_dashes() {
         let a = agents_text(&AgentsData {
-            agents: vec![AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: None, usable: true }],
+            agents: vec![AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: None, usable: true, accounts: vec![], default_account: None }],
         });
         let t = tab_text(&TabData {
             agent_args: Vec::new(),

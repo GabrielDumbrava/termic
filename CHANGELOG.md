@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.18.1] - 2026-10-20
+## [1.18.2] - 2026-10-20
 
 Review tasks get names, pins sit atop the file tree, usage limits read as waiting.
 
@@ -17,6 +17,7 @@ Review tasks get names, pins sit atop the file tree, usage limits read as waitin
 - A Claude tab that hits its usage limit shows as waiting (the dashed ring, "usage limit") instead of spinning, and goes back to work on its own when the window resets.
 - Settings, Agents & Terminals: each agent's card can show its recent hook reports, grouped per tab, with what Termic made of each one and a Copy all button, for checking what the agent actually told Termic.
 - The project filter icon in the sidebar is drawn at rest, like the + beside it.
+- The termic CLI and the MCP server can launch a task on a named agent account (new --account, task_new's account), and the agents listing shows each agent's accounts with the default marked. Meant for when you ask an agent for a specific account; without it the default is used.
 
 ### Bug fixes
 - Quitting Termic now gives agents a moment to shut down (SIGTERM, then SIGKILL after 1.5s) instead of killing them outright, so they can save and their MCP servers and shells do not linger.

@@ -559,6 +559,8 @@ pub(crate) struct AgentMeta {
     /// Registry `resume_id_args` non-empty: the agent can resume a
     /// SPECIFIC session by id, the `--resume <SESSION_ID>` gate (GH #169).
     pub id_resume: bool,
+    /// Named accounts (GH #278), the `--account` gate.
+    pub accounts: Vec<String>,
 }
 
 /// Everything the request handler needs from the app, behind a trait so
@@ -1222,6 +1224,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         resume,
         sandbox,
         yolo,
+        account,
         project,
         open,
         wait,
@@ -1416,6 +1419,18 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
                 ),
             );
         }
+        // --account names a login store by its Settings name; an unknown
+        // one would make the first spawn sign in from scratch.
+        Some(meta) if account.as_deref().is_some_and(|n| !meta.accounts.iter().any(|a| a.eq_ignore_ascii_case(n))) => {
+            return fail(
+                ErrorCode::NotFound,
+                format!(
+                    "agent \"{effective_agent}\" has no account \"{}\" (have: {})",
+                    account.as_deref().unwrap_or_default(),
+                    meta.accounts.join(", ")
+                ),
+            );
+        }
         // --resume seeds a session id, which only means something to an
         // agent whose registry entry has `resume_id_args` (claude). The
         // capable list is the actionable part; without it the caller is
@@ -1487,6 +1502,9 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         "resume": resume,
         "sandbox": sandbox,
         "yolo": yolo,
+        // Names may hold spaces and mixed case ("Client A"); the store is
+        // keyed by the Settings spelling, so send that one.
+        "account": account.as_deref().and_then(|n| known.and_then(|m| m.accounts.iter().find(|a| a.eq_ignore_ascii_case(n)))),
         "projectId": proj.id,
         "open": open,
         "prompt": prompt,
@@ -4296,6 +4314,7 @@ impl CliHost for TauriHost {
                 work_done: a.work_done,
                 disabled: a.disabled,
                 id_resume: !a.capabilities.resume_id_args.is_empty(),
+                accounts: a.accounts.clone(),
             })
             .collect()
     }
@@ -6091,7 +6110,7 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn agent_meta(id: &str, work_done: bool) -> AgentMeta {
-        AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false, id_resume: id == "claude" }
+        AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false, id_resume: id == "claude", accounts: Vec::new() }
     }
 
     pub(crate) struct StubHost {
@@ -6865,6 +6884,7 @@ mod tests {
             resume: None,
             sandbox: None,
             yolo: false,
+            account: None,
             project: project.map(str::to_string),
             open: false,
             wait: false,
@@ -8239,6 +8259,7 @@ mod tests {
             work_done: true,
             disabled: true,
             id_resume: false,
+            accounts: Vec::new(),
         });
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { agent, .. } = &mut cmd {
@@ -8248,6 +8269,38 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Unsupported);
         assert!(err.message.contains("disabled"), "{}", err.message);
         assert!(host.rpc_calls.lock().unwrap().is_empty(), "nothing reached the webview");
+    }
+
+    #[test]
+    fn new_account_is_matched_against_the_agent_and_sent_as_spelled_in_settings() {
+        let mut host = StubHost::default();
+        host.agents.push(AgentMeta {
+            id: "acct".into(),
+            kind: "agent".into(),
+            work_done: true,
+            disabled: false,
+            id_resume: false,
+            accounts: vec!["Work".into(), "Client A".into()],
+        });
+        // Unknown: refused before the webview, with the known names.
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { agent, account, .. } = &mut cmd {
+            *agent = Some("acct".into());
+            *account = Some("Nope".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("Work, Client A"), "{}", err.message);
+        assert!(host.rpc_calls.lock().unwrap().is_empty(), "nothing reached the webview");
+        // Known, typed in another case: the Settings spelling goes out.
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { agent, account, .. } = &mut cmd {
+            *agent = Some("acct".into());
+            *account = Some("client a".into());
+        }
+        assert!(handle(&req(cmd, Some("tok")), &host).ok);
+        assert_eq!(rpc_params(&host, "new_task")["account"], "Client A");
     }
 
     #[test]
