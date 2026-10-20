@@ -19,14 +19,15 @@ import { visibleCliIds } from "@/lib/agents";
 import { projectForgePrs } from "@/lib/ipc";
 import { prRef } from "@/lib/forge";
 import { parsePrRef, repoSlug } from "@/lib/prReview";
-import { existingReviewTask, startPrReview, type ReviewWhere } from "@/lib/prReviewTask";
+import { DEFAULT_REVIEW_GROUP, existingReviewTask, startPrReview, type ReviewWhere } from "@/lib/prReviewTask";
 import type { PrPickList } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** The last choices, so the second review is one paste and Enter. Per
  *  machine: a prompt id and a checkout preference are not worth syncing. */
 const LS_REVIEW_PR_LAST = "reviewPrLast";
-interface Last { promptId?: string; where?: ReviewWhere; cli?: string }
+/** `group` is "" when the user cleared it: no group, not the default. */
+interface Last { promptId?: string; where?: ReviewWhere; cli?: string; group?: string }
 
 function readLast(): Last {
   try {
@@ -67,6 +68,11 @@ export function ReviewPrDialog() {
   // the picked library prompt. Edits stay in this dialog; the library is
   // untouched. Picking another prompt starts again from its text.
   const [draft, setDraft] = useState<string | null>(null);
+  // The task's name ("" = the PR's branch) and the sidebar group it joins.
+  const [name, setName] = useState("");
+  const [group, setGroup] = useState(DEFAULT_REVIEW_GROUP);
+  // The PR's branch, once known: the name a blank Name field stands for.
+  const [head, setHead] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // The PRs waiting on this user's review, as one-click rows under the box.
@@ -86,6 +92,8 @@ export function ReviewPrDialog() {
     setPromptId(last.promptId ?? null);
     setCli(last.cli ?? "");
     setDraft(null);
+    setName("");
+    setGroup(typeof last.group === "string" ? last.group : DEFAULT_REVIEW_GROUP);
   }, [open, openFor]);
 
   const project = gitProjects.find(p => p.id === projectId) ?? null;
@@ -106,26 +114,42 @@ export function ReviewPrDialog() {
   }, [open, projectId]);
 
   const number = parsePrRef(query);
+
+  // The PR's branch for the Name placeholder: from the waiting list when the
+  // PR is in it, else looked up once typing pauses.
+  const listedHead = waiting?.prs.find(p => p.number === number)?.head_ref ?? null;
+  useEffect(() => {
+    setHead(null);
+    if (!open || !projectId || !number || listedHead) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      projectForgePrs(projectId, { number })
+        .then(r => { if (!cancelled) setHead(r.prs[0]?.head_ref ?? null); })
+        .catch(() => {});
+    }, 400);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [open, projectId, number, listedHead]);
+  const branchName = listedHead ?? head;
   // A link names its repo: refuse one for a different repo here, with the
   // reason, rather than fetching the same number from the wrong project.
   const linkSlug = /^https?:\/\//i.test(query.trim()) ? repoSlug(query) : null;
   const projectSlug = waiting?.remote_url ? repoSlug(waiting.remote_url) : null;
   const wrongRepo = !!linkSlug && !!projectSlug && linkSlug !== projectSlug;
-  const reuse = project && number ? existingReviewTask(project.id, number) : undefined;
+  const reuse = project && number ? existingReviewTask(project.id, number, branchName) : undefined;
   const promptText = draft ?? prompt?.body ?? "";
   const canStart = !!project && number > 0 && !!promptText.trim() && !!agent && !busy && !wrongRepo;
 
   async function start(n = number) {
     if (!project || !promptText.trim() || !agent || !n || busy || wrongRepo) return;
     setBusy(true); setErr(null);
-    if (prompt) writeLast({ promptId: prompt.id, where, cli: agent.id });
+    if (prompt) writeLast({ promptId: prompt.id, where, cli: agent.id, group: group.trim() });
     try {
       // The text as edited here, under the picked prompt's identity (its
       // title names the agent tab when the PR already has a review task).
       const used = prompt
         ? { ...prompt, body: promptText }
         : { id: "review-pr:custom", title: t("reviewPr.title"), body: promptText, builtin: false, enabled: true, modified: false, labels: [CODE_REVIEW_LABEL], forReview: true };
-      await startPrReview({ projectId: project.id, number: n, where, cli: agent.id, prompt: used });
+      await startPrReview({ projectId: project.id, number: n, where, cli: agent.id, prompt: used, name, group });
       close();
     } catch (e) {
       setErr(String(e).replace(/^Error:\s*/, ""));
@@ -259,6 +283,36 @@ export function ReviewPrDialog() {
             ))}
           </div>
         </div>
+
+        {/* Unused when the PR already has a task: the review joins that one. */}
+        {!reuse && (
+          <>
+            <div className="flex items-start gap-2.5">
+              <span className={label}>{t("reviewPr.name")}</span>
+              <input
+                data-testid="review-pr-name"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && canStart) { e.preventDefault(); void start(); } }}
+                placeholder={branchName ?? t("reviewPr.namePlaceholder")}
+                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+                className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
+              />
+            </div>
+            <div className="flex items-start gap-2.5">
+              <span className={label}>{t("reviewPr.group")}</span>
+              <input
+                data-testid="review-pr-group"
+                value={group}
+                onChange={e => setGroup(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && canStart) { e.preventDefault(); void start(); } }}
+                placeholder={t("reviewPr.groupPlaceholder")}
+                autoComplete="off" spellCheck={false}
+                className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
+              />
+            </div>
+          </>
+        )}
 
         <div className="flex items-start gap-2.5">
           <span className={label}>{t("reviewPr.agent")}</span>

@@ -336,6 +336,71 @@ describe("review a PR: the dialog", () => {
     await clickWhenVisible('[data-testid="review-pr-where-worktree"]');
   });
 
+  const NAME = '[data-testid="review-pr-name"]';
+  const GROUP = '[data-testid="review-pr-group"]';
+  const field = (sel: string) => browser.execute((s) => {
+    const el = document.querySelector(s) as HTMLInputElement | null;
+    return el ? { value: el.value, placeholder: el.placeholder } : null;
+  }, sel);
+
+  it("names the task after the PR's branch and files it under Review, both editable", async () => {
+    await openDialog();
+    // Blank Name means the PR's branch; the fixture has no forge to say
+    // which branch, so the placeholder says so in words.
+    expect(await field(NAME)).toEqual({ value: "", placeholder: "The PR branch" });
+    expect((await field(GROUP))?.value).toBe("Review");
+    await setInputValue(NAME, "login review");
+    expect((await field(NAME))?.value).toBe("login review");
+    await snap("review-pr-07-name-and-group.png");
+  });
+
+  it("remembers a cleared group as no group, and a named one as itself", async () => {
+    await openDialog();
+    await setInputValue(GROUP, "");
+    await setInputValue(INPUT, "7");
+    await clickWhenVisible(START);
+    await waitVisible('[data-testid="review-pr-error"]');
+    await closeDialog();
+    await openDialog();
+    expect((await field(GROUP))?.value).toBe("");
+    await setInputValue(GROUP, "PR triage");
+    await setInputValue(INPUT, "7");
+    await clickWhenVisible(START);
+    await waitVisible('[data-testid="review-pr-error"]');
+    await closeDialog();
+    await openDialog();
+    expect((await field(GROUP))?.value).toBe("PR triage");
+    // The name is per review: never carried over.
+    expect((await field(NAME))?.value).toBe("");
+    await browser.execute(() => localStorage.removeItem("reviewPrLast"));
+  });
+
+  it("asks for no name or group when the PR already has a task, which the review joins", async () => {
+    // A task the old `review-pr-<n>` naming made (the CLI still does). Put in
+    // the store directly: the matching rules themselves are unit-tested
+    // (prReviewTask.test.ts); this pins what the dialog does with a match.
+    const id = await fixtureId();
+    await browser.execute((pid) => {
+      const s = window.__termic!.useApp.getState();
+      window.__termic!.useApp.setState({ tasks: [...s.tasks, { ...s.tasks[0], id: "e2e-review-42", project_id: pid, name: "review-pr-42", branch: "e2e-review-42", archived: false }] });
+    }, id);
+    try {
+      await openDialog();
+      await setInputValue(INPUT, "42");
+      await waitVisible('[data-testid="review-pr-hint"]');
+      expect(await browser.execute(() => document.querySelector('[data-testid="review-pr-hint"]')?.textContent ?? "")).toContain("review-pr-42");
+      expect(await field(NAME)).toBeNull();
+      expect(await field(GROUP)).toBeNull();
+      await setInputValue(INPUT, "43");
+      await waitVisible(NAME);
+    } finally {
+      await browser.execute(() => {
+        const s = window.__termic!.useApp.getState();
+        window.__termic!.useApp.setState({ tasks: s.tasks.filter((t: { id: string }) => t.id !== "e2e-review-42") });
+      });
+    }
+  });
+
   it("reports a PR the forge cannot answer for, stays open, and makes nothing", async () => {
     const before = await reviewTasks();
     await openDialog();
