@@ -26756,6 +26756,7 @@ mod tests {
         assert!(!Task { sandbox_mode: Some(SandboxMode::Enforce), ..Default::default() }.keychain_blocked());
     }
 
+    #[cfg(unix)] // builds its home with a unix symlink
     #[test]
     fn under_keychains_matches_both_forms_and_nothing_else() {
         let tmp = tempfile::tempdir().unwrap();

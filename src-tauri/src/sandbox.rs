@@ -3663,6 +3663,7 @@ print(sec.SecItemCopyMatching(d, C.byref(C.c_void_p())))
         }
     }
 
+    #[cfg(unix)] // builds its home with a unix symlink
     #[test]
     fn keychain_dirs_covers_the_resolved_path() {
         let tmp = tempfile::tempdir().unwrap();
