@@ -52,6 +52,7 @@ mod peer_crypto;
 mod peers;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
 mod config_sync;
+pub mod customizations;
 // Row shapes + OS-agnostic logic (subtree walk, cpu_ratio, label_for,
 // signal_from_name) shared by every `procmon` variant below.
 // Linux AppImage desktop integration (menu entry + icon + `termic://`
@@ -188,6 +189,10 @@ pub struct Project {
     /// matched against the request hostname.
     #[serde(default)]
     pub sandbox_allowed_hosts: Vec<String>,
+
+    /// Mode controlling how a project inherits profile-level customizations (skills, mcp, agents).
+    #[serde(default)]
+    pub customization_mode: customizations::CustomizationMode,
 
     /// Project type. Defaults to Single for back-compat with all the
     /// `projects.json` rows written before multi-repo shipped.
@@ -1100,6 +1105,64 @@ pub(crate) fn profile_dir(id: &ProfileId) -> Result<PathBuf> {
     let p = profiles::profile_dir(&global_dir()?, id);
     fs::create_dir_all(&p)?;
     Ok(p)
+}
+
+pub(crate) fn effective_customization_mode(project: &Project) -> customizations::CustomizationMode {
+    if project.customization_mode != customizations::CustomizationMode::Default {
+        return project.customization_mode;
+    }
+    project.customization_mode.resolve(
+        load_settings_in(&project.profile).customizations_enabled.unwrap_or(true),
+    )
+}
+
+fn prepare_profile_customizations(profile: &ProfileId) -> Result<PathBuf, String> {
+    let dir = profile_dir(profile).map_err(|e| e.to_string())?;
+    customizations::ensure_builtin_skills(&dir).map_err(|e| e.to_string())?;
+    Ok(customizations::customizations_dir(&dir))
+}
+
+/// Initialize and open the CALLING WINDOW's profile customizations.
+#[tauri::command]
+async fn customizations_open(window: tauri::Window) -> Result<String, String> {
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = prepare_profile_customizations(&profile)?.to_string_lossy().into_owned();
+        #[cfg(feature = "e2e")]
+        e2e_record_open(&path);
+        #[cfg(not(feature = "e2e"))]
+        spawn_os_open(&path)?;
+        Ok(path)
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn set_customizations_enabled(profile: &ProfileId, enabled: bool) -> Result<(), String> {
+    let dir = profile_dir(profile).map_err(|e| e.to_string())?;
+    if enabled {
+        customizations::ensure_builtin_skills(&dir).map_err(|e| e.to_string())?;
+    }
+    let mut settings = load_settings_in(profile);
+    settings.customizations_enabled = Some(enabled);
+    save_settings_in(profile, &settings)?;
+    let projects = load_projects_in(profile);
+    for task in load_tasks_in(profile).into_iter().filter(|t| !t.archived) {
+        if !Path::new(&task.path).is_dir() { continue; }
+        if let Some(project) = projects.iter().find(|p| p.id == task.project_id) {
+            if project.customization_mode == customizations::CustomizationMode::Default {
+                customizations::reconcile_customizations(
+                    &dir, Path::new(&task.path), project.customization_mode.resolve(enabled), &task.cli,
+                ).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn customizations_set_enabled(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    let profile = window_profile(&window);
+    tauri::async_runtime::spawn_blocking(move || set_customizations_enabled(&profile, enabled))
+        .await.map_err(|e| e.to_string())?
 }
 
 // ─────────────── agent accounts: where a login lives (GH #278) ───────────────
@@ -3954,6 +4017,17 @@ fn pty_spawn(
             );
         }
     }
+    if let Some(task) = &spawn_task {
+        if let Ok(pdir) = profile_dir(&spawn_profile) {
+            let cust_mode = load_projects_all()
+                .into_iter()
+                .find(|p| p.id == task.project_id)
+                .map(|p| effective_customization_mode(&p))
+                .unwrap_or(customizations::CustomizationMode::Inherit);
+            let agent = args.agent_id.as_deref().unwrap_or(&task.cli);
+            let _ = customizations::reconcile_customizations(&pdir, Path::new(&task.path), cust_mode, agent);
+        }
+    }
     let docker_task = spawn_task
         .clone()
         .filter(|t| t.docker_sandbox_enabled && docker_globally_enabled);
@@ -3998,6 +4072,18 @@ fn pty_spawn(
         let (docker_allowed_paths, _) = live_sandbox_lists(&task);
         // Docker-specific env when this agent declares one (see Agent.docker_env).
         let mut docker_env = docker_env_for(&docker_settings.agents, &agent, &args.env);
+        let inherits = load_projects_all()
+            .into_iter()
+            .find(|p| p.id == task.project_id)
+            .map(|p| effective_customization_mode(&p) == customizations::CustomizationMode::Inherit)
+            .unwrap_or(true);
+        if inherits {
+            if let Ok(pdir) = profile_dir(&spawn_profile) {
+                for (k, v) in customizations::read_mcp_env(&pdir) {
+                    docker_env.insert(k, v);
+                }
+            }
+        }
         // TERMIC_TAB_ID (GH #358) rides the overlay build_spec forwards into
         // the container: the host injection below never reaches it.
         if let Some(tab) = agent_tab_id(&args) {
@@ -4241,6 +4327,22 @@ fn pty_spawn(
         cmd.env("TERMIC_TASK_ID", wid);
         if let Some(name) = &task_name {
             cmd.env("TERMIC_TASK", name);
+        }
+    }
+    let inherits_customizations = spawn_task.as_ref().map(|t| {
+        load_projects_all()
+            .into_iter()
+            .find(|p| p.id == t.project_id)
+            .map(|p| effective_customization_mode(&p) == customizations::CustomizationMode::Inherit)
+            .unwrap_or(true)
+    }).unwrap_or(true);
+
+    // Machine-local MCP environment variables (e.g. from mcp.env.local)
+    if inherits_customizations {
+        if let Ok(pdir) = profile_dir(&spawn_profile) {
+            for (k, v) in customizations::read_mcp_env(&pdir) {
+                cmd.env(k, v);
+            }
         }
     }
     // The agent's OWN tab (GH #358), so `termic prop` writes where the agent
@@ -5786,6 +5888,7 @@ fn project_add(window: tauri::Window, root_path: String, non_git: Option<bool>) 
         docker_extra_mounts: Vec::new(),
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
+        customization_mode: customizations::CustomizationMode::default(),
         // Default to single-repo. project_add_multi is the entry
         // point for multi-repo projects (it sets type + members).
         project_type: ProjectType::Single,
@@ -5983,6 +6086,7 @@ fn project_add_multi(window: tauri::Window, root_path: String, name: String, mem
         docker_extra_mounts: Vec::new(),
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
+        customization_mode: customizations::CustomizationMode::default(),
         project_type: ProjectType::Multi,
         members,
         spotlight_enabled: false,
@@ -6103,9 +6207,19 @@ fn project_update(mut p: Project) -> Result<(), String> {
         if p.docker_extra_mounts != slot.docker_extra_mounts {
             docker::refuse_data_dir_mounts(&p.docker_extra_mounts)?;
         }
+        let mode_changed = p.customization_mode != slot.customization_mode;
         p.profile = slot.profile.clone();
+        let current_p = p.clone();
         *slot = p;
         save_projects(&list).map_err(|e| e.to_string())?;
+        if mode_changed {
+            if let Ok(pdir) = profile_dir(&current_p.profile) {
+                let _ = customizations::ensure_builtin_skills(&pdir);
+                for t in load_tasks_all().into_iter().filter(|t| !t.archived && t.project_id == current_p.id) {
+                    let _ = customizations::reconcile_customizations(&pdir, Path::new(&t.path), effective_customization_mode(&current_p), &t.cli);
+                }
+            }
+        }
         Ok(())
     } else {
         Err("project not found".into())
@@ -6494,6 +6608,10 @@ fn task_open_repo(
         schedule: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
+    if let Ok(pdir) = profile_dir(&proj.profile) {
+        let _ = customizations::ensure_builtin_skills(&pdir);
+        let _ = customizations::reconcile_customizations(&pdir, Path::new(&task.path), effective_customization_mode(&proj), &task.cli);
+    }
     Ok(task)
 }
 
@@ -6926,6 +7044,10 @@ fn task_import_worktree(
         schedule: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
+    if let Ok(pdir) = profile_dir(&proj.profile) {
+        let _ = customizations::ensure_builtin_skills(&pdir);
+        let _ = customizations::reconcile_customizations(&pdir, Path::new(&task.path), effective_customization_mode(&proj), &task.cli);
+    }
     Ok(task)
 }
 
@@ -7225,6 +7347,13 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         if !existed && wt_path.join(name).exists() {
             emit_create_progress(&app, &task_id, format!("Linked {name}."));
         }
+    }
+
+    // Profile customizations (skills, personas, mcp)
+    if let Ok(pdir) = profile_dir(&proj.profile) {
+        let _ = customizations::ensure_builtin_skills(&pdir);
+        let cli_hint = args.cli.as_deref().unwrap_or(&proj.default_cli);
+        let _ = customizations::reconcile_customizations(&pdir, &wt_path, effective_customization_mode(&proj), cli_hint);
     }
 
     // Allocate the task's port block (base + extras + buffer).
@@ -7769,6 +7898,12 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
+
+    // Profile customizations (skills, personas, mcp)
+    if let Ok(pdir) = profile_dir(&host.profile) {
+        let _ = customizations::ensure_builtin_skills(&pdir);
+        let _ = customizations::reconcile_customizations(&pdir, &wrapper, effective_customization_mode(&host), &task.cli);
+    }
 
     // Streamed setup: host's project.setup_script (cwd=wrapper)
     // first, then each member's setup_script (cwd=member.path) in
@@ -11408,6 +11543,9 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
         list[idx].archived = false;
         list[idx].archived_at = None;
         save_task(&list[idx]).map_err(|e| e.to_string())?;
+        if let Ok(pdir) = profile_dir(&list[idx].profile) {
+            let _ = customizations::reconcile_customizations(&pdir, Path::new(&list[idx].path), effective_customization_mode(&proj), &list[idx].cli);
+        }
         return Ok(list[idx].clone());
     }
 
@@ -11608,6 +11746,12 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     save_task(&list[idx]).map_err(|e| e.to_string())?;
     drop(port_guard);
     let task = list[idx].clone();
+
+    // Profile customizations (skills, personas, mcp)
+    if let Ok(pdir) = profile_dir(&proj.profile) {
+        let _ = customizations::ensure_builtin_skills(&pdir);
+        let _ = customizations::reconcile_customizations(&pdir, &wt_path, effective_customization_mode(&proj), &task.cli);
+    }
 
     // Run setup script(s) fire-and-forget, same as creation.
     if !is_multi && task.composition.is_empty() {
@@ -14688,16 +14832,24 @@ fn safe_task_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
 /// keep the strict check, so nothing can MUTATE the main checkout by writing
 /// through a link from a worktree task.
 fn safe_task_read_path(w: &Task, base: &Path, rel: &str) -> Result<PathBuf, String> {
-    let root = load_projects_all()
+    let proj = load_projects_all()
         .into_iter()
-        .find(|p| p.id == w.project_id)
-        .map(|p| PathBuf::from(p.root_path));
-    safe_task_read_path_in(root.as_deref(), base, rel)
+        .find(|p| p.id == w.project_id);
+    let root = proj.as_ref().map(|p| PathBuf::from(&p.root_path));
+    let cust_dir = proj
+        .and_then(|p| profile_dir(&p.profile).ok())
+        .map(|pdir| customizations::customizations_dir(&pdir));
+    safe_task_read_path_in(root.as_deref(), cust_dir.as_deref(), base, rel)
 }
 
 /// The decision itself, with the project root passed in rather than looked up,
 /// so it is testable without a profile on disk.
-fn safe_task_read_path_in(project_root: Option<&Path>, base: &Path, rel: &str) -> Result<PathBuf, String> {
+fn safe_task_read_path_in(
+    project_root: Option<&Path>,
+    customizations_root: Option<&Path>,
+    base: &Path,
+    rel: &str,
+) -> Result<PathBuf, String> {
     let strict = match safe_task_path(base, rel) {
         Ok(p) => return Ok(p),
         Err(e) => e,
@@ -14707,27 +14859,42 @@ fn safe_task_read_path_in(project_root: Option<&Path>, base: &Path, rel: &str) -
         Err(_) => return Err(strict),
     };
     let Some(first) = pb.components().next() else { return Err(strict) };
-    // Only a symlink sitting directly in the task root qualifies: that is the
-    // shape link_config_dir creates, and it keeps a symlink buried deep in the
-    // repo from widening the check.
+    let first_str = first.as_os_str().to_string_lossy();
+
+    // Only a symlink sitting directly in the task root qualifies, or a
+    // Termic-managed customization path under .agents or .mcp.json.
     let is_link = base
         .join(first.as_os_str())
         .symlink_metadata()
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false);
-    if !is_link {
+    let is_customization_path = first_str == ".agents" || first_str == ".mcp.json";
+
+    if !is_link && !is_customization_path {
         return Err(strict);
     }
-    let Some(root) = project_root else { return Err(strict) };
-    let (Ok(canon_root), Ok(target)) = (dunce::canonicalize(root), dunce::canonicalize(base.join(&pb)))
-    else {
+
+    let Ok(target) = dunce::canonicalize(base.join(&pb)) else {
         return Err(strict);
     };
-    if target.starts_with(&canon_root) {
-        Ok(target)
-    } else {
-        Err(strict)
+
+    if let Some(root) = project_root {
+        if let Ok(canon_root) = dunce::canonicalize(root) {
+            if target.starts_with(&canon_root) {
+                return Ok(target);
+            }
+        }
     }
+
+    if let Some(cust) = customizations_root {
+        if let Ok(canon_cust) = dunce::canonicalize(cust) {
+            if target.starts_with(&canon_cust) {
+                return Ok(target);
+            }
+        }
+    }
+
+    Err(strict)
 }
 
 #[derive(Serialize)]
@@ -21834,6 +22001,9 @@ fn legacy_shared_config_dirs_pre_azure() -> Vec<String> {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
+    /// Profile-wide default for projects without an explicit customization override.
+    /// Absent/null preserves the original enabled behavior.
+    pub customizations_enabled: Option<bool>,
     /// Directory to scan for git repos when discovering. Empty = unset.
     pub repos_dir: String,
     /// True once the user has finished the welcome wizard.
@@ -26167,7 +26337,7 @@ pub fn run() {
             pty_spawn, pty_write, pty_resize, pty_kill,
             procmon_start, procmon_sample, procmon_stop, procmon_signal, procmon_open_window,
             lsp_offer, lsp_catalog, lsp_install, lsp_install_zuban, lsp_check_update, lsp_update, lsp_start, lsp_send, lsp_stop, lsp_reap_foreign, lsp_list,
-            notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
+            notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, customizations_open, customizations_set_enabled, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, discovery_dismiss,
             config_sync::sync_status, config_sync::sync_connect, config_sync::sync_preview,
             config_sync::sync_bind, config_sync::sync_now, config_sync::sync_launch_pull, config_sync::sync_focus_pull,
@@ -27051,6 +27221,88 @@ mod tests {
             profile,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn customizations_folder_is_initialized_in_the_requested_profile() {
+        with_scratch_data_dir(|data| {
+            let profile = ProfileId::Slug("home".into());
+            let path = crate::prepare_profile_customizations(&profile).unwrap();
+            assert_eq!(path, data.join("profiles/home/customizations"));
+            assert!(path.join("skills/termic/SKILL.md").is_file());
+            assert!(path.join("agents").is_dir());
+            assert!(path.join("mcp").is_dir());
+            assert!(!data.join("customizations").exists());
+            fs::write(path.join("skills/termic/SKILL.md"), "User-edited skill").unwrap();
+            assert_eq!(crate::prepare_profile_customizations(&profile).unwrap(), path);
+            assert_eq!(fs::read_to_string(path.join("skills/termic/SKILL.md")).unwrap(), "User-edited skill");
+            assert_eq!(crate::prepare_profile_customizations(&ProfileId::Root).unwrap(), data.join("customizations"));
+        });
+    }
+
+    #[test]
+    fn customizations_folder_initialization_propagates_io_errors() {
+        with_scratch_data_dir(|data| {
+            fs::write(data.join("customizations"), "Occupied").unwrap();
+            assert!(crate::prepare_profile_customizations(&ProfileId::Root).is_err());
+            assert!(crate::set_customizations_enabled(&ProfileId::Root, true).is_err());
+            assert_eq!(crate::load_settings_in(&ProfileId::Root).customizations_enabled, None);
+        });
+    }
+
+    #[test]
+    fn customizations_default_is_profile_scoped_and_preserves_explicit_overrides() {
+        use crate::customizations::CustomizationMode as Mode;
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            let mut project = a_project("p1", ProfileId::Root);
+            assert_eq!(project.customization_mode, Mode::Default);
+            assert_eq!(crate::effective_customization_mode(&project), Mode::Inherit);
+            crate::set_customizations_enabled(&ProfileId::Root, false).unwrap();
+            assert_eq!(crate::effective_customization_mode(&project), Mode::Override);
+            project.profile = ProfileId::Slug("home".into());
+            assert_eq!(crate::effective_customization_mode(&project), Mode::Inherit);
+            project.profile = ProfileId::Root;
+            for explicit in [Mode::Inherit, Mode::Override, Mode::None] {
+                project.customization_mode = explicit;
+                assert_eq!(crate::effective_customization_mode(&project), explicit);
+            }
+            let mut legacy = serde_json::to_value(&project).unwrap();
+            legacy.as_object_mut().unwrap().remove("customization_mode");
+            assert_eq!(serde_json::from_value::<crate::Project>(legacy).unwrap().customization_mode, Mode::Default);
+        });
+    }
+
+    #[test]
+    fn customizations_default_reconciles_existing_tasks_without_changing_overrides() {
+        use crate::customizations::CustomizationMode as Mode;
+        with_scratch_data_dir(|data| {
+            let mut projects = Vec::new();
+            for (id, mode) in [("following", Mode::Default), ("explicit", Mode::Inherit)] {
+                let mut p = a_project(id, ProfileId::Root);
+                p.customization_mode = mode;
+                projects.push(p);
+                let mut task = a_task(id, ProfileId::Root);
+                task.project_id = id.into();
+                task.path = data.join(id).to_string_lossy().into_owned();
+                fs::create_dir_all(&task.path).unwrap();
+                crate::save_task(&task).unwrap();
+            }
+            crate::save_projects_in(&ProfileId::Root, &projects).unwrap();
+            crate::prepare_profile_customizations(&ProfileId::Root).unwrap();
+            crate::customizations::reconcile_customizations(data, &data.join("explicit"), Mode::Inherit, "codex").unwrap();
+            crate::set_customizations_enabled(&ProfileId::Root, true).unwrap();
+            let inherited = data.join("following/.agents/skills/termic");
+            let explicit = data.join("explicit/.agents/skills/termic");
+            assert!(inherited.exists());
+            assert!(explicit.exists());
+            crate::set_customizations_enabled(&ProfileId::Root, false).unwrap();
+            assert!(!inherited.exists());
+            assert!(explicit.exists());
+            crate::set_customizations_enabled(&ProfileId::Root, true).unwrap();
+            assert!(inherited.exists());
+            assert!(explicit.exists());
+        });
     }
 
     #[test]
@@ -30986,12 +31238,12 @@ mod tests {
         // and never opens.
         assert!(safe_task_path(wt.path(), ".claude").is_err());
 
-        let dir = safe_task_read_path_in(Some(repo.path()), wt.path(), ".claude").unwrap();
+        let dir = safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".claude").unwrap();
         assert_eq!(dir, dunce::canonicalize(repo.path().join(".claude")).unwrap());
         // …and files under it, which is what the editor opens.
-        let file = safe_task_read_path_in(Some(repo.path()), wt.path(), ".claude/settings.json").unwrap();
+        let file = safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".claude/settings.json").unwrap();
         assert!(file.ends_with(".claude/settings.json"));
-        assert!(safe_task_read_path_in(Some(repo.path()), wt.path(), ".claude/agents").is_ok());
+        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".claude/agents").is_ok());
     }
 
     #[cfg(unix)]
@@ -31010,10 +31262,31 @@ mod tests {
         )
         .unwrap();
 
-        let err = safe_task_read_path_in(Some(repo.path()), wt.path(), ".secrets/id_rsa").unwrap_err();
+        let err = safe_task_read_path_in(Some(repo.path()), None, wt.path(), ".secrets/id_rsa").unwrap_err();
         assert!(err.contains("path escapes task"), "{err}");
         // And with no project known, nothing is relaxed at all.
-        assert!(safe_task_read_path_in(None, wt.path(), ".claude").is_err());
+        assert!(safe_task_read_path_in(None, None, wt.path(), ".claude").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_profile_customizations_skills() {
+        let (repo, wt) = repo_with_linked_config();
+        let cust = tempdir().unwrap();
+        let skill_dir = cust.path().join("skills/termic");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), b"# Termic Skill").unwrap();
+
+        let wt_skill_dir = wt.path().join(".agents/skills");
+        fs::create_dir_all(&wt_skill_dir).unwrap();
+        std::os::unix::fs::symlink(
+            fs::canonicalize(&skill_dir).unwrap(),
+            wt_skill_dir.join("termic"),
+        )
+        .unwrap();
+
+        let read = safe_task_read_path_in(Some(repo.path()), Some(cust.path()), wt.path(), ".agents/skills/termic/SKILL.md").unwrap();
+        assert!(read.ends_with("SKILL.md"));
     }
 
     #[cfg(unix)]
@@ -31033,7 +31306,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(safe_task_read_path_in(Some(repo.path()), wt.path(), "src/nested/vendor/lib.rs").is_err());
+        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), "src/nested/vendor/lib.rs").is_err());
     }
 
     #[test]
@@ -31044,11 +31317,11 @@ mod tests {
         fs::create_dir_all(wt.path().join("docs")).unwrap();
         fs::write(wt.path().join("docs/a.md"), b"x").unwrap();
         assert_eq!(
-            safe_task_read_path_in(Some(repo.path()), wt.path(), "docs/a.md").unwrap(),
+            safe_task_read_path_in(Some(repo.path()), None, wt.path(), "docs/a.md").unwrap(),
             safe_task_path(wt.path(), "docs/a.md").unwrap(),
         );
-        assert!(safe_task_read_path_in(Some(repo.path()), wt.path(), "../outside.txt").is_err());
-        assert!(safe_task_read_path_in(Some(repo.path()), wt.path(), "/etc/passwd").is_err());
+        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), "../outside.txt").is_err());
+        assert!(safe_task_read_path_in(Some(repo.path()), None, wt.path(), "/etc/passwd").is_err());
     }
 
     // ─────────────────── scratchpads (GH #244) ───────────────────

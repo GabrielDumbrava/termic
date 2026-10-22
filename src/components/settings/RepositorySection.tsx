@@ -1280,6 +1280,30 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             }
           />
           <Field
+            label={t("repo.customizationModeLabel")}
+            hint={t("repo.customizationModeHint")}
+            control={
+              <select
+                value={draft.customization_mode ?? "default"}
+                aria-label={t("repo.customizationModeLabel")}
+                data-testid="project-customizations-mode"
+                onChange={(e) => {
+                  if (e.target.value === (draft.customization_mode ?? "default")) return;
+                  patch("customization_mode", e.target.value as "default" | "inherit" | "override" | "none");
+                }}
+                className={cn(
+                  "rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[200px]",
+                  flashRing("customization_mode"),
+                )}
+              >
+                <option value="default">{t("repo.customizationDefault")}</option>
+                <option value="inherit">{t("repo.customizationInherit")}</option>
+                <option value="override">{t("repo.customizationOverride")}</option>
+                <option value="none">{t("repo.customizationNone")}</option>
+              </select>
+            }
+          />
+          <Field
             label={t("repo.rootLabel")}
             hint={t("repo.rootHint")}
             control={<Input value={draft.root_path} readOnly className="font-mono opacity-70 cursor-not-allowed" />}

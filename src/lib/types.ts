@@ -144,6 +144,9 @@ export interface Project {
    *  per-CLI defaults the proxy enforces. Format mirrors tinyproxy. */
   sandbox_allowed_hosts?: string[];
 
+  /** Follow the profile default unless this project explicitly overrides it. */
+  customization_mode?: "default" | "inherit" | "override" | "none";
+
   /** Whether Spotlight is enabled for this project. Disabled by default.
    *  All spotlight UI + commands are gated on this flag. */
   spotlight_enabled?: boolean;
@@ -849,6 +852,8 @@ export interface OpenWithPick {
 }
 
 export interface Settings {
+  /** Profile-wide default; absent/null means enabled. */
+  customizations_enabled?: boolean | null;
   /** Config sync state for this profile (config_sync.rs). Written only by the
    *  sync_* commands; settings_save carries the disk copy across, so a form
    *  holding an old snapshot cannot put an old one back. */
