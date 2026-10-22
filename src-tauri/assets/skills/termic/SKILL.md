@@ -95,6 +95,16 @@ Rules that matter:
 - `--account <name>` (MCP `account`) runs the new task's agent on one of its named accounts (Settings > Agents > credentials).
 - Task names must be unique per project.
 
+## Multi-Repo Projects
+
+A multi-repo project holds several repos, possibly many, plus a host folder whose CLAUDE.md and AGENTS.md every task of it sees. Its repos are its members, and each task picks the ones it needs. `"$TERMIC_CLI" project list` (MCP `project_list`) shows which projects are multi-repo and names their members; with `--json`, `type` is `"multi"` and `members` holds each one's `name` and `root_path`.
+
+Name the members a task needs with `--member <name>`, once per member (MCP `task_new` `members`). Each named member gets its own worktree on the task branch, and the rest stay out. Without `--member` no member gets a worktree, so pass it whenever the work touches a member repo:
+
+    "$TERMIC_CLI" new fix-login --project shop --member api --member web -p "..."
+
+An unknown member name, or `--member` on a project that is not multi-repo, fails before anything is created and lists the valid names: the project's members, or the multi-repo projects. Read the names from `project list` rather than guessing them.
+
 ## Your Task Group
 
 Every task you create with `new` from inside your own task joins YOUR task's group: the sidebar draws them as one coloured block with a caption, led by your task, so the user can see which tasks you started. A worker that creates tasks adds them to the same group (groups do not nest). `new --no-group` keeps a task out.

@@ -19,7 +19,7 @@ discovery result is authoritative; do not invent a missing tool or flag.
 | --- | --- | --- |
 | `list` | `task_list` | Tasks and work states |
 | `status` | `task_status` | Task details, path, and tabs |
-| `new` | `task_new` | Create a task and optionally start an agent |
+| `new` | `task_new` | Create a task, with any multi-repo members, and optionally start an agent |
 | `review` | `task_review` | Create a PR review task |
 | `send` | `task_send` | Prompt or resume an agent |
 | `wait` | `task_wait` | Wait for a settled turn |
@@ -42,7 +42,7 @@ discovery result is authoritative; do not invent a missing tool or flag.
 | `scratchpad list` | `scratchpad_list` | List notes |
 | `scratchpad rm` | `scratchpad_remove` | Delete a note |
 | `scratchpad clear` | `scratchpad_clear` | Delete all notes in a target scope |
-| `project list` | `project_list` | List registered projects |
+| `project list` | `project_list` | List registered projects, their type, and multi-repo members |
 | `project add` | `project_add` | Register a repository or plain folder |
 | `project remove` | `project_remove` | Unregister a project and delete its tasks |
 | `schedule list` | `schedule_list` | List recurring schedules |
@@ -106,10 +106,13 @@ or MCP `project`, retain the returned IDs, and coordinate using `send` /
 `task_send`. A task created in another project is linked by `spawned_by`,
 but does not join a group in the first project's sidebar list.
 
-That is distinct from one composed, multi-repository task. The `new` /
-`task_new` interface has no repository-member list; do not invent a
-`members` argument. Use the app's multi-repository flow when that layout
-is required, or separate linked tasks when the assignment permits it.
+That is distinct from one composed, multi-repository task, which lives in
+a multi-repo project. `project list` / `project_list` shows which projects
+are multi-repo and names their members. Pass each member the task needs as
+`--member <name>`, repeated (MCP `task_new` `members`): each named member
+gets a worktree on the task branch, and without it no member gets one. An
+unknown name, or a project that is not multi-repo, fails and lists the
+valid names.
 
 CLI global `--profile <name-or-slug>` explicitly routes commands to a
 profile. Otherwise the named project's profile is used, falling back to

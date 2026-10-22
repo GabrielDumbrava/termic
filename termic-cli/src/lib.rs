@@ -381,6 +381,17 @@ local branch, <remote>/<branch>, or a name that only exists on the remote \
 one is an error. --base then only sets what the diff compares against, and \
 the name defaults to the branch.
 
+--member <NAME> picks the member repos of a multi-repo project by name \
+(case-insensitive); repeat it for more. Each named member gets its own \
+worktree on the task branch, a plain-folder member is linked, and members \
+you did not name are left out. The task is a worktree task, even on a \
+plain-folder host, unless --main asks for the main checkout, which links the \
+named members' live checkouts into the host instead. An unknown name fails \
+before anything is created, listing the project's members, and --member on a \
+project that is not multi-repo fails listing the multi-repo projects. Read the \
+names from `project list`. Without --member \
+no member gets a worktree (a main-checkout task links every member).
+
 Without --wait the command returns at spawn; a prompt keeps injecting \
 app-side but is NOT confirmed. With --wait it blocks until the prompt is \
 confirmed delivered AND that turn settles (or, with no prompt, until the \
@@ -474,6 +485,11 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         /// --main, where the task's directory matches the session's.
         #[arg(long, value_name = "SESSION_ID")]
         resume: Option<String>,
+        /// Multi-repo projects only: a member repo to include, by name.
+        /// Repeat for more. Each gets a worktree on the task branch (with
+        /// --main, its live checkout is linked instead).
+        #[arg(long = "member", value_name = "NAME", conflicts_with_all = ["from", "checkout", "resume"])]
+        members: Vec<String>,
         /// Sandbox mode for the task. Default: the project's sandbox seeds.
         /// `enforce` / `enforce-fs` also deny the new agent the control
         /// plane, so it can never report back to you: ask it for a file in
@@ -1595,7 +1611,7 @@ pub enum ProjectCmd {
         after_help = "The non-interactive registration path scripts need: no prompt, the \
 directory (default: the current one) must be a git repository. Prints the \
 registered project on stdout; with --output-format json, one object: \
-{\"project\": {id, name, root_path, tasks, default_agent}}.
+{\"project\": {id, name, root_path, tasks, default_agent, type, members}}.
 
 Exit codes: 0 registered (or already registered), 1 error (not a git \
 repository, missing directory), 4 app not running, 5 CLI disabled, \
@@ -1612,8 +1628,11 @@ repository, missing directory), 4 app not running, 5 CLI disabled, \
     },
     /// List registered projects with live-task counts.
     #[command(
-        after_help = "Prints one row per project on stdout. With --output-format json, one \
-object: {\"projects\": [{id, name, root_path, tasks, default_agent}]}.
+        after_help = "Prints one row per project on stdout; a multi-repo project's row ends \
+with its member repos. With --output-format json, one object: \
+{\"projects\": [{id, name, root_path, tasks, default_agent, type, members}]}, \
+where type is \"single\" or \"multi\" and members (multi only) lists \
+{name, root_path, non_git, base_branch}.
 
 Exit codes: 0 success, 1 error, 4 app not running, 5 CLI disabled, \
 6 refused, 8 connection lost."
@@ -2519,6 +2538,7 @@ fn execute_new(
         checkout,
         from,
         resume,
+        members,
         sandbox,
         yolo,
         account,
@@ -2575,6 +2595,7 @@ fn execute_new(
         cwd,
         parent_task: if *no_group { None } else { parent_task_from_env() },
         pr: None,
+        members: members.clone(),
     };
     run_new_wire(conn, wire, *wait, token, format, paths)
 }
@@ -2616,6 +2637,7 @@ fn execute_review(
         cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
         parent_task: if *no_group { None } else { parent_task_from_env() },
         pr: Some(number),
+        members: Vec::new(),
     };
     run_new_wire(conn, wire, *wait, token, format, paths)
 }
@@ -3966,6 +3988,26 @@ mod tests {
         assert_eq!(checkout.as_deref(), Some("origin/alice/fix"));
         // Without --from or --checkout the name is still required.
         assert!(Cli::try_parse_from(["termic", "new", "--base", "dev"]).is_err());
+    }
+
+    #[test]
+    fn new_member_flag_rules() {
+        // Repeatable, kept in the order typed (the server owns order and case).
+        let cli = Cli::try_parse_from([
+            "termic", "new", "x", "--member", "api", "--member", "Web", "--main",
+        ])
+        .unwrap();
+        let Cmd::New { members, main, .. } = cli.cmd else { panic!() };
+        assert_eq!(members, ["api", "Web"]);
+        assert!(main, "--main combines: it links the named members");
+        assert!(Cli::try_parse_from(["termic", "new", "x", "--member", "api", "--worktree", "--base", "dev"]).is_ok());
+        // The multi create has no adopt, checkout or resume path.
+        for extra in [["--from", "/wt"], ["--checkout", "alice/fix"], ["--resume", "S1"]] {
+            let argv = ["termic", "new", "x", "--member", "api", extra[0], extra[1]];
+            assert!(Cli::try_parse_from(argv).is_err(), "{argv:?} must be refused");
+        }
+        let Cmd::New { members, .. } = Cli::try_parse_from(["termic", "new", "x"]).unwrap().cmd else { panic!() };
+        assert!(members.is_empty());
     }
 
     #[test]

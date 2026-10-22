@@ -782,7 +782,7 @@ fn rpc_response(server: &McpServer, req: &HttpRequest) -> (u16, Vec<u8>) {
 /// (`agent_overview!` in termic-cli/src/lib.rs): keep the two in step. The
 /// point is the first sentence: an agent that does not realise it is running
 /// INSIDE a Termic task never thinks to start siblings or report back.
-const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send; it queues behind a busy agent's turn, and now=true skips that queue for a message that cannot wait) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); retitle your own task (task_rename); label your tab with what you are working on, shown on the task's sidebar row (task_prop, e.g. ticket=ABC-1; pass your TERMIC_TAB_ID as tab); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id), and ask for that report every time it finishes or gets stuck, follow-up work included, until a human tells it to stop. Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>, with the values written out (there is no shell here to fill them in; TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is where to reply. Report back there every time you finish or get stuck, follow-up work included, and stop only when a human tells you to. When Termic set this client up, it tells the server which task you run in, so task_rename, task_group, task_tab and task_prop default to your own task, exactly like the CLI; name other tasks explicitly. If this machine is paired with others on its network (peer_list), task_new, task_send, task_wait, task_result and task_list take peer:<machine> to run THERE, and peer_call runs any other tool there: put peer:<this machine's name> in your signature and ask for the reply as a task_send with peer:<this machine> back to your task id; a prompt whose header carries peer:<machine> came from that machine, so answer it, or ask it for help when stuck, with task_send peer:<machine> to the id in that header. Without TERMIC_TASK_ID you are driving Termic from outside it.";
+const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send; it queues behind a busy agent's turn, and now=true skips that queue for a message that cannot wait) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); retitle your own task (task_rename); label your tab with what you are working on, shown on the task's sidebar row (task_prop, e.g. ticket=ABC-1; pass your TERMIC_TAB_ID as tab); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. A multi-repo project holds several repos, possibly many (project_list shows each project's type and members): task_new worktrees only the members you name in members (none without it). Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id), and ask for that report every time it finishes or gets stuck, follow-up work included, until a human tells it to stop. Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>, with the values written out (there is no shell here to fill them in; TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is where to reply. Report back there every time you finish or get stuck, follow-up work included, and stop only when a human tells you to. When Termic set this client up, it tells the server which task you run in, so task_rename, task_group, task_tab and task_prop default to your own task, exactly like the CLI; name other tasks explicitly. If this machine is paired with others on its network (peer_list), task_new, task_send, task_wait, task_result and task_list take peer:<machine> to run THERE, and peer_call runs any other tool there: put peer:<this machine's name> in your signature and ask for the reply as a task_send with peer:<this machine> back to your task id; a prompt whose header carries peer:<machine> came from that machine, so answer it, or ask it for help when stuck, with task_send peer:<machine> to the id in that header. Without TERMIC_TASK_ID you are driving Termic from outside it.";
 
 /// UnsupportedProtocolVersionError. The `supported` list has to be
 /// machine-readable in `data`: that is what a client retries from, and
@@ -1119,6 +1119,7 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "args", json_type: "array", required: false, description: "Extra argv for the new task's agent, one element per entry.", cli_flag: Some("--arg") },
             ParamDef { name: "from", json_type: "string", required: false, description: "Absolute path of an EXISTING registered git worktree to adopt as the task instead of creating one (no setup script runs; excludes mode and base).", cli_flag: Some("--from") },
             ParamDef { name: "resume", json_type: "string", required: false, description: "Session id the agent resumes on its first spawn (agents with id-resume support only).", cli_flag: Some("--resume") },
+            ParamDef { name: "members", json_type: "array", required: false, description: "Multi-repo projects: member repos to include, by name. Each gets a worktree on the task branch; with mode \"main\", its live checkout is linked.", cli_flag: Some("--member") },
             ParamDef { name: "sandbox", json_type: "string", required: false, description: "off, monitor, enforce or enforce-fs; default the project's. enforce and enforce-fs deny the new agent this control plane, so it can never report back: ask it for a file in its worktree instead.", cli_flag: Some("--sandbox") },
             ParamDef { name: "yolo", json_type: "boolean", required: false, description: "Skip the agent's permission prompts (its YOLO flag). Unattended tasks need this or an enforcing sandbox, or they stop at the first prompt.", cli_flag: Some("--yolo") },
             ParamDef { name: "account", json_type: "string", required: false, description: "Agent account (Settings > Agents > credentials) the new task's agent runs on. Only when the user explicitly asked for a specific account; otherwise leave it out and the agent's default is used.", cli_flag: Some("--account") },
@@ -1151,6 +1152,7 @@ const TOOLS: &[ToolDef] = &[
             // --no-group wins over the caller default AND an explicit parent.
             parent_task: if arg_bool(a, "noGroup")? { None } else { arg_str(a, "parentTask")? },
             pr: None,
+            members: arg_str_list(a, "members")?,
         }),
     },
     ToolDef {
@@ -1205,6 +1207,7 @@ const TOOLS: &[ToolDef] = &[
                 // Filled with the caller's task by with_caller_defaults.
                 parent_task: if arg_bool(a, "noGroup")? { None } else { arg_str(a, "parentTask")? },
                 pr: Some(pr),
+                members: Vec::new(),
             })
         },
     },
@@ -1883,7 +1886,7 @@ fn tool_schema(t: &ToolDef) -> serde_json::Value {
     let mut required = Vec::new();
     for p in t.params {
         let mut schema = serde_json::json!({ "type": p.json_type, "description": p.description });
-        // The only array param shape we have: a list of argv strings.
+        // The only array param shape we have: a list of strings.
         if p.json_type == "array" {
             schema["items"] = serde_json::json!({ "type": "string" });
         }
@@ -3998,7 +4001,10 @@ mod tests {
         // for a report back until a human says stop. An orchestrator using
         // task_new never saw the rule when its client dropped the server
         // instructions. The format itself stays in task_send, pointed at.
-        const RECORDED: usize = 28122;
+        // 28336: task_new's `members`, parity with `termic new --member`:
+        // the multi-repo members a task worktrees. One sentence; the
+        // refusals live in the server's errors.
+        const RECORDED: usize = 28336;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -4773,6 +4779,12 @@ command = \"/bin/true\"\n";
         let Command::New { parent_task, .. } = build("task_new", serde_json::json!({ "name": "x", "parentTask": "p", "noGroup": true })).unwrap() else { panic!() };
         assert_eq!(parent_task, None);
         assert!(build("task_new", serde_json::json!({ "name": "x", "args": [1] })).is_err(), "argv entries are strings");
+        // `members` is `--member` repeated, names passed through for the server to resolve.
+        let Command::New { members, .. } = build("task_new", serde_json::json!({ "name": "x", "members": ["api", "Web"] })).unwrap() else { panic!() };
+        assert_eq!(members, ["api", "Web"]);
+        let Command::New { members, .. } = build("task_new", serde_json::json!({ "name": "x" })).unwrap() else { panic!() };
+        assert!(members.is_empty());
+        assert!(build("task_new", serde_json::json!({ "name": "x", "members": "api" })).is_err(), "an array, not one name");
     }
 
     #[test]

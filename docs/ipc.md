@@ -255,6 +255,33 @@ set (the name is the OTHER machine's profile), and
 
 `task_create` with `checkout_existing: true` checks `branch` out as it exists instead of cutting it from `base_branch`, which then only sets the diff baseline. `checkout_existing_branch` (lib.rs) runs first and turns the request into a local branch (local as is; `origin/x` or a bare remote-only `x` fetched and tracked) or an error; it never falls through to the new-branch path. The New Task dialog's "Existing branch" mode and `termic new --checkout` (proto v14, `Command::New.checkout`) are the two callers. The flag is saved on the task (`Task.checkout_existing`), so `task_restore` brings a branch archive deleted back the same way (`ensure_restore_branch`) instead of cutting it from the base. See [ui.md](ui.md) "Checking out an existing branch".
 
+### Multi-repo members from the CLI
+
+`termic new --member <name>` (proto v24, `Command::New.members`, MCP
+`task_new` `members`) is how a CLI or MCP create gets member worktrees.
+The wire carries member NAMES; `handle_new` resolves them against the
+disk-read project (`resolve_new_members`: case-insensitive, project
+order, repeats collapsed), refuses an unknown one as not_found listing
+the members, refuses `members` on a single-repo project (naming the
+registered multi-repo projects, or saying there are none) and alongside
+`from` / `checkout` / `pr` / `resume`, and sends the `new_task` RPC the
+member root_paths plus a concrete mode: "main" only when asked for,
+otherwise "worktree", also on a plain-folder host, which keeps the
+dialog's `canWorktree = isMulti || !hostNonGit` instead of the
+single-repo plain-folder pin. The webview's `new_task` handler then
+calls `task_create_multi` (each member `worktree`, or `repo_root` when
+it is a plain folder; member branch and base left to Rust's fallbacks)
+or `task_open_repo` with the `members` filter. Without `members` nothing
+changes: a worktree create is a single-repo `task_create` of the host
+with no members, and a main-checkout create (the only kind on a
+plain-folder host) links every member.
+
+`termic project list` (MCP `project_list`) is where a caller finds
+those names: `ProjectInfo` carries `type` ("single" or "multi", the
+`Project.type` key) and a multi project's `members`, each one's
+`name`, `root_path`, `non_git` and `base_branch`
+(`ProjectMemberInfo`), filled by `project_info` from the disk read.
+
 ### Non-blocking task creation (GH #242)
 
 `task_create`/`task_create_multi` being `spawn_blocking` on the Rust side keeps the WKWebView event loop free, but that alone doesn't stop the FRONTEND from blocking: the old New Task dialog (and, separately, the sidebar `+` quick-create row via `QuickCreateProgressDialog`) each `await`ed the call with a dialog locked open, so the whole window was unusable until `git worktree add` + the file copy finished on a big repo. There were TWO of these blocking implementations (the full dialog and the "quick create" inline path in `Sidebar.tsx`/`quickTask.ts`) — both needed the same fix, since a caller with the id ahead of time gets the same treatment regardless of which UI it came from. The fix doesn't use `useUI.setBusy` (that dims the entire app for one in-flight task, the wrong blast radius) — instead:
