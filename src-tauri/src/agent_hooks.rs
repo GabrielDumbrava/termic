@@ -5041,6 +5041,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
 
     /// claude's `SessionStart` payload: the shape measured on 2.1.273, with
     /// placeholder paths. `session_id` first, `source` near the end.
+    #[cfg(unix)]
     fn claude_session_start_payload(sid: &str, source: &str) -> String {
         format!(
             r#"{{"session_id":"{sid}",

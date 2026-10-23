@@ -744,6 +744,7 @@ fn list_files(clone: &Path, rev: &str, prefix: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[cfg(unix)]
 fn read_git_file_mode(clone: &Path, rev: &str, path: &str) -> Option<u32> {
     let out = g(clone, &["ls-tree", rev, path]).ok()?;
     let line = out.lines().next()?;
@@ -1985,7 +1986,7 @@ fn apply_paths(
                                         (mode_diff, if want_exec { 0o755 } else { 0o644 })
                                     };
                                     #[cfg(not(unix))]
-                                    let (mode_changed, want_mode) = (false, 0o644);
+                                    let mode_changed = false;
 
                                     if bytes_changed || mode_changed {
                                         if !dry_run {

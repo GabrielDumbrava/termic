@@ -30,6 +30,7 @@
 //! VS Code, Cursor, Zed, GitHub Desktop all do the same thing for the
 //! same reason. See e.g. microsoft/vscode `shellEnv.ts`.
 use std::collections::HashMap;
+#[cfg(not(windows))]
 use std::process::Stdio;
 use std::sync::{Condvar, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
@@ -39,6 +40,7 @@ use std::time::{Duration, Instant};
 /// before we give up on that attempt and schedule a retry. Generous on
 /// purpose (VS Code uses 10s): a cold rc at login can legitimately take
 /// seconds, and cutting it off used to mean permanent fallback (#186).
+#[cfg(not(windows))]
 const PROBE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long a reader may wait for the FIRST probe attempt before
@@ -394,16 +396,12 @@ fn passwd_shell() -> Option<String> {
     }
 }
 
-#[cfg(not(unix))]
-fn passwd_shell() -> Option<String> {
-    None
-}
-
 /// Pure shell-selection logic, factored out for testability. `exists`
 /// is the disk probe (real `Path::exists` in production, a stub in
 /// tests). Prefers the given `preferred` shell when set and present,
 /// else the first known-good interpreter found, else `/bin/sh` as a
 /// last resort (POSIX guarantees it).
+#[cfg_attr(windows, allow(dead_code))]
 fn pick_shell(preferred: Option<String>, exists: impl Fn(&str) -> bool) -> String {
     if let Some(s) = preferred {
         if !s.is_empty() && exists(&s) {
@@ -583,6 +581,7 @@ fn bare_login_env() -> LoginEnv {
 }
 
 /// Build the resolved env from a successful probe's `env` dump.
+#[cfg(not(windows))]
 fn env_from_probe(probed: &[(String, String)]) -> LoginEnv {
     let current: HashMap<String, String> = std::env::vars().collect();
     let bare_path = current.get("PATH").cloned().unwrap_or_default();
@@ -624,6 +623,7 @@ fn env_from_probe(probed: &[(String, String)]) -> LoginEnv {
 ///     bare launchd value (LANG=C, no EDITOR) loses to the rc's. Unchanged
 ///     vars (incl. inherited launchd noise like XPC_SERVICE_NAME) are
 ///     dropped either way. Pure for testing.
+#[cfg_attr(windows, allow(dead_code))]
 fn select_injected(
     probed: &[(String, String)],
     current: &HashMap<String, String>,
@@ -656,6 +656,7 @@ fn select_injected(
 /// task's own — a frozen-activation footgun. PATH already carries the
 /// right bin dirs; we just drop the activation pointers so each task's
 /// own activation (or lack of one) wins.
+#[cfg_attr(windows, allow(dead_code))]
 fn is_managed(key: &str) -> bool {
     matches!(
         key,
@@ -666,6 +667,7 @@ fn is_managed(key: &str) -> bool {
     )
 }
 
+#[cfg(not(windows))]
 fn probe_login_shell() -> Option<Vec<(String, String)>> {
     // Probe the SAME shell we spawn terminals with — the account login
     // shell (reflects `chsh`), then `$SHELL`, then a last-resort scan. No
@@ -729,6 +731,7 @@ fn probe_login_shell() -> Option<Vec<(String, String)>> {
 /// junk and the trailing lines of any multi-line value (rare, and we'd
 /// rather drop one than inject a garbage key). Values keep everything
 /// after the first `=`, so `FOO=a=b` round-trips correctly.
+#[cfg_attr(windows, allow(dead_code))]
 fn parse_env_output(stdout: &str) -> Vec<(String, String)> {
     stdout
         .lines()

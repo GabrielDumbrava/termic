@@ -4326,6 +4326,7 @@ fn pty_spawn(
     // above: a sandboxed agent is the threat model and must not gain an
     // rc-level env hook, and Docker has its own HOME and dotfiles. The flag
     // itself is consumed here, not passed through.
+    #[cfg(unix)]
     let share_history = args.env.get(SHARE_HISTORY_ENV).is_some_and(|v| v == "1");
     cmd.env_remove(SHARE_HISTORY_ENV);
     #[cfg(unix)]
