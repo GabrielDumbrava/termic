@@ -507,6 +507,11 @@ names, git branches, and agent CLIs. Enter activates the task
 (`setActiveTask`) and focuses its main tab, while Escape restores focus to
 whichever element was previously focused.
 
+Quick filter shortcuts switch or toggle status filters on the fly: ⌘1
+(All), ⌘2 (Working), ⌘3 (Settled), ⌘4 (Attention), and ⌘5 (Review). The
+footer bar renders interactive hint buttons displaying the current active
+filter and its key chord (⌘1..5 on macOS, Ctrl+1..5 off macOS).
+
 ## Add selection to agent (⇧⌘L)
 
 `add-selection-to-agent` is contextual, not global: it has no `case` in
