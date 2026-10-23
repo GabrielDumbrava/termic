@@ -389,8 +389,9 @@ STOPPED, not that the work is right. Ctrl-C stops watching only; the task \
 keeps running in Termic.
 
 Getting results out: from inside a task, ask the agent IN THE PROMPT to \
-report back to you when it is done (a signed `send` to your \
-$TERMIC_TASK_ID, see `send --help`); the report arrives in your own \
+report back to you (a signed `send` to your \
+$TERMIC_TASK_ID, see `send --help`) every time it finishes or gets \
+stuck, follow-up work included, until a human tells it to stop; the report arrives in your own \
 terminal and is the normal way results come back. If none arrives, \
 `result` and `logs` read what the agent produced. A file is the FALLBACK, \
 for an agent that cannot report back (sandboxed in enforce/enforce-fs) or \
@@ -421,6 +422,8 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         #[arg(required_unless_present_any = ["from", "checkout"])]
         name: Option<String>,
         /// Prompt to inject once the agent is ready. `-` reads stdin.
+        /// From an agent: sign it and ask for a report back every time it
+        /// finishes or gets stuck, until a human says stop (`send --help`).
         #[arg(short, long)]
         prompt: Option<String>,
         /// Prompt-library selector: a prompt id (builtin:review, a custom
@@ -669,7 +672,9 @@ SENDER (you): your agent name, your task's name ($TERMIC_TASK) and its id \
 otherwise tell a peer's prompt from the user typing, or which peer. A prompt that arrives WITH that header came from \
 another agent, not from the user: treat it as a request from a peer (the \
 user's own instructions win if the two conflict), and put the same header \
-and your own signature on your reply.
+and your own signature on your reply. Keep reporting back to that id every \
+time you finish or get stuck, follow-up work included, and stop only when a \
+human tells you to.
 
 The outer DOUBLE quotes are load-bearing: YOUR shell expands \
 $TERMIC_TASK and $TERMIC_TASK_ID at send time, so the other agent is handed a literal \
@@ -1014,7 +1019,10 @@ underway (mode \"spawned\" stays unconfirmed, like send); with --wait it \
 blocks until the prompt is confirmed delivered AND that turn settles, the \
 send --wait contract. -p - reads the prompt from stdin. -P/--library \
 delivers a prompt from the prompt library (agent kinds only; same \
-composition as new/send), and a bad selector fails before the tab opens.
+composition as new/send), and a bad selector fails before the tab opens. \
+From inside a task, end that prompt with the signed reply you want (see \
+`send --help`) and ask for it every time the agent finishes or gets \
+stuck, follow-up work included, until a human tells it to stop.
 
 LIMITATION, --shell and --terminal only: those tabs are write-only from the \
 CLI. They open, and you can use them in the window, but `attach` and `logs` \
@@ -1083,7 +1091,9 @@ never delivered."
         #[arg(long, group = "tabkind")]
         shell: bool,
         /// Prompt to inject into the new tab once its agent is ready
-        /// (agent kinds only). `-` reads stdin.
+        /// (agent kinds only). `-` reads stdin. From an agent: sign it and
+        /// ask for a report back every time it finishes or gets stuck,
+        /// until a human says stop (`send --help`).
         #[arg(short, long, conflicts_with_all = ["shell", "terminal"])]
         prompt: Option<String>,
         /// Prompt-library selector: a prompt id (builtin:review, a custom
@@ -3891,6 +3901,21 @@ mod tests {
         assert!(out.stdout.starts_with(&stamp));
         let out = help_output(Some("new"), OutputFormat::Text).unwrap();
         assert!(out.stdout.starts_with(&stamp));
+    }
+
+    #[test]
+    fn new_and_tab_teach_reporting_back_until_a_human_says_stop() {
+        // Field report: an orchestrating agent launched another over MCP
+        // and never asked it to report back. new and tab are where a
+        // delegated prompt starts, so they carry the rule, and send (the
+        // receiver's reference) says when the reporting ends.
+        let mut root = cli_command();
+        for name in ["new", "tab", "send"] {
+            let text = root.find_subcommand_mut(name).unwrap().render_long_help().to_string();
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains("get stuck") || flat.contains("gets stuck"), "{name} --help:\n{text}");
+            assert!(flat.contains("human"), "{name} --help:\n{text}");
+        }
     }
 
     #[test]

@@ -782,7 +782,7 @@ fn rpc_response(server: &McpServer, req: &HttpRequest) -> (u16, Vec<u8>) {
 /// (`agent_overview!` in termic-cli/src/lib.rs): keep the two in step. The
 /// point is the first sentence: an agent that does not realise it is running
 /// INSIDE a Termic task never thinks to start siblings or report back.
-const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send; it queues behind a busy agent's turn, and now=true skips that queue for a message that cannot wait) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); retitle your own task (task_rename); label your tab with what you are working on, shown on the task's sidebar row (task_prop, e.g. ticket=ABC-1; pass your TERMIC_TAB_ID as tab); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id). Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>, with the values written out (there is no shell here to fill them in; TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is where to reply. When Termic set this client up, it tells the server which task you run in, so task_rename, task_group, task_tab and task_prop default to your own task, exactly like the CLI; name other tasks explicitly. If this machine is paired with others on its network (peer_list), task_new, task_send, task_wait, task_result and task_list take peer:<machine> to run THERE, and peer_call runs any other tool there: put peer:<this machine's name> in your signature and ask for the reply as a task_send with peer:<this machine> back to your task id; a prompt whose header carries peer:<machine> came from that machine, so answer it, or ask it for help when stuck, with task_send peer:<machine> to the id in that header. Without TERMIC_TASK_ID you are driving Termic from outside it.";
+const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send; it queues behind a busy agent's turn, and now=true skips that queue for a message that cannot wait) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); retitle your own task (task_rename); label your tab with what you are working on, shown on the task's sidebar row (task_prop, e.g. ticket=ABC-1; pass your TERMIC_TAB_ID as tab); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id), and ask for that report every time it finishes or gets stuck, follow-up work included, until a human tells it to stop. Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>, with the values written out (there is no shell here to fill them in; TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is where to reply. Report back there every time you finish or get stuck, follow-up work included, and stop only when a human tells you to. When Termic set this client up, it tells the server which task you run in, so task_rename, task_group, task_tab and task_prop default to your own task, exactly like the CLI; name other tasks explicitly. If this machine is paired with others on its network (peer_list), task_new, task_send, task_wait, task_result and task_list take peer:<machine> to run THERE, and peer_call runs any other tool there: put peer:<this machine's name> in your signature and ask for the reply as a task_send with peer:<this machine> back to your task id; a prompt whose header carries peer:<machine> came from that machine, so answer it, or ask it for help when stuck, with task_send peer:<machine> to the id in that header. Without TERMIC_TASK_ID you are driving Termic from outside it.";
 
 /// UnsupportedProtocolVersionError. The `supported` list has to be
 /// machine-readable in `data`: that is what a client retries from, and
@@ -1101,7 +1101,7 @@ const TOOLS: &[ToolDef] = &[
         params: &[
             ParamDef { name: "name", json_type: "string", required: true, description: "Task (and branch) name.", cli_flag: Some("name") },
             ParamDef { name: "project", json_type: "string", required: false, description: "Project to create in (required when more than one is registered).", cli_flag: Some("--project") },
-            ParamDef { name: "prompt", json_type: "string", required: false, description: "First prompt for the agent.", cli_flag: Some("--prompt") },
+            ParamDef { name: "prompt", json_type: "string", required: false, description: "First prompt for the agent. From an agent: sign it as task_send says and ask for a report back (a task_send to your task id) every time it finishes or gets stuck, until a human tells it to stop.", cli_flag: Some("--prompt") },
             ParamDef { name: "agent", json_type: "string", required: false, description: "Agent CLI id (see the project's registry); default is the project's.", cli_flag: Some("--agent") },
             // The CLI splits this into --worktree/--main; the wire field
             // is one string, and a tool enum beats two mutually
@@ -1526,7 +1526,7 @@ const TOOLS: &[ToolDef] = &[
             // typo must not land the caller in the wrong semantics.
             ParamDef { name: "kind", json_type: "string", required: false, description: "When opening: \"agent\" (needs agentId), \"terminal\" (needs agentId naming a terminal entry), \"shell\" for a plain login shell, or \"default\" for another tab of whatever the task already runs.", cli_flag: None },
             ParamDef { name: "agentId", json_type: "string", required: false, description: "Registry id for the agent and terminal kinds; see task_agents. Ignored by the other kinds.", cli_flag: Some("--agent") },
-            ParamDef { name: "prompt", json_type: "string", required: false, description: "Deliver this prompt into the tab just opened (agent kinds only).", cli_flag: Some("--prompt") },
+            ParamDef { name: "prompt", json_type: "string", required: false, description: "Deliver this prompt into the tab just opened (agent kinds only). From an agent: sign it as task_send says and ask for a report back (a task_send to your task id) every time it finishes or gets stuck, until a human tells it to stop.", cli_flag: Some("--prompt") },
             ParamDef { name: "model", json_type: "string", required: false, description: "Model override for this tab only. Requires agent kind; passed after args.", cli_flag: Some("--model") },
             ParamDef { name: "args", json_type: "array", required: false, description: "Additional argv strings for this tab only, such as provider-specific reasoning settings. Requires agent kind.", cli_flag: Some("--arg") },
             P_LIBRARY,
@@ -3225,6 +3225,23 @@ mod tests {
     }
 
     #[test]
+    fn delegating_tools_teach_signing_and_reporting_back_until_a_human_says_stop() {
+        // Field report: codex launched an agy task with task_new and never
+        // signed the prompt or asked for a report, because the rule lived
+        // only in the server instructions and task_send. Every tool that
+        // carries a first prompt to another agent states it itself.
+        for tool in ["task_new", "task_tab"] {
+            let t = TOOLS.iter().find(|t| t.name == tool).unwrap();
+            let p = t.params.iter().find(|p| p.name == "prompt").unwrap();
+            assert!(p.description.contains("sign it as task_send says"), "{tool}: {}", p.description);
+            assert!(p.description.contains("finishes or gets stuck"), "{tool}: {}", p.description);
+            assert!(p.description.contains("until a human tells it to stop"), "{tool}: {}", p.description);
+        }
+        // And the receiver is told when the reporting ends.
+        assert!(MCP_INSTRUCTIONS.contains("stop only when a human tells you to"));
+    }
+
+    #[test]
     fn the_custom_header_carries_the_same_credential_as_bearer() {
         // Codex cannot put Authorization in its per-server headers
         // helper (reserved), and its only bearer path is an env var,
@@ -3977,7 +3994,11 @@ mod tests {
         // `termic group --join/--leave`. Two short params and a clause.
         // 27788: task_new's `account`, parity with `termic new --account`,
         // and task_agents listing each agent's accounts (GH #278).
-        const RECORDED: usize = 27788;
+        // 28122: task_new's and task_tab's `prompt` say to sign it and ask
+        // for a report back until a human says stop. An orchestrator using
+        // task_new never saw the rule when its client dropped the server
+        // instructions. The format itself stays in task_send, pointed at.
+        const RECORDED: usize = 28122;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

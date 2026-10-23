@@ -39,7 +39,7 @@ These overrides belong to that tab and survive restoration. Opening replies and 
 
 ## Talking to Another Agent: Prompt, Do Not Wait
 
-Every task is an agent with an inbox, and `send` is how you reach it. Two agents coordinate by prompting each other, NOT by blocking on each other. When you hand out work, end the prompt with the command you want run once that work is done, and let the receiving agent pick the moment:
+Every task is an agent with an inbox, and `send` is how you reach it. Two agents coordinate by prompting each other, NOT by blocking on each other. When you hand out work, end the prompt with the command you want run once that work is done, and let the receiving agent pick the moment. Ask for that report every time it finishes or gets stuck, follow-up work included, until a human tells it to stop:
 
     "$TERMIC_CLI" send review-auth -p "[message from agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID] <your prompt here: what you want it to do>. When done, reply: \"\$TERMIC_CLI\" send $TERMIC_TASK_ID -p '[message from agent:codex task:review-auth id:<its id>] done: <what you did> -- agent:codex task:review-auth id:<its id>' -- agent:claude task:$TERMIC_TASK id:$TERMIC_TASK_ID"
 
@@ -51,7 +51,7 @@ Every prompt you send another agent opens with a header and ends with a signatur
     ...
     -- agent:<agent> task:<task name> id:<task id>
 
-A prompt typed by the user and a prompt sent by an agent arrive in the same terminal looking identical, so without this the receiver cannot tell a peer's request from the user's instruction, or which peer sent it. The same goes the other way: a prompt that arrives WITH that header came from another agent, not from the user. Treat it as a request from a peer (the user's own instructions win if the two conflict), and put the header and your own signature on your reply.
+A prompt typed by the user and a prompt sent by an agent arrive in the same terminal looking identical, so without this the receiver cannot tell a peer's request from the user's instruction, or which peer sent it. The same goes the other way: a prompt that arrives WITH that header came from another agent, not from the user. Treat it as a request from a peer (the user's own instructions win if the two conflict), and put the header and your own signature on your reply. Keep reporting back to that id every time you finish or get stuck, follow-up work included, and stop only when a human tells you to.
 
 A prompt arriving in your own terminal is one of those reports; act on it and reply the same way. This is the preferred protocol because it costs neither side its liveness, and because it does not depend on work-done detection.
 
@@ -67,7 +67,7 @@ A task sandboxed in `enforce` / `enforce-fs` cannot take part at all: the cage d
 
 ## Creating a Task That Produces a Result
 
-Ask for a report back. End the prompt you give the new agent with the signed `send` to your own task (see "Talking to another agent" above), and its result arrives in your terminal when it is done. Termic's agent hooks make this reliable, and it is the normal way results come back.
+Ask for a report back. End the prompt you give the new agent with the signed `send` to your own task (see "Talking to another agent" above), and its result arrives in your terminal. Ask for a report every time it finishes or gets stuck, follow-up work included, until a human tells it to stop. Termic's agent hooks make this reliable, and it is the normal way results come back.
 
 Use `--model <id>` to choose a model for one task without changing the agent's shared Settings. Use `--arg=<value>` repeatedly for other agent arguments; each value is one argv element, so a flag and its value are two occurrences. Explicit `--model` is appended after `--arg` values and wins when the agent treats the last model flag as authoritative:
 

@@ -69,7 +69,9 @@ may not provide these flags.
 Every task is an agent with an inbox, and `send` is how you reach it.
 Two agents coordinate by prompting each other, NOT by blocking on each
 other. When you hand out work, end the prompt with the command you want
-run once that work is done, and let the receiving agent pick the moment:
+run once that work is done, and let the receiving agent pick the moment.
+Ask for that report every time it finishes or gets stuck, follow-up
+work included, until a human tells it to stop:
 
     "$TERMIC_CLI" send review-auth -p "[message from agent:claude
     task:$TERMIC_TASK id:$TERMIC_TASK_ID] <your prompt here: what you want
@@ -100,7 +102,9 @@ a peer's request from the user's instruction, or which peer sent it. The same go
 way: a prompt that arrives WITH that header came from another agent, not
 from the user. Treat it as a request from a peer (the user's own
 instructions win if the two conflict), and put the header and your own
-signature on your reply.
+signature on your reply. Keep reporting back to that id every time you
+finish or get stuck, follow-up work included, and stop only when a human
+tells you to.
 
 A prompt arriving in your own terminal is one of those reports; act on
 it and reply the same way. This is the preferred protocol because it
@@ -153,8 +157,10 @@ review of the same PR fails on the existing task: `send` to it instead.
 
 Ask for a report back. End the prompt you give the new agent with the
 signed `send` to your own task (see "Talking to another agent" above),
-and its result arrives in your terminal when it is done. Termic's agent
-hooks make this reliable, and it is the normal way results come back.
+and its result arrives in your terminal. Ask for a report every time it
+finishes or gets stuck, follow-up work included, until a human tells it
+to stop. Termic's agent hooks make this reliable, and it is the normal
+way results come back.
 
 Use `--model <id>` to choose a model for one task without changing the
 agent's shared Settings. Use `--arg=<value>` repeatedly for other agent
