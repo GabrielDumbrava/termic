@@ -149,12 +149,14 @@ describe("readiness reported by the agent's own hook", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("blocks rather than guessing when the hook stays silent", async () => {
-    // The bug this exists for. claude's trust picker paints and then goes
-    // quiet, which is byte-for-byte a waiting input box, so the heuristic
-    // called it settled and typed. The submit confirmed the highlighted
-    // `No, exit` and killed the agent. With hooks installed, quiet is no
-    // longer evidence of anything.
+  it("does not guess while the hook may still speak, then falls back to settled", async () => {
+    // claude's trust picker paints and then goes quiet, which is
+    // byte-for-byte a waiting input box, so quiet alone once typed into it
+    // and the submit confirmed `No, exit`. So no guessing inside the wait.
+    // At the deadline a quiet agent is "settled", NOT "ready": callers type
+    // it with verifyEcho, which a picker never satisfies, so the submit is
+    // still withheld there. A hook that stopped firing no longer drops
+    // every first prompt.
     vi.useFakeTimers();
     try {
       const tab = painted(Date.now());
@@ -163,6 +165,18 @@ describe("readiness reported by the agent's own hook", () => {
       await vi.advanceTimersByTimeAsync(READY_QUIET_MS + READY_FLOOR_MS + 500);
       expect(state.outcome).toBeUndefined();
       await vi.advanceTimersByTimeAsync(READY_DEADLINE_MS);
+      expect(await done).toBe("settled");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("blocks at the deadline when the hook stayed silent and the agent is still painting", async () => {
+    vi.useFakeTimers();
+    try {
+      let tab = painted(Date.now());
+      const busy = setInterval(() => { tab = { ...tab, lastOutputAt: Date.now() }; }, 100);
+      const { done } = start(() => tab, true);
+      await vi.advanceTimersByTimeAsync(READY_DEADLINE_MS + 500);
+      clearInterval(busy);
       expect(await done).toBe("blocked");
     } finally { vi.useRealTimers(); }
   });
@@ -215,6 +229,15 @@ describe("hooksOwnStartupReadiness", () => {
     expect(hooksOwnStartupReadiness("codex", false)).toBe(false);
     expect(hooksOwnStartupReadiness("claude", true)).toBe(true);
     expect(hooksOwnStartupReadiness("claude", false)).toBe(false);
-    expect(hooksOwnStartupReadiness(undefined, true)).toBe(true);
+    expect(hooksOwnStartupReadiness("devin", true)).toBe(true);
+    expect(hooksOwnStartupReadiness(undefined, true)).toBe(false);
+  });
+
+  it("is false for agents whose hooks never report ready, or every first prompt is blocked", () => {
+    // agy's hook set is PreInvocation + Stop: no ready event exists, so
+    // gating on one held `task_new -p` for 20s and then dropped it.
+    for (const cli of ["agy", "grok", "opencode", "pi", "omp", "copilot", "muse"]) {
+      expect(hooksOwnStartupReadiness(cli, true)).toBe(false);
+    }
   });
 });

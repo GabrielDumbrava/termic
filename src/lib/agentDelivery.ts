@@ -12,7 +12,7 @@ import { useApp } from "@/store/app";
 import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { ptyAlive } from "@/lib/ipc";
 import { deliverMessage } from "@/lib/agentSend";
-import { isTerminalCli } from "@/lib/agents";
+import { isTerminalCli, builtinBaseId } from "@/lib/agents";
 import type { TerminalTab } from "@/lib/types";
 
 const SPAWN_DEADLINE_MS = 15_000;
@@ -75,7 +75,7 @@ export async function deliverPromptWhenReady(
   // that owns its own ready signal and never sends it is showing a startup
   // prompt, where typing + Enter confirms whatever is highlighted.
   const cli = agentTabFor(taskId, tabId)?.cli;
-  const hooksOwnReadiness = hooksOwnStartupReadiness(cli, !!cli && useApp.getState().agentHooksInstalled[cli] === true);
+  const hooksOwnReadiness = hooksOwnStartupReadiness(cli && builtinBaseId(cli, useApp.getState().agents), !!cli && useApp.getState().agentHooksInstalled[cli] === true);
   const ready = await waitForAgentReady(() => agentTabFor(taskId, tabId), { hooksOwnReadiness });
   if (ready === "blocked") return fail(`${cli} never reported ready; not typing (startup prompt?)`);
   const tab = ready === "lost" ? undefined : agentTabFor(taskId, tabId);

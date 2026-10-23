@@ -74,9 +74,17 @@ export type AgentReadyOutcome = "ready" | "settled" | "deadline" | "blocked" | "
  *  signal is structurally absent exactly when seeding needs it - gating on
  *  it withholds every first message as `blocked`. Falling back to the
  *  painted-and-quiet heuristic is still picker-safe: the typed text never
- *  echoes into a selection dialog, so deliverMessage's verifyEcho refuses. */
-export function hooksOwnStartupReadiness(cli: string | undefined, hooksInstalled: boolean): boolean {
-  return hooksInstalled && cli !== "codex";
+ *  echoes into a selection dialog, so deliverMessage's verifyEcho refuses.
+ *
+ *  An ALLOWLIST of the agents whose hook set registers `Signal::Ready`
+ *  (`hooks_for` in agent_hooks.rs), never "hooks installed, minus codex".
+ *  agy has hooks and no ready event at all, so that rule withheld every
+ *  first prompt it was sent (`task_new -p`, `tab -p`) as `blocked` after a
+ *  silent 20s. `base` is the BUILT-IN id (`builtinBaseId`), so a clone
+ *  answers as the agent it runs. */
+const READY_HOOK_AGENTS = new Set(["claude", "devin"]);
+export function hooksOwnStartupReadiness(base: string | undefined, hooksInstalled: boolean): boolean {
+  return hooksInstalled && !!base && READY_HOOK_AGENTS.has(base);
 }
 
 /** Plain setTimeout, not window.setTimeout: this module is unit-tested
@@ -119,7 +127,7 @@ export async function waitForAgentReady(
     if (t.agentReadyAt) return "ready";
     // Hooks are installed for this agent, so readiness is reportable and has
     // not been reported. Every heuristic below would be guessing against a
-    // signal that exists, so none of them run.
+    // signal that exists, so none of them run until the deadline.
     if (hooked) continue;
     const now = Date.now();
     const quietSince = lastPtyOutputAt(t) ?? now;
@@ -128,5 +136,15 @@ export async function waitForAgentReady(
       if (now - started >= paintingDeadlineMs) return "deadline";
     }
   }
-  return hooked ? "blocked" : "deadline";
+  if (!hooked) return "deadline";
+  // The hook never spoke for the whole wait. A hook that silently stopped
+  // firing (an agent update renamed its event, as agy 1.4.6 did to
+  // PreInvocation) must not drop every first prompt forever, so a painted,
+  // quiet agent falls back to "settled". That is picker-safe: every caller
+  // types non-"ready" outcomes with verifyEcho, and a selection list never
+  // echoes, so the submit is withheld there. Still painting: blocked.
+  const t = tab();
+  if (!t?.ptyId) return "lost";
+  const quiet = !!t.firstOutputAt && Date.now() - (t.lastOutputAt ?? Date.now()) >= quietMs;
+  return quiet ? "settled" : "blocked";
 }

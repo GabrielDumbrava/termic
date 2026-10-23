@@ -741,7 +741,7 @@ const captureArmedRef = useRef(false);
       logWorkState("scheduled-kept", `cli=${tab.cli} ${why}`);
     };
     try {
-      const hooksOwnReadiness = hooksOwnStartupReadiness(tab.cli, useApp.getState().agentHooksInstalled[tab.cli] === true);
+      const hooksOwnReadiness = hooksOwnStartupReadiness(builtinBaseId(tab.cli, useApp.getState().agents), useApp.getState().agentHooksInstalled[tab.cli] === true);
       const outcome = force ? "ready" : await waitForAgentReady(getTab, { hooksOwnReadiness });
       if (outcome === "lost" || outcome === "blocked") return keep(`agent not ready (${outcome})`);
       const now = getTab();

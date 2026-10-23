@@ -1369,6 +1369,37 @@ fn account_login_env(
     env
 }
 
+/// The `.gemini` dir an agy spawn will read, in either realm: the account's
+/// store when one relocates (its `GEMINI_CLI_HOME` is the PARENT on the host;
+/// in Docker the store is mounted AS `/root/.gemini`), else the primary.
+fn agy_config_dir(task: Option<&Task>, agent_id: &str, agents: &[Agent], realm: LoginRealm) -> Option<PathBuf> {
+    match (relocating_account(task, agent_id, agents), realm) {
+        (Some(a), LoginRealm::Host) => Some(login_store_dir(agent_id, Some(&a), realm)?.join(".gemini")),
+        (Some(a), LoginRealm::Docker) => login_store_dir(agent_id, Some(&a), realm),
+        (None, LoginRealm::Host) => agent_dirs::instance_config_dir(agents, agent_id, Path::new(&home_dir())),
+        (None, LoginRealm::Docker) => Some(docker::agent_config_host_dir(agent_id)),
+    }
+}
+
+/// Pre-trust the spawn's cwd for agy, so it never opens on its trust dialog.
+/// See `agent_hooks::agy_trust_workspace` for why. A no-op for other agents;
+/// a failure is logged, never fatal: the worst case is the dialog.
+fn trust_agy_workspace(task: Option<&Task>, agent_id: &str, agents: &[Agent], realm: LoginRealm, cwd: &str) {
+    if !matches!(docker::base_agent_id(agents, agent_id), "agy" | "antigravity") {
+        return;
+    }
+    let Some(dir) = agy_config_dir(task, agent_id, agents, realm) else { return };
+    // The path agy itself sees: canonical (getcwd), and the container's form
+    // in Docker, which is what build_spec hands it as its workdir.
+    let ws = match realm {
+        LoginRealm::Host => canon_str(cwd),
+        LoginRealm::Docker => docker::in_container(&canon_str(cwd)),
+    };
+    if let Err(e) = agent_hooks::agy_trust_workspace(&dir, &ws) {
+        dlog(&format!("[agy] could not pre-trust {ws}: {e}"));
+    }
+}
+
 /// The profile whose window issued a command.
 ///
 /// The ONE place a window is consulted, and it is used only where the answer
@@ -4173,6 +4204,7 @@ fn pty_spawn(
         let agent_base = docker::base_agent_id(&docker_settings.agents, &agent).to_string();
         let docker_account = relocating_account(Some(&task), &agent, &docker_settings.agents);
         spawn_account = docker_account.clone();
+        trust_agy_workspace(Some(&task), &agent, &docker_settings.agents, LoginRealm::Docker, &args.cwd);
         let spec = docker::build_spec(&task, &agent, &image, &args.cwd, task.docker_extra_args.clone(), &docker_env, &agent_extra_dirs, agent_persist_enabled, &docker_allowed_paths, &task.docker_extra_mounts, &id, &agent_base, &docker_settings.docker_shared_config_dirs,
             // The DOCKER realm's account: a container reads the dir termic
             // mounts, never the host's config dir, so its login is a separate
@@ -4375,6 +4407,7 @@ fn pty_spawn(
             &spawn_task.as_ref().map(|t| t.profile.clone()).unwrap_or_default(),
         ).agents;
         spawn_account = relocating_account(spawn_task.as_ref(), &agent_id, &agents);
+        trust_agy_workspace(spawn_task.as_ref(), &agent_id, &agents, LoginRealm::Host, &args.cwd);
         let overlay = account_login_env(spawn_task.as_ref(), &agent_id, &agents, LoginRealm::Host);
         // LINUX TRAP. Two of the shapes relocate an XDG root, and on Linux
         // `dirs::data_local_dir()` IS `$XDG_DATA_HOME`. termic's own CLI
@@ -29243,6 +29276,34 @@ mod tests {
                 env.iter().find(|(k, _)| k == "GEMINI_FORCE_FILE_STORAGE").map(|(_, v)| v.as_str()),
                 Some("true"),
             );
+        });
+    }
+
+    #[test]
+    fn agy_trust_lands_in_the_settings_the_spawn_will_read() {
+        // Same parent-vs-config-dir trap as above: an account's trust goes one
+        // level under GEMINI_CLI_HOME on the host, but straight into the store
+        // in Docker, where the store is mounted AS /root/.gemini.
+        with_scratch_data_dir(|data| {
+            let agents = vec![agent_with("agy", &["Work"], Some("Work"))];
+            let read = |p: PathBuf| -> serde_json::Value {
+                serde_json::from_str(&fs::read_to_string(p.join("antigravity-cli/settings.json")).unwrap()).unwrap()
+            };
+            let ws = data.join("task");
+            fs::create_dir_all(&ws).unwrap();
+            let ws = ws.to_string_lossy().into_owned();
+
+            crate::trust_agy_workspace(None, "agy", &agents, LoginRealm::Host, &ws);
+            let host = read(data.join("logins/agy/work/.gemini"));
+            assert_eq!(host["trustedWorkspaces"], serde_json::json!([crate::canon_str(&ws)]));
+
+            crate::trust_agy_workspace(None, "agy", &agents, LoginRealm::Docker, &ws);
+            let docker = read(data.join("docker-agents/agy/work"));
+            assert_eq!(docker["trustedWorkspaces"].as_array().unwrap().len(), 1);
+
+            // Not agy: nothing written anywhere.
+            crate::trust_agy_workspace(None, "claude", &agents, LoginRealm::Docker, &ws);
+            assert!(!data.join("docker-agents/claude").exists());
         });
     }
 

@@ -2018,6 +2018,38 @@ fn agy_unmerge(existing: &Value) -> Option<Value> {
     if removed { Some(root) } else { None }
 }
 
+/// agy's settings with `workspace` added to `trustedWorkspaces`, or None when
+/// there is nothing to write: already trusted, or a shape we do not
+/// understand and so must not rewrite.
+fn agy_with_trusted(root: &Value, workspace: &str) -> Option<Value> {
+    let mut out = root.clone();
+    let list = out.as_object_mut()?
+        .entry("trustedWorkspaces")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()?;
+    if list.iter().any(|v| v.as_str() == Some(workspace)) {
+        return None;
+    }
+    list.push(Value::String(workspace.into()));
+    Some(out)
+}
+
+/// Pre-accept agy's "Do you trust the contents of this project?" before it
+/// starts in `workspace`. Opening the project in termic is already that
+/// decision, and the dialog has no input box, so a prompt sent by another
+/// agent lands on it and is withheld (agentSend's echo check), i.e. lost.
+///
+/// There is no flag or env var for it (measured on 1.4.6, including
+/// `--dangerously-skip-permissions`), and trust is an EXACT path match: a
+/// trusted parent does not cover a task's worktree under it. Only ever adds.
+pub fn agy_trust_workspace(config_dir: &Path, workspace: &str) -> Result<(), String> {
+    let path = config_dir.join("antigravity-cli/settings.json");
+    match agy_with_trusted(&read_settings(&path)?, workspace) {
+        Some(next) => write_json(&path, &next),
+        None => Ok(()),
+    }
+}
+
 /// Whether the user has switched every hook off. Install must respect it and
 /// say so, rather than writing a file that will never fire.
 pub fn disable_all_hooks(root: &Value) -> bool {
@@ -5909,6 +5941,37 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         let back = agy_unmerge(&after).expect("ours to remove");
         assert_eq!(back, before, "another author's hook survives untouched");
         assert!(agy_unmerge(&before).is_none(), "nothing of ours, nothing to do");
+    }
+
+    #[test]
+    fn agy_trust_adds_the_workspace_once_and_keeps_everything_else() {
+        let before = serde_json::json!({
+            "model": "m", "trustedWorkspaces": ["/Users/alice/a"], "statusLine": { "command": "x" },
+        });
+        let after = agy_with_trusted(&before, "/Users/alice/b").expect("new workspace");
+        assert_eq!(after["trustedWorkspaces"], serde_json::json!(["/Users/alice/a", "/Users/alice/b"]));
+        assert_eq!(after["model"], "m");
+        assert_eq!(after["statusLine"], before["statusLine"]);
+        assert!(agy_with_trusted(&after, "/Users/alice/b").is_none(), "already trusted, no write");
+
+        let fresh = agy_with_trusted(&serde_json::json!({}), "/w").expect("no list yet");
+        assert_eq!(fresh["trustedWorkspaces"], serde_json::json!(["/w"]));
+        // A shape we do not understand is left alone rather than rewritten.
+        assert!(agy_with_trusted(&serde_json::json!({ "trustedWorkspaces": "/w" }), "/x").is_none());
+        assert!(agy_with_trusted(&serde_json::json!([]), "/x").is_none());
+    }
+
+    #[test]
+    fn agy_trust_writes_settings_and_refuses_to_clobber_bad_json() {
+        let dir = tempfile::tempdir().unwrap();
+        agy_trust_workspace(dir.path(), "/w").unwrap();
+        let path = dir.path().join("antigravity-cli/settings.json");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["trustedWorkspaces"], serde_json::json!(["/w"]));
+
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(agy_trust_workspace(dir.path(), "/x").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
     }
 
     #[test]
