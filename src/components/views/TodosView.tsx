@@ -33,6 +33,8 @@ import {
 import { cn } from "@/lib/utils";
 import { i18n } from "@/lib/i18n";
 
+const TODOS_GRID = "grid grid-cols-[100px_minmax(280px,1fr)_minmax(110px,160px)_76px_128px] items-center gap-x-4";
+
 function fmtDate(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -443,7 +445,7 @@ export function TodosView() {
       )}
 
       {/* Content Table / List */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-3" data-testid="todos-list">
         {items.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center p-8 text-center">
             <div className="mb-3 rounded-full bg-[var(--color-bg-2)] p-3 text-[var(--color-fg-faint)]">
@@ -455,17 +457,17 @@ export function TodosView() {
             </p>
           </div>
         ) : (
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-[var(--color-border-soft)] text-[11px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)] bg-[var(--color-bg)] sticky top-0 z-10">
-                <th className="py-2 px-6 w-32">{t("todos.colAction")}</th>
-                <th className="py-2 px-4">{t("todos.colTitle")}</th>
-                <th className="py-2 px-4 w-44">{t("todos.colProject")}</th>
-                <th className="py-2 px-4 w-28">{t("todos.colUpdated")}</th>
-                <th className="py-2 px-6 w-36" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--color-border-subtle)]/60">
+          <div className="w-full">
+            {/* Column heads */}
+            <div className={cn(TODOS_GRID, "px-3 pb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-fg-faint)] select-none")}>
+              <span>{t("todos.colAction")}</span>
+              <span>{t("todos.colTitle")}</span>
+              <span>{t("todos.colProject")}</span>
+              <span className="text-right">{t("todos.colUpdated")}</span>
+              <span />
+            </div>
+
+            <div className="space-y-0.5">
               {items.map((item) => {
                 const title = item.kind === "issue" ? item.issue.title : item.pr.title;
                 const number = item.kind === "issue" ? item.issue.number : item.pr.number;
@@ -512,13 +514,16 @@ export function TodosView() {
                         : "bg-purple-500";
 
                 return (
-                  <tr
+                  <div
                     key={item.id}
                     data-testid="todos-row"
-                    className="group hover:bg-[var(--color-bg-hover)]/70 transition-colors"
+                    className={cn(
+                      TODOS_GRID,
+                      "group rounded-md px-3 py-1.5 text-[13px] select-none transition-colors hover:bg-[var(--color-hover)]"
+                    )}
                   >
                     {/* Action Badge */}
-                    <td className="py-2.5 px-6 whitespace-nowrap">
+                    <div className="flex items-center min-w-0">
                       {hasAction ? (
                         <span
                           className={cn(
@@ -527,114 +532,110 @@ export function TodosView() {
                           )}
                         >
                           <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotBg)} />
-                          {actionLabel}
+                          <span className="truncate">{actionLabel}</span>
                         </span>
                       ) : null}
-                    </td>
+                    </div>
 
                     {/* Title + Number + Labels + Author */}
-                    <td className="py-2.5 px-4 min-w-0">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {item.kind === "issue" ? (
-                          <CircleDot className={cn("h-4 w-4 shrink-0", iconColor)} />
-                        ) : (
-                          <GitPullRequest className={cn("h-4 w-4 shrink-0", iconColor)} />
-                        )}
-                        <span className="font-mono text-[12px] text-[var(--color-fg-dim)] shrink-0">
-                          {item.kind === "issue" ? `#${number}` : `!${number}`}
+                    <div className="flex items-center gap-2 min-w-0">
+                      {item.kind === "issue" ? (
+                        <CircleDot className={cn("h-4 w-4 shrink-0", iconColor)} />
+                      ) : (
+                        <GitPullRequest className={cn("h-4 w-4 shrink-0", iconColor)} />
+                      )}
+                      <span className="font-mono text-[12px] text-[var(--color-fg-dim)] shrink-0">
+                        {item.kind === "issue" ? `#${number}` : `!${number}`}
+                      </span>
+                      <span
+                        className="font-medium text-[13px] text-[var(--color-fg)] truncate hover:text-[var(--color-accent)] transition-colors cursor-pointer"
+                        onClick={() => handleStartTask(item)}
+                        title={title}
+                      >
+                        {title}
+                      </span>
+                      {isDraft && (
+                        <span className="rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-fg-faint)] border border-[var(--color-border-subtle)] shrink-0">
+                          draft
                         </span>
+                      )}
+                      {isClosed && item.state && (
+                        <span className="rounded bg-[var(--color-warn)]/10 px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-warn)] border border-[var(--color-warn)]/20 shrink-0">
+                          {item.state.toLowerCase()}
+                        </span>
+                      )}
+                      {labels.slice(0, 3).map((l) => (
                         <span
-                          className="font-medium text-[13px] text-[var(--color-fg)] truncate hover:text-[var(--color-accent)] transition-colors cursor-pointer"
-                          onClick={() => handleStartTask(item)}
-                          title={title}
+                          key={l}
+                          className="hidden md:inline-flex items-center rounded-full bg-[var(--color-bg-2)] border border-[var(--color-border-subtle)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--color-fg-muted)] shrink-0"
                         >
-                          {title}
+                          {l}
                         </span>
-                        {isDraft && (
-                          <span className="rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-fg-faint)] border border-[var(--color-border-subtle)] shrink-0">
-                            draft
-                          </span>
-                        )}
-                        {isClosed && item.state && (
-                          <span className="rounded bg-[var(--color-warn)]/10 px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-warn)] border border-[var(--color-warn)]/20 shrink-0">
-                            {item.state.toLowerCase()}
-                          </span>
-                        )}
-                        {labels.slice(0, 3).map((l) => (
-                          <span
-                            key={l}
-                            className="hidden md:inline-flex items-center rounded-full bg-[var(--color-bg-2)] border border-[var(--color-border-subtle)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--color-fg-muted)] shrink-0"
-                          >
-                            {l}
-                          </span>
-                        ))}
-                        <span className="text-[11.5px] text-[var(--color-fg-faint)] hidden lg:inline shrink-0 ml-auto pl-3">
-                          by {author}
-                        </span>
-                      </div>
-                    </td>
+                      ))}
+                      <span className="text-[11.5px] text-[var(--color-fg-faint)] hidden lg:inline shrink-0 ml-auto pl-3">
+                        by {author}
+                      </span>
+                    </div>
 
                     {/* Project */}
-                    <td className="py-2.5 px-4 whitespace-nowrap">
+                    <div className="min-w-0">
                       <button
                         type="button"
                         onClick={() => setSelectedProjectId(item.projectId)}
-                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--color-fg-muted)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] transition-colors max-w-[160px]"
+                        className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11.5px] font-medium text-[var(--color-fg-muted)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] transition-colors max-w-full"
                         title={item.projectName}
                       >
                         <Folder className="h-3.5 w-3.5 text-[var(--color-fg-faint)] shrink-0" />
                         <span className="truncate">{item.projectName}</span>
                       </button>
-                    </td>
+                    </div>
 
                     {/* Updated */}
-                    <td className="py-2.5 px-4 whitespace-nowrap text-[12px] tabular-nums text-[var(--color-fg-dim)]">
+                    <div className="text-right text-[12px] tabular-nums text-[var(--color-fg-dim)] min-w-0">
                       <Tip content={fmtDate(updatedAt)}>
-                        <span className="cursor-default">
+                        <span className="cursor-default truncate block">
                           {fmtRelative(updatedAt)}
                         </span>
                       </Tip>
-                    </td>
+                    </div>
 
                     {/* Actions */}
-                    <td className="py-2.5 px-6 whitespace-nowrap text-right">
-                      <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => handleStartTask(item)}
-                          data-testid="todos-start-task"
-                          className="h-6 px-2.5 text-[11px] font-medium gap-1 shadow-2xs hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                    <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleStartTask(item)}
+                        data-testid="todos-start-task"
+                        className="h-6 px-2 text-[11px] font-medium gap-1 shadow-2xs hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] shrink-0"
+                      >
+                        {item.kind === "issue" ? (
+                          <>
+                            <Play className="h-3 w-3 fill-current" />
+                            <span>{t("todos.startTask")}</span>
+                          </>
+                        ) : (
+                          <>
+                            <GitPullRequest className="h-3 w-3" />
+                            <span>{t("todos.reviewPr")}</span>
+                          </>
+                        )}
+                      </Button>
+                      <Tip content={t("todos.openInBrowser")}>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenBrowser(item)}
+                          data-testid="todos-open-browser"
+                          className="rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] transition-colors shrink-0"
                         >
-                          {item.kind === "issue" ? (
-                            <>
-                              <Play className="h-3 w-3 fill-current" />
-                              <span>{t("todos.startTask")}</span>
-                            </>
-                          ) : (
-                            <>
-                              <GitPullRequest className="h-3 w-3" />
-                              <span>{t("todos.reviewPr")}</span>
-                            </>
-                          )}
-                        </Button>
-                        <Tip content={t("todos.openInBrowser")}>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenBrowser(item)}
-                            data-testid="todos-open-browser"
-                            className="rounded-md p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] transition-colors"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          </button>
-                        </Tip>
-                      </div>
-                    </td>
-                  </tr>
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </button>
+                      </Tip>
+                    </div>
+                  </div>
                 );
               })}
-            </tbody>
-          </table>
+            </div>
+          </div>
         )}
       </div>
 
