@@ -27,6 +27,7 @@ import { openWebUrl, browserCommandForTask } from "@/lib/previewBrowser";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Osc52Base64 } from "@/lib/osc52";
 import { makeCtrlSniffer } from "@/lib/ctrlSniffer";
+import { createPtyOutputActivity, lastPtyOutputAt } from "@/lib/ptyOutputActivity";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { ImageAddon } from "@xterm/addon-image";
 import { preserveImagesOnErase } from "@/lib/terminalImagePersistence";
@@ -274,21 +275,12 @@ export function TerminalPane({ task, tab, active }: Props) {
   // timestamp is older than QUIET_MS, force `done`. More robust than
   // content-hash for TUIs that repaint status bars during/after work.
   const lastDataAtRef = useRef(0);
-  // Last time we wrote lastOutputAt into the store. The data handler
-  // coalesces that write to one per 500 ms: a streaming agent delivers up
-  // to ~125 chunks/s, and patching the tabs array per chunk re-rendered
-  // every tabs subscriber (TabBar, sidebar rows) at chunk rate — per
-  // terminal. Nothing in-app reads lastOutputAt at finer granularity
-  // (settled detection uses lastDataAtRef above); the write is kept, not
-  // deleted, because the automation bridge / e2e flows assert PTY
-  // liveness through it (.claude/skills/e2e). A trailing-edge timer
-  // (below) stamps the final value once the burst ends, so the store
-  // never understates the real last-output time by the window width.
-  const lastOutputPatchRef = useRef(0);
+  // createPtyOutputActivity coalesces the non-query output snapshot to one
+  // write per 500 ms. Rendering bypasses that snapshot entirely. Readiness
+  // and queue checks use its raw clock; byte-quiet uses lastDataAtRef.
   // Whether firstOutputAt has been stamped for the CURRENT PTY, so the
   // data handler patches it once rather than per chunk.
   const firstOutputPatchedRef = useRef(false);
-  const lastOutputTrailerRef = useRef<number | null>(null);
   // Scrollback line count over time. Real work GROWS the scrollback
   // (agent prints lines that scroll off). Status-bar ticks ("Cooking
   // for 5s"), cursor blinks, and in-place repaints do NOT — they
@@ -1021,7 +1013,7 @@ const captureArmedRef = useRef(false);
       if (!queueLooksStalled({
         hasQueued: !!cur.queue?.length,
         workState: cur.workState,
-        lastOutputAt: cur.lastOutputAt,
+        lastOutputAt: lastPtyOutputAt(cur),
         lastQueueSendAt: lastQueueSendAtRef.current,
         now: Date.now(),
         stallMs: usePrefs.getState().queueStallMs,
@@ -1092,6 +1084,7 @@ const captureArmedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    let outputActivity: ReturnType<typeof createPtyOutputActivity> | undefined;
     const host = hostRef.current;
     if (!host) return;
 
@@ -3188,6 +3181,10 @@ const captureArmedRef = useRef(false);
         const tailDecoder = new TextDecoder();
         resumeTailRef.current = "";
         resumeTailOpenRef.current = lastSpawnWasResumeRef.current;
+        const activity = createPtyOutputActivity(ptyId, at => {
+          if (!cancelled) patchTab(task.id, tab.id, { lastOutputAt: at });
+        });
+        outputActivity = activity;
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
           term.write(u8);
           if (resumeTailOpenRef.current) {
@@ -3213,20 +3210,7 @@ const captureArmedRef = useRef(false);
             firstOutputPatchedRef.current = true;
             patchTab(task.id, tab.id, { firstOutputAt: now });
           }
-          if (now - lastOutputPatchRef.current >= 500) {
-            lastOutputPatchRef.current = now;
-            patchTab(task.id, tab.id, { lastOutputAt: now });
-          } else if (lastOutputTrailerRef.current === null) {
-            // Chunks landing inside the window would otherwise be lost if
-            // the burst ends before the next >=500ms chunk: schedule one
-            // trailing write for when the window closes.
-            lastOutputTrailerRef.current = window.setTimeout(() => {
-              lastOutputTrailerRef.current = null;
-              const t = lastDataAtRef.current;
-              lastOutputPatchRef.current = t;
-              patchTab(task.id, tab.id, { lastOutputAt: t });
-            }, 500 - (now - lastOutputPatchRef.current));
-          }
+          activity.record(u8, now);
           if (outputSignals) scanOutputLines(u8);
           if (ptyDebugOn) dbg("data", decodeForDebug(u8, ptyRawOn ? 65_536 : 500));
           // Output activity extends the OSC 9;4 done timer — even if
@@ -3279,6 +3263,7 @@ const captureArmedRef = useRef(false);
           });
         }
         const unlistenExit = await ipc.onPtyExit(ptyId, (code) => {
+          activity.dispose();
           ptyRef.current = null;
           // Run/setup tabs (GH #54): surface a non-zero exit as "failed" on
           // the tab pill. code === null means the process was killed (Stop
@@ -3594,12 +3579,8 @@ const captureArmedRef = useRef(false);
       unlistenSudoRef.current?.();
       unlistenSudoRef.current = null;
       setSudoOffer(false);
-      // A pending trailing lastOutputAt write must not fire into the next
-      // PTY session (gen-bump Restart reuses this component).
-      if (lastOutputTrailerRef.current !== null) {
-        clearTimeout(lastOutputTrailerRef.current);
-        lastOutputTrailerRef.current = null;
-      }
+      // Cancels the trailer and raw clock before any restart/late data.
+      outputActivity?.dispose();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose the renderer addon FIRST so its render loop can't fire
       // on a half-disposed terminal.

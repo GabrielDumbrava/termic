@@ -9,6 +9,7 @@ import {
 } from "@/lib/agentReady";
 import type { AgentReadyOutcome } from "@/lib/agentReady";
 import type { TerminalTab } from "@/lib/types";
+import { forgetPtyOutput, notePtyOutput } from "@/lib/ptyOutputActivity";
 
 // Fake timers against the REAL constants, the way race.integration.test.ts
 // drives the same path: the thresholds under test are the ones that ship,
@@ -35,6 +36,24 @@ function start(tab: () => TerminalTab | undefined, hooksOwnReadiness = false) {
 }
 
 describe("waitForAgentReady", () => {
+  it("counts raw query traffic even when the UI output snapshot stays unchanged", async () => {
+    vi.useFakeTimers();
+    let probe: ReturnType<typeof setInterval> | undefined;
+    try {
+      const tab = painted(Date.now());
+      probe = setInterval(() => notePtyOutput(tab.ptyId!, Date.now()), 200);
+      const { state, done } = start(() => tab);
+      await vi.advanceTimersByTimeAsync(READY_FLOOR_MS + READY_QUIET_MS);
+      expect(state.outcome).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(READY_PAINTING_DEADLINE_MS);
+      expect(await done).toBe("deadline");
+    } finally {
+      clearInterval(probe);
+      forgetPtyOutput("pty-1");
+      vi.useRealTimers();
+    }
+  });
+
   it("settles once the agent paints and then goes quiet", async () => {
     vi.useFakeTimers();
     try {

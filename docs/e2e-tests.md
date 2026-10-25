@@ -261,9 +261,11 @@ fuzzy):
    for assertions. Assert DOM text/attributes, or app state.
 3. **Terminal content is NOT in the DOM.** xterm renders to a WebGL canvas —
    `innerText` never contains PTY output. Assert terminal activity via app
-   state (e.g. `lastOutputAt`) read with `browser.execute`, exactly as the
-   `e2e` skill does. All other UI (sidebar, tabs, dialogs, Git panel) is normal
-   DOM.
+   state (`lastOutputAt` for non-query output, `liveTitle` for titles) read
+   with `browser.execute`. For raw liveness, including status/cursor queries,
+   use `window.__termic.lastPtyOutputAt(tab)` or `waitPtyQuiet`, as the `e2e`
+   skill does. See [performance.md](performance.md), item 14. All other UI
+   (sidebar, tabs, dialogs, Git panel) is normal DOM.
 4. **Stable selectors.** Prefer role/visible-text; add a `data-testid` only
    where text is ambiguous or localized. Never depend on generated class names.
 5. **Deterministic fixtures.** Reset/seed via the isolated profile; don't rely

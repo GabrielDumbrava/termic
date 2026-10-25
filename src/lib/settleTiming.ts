@@ -35,7 +35,7 @@ export const SETTLE_SAMPLES = 2;
 
 /**
  * Byte-quiet fallback: no PTY output for this long, while "working", forces
- * done. Wall-clock (compared against `lastOutputAt`), so the clamp does not
+ * done. Wall-clock (compared against `lastDataAtRef`), so the clamp does not
  * change its meaning - but it has to exceed SAMPLE_MS to be seen at all.
  */
 export const QUIET_MS = 4_000;

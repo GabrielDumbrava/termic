@@ -1631,6 +1631,8 @@ export interface TerminalTab extends BaseTab {
   ptyId?: string;
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;
+  /** Coalesced UI snapshot; query-only traffic does not rewrite it. Raw
+   * liveness for readiness/queue checks is in lib/ptyOutputActivity. */
   lastOutputAt?: number | null;
   /** When the CURRENT PTY first produced output, i.e. when the agent
    *  started painting. Null until it does, and distinct from

@@ -9,8 +9,9 @@
 //
 // The store already carries the signals that timer was standing in for.
 // TerminalPane stamps `firstOutputAt` when the PTY first produces output
-// (the agent has started painting) and `lastOutputAt` on every chunk after
-// it. A TUI that has painted and then gone quiet is sitting at its input
+// (the agent has started painting). Raw output times live outside React in
+// ptyOutputActivity, including terminal queries which do not update the UI's
+// lastOutputAt snapshot. A TUI that has painted and gone quiet is at its input
 // box. So wait for the first paint, then for a quiet stretch, and only
 // then hand back control.
 //
@@ -35,11 +36,11 @@
 //     caller still verifies the PTY survived the write.
 
 import type { TerminalTab } from "@/lib/types";
+import { lastPtyOutputAt } from "@/lib/ptyOutputActivity";
 
-/** Quiet stretch that marks the TUI as done painting. Comfortably above
- *  TerminalPane's 500 ms `lastOutputAt` coalescing window, so a busy agent
- *  cannot look quiet in the gap between two store writes, and short enough
- *  that an agent repainting a status line still settles between repaints. */
+/** Quiet stretch that marks the TUI as done painting. Read from raw traffic
+ *  time, including queries, so the UI snapshot's batching cannot make an
+ *  active agent look quiet. Short enough to settle between status repaints. */
 export const READY_QUIET_MS = 1200;
 /** Never type before this, however early the agent goes quiet. Boot output
  *  often arrives in bursts with real pauses between them. */
@@ -121,7 +122,7 @@ export async function waitForAgentReady(
     // signal that exists, so none of them run.
     if (hooked) continue;
     const now = Date.now();
-    const quietSince = t.lastOutputAt ?? now;
+    const quietSince = lastPtyOutputAt(t) ?? now;
     if (t.firstOutputAt) {
       if (now - quietSince >= quietMs && now - started >= floorMs) return "settled";
       if (now - started >= paintingDeadlineMs) return "deadline";

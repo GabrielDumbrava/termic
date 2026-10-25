@@ -58,6 +58,7 @@ export async function snap(name: string): Promise<void> {
  * the shapes from src/store/* as you need them in a given spec.
  */
 export interface TermicApi {
+  lastPtyOutputAt: (tab: { ptyId?: string; lastOutputAt?: number | null }) => number | null | undefined;
   useApp: {
     getState: () => any;
     setState: (p: any) => void;
@@ -1703,7 +1704,8 @@ export async function waitTabInFront(taskId: string, tabId: string, timeout = 10
   );
 }
 
-/** Wait until `taskId`'s first tab has seen no PTY output for `quietMs`.
+/** Wait until `taskId`'s first tab has seen no raw PTY traffic for `quietMs`,
+ *  including cursor/status queries that do not change its UI snapshot.
  *
  *  The loop runs IN THE PAGE. Measured afterwards, that is NOT where the time
  *  was (an `execute` round trip is 4ms here, so the polling it replaced cost
@@ -1721,7 +1723,8 @@ export async function waitPtyQuiet(taskId: string, quietMs: number, timeout = 30
     const started = Date.now();
     const since = () => {
       const tab = window.__termic!.useApp.getState().tabs[id]?.[0];
-      return Date.now() - (tab?.lastOutputAt ?? 0);
+      const at = tab ? window.__termic!.lastPtyOutputAt(tab) : null;
+      return Date.now() - (at ?? 0);
     };
     while (Date.now() - started < cap) {
       if (since() > ms) return true;

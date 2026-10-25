@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "../../wdio.conf.js";
 // Agent work-state, attention and queue flows.
@@ -3651,5 +3651,119 @@ describe("an agent that exits mid-turn", () => {
       timeout: 8_000,
       message: "a dead agent's row kept its working badge",
     });
+  });
+});
+
+// The fixture uses POSIX tty modes and Bash's delimiter read. Unit tests
+// cover the byte classifier on every platform, including Windows.
+const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+describePosix("terminal status traffic", () => {
+  let taskId: string;
+  const tabId = "status-probe";
+  const script = join(dataDir, "status-probe.sh");
+  const replies = join(dataDir, "status-probe-replies");
+  const tab = () => browser.execute((id, t) =>
+    window.__termic!.useApp.getState().tabs[id]?.find((x: { id: string }) => x.id === t) as any,
+  taskId, tabId);
+  const send = async (s: string) => {
+    const t = await tab();
+    await browser.execute((pty, input) => window.__termic!.ipc.ptyWrite(
+      pty, Array.from(new TextEncoder().encode(input)),
+    ), t.ptyId as string, s);
+  };
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    rmSync(replies, { force: true });
+    // File progress is a condition the spec can await without printing more
+    // terminal output. Each byte proves xterm replied through the real PTY.
+    writeFileSync(script, `#!/bin/bash
+set -eu
+tty_mode=$(stty -g)
+trap 'stty "$tty_mode"' EXIT
+stty -echo -icanon min 1 time 0
+printf '\\033]0;probe-ready\\007'
+IFS= read -r -n 1 start
+for ((i=0; i<100; i++)); do
+  printf '\\033[?6n'
+  IFS= read -r -t 10 -d R reply
+  [[ "$reply" == $'\\033[?'*';'* ]] || exit 2
+  printf x >> "$1"
+done
+IFS= read -r -n 1 finish
+printf '\\r\\nnew output\\r\\n\\033]0;probe-finished\\007'
+IFS= read -r -n 1 hold
+`);
+    taskId = await openTask("e2e-status-probes");
+    await waitForAgentReady(taskId);
+    await browser.execute((id, t, path, log) => {
+      // initialInput runs only once the shell is ready to read it.
+      const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+      window.__termic!.useApp.getState().addTab(id, {
+        id: t, type: "terminal", cli: "shell", title: t,
+        initialInput: `bash ${quote(path)} ${quote(log)}\r`,
+      } as any);
+    }, taskId, tabId, script, replies);
+    await browser.waitUntil(async () => (await tab())?.liveTitle === "probe-ready", {
+      timeout: 30_000, timeoutMsg: "the status-probe fixture never started",
+    });
+    // Drain the existing 500ms trailing activity stamp before measuring.
+    await browser.waitUntil(async () => {
+      const t = await tab();
+      return !!t?.lastOutputAt && Date.now() - t.lastOutputAt > 750;
+    });
+  });
+
+  after(async () => {
+    await browser.execute(() => (window as any).__statusProbeUnsub?.()).catch(() => {});
+    try {
+      const closing = taskId ? await tab() : undefined;
+      if (taskId) await archiveTask(taskId);
+      if (closing?.ptyId) {
+        await browser.waitUntil(async () => browser.execute((ptyId) =>
+          window.__termic!.lastPtyOutputAt({ ptyId }) === undefined,
+        closing.ptyId as string), { timeoutMsg: "closed PTY retained its raw activity clock" });
+      }
+    } finally {
+      rmSync(script, { force: true });
+      rmSync(replies, { force: true });
+    }
+  });
+
+  it("answers 100 cursor queries with no tab writes, then records real output", async () => {
+    const before = await tab();
+    const rawBefore = await browser.execute((id, t) => {
+      const current = window.__termic!.useApp.getState().tabs[id]?.find((x: { id: string }) => x.id === t);
+      return window.__termic!.lastPtyOutputAt(current) ?? 0;
+    }, taskId, tabId);
+    await browser.execute((id) => {
+      const w = window as any;
+      w.__statusProbeWrites = 0;
+      w.__statusProbeUnsub = window.__termic!.useApp.subscribe((s, prev) => {
+        if (s.tabs[id] !== prev.tabs[id]) w.__statusProbeWrites++;
+      });
+    }, taskId);
+    await send("s");
+    await browser.waitUntil(() => {
+      try { return readFileSync(replies, "utf8").length === 100; }
+      catch { return false; }
+    }, { timeout: 20_000, timeoutMsg: "xterm did not answer every cursor query" });
+    const after = await tab();
+    expect(await browser.execute(() => (window as any).__statusProbeWrites)).toBe(0);
+    expect(after.lastOutputAt).toBe(before.lastOutputAt);
+    expect(after.firstOutputAt).toBe(before.firstOutputAt);
+    const rawAfter = await browser.execute((id, t) => {
+      const current = window.__termic!.useApp.getState().tabs[id]?.find((x: { id: string }) => x.id === t);
+      return window.__termic!.lastPtyOutputAt(current) ?? 0;
+    }, taskId, tabId);
+    expect(rawAfter).toBeGreaterThan(rawBefore);
+
+    await send("f");
+    await browser.waitUntil(async () => {
+      const t = await tab();
+      return t.liveTitle === "probe-finished" && t.lastOutputAt > before.lastOutputAt;
+    }, { timeoutMsg: "real output stopped updating terminal activity" });
   });
 });

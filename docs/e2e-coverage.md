@@ -24,6 +24,7 @@ until `make e2e` is green and this file reflects it.
 | Area | What's asserted | Spec |
 |---|---|---|
 | ✅ App shell | Renders; `__termic` exposes real store state | `app.e2e.ts` |
+| ✅ Idle terminal status traffic | 100 cursor queries are answered through real xterm and a real PTY with zero tab-state writes and advancing raw liveness; subsequent text still updates output activity (POSIX tty fixture) | `agent.e2e.ts` |
 | ✅ Agent customizations | Initializes and opens the current profile folder, shows file-layout guidance and the actual path, preserves edited skills, persists the profile default, retains project overrides, and recovers from initialization errors | `customizations.e2e.ts` |
 | ✅ Navigation | Dashboard ↔ History via real clicks | `app.e2e.ts` |
 | ✅ Window chrome | The caption buttons exist on Windows and Linux and never on macOS; there the window has no native frame, and the buttons sit flush with its top-right corner, the full height of the bar, in minimize / maximize / close order. Where something manages windows (always on Windows; on Linux only when the display has a window manager, which the CI job's Xvfb does not): maximize toggles the window and the button says which way; minimize minimizes and `raise` over the control socket brings it back. Close is never clicked: it would end the session every later spec runs in | `window-chrome.e2e.ts` |
@@ -347,7 +348,7 @@ These are intentionally NOT covered by written specs — asserting them would be
 
 ## Known harness gotchas (read before writing a spec)
 
-- **Terminal content is not in the DOM** (WebGL canvas) — assert `lastOutputAt`/`liveTitle`/store, never innerText, for PTY output.
+- **Terminal content is not in the DOM** (WebGL canvas) — assert `lastOutputAt` for non-query output, `liveTitle` for titles, and `lastPtyOutputAt`/`waitPtyQuiet` for raw traffic. See performance.md item 14.
 - **`workState === "working"`** won't flip from a raw `ipc.ptyWrite`; termic gates it on a real submit through the input path.
 - **Radix menus open on pointerdown** — dispatch `pointerdown`/`pointerup`, not just `.click()` (see `tabs-layout.e2e.ts`).
 - **CSS transitions can stall for seconds.** They run on `document.timeline`, which advances only while the window paints frames, and the suite's window often paints none: measured, the timeline moved 13 ms over about 1.5 s while a `transition-colors` row sat at alpha 0.016 of its selection colour. A computed colour read through a transition is therefore a race. Read it with `el.style.transition = "none"` (and put it back), which measures the end state the class asks for. Unrelated to the WKWebView `transition-colors` border bug in docs/gotchas.md, which never settles in any window.
