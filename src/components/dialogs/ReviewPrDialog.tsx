@@ -87,7 +87,9 @@ export function ReviewPrDialog() {
     if (!open) return;
     const last = readLast();
     setProjectId(openFor);
-    setQuery(""); setErr(null); setBusy(false); setWaiting(null);
+    const seed = useUI.getState().reviewPrSeed;
+    const initialQuery = seed?.url ?? (seed?.number ? String(seed.number) : "");
+    setQuery(initialQuery); setErr(null); setBusy(false); setWaiting(null);
     setWhere(last.where === "main" ? "main" : "worktree");
     setPromptId(last.promptId ?? null);
     setCli(last.cli ?? "");

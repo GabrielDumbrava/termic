@@ -26,6 +26,7 @@ import { Dashboard } from "@/components/views/Dashboard";
 import { HistoryView } from "@/components/views/History";
 import { BoardView } from "@/components/views/BoardView";
 import { ScheduledView } from "@/components/views/Scheduled";
+import { TodosView } from "@/components/views/TodosView";
 import { TaskView } from "@/components/task/TaskView";
 import { CreatingTaskPane } from "@/components/task/CreatingTaskPane";
 
@@ -66,6 +67,7 @@ export function MainArea() {
     view === "history" && !task ? <HistoryView /> :
     view === "board" && !task ? <BoardView /> :
     view === "scheduled" && !task ? <ScheduledView /> :
+    view === "todos" && !task ? <TodosView /> :
     pending ? <CreatingTaskPane id={pending.id} /> :
     !task ? <Dashboard /> :
     null;

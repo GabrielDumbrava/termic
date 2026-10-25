@@ -580,19 +580,12 @@ export function NewTaskDialog() {
     // "Duplicate task" flow to pre-fill `base` with the source
     // task's branch tip + optionally seed a name prefix.
     const seed = useUI.getState().newTaskSeed;
-    const seededName = seed?.namePrefix ?? "";
+    const seededName = seed?.issue ? issueTaskName(seed.issue) : seed?.namePrefix ?? "";
     setName(seededName);
-    // Seed the branch HERE, in the same pass as the name, rather than
-    // blanking it and leaving the job to the derive effect below. A deep
-    // link arrives with the name already filled, so the user is looking at
-    // a populated Name and an empty "Branch name" until they touch the
-    // Name field, which is the one thing a link is supposed to save them
-    // (GH #192 follow-up). `existingBranches` is empty at this point; the
-    // derive effect still runs when the repo's branch list lands and bumps
-    // the suffix if this one collides (#129).
-    // Read imperatively, like the CLI/base seeds above: the effect must not
-    // re-run (and re-blank the form) just because the prefix pref changed.
-    setBranch(derivedBranch(seededName, usePrefs.getState().branchPrefix));
+    const seededBranch = seed?.issue
+      ? issueBranch(seed.issue, usePrefs.getState().branchPrefix)
+      : derivedBranch(seededName, usePrefs.getState().branchPrefix);
+    setBranch(seededBranch);
     setBranchEdited(false); setErr(null);
     setBase(seed?.baseBranch ?? p?.base_branch ?? "");
     // A LINK-supplied base is the one nobody can see before pressing Create:
@@ -706,14 +699,21 @@ export function NewTaskDialog() {
     const wantImport = !!seed?.importMode && canImp;
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setResumeOverride(""); setResumeOpen(false);
-    setPrompt(seed?.prompt ?? "");
+    if (seed?.issue) {
+      setPrompt(buildIssuesPrompt([seed.issue], MAX_PROMPT_CHARS, ""));
+      setYolo(false);
+      setYoloHeld("issue");
+      setIssuePicks([seed.issue]);
+    } else {
+      setPrompt(seed?.prompt ?? "");
+      setIssuePicks([]);
+    }
     setImportMode(wantImport);
     // Issue mode is per-OPEN, like import mode beside it. It was left out of
     // this reset, so picking issue #42 in project A and cancelling meant the
     // next open - for a DIFFERENT project - still showed project A's issue
     // list, and creating from it seeded the agent with project A's issue.
     setIssueMode(false);
-    setIssuePicks([]);
     setIssueLookup(null);
     setIssueScope("all");
     // The filter text is per-open too: a query typed against one project's
@@ -821,10 +821,13 @@ export function NewTaskDialog() {
   // `feature/<name>`, fully editable. A name that's already a qualified
   // branch (contains a "/", e.g. a Linear "username/my-feature" pasted
   // straight in) is taken verbatim with no prefix.
-  const derived = useMemo(
-    () => uniqueBranch(derivedBranch(name, branchPrefix), existingBranches),
-    [name, branchPrefix, existingBranches],
-  );
+  const derived = useMemo(() => {
+    const seed = useUI.getState().newTaskSeed;
+    const base = seed?.issue
+      ? issueBranch(seed.issue, branchPrefix)
+      : derivedBranch(name, branchPrefix);
+    return uniqueBranch(base, existingBranches);
+  }, [name, branchPrefix, existingBranches]);
   // The name is real but derives no branch at all: every character of it is
   // outside a-z0-9-_ (an all-punctuation name, or a non-Latin script, which
   // `slugify` folds out because the slug is a path segment as well as a ref).
@@ -1217,11 +1220,13 @@ export function NewTaskDialog() {
     // they are just text the user may well want to keep; a first message that
     // opens "GitHub issue #266:" is actively wrong on a task that is no longer
     // about that issue, and "blank task instead" says what it clears.
-    if (issuePicks.length > 0) setPrompt("");
-    // The issue's text just left the box, so the reason YOLO stepped back
-    // left with it (see `yoloHeld`). Not e2e-covered: picking an issue needs
-    // a real forge, which the fixture repo is not.
-    if (yoloHeld === "issue") { setYolo(yoloDefaultRef.current); setYoloHeld(null); }
+    if (issuePicks.length > 0) {
+      setPrompt("");
+      if (yoloHeld === "issue") { setYolo(yoloDefaultRef.current); setYoloHeld(null); }
+    } else if (yoloHeld === "issue" && !prompt.trim()) {
+      setYolo(yoloDefaultRef.current);
+      setYoloHeld(null);
+    }
     setIssuePicks([]);
     setErr(null);
   }

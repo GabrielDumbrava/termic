@@ -804,6 +804,21 @@ describe("prefs: status section", () => {
     expect(calls).toBe(0);
   });
 
+  it("the Todos nav entry ships on, and only a stored 0 turns it off", async () => {
+    const first = await import("./prefs");
+    expect(first.usePrefs.getState().showTodos).toBe(true);
+    first.usePrefs.getState().setShowTodos(false);
+    expect(localStorage.getItem("showTodos")).toBe("0");
+    vi.resetModules();
+    const second = await import("./prefs");
+    expect(second.usePrefs.getState().showTodos).toBe(false);
+    let calls = 0;
+    const off = second.usePrefs.subscribe(() => { calls++; });
+    second.usePrefs.getState().setShowTodos(false);
+    off();
+    expect(calls).toBe(0);
+  });
+
   it("the Scheduled nav entry: always by default, and auto follows the schedules", async () => {
     const first = await import("./prefs");
     expect(first.usePrefs.getState().scheduledNav).toBe("always");

@@ -98,6 +98,7 @@ export default {
       yoloSuffix: "危险地跳过权限确认",
       sandboxSettings: "沙箱设置",
       createPr: "创建拉取请求",
+      viewTodos: "查看待办",
       toggleLeftSidebar: "切换左侧边栏",
       toggleRightSidebar: "切换右侧边栏",
       toggleTerminal: "切换终端面板",

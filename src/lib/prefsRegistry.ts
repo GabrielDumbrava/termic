@@ -145,6 +145,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "taskExpandMode", scoped: true, class: "sync" },
   { key: "showStatusSection", scoped: true, class: "sync" },
   { key: "showBoard", scoped: true, class: "sync" },
+  { key: "showTodos", scoped: true, class: "sync" },
   { key: "scheduledNav", scoped: true, class: "sync" },
   { key: "newTaskButton", scoped: true, class: "sync" },
   { key: "launcherVisibility", scoped: true, class: "sync" },

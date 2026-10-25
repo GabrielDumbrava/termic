@@ -544,6 +544,10 @@ export default {
       label: "Kanban board",
       hint: "Show Kanban in the sidebar's navigation. Turn it off if you never use the board.",
     },
+    todos: {
+      label: "Todos",
+      hint: "Show Todos in the sidebar's navigation. Turn it off if you never use the todos view.",
+    },
     newTaskButton: {
       label: "New task button",
       hint: "The dashed New task button under a project's tasks, where the new task appears.",
