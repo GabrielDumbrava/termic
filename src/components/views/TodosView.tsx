@@ -33,7 +33,7 @@ import {
 import { cn } from "@/lib/utils";
 import { i18n } from "@/lib/i18n";
 
-const TODOS_GRID = "grid grid-cols-[100px_minmax(280px,1fr)_minmax(110px,160px)_76px_128px] items-center gap-x-4";
+const TODOS_GRID = "grid grid-cols-[minmax(300px,1fr)_minmax(110px,160px)_76px_128px] items-center gap-x-4";
 
 function fmtDate(iso: string): string {
   if (!iso) return "";
@@ -460,7 +460,6 @@ export function TodosView() {
           <div className="w-full">
             {/* Column heads */}
             <div className={cn(TODOS_GRID, "px-3 pb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-fg-faint)] select-none")}>
-              <span>{t("todos.colAction")}</span>
               <span>{t("todos.colTitle")}</span>
               <span>{t("todos.colProject")}</span>
               <span className="text-right">{t("todos.colUpdated")}</span>
@@ -522,22 +521,7 @@ export function TodosView() {
                       "group rounded-md px-3 py-1.5 text-[13px] select-none transition-colors hover:bg-[var(--color-hover)]"
                     )}
                   >
-                    {/* Action Badge */}
-                    <div className="flex items-center min-w-0">
-                      {hasAction ? (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium border",
-                            badgeBg
-                          )}
-                        >
-                          <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotBg)} />
-                          <span className="truncate">{actionLabel}</span>
-                        </span>
-                      ) : null}
-                    </div>
-
-                    {/* Title + Number + Labels + Author */}
+                    {/* Title + Number + Role Badge + Status + Labels + Author */}
                     <div className="flex items-center gap-2 min-w-0">
                       {item.kind === "issue" ? (
                         <CircleDot className={cn("h-4 w-4 shrink-0", iconColor)} />
@@ -554,6 +538,17 @@ export function TodosView() {
                       >
                         {title}
                       </span>
+                      {hasAction && (
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium border shrink-0",
+                            badgeBg
+                          )}
+                        >
+                          <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotBg)} />
+                          <span>{actionLabel}</span>
+                        </span>
+                      )}
                       {isDraft && (
                         <span className="rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-fg-faint)] border border-[var(--color-border-subtle)] shrink-0">
                           draft
