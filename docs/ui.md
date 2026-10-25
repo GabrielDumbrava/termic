@@ -1,5 +1,11 @@
 # UI
 
+The sidebar coffee mug opens [Caffeinate](caffeinate.md), with duration,
+deadline and automatic agent-work modes. Its indicator reflects native power
+state, with separate closed-lid status and errors. All original footer icons
+retain their order and stay directly accessible; Coffee is appended after Settings.
+The footer retains the shared bottom-bar height in expanded and compact modes.
+
 Profile-wide **Agent customizations** live in Settings → Agents & Terminals,
 above the per-agent controls. The block opens and initializes the current
 profile's folder, shows its actual path, explains the file layout, and offers

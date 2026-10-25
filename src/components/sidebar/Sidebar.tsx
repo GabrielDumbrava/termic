@@ -2,6 +2,7 @@
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
 import { ThemePicker } from "@/components/ThemePicker";
+import { CaffeinateControl } from "./CaffeinateControl";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
@@ -2519,11 +2520,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
 
         {/* Footer */}
         <div className={cn(
-          "flex border-t border-[var(--color-border-soft)] gap-1",
+          "flex border-t border-[var(--color-border-soft)] gap-1 [&_button]:shrink-0",
           // --bottom-bar-h (expanded) is the shared height for every bottom
           // bar. Compact mode stays a vertical icon stack with its own padding.
-          compact ? "flex-col items-center p-2" : "items-center h-[var(--bottom-bar-h)] px-2",
-        )}>
+          compact ? "flex-col items-center gap-1 p-2" : "items-center h-[var(--bottom-bar-h)] px-2",
+          !compact && sidebarWidth < 212 && "gap-0 [&_button]:w-[20px]",
+        )} data-testid="sidebar-footer">
           {/* Left cluster (full mode): support — bug + contact. The bug
               button opens a prefilled GitHub issue (public tracker, better
               than email for triage + dedupe); Contact stays a mailto: that
@@ -2536,21 +2538,19 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               where the other set-once affordances already live. */}
           <ThemePicker />
           <Tip content={t("reportBug")}>
-            <Button size="icon" variant="icon" onClick={() =>
-              openIssue(t("bugIssueTitle"), t("bugIssueBody"))
-            }>
+            <Button size="icon" variant="icon" aria-label={t("reportBug")} data-testid="sidebar-report-bug"
+              onClick={() => openIssue(t("bugIssueTitle"), t("bugIssueBody"))}>
               <Bug className={iconSize(compact)} />
             </Button>
           </Tip>
           <Tip content={t("contact")}>
-            <Button size="icon" variant="icon" onClick={() =>
-              openMailto("contact@termic.dev", t("contactSubject"), "")
-            }>
+            <Button size="icon" variant="icon" aria-label={t("contact")} data-testid="sidebar-contact"
+              onClick={() => openMailto("contact@termic.dev", t("contactSubject"), "")}>
               <Mail className={iconSize(compact)} />
             </Button>
           </Tip>
           <Tip content={t("shortcuts")}>
-            <Button size="icon" variant="icon" onClick={() => useUI.getState().openShortcutsHelp()}>
+            <Button size="icon" variant="icon" aria-label={t("shortcuts")} data-testid="sidebar-shortcuts" onClick={() => useUI.getState().openShortcutsHelp()}>
               <Keyboard className={iconSize(compact)} />
             </Button>
           </Tip>
@@ -2563,14 +2563,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               size="icon"
               variant="icon"
               data-testid="open-activity"
+              aria-label={t("activityTip")}
               onClick={() => { void procmonOpenWindow().catch(() => {}); }}
             >
               <Activity className={iconSize(compact)} />
             </Button>
           </Tip>
-          {/* Settings, rightmost, at the absolute edge: the gear is exactly
-              where users reflexively reach for it (same position as macOS
-              preferences in most apps). `ml-auto` pushes it there.
+          {/* Keep the original actions in order, with Settings after Activity.
+              Coffee is appended after the last existing icon.
 
               The PROFILE control that used to sit beside it moved to the title
               bar with the rest of the profile UI (GH #280). "Add project" was
@@ -2578,11 +2578,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               in the PROJECTS header, which is where the action belongs, next
               to the list it acts on. */}
           <Tip content={t("settingsTip", { combo: kbd("⌘,") })}>
-            <Button size="icon" variant="icon" className={compact ? undefined : "ml-auto"}
+            <Button size="icon" variant="icon" data-testid="sidebar-settings" aria-label={t("settingsTip", { combo: kbd("⌘,") })} className={compact ? undefined : "ml-auto"}
                     onClick={() => openSettings()}>
               <Settings className={iconSize(compact)} />
             </Button>
           </Tip>
+          <CaffeinateControl compact={compact} />
         </div>
       </div>
 

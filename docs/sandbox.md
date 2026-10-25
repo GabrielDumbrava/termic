@@ -1,5 +1,11 @@
 # Sandbox
 
+Optional macOS [closed-lid permission](caffeinate.md) installs a sudoers rule
+for the current uid and exactly `pmset disablesleep 0/1`. This grant is not
+restricted to the signed Termic executable: unsandboxed agent processes under
+that uid can use it too. It does not change the agent sandbox policy. The
+popover provides permission removal after active changes have been restored.
+
 `src-tauri/src/sandbox.rs` + `TaskSandboxDialog`. Per-task macOS sandbox-exec (Seatbelt) + per-task in-process HTTPS CONNECT proxy (`src-tauri/src/proxy.rs`).
 
 ## Off macOS (Windows, Linux)
