@@ -12,7 +12,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, ListTodo, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -183,6 +183,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const taskPrBadge = usePrefs(s => s.taskPrBadge);
   const setTaskPrBadge = usePrefs(s => s.setTaskPrBadge);
   const showBoard = usePrefs(s => s.showBoard);
+  const showTodos = usePrefs(s => s.showTodos);
   const scheduledNav = usePrefs(s => s.scheduledNav);
   const newTaskButtonMode = usePrefs(s => s.newTaskButton);
   // A boolean out of the selector, so a task write that leaves the answer
@@ -1245,6 +1246,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           active={currentView === "history" && !activeTask} compact={compact}
           onClick={() => setView("history")}
         />
+        {showTodos && (
+          <NavItem icon={<ListTodo className={iconSize(compact)} />} label={t("navTodos")}
+            active={currentView === "todos" && !activeTask} compact={compact}
+            onClick={() => setView("todos")} testId="nav-todos"
+          />
+        )}
         {showBoard && (
           <NavItem icon={<Columns3 className={iconSize(compact)} />} label={t("navBoard")}
             active={currentView === "board" && !activeTask} compact={compact}

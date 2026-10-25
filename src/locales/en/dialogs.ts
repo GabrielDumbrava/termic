@@ -99,6 +99,7 @@ export default {
       yoloSuffix: "Dangerously skip permissions",
       sandboxSettings: "Sandbox settings",
       createPr: "Create pull request",
+      viewTodos: "View Todos",
       toggleLeftSidebar: "Toggle left sidebar",
       toggleRightSidebar: "Toggle right sidebar",
       toggleTerminal: "Toggle terminal panel",

@@ -79,7 +79,7 @@ interface View {
   /** Underlying page — dashboard / history / board / scheduled / empty. NOT "settings":
    *  Settings is a separate overlay flag (`settingsOpen`), so closing it
    *  returns to whatever this page was. */
-  page: "dashboard" | "history" | "board" | "scheduled" | "empty";
+  page: "dashboard" | "history" | "board" | "scheduled" | "todos" | "empty";
   /** True when the Settings overlay is up. The overlay renders on top of
    *  the main app layout (see App.tsx) so the active task, terminals,
    *  and panel state all stay intact while it's open. */

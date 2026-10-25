@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import type { Prompt } from "@/store/prompts";
 import type { TaskFilter } from "@/lib/taskFilter";
+import type { ForgeIssue } from "@/lib/types";
 
 /** What the schedule dialog is for: a new schedule (optionally preselecting a
  *  project), "Schedule..." on an existing task, or editing a schedule. */
@@ -87,6 +88,8 @@ export interface NewTaskSeed {
   /** Open straight into the forge issue picker. Ignored for multi-repo and
    *  non-git projects, which have no issues to pick from. */
   issueMode?: boolean;
+  /** Seed the form directly from this forge issue (name, branch, prompt). */
+  issue?: ForgeIssue;
   /** Pre-fills the first-message textarea (GH #192, deep links). Sent to
    *  the agent after create; never auto-submitted from the link itself. */
   prompt?: string;
@@ -200,6 +203,8 @@ interface UIState {
   /** Review a PR dialog: the project it opens on, null = closed. The dialog
    *  can switch project itself. */
   reviewPrProjectId: string | null;
+  /** Optional PR seed (number or url) for ReviewPrDialog. */
+  reviewPrSeed: { number?: number; url?: string } | null;
   /** Agent Race compare surface: race id whose racers' worktree diffs are
    *  shown N-up, null = closed. Separate from the launcher so a finished
    *  race can be re-compared without relaunching. */
@@ -370,7 +375,7 @@ interface UIState {
   openProjectBroadcast: (projectId: string) => void;
   closeBroadcast: () => void;
   openRace: (projectId: string) => void;
-  openReviewPr: (projectId: string) => void;
+  openReviewPr: (projectId: string, seed?: { number?: number; url?: string }) => void;
   closeReviewPr: () => void;
   closeRace: () => void;
   openRaceCompare: (raceId: string) => void;
@@ -562,6 +567,7 @@ export const useUI = create<UIState>((set, get) => ({
   broadcastForProjectId: null,
   raceProjectId: null,
   reviewPrProjectId: null,
+  reviewPrSeed: null,
   raceCompareId: null,
   sandboxForTaskId: null,
   fileFinderTaskId: null,
@@ -647,8 +653,8 @@ export const useUI = create<UIState>((set, get) => ({
   openProjectBroadcast: (projectId) => set({ broadcastForProjectId: projectId, broadcastForTaskId: null }),
   closeBroadcast:    () => set({ broadcastForTaskId: null, broadcastForProjectId: null }),
   openRace:          (projectId) => set({ raceProjectId: projectId }),
-  openReviewPr:      (projectId) => set({ reviewPrProjectId: projectId }),
-  closeReviewPr:     () => set({ reviewPrProjectId: null }),
+  openReviewPr:      (projectId, seed) => set({ reviewPrProjectId: projectId, reviewPrSeed: seed ?? null }),
+  closeReviewPr:     () => set({ reviewPrProjectId: null, reviewPrSeed: null }),
   closeRace:         () => set({ raceProjectId: null }),
   openRaceCompare:   (raceId) => set({ raceCompareId: raceId }),
   closeRaceCompare:  () => set({ raceCompareId: null }),

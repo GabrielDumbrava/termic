@@ -110,6 +110,7 @@ const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
 const LS_STATUS_SECTION_COLLAPSED = scoped("statusSectionCollapsed");
 const LS_SHOW_BOARD = scoped("showBoard");
+const LS_SHOW_TODOS = scoped("showTodos");
 const LS_SCHEDULED_NAV = scoped("scheduledNav");
 const LS_NEW_TASK_BUTTON = scoped("newTaskButton");
 const LS_LAUNCHER_VISIBILITY = scoped("launcherVisibility");
@@ -851,6 +852,9 @@ interface PrefsState {
   /** The Kanban entry in the sidebar's primary nav, the only way into the
    *  board. On by default; off hides the entry for people who never use it. */
   showBoard: boolean;
+  /** The Todos entry in the sidebar's primary nav, the triage workspace.
+   *  On by default; off hides the entry for people who never use it. */
+  showTodos: boolean;
   /** The Scheduled entry in the sidebar's primary nav: never, only while
    *  this profile has a schedule ("auto"), or always. Always by default, the
    *  shape it shipped in. */
@@ -1070,6 +1074,7 @@ interface PrefsState {
   setShowStatusSection: (v: boolean) => void;
   setStatusSectionCollapsed: (v: boolean) => void;
   setShowBoard: (v: boolean) => void;
+  setShowTodos: (v: boolean) => void;
   setScheduledNav: (m: ScheduledNavMode) => void;
   setNewTaskButton: (m: NewTaskButtonMode) => void;
   setLauncherVisibility: (id: string, v: LauncherVisibility | null) => void;
@@ -1355,6 +1360,7 @@ function readStoredPrefs() {
   const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
   const initialStatusSectionCollapsed = lsGet(LS_STATUS_SECTION_COLLAPSED, "") === "1";
   const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
+  const initialShowTodos = lsGet(LS_SHOW_TODOS, "") !== "0";
   const initialScheduledNav = parseScheduledNav(lsGet(LS_SCHEDULED_NAV, ""));
   const initialNewTaskButton = parseNewTaskButton(lsGet(LS_NEW_TASK_BUTTON, ""));
   const initialLauncherVisibility = parseLauncherVisibility(lsGet(LS_LAUNCHER_VISIBILITY, ""));
@@ -1457,6 +1463,7 @@ function readStoredPrefs() {
     showStatusSection: initialShowStatusSection,
     statusSectionCollapsed: initialStatusSectionCollapsed,
     showBoard: initialShowBoard,
+    showTodos: initialShowTodos,
     scheduledNav: initialScheduledNav,
     newTaskButton: initialNewTaskButton,
     launcherVisibility: initialLauncherVisibility,
@@ -1886,6 +1893,11 @@ export const usePrefs = create<PrefsState>(set => ({
     if (s.showBoard === v) return s;
     try { localStorage.setItem(LS_SHOW_BOARD, v ? "1" : "0"); } catch {}
     return { showBoard: v };
+  }),
+  setShowTodos: (v) => set(s => {
+    if (s.showTodos === v) return s;
+    try { localStorage.setItem(LS_SHOW_TODOS, v ? "1" : "0"); } catch {}
+    return { showTodos: v };
   }),
   setScheduledNav: (m) => set(s => {
     if (s.scheduledNav === m) return s;

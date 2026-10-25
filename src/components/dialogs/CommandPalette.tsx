@@ -509,6 +509,16 @@ export function CommandPalette() {
     }
 
     // ── View ───────────────────────────────────────────────────────────
+    if (usePrefs.getState().showTodos) {
+      cmds.push({
+        id: "view-todos", section: "View", label: t("commandPalette.cmd.viewTodos"),
+        icon: ListTodo, keywords: "todos issues prs work items forge assigned review inbox",
+        run: act(() => {
+          useApp.getState().setActiveTask(null);
+          useApp.getState().setView("todos");
+        }),
+      });
+    }
     cmds.push({
       id: "toggle-left-sidebar", section: "View", label: t("commandPalette.cmd.toggleLeftSidebar"),
       icon: PanelLeft, shortcutId: "toggle-left-sidebar", keywords: "projects collapse hide",

@@ -457,6 +457,8 @@ function SidebarSection() {
   const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
   const showBoard = usePrefs(s => s.showBoard);
   const setShowBoard = usePrefs(s => s.setShowBoard);
+  const showTodos = usePrefs(s => s.showTodos);
+  const setShowTodos = usePrefs(s => s.setShowTodos);
   const scheduledNav = usePrefs(s => s.scheduledNav);
   const setScheduledNav = usePrefs(s => s.setScheduledNav);
   const newTaskButton = usePrefs(s => s.newTaskButton);
@@ -582,6 +584,16 @@ function SidebarSection() {
           // back in and no nav entry lit, so leave it now.
           const app = useApp.getState();
           if (!v && app.view.page === "board") app.setView("dashboard");
+        }}
+      />
+      <Toggle
+        label={t("appearance.todos.label")}
+        hint={t("appearance.todos.hint")}
+        value={showTodos}
+        onChange={v => {
+          setShowTodos(v);
+          const app = useApp.getState();
+          if (!v && app.view.page === "todos") app.setView("dashboard");
         }}
       />
       <div className="flex items-start justify-between gap-6" data-testid="scheduled-nav-setting">
