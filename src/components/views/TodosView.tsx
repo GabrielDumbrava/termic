@@ -354,9 +354,11 @@ export function TodosView() {
             ))}
           </div>
 
+          <div className="h-4 w-px bg-[var(--color-border-soft)]" />
+
           {/* Scope Filter Pills */}
           <div className="flex items-center rounded-md bg-[var(--color-bg-1)] p-0.5 border border-[var(--color-border-soft)]">
-            {(["all", "for_me", "review"] as const).map((s) => (
+            {(["for_me", "review", "all"] as const).map((s) => (
               <button
                 key={s}
                 type="button"
@@ -377,6 +379,8 @@ export function TodosView() {
               </button>
             ))}
           </div>
+
+          <div className="h-4 w-px bg-[var(--color-border-soft)]" />
 
           {/* Status Filter Pills */}
           <div className="flex items-center rounded-md bg-[var(--color-bg-1)] p-0.5 border border-[var(--color-border-soft)]">
@@ -458,10 +462,10 @@ export function TodosView() {
                 <th className="py-2 px-4">{t("todos.colTitle")}</th>
                 <th className="py-2 px-4 w-44">{t("todos.colProject")}</th>
                 <th className="py-2 px-4 w-28">{t("todos.colUpdated")}</th>
-                <th className="py-2 px-6 w-36 text-right">{t("todos.startTask")}</th>
+                <th className="py-2 px-6 w-36" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-[var(--color-border-subtle)]">
+            <tbody className="divide-y divide-[var(--color-border-subtle)]/60">
               {items.map((item) => {
                 const title = item.kind === "issue" ? item.issue.title : item.pr.title;
                 const number = item.kind === "issue" ? item.issue.number : item.pr.number;
@@ -469,7 +473,15 @@ export function TodosView() {
                 const updatedAt = item.kind === "issue" ? item.issue.updated_at : item.pr.updated_at;
                 const labels = item.kind === "issue" ? item.issue.labels : [];
                 const isDraft = item.kind === "pr" ? item.pr.draft : false;
+                const isClosed = item.state && (item.state.toLowerCase() === "closed" || item.state.toLowerCase() === "merged");
 
+                const iconColor = isDraft
+                  ? "text-[var(--color-fg-faint)]"
+                  : isClosed
+                    ? "text-purple-500 dark:text-purple-400"
+                    : "text-emerald-500 dark:text-emerald-400";
+
+                const hasAction = item.action !== "open";
                 const actionLabel =
                   item.action === "assigned"
                     ? t("todos.actionAssigned")
@@ -483,59 +495,80 @@ export function TodosView() {
 
                 const badgeBg =
                   item.action === "assigned"
-                    ? "bg-[var(--color-info)]/15 text-[var(--color-info)]"
+                    ? "bg-[var(--color-info)]/12 text-[var(--color-info)] border-[var(--color-info)]/25"
                     : item.action === "review_requested"
-                      ? "bg-[var(--color-warn)]/15 text-[var(--color-warn)]"
+                      ? "bg-[var(--color-warn)]/12 text-[var(--color-warn)] border-[var(--color-warn)]/25"
                       : item.action === "mentioned"
-                        ? "bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
-                        : "bg-[var(--color-bg-2)] text-[var(--color-fg-muted)]";
+                        ? "bg-[var(--color-accent)]/12 text-[var(--color-accent)] border-[var(--color-accent)]/25"
+                        : "bg-purple-500/12 text-purple-600 dark:text-purple-400 border-purple-500/25";
+
+                const dotBg =
+                  item.action === "assigned"
+                    ? "bg-[var(--color-info)]"
+                    : item.action === "review_requested"
+                      ? "bg-[var(--color-warn)]"
+                      : item.action === "mentioned"
+                        ? "bg-[var(--color-accent)]"
+                        : "bg-purple-500";
 
                 return (
                   <tr
                     key={item.id}
                     data-testid="todos-row"
-                    className="group hover:bg-[var(--color-bg-hover)] transition-colors"
+                    className="group hover:bg-[var(--color-bg-hover)]/70 transition-colors"
                   >
                     {/* Action Badge */}
                     <td className="py-2.5 px-6 whitespace-nowrap">
-                      <span className={cn("inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium", badgeBg)}>
-                        {actionLabel}
-                      </span>
+                      {hasAction ? (
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium border",
+                            badgeBg
+                          )}
+                        >
+                          <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotBg)} />
+                          {actionLabel}
+                        </span>
+                      ) : null}
                     </td>
 
-                    {/* Title + Number + Labels */}
+                    {/* Title + Number + Labels + Author */}
                     <td className="py-2.5 px-4 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
                         {item.kind === "issue" ? (
-                          <CircleDot className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
+                          <CircleDot className={cn("h-4 w-4 shrink-0", iconColor)} />
                         ) : (
-                          <GitPullRequest className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
+                          <GitPullRequest className={cn("h-4 w-4 shrink-0", iconColor)} />
                         )}
-                        <span className="font-mono text-[12px] text-[var(--color-fg-faint)] shrink-0">
+                        <span className="font-mono text-[12px] text-[var(--color-fg-dim)] shrink-0">
                           {item.kind === "issue" ? `#${number}` : `!${number}`}
                         </span>
-                        <span className="font-medium text-[13px] text-[var(--color-fg)] truncate max-w-xl">
+                        <span
+                          className="font-medium text-[13px] text-[var(--color-fg)] truncate hover:text-[var(--color-accent)] transition-colors cursor-pointer"
+                          onClick={() => handleStartTask(item)}
+                          title={title}
+                        >
                           {title}
                         </span>
                         {isDraft && (
-                          <span className="rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-fg-faint)]">
+                          <span className="rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-fg-faint)] border border-[var(--color-border-subtle)] shrink-0">
                             draft
                           </span>
                         )}
-                        {item.state && (item.state.toLowerCase() === "closed" || item.state.toLowerCase() === "merged") && (
-                          <span className="rounded bg-[var(--color-warn)]/10 px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-warn)]">
+                        {isClosed && item.state && (
+                          <span className="rounded bg-[var(--color-warn)]/10 px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-warn)] border border-[var(--color-warn)]/20 shrink-0">
                             {item.state.toLowerCase()}
                           </span>
                         )}
                         {labels.slice(0, 3).map((l) => (
                           <span
                             key={l}
-                            className="hidden md:inline-block rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10.5px] text-[var(--color-fg-muted)]"
+                            className="hidden md:inline-flex items-center rounded-full bg-[var(--color-bg-2)] border border-[var(--color-border-subtle)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--color-fg-muted)] shrink-0"
                           >
                             {l}
                           </span>
                         ))}
-                        <span className="text-[11.5px] text-[var(--color-fg-faint)] hidden lg:inline shrink-0">
+                        <span className="text-[11.5px] text-[var(--color-fg-faint)] hidden lg:inline shrink-0 ml-auto pl-3">
                           by {author}
                         </span>
                       </div>
@@ -543,16 +576,21 @@ export function TodosView() {
 
                     {/* Project */}
                     <td className="py-2.5 px-4 whitespace-nowrap">
-                      <div className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-muted)]">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProjectId(item.projectId)}
+                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--color-fg-muted)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] transition-colors max-w-[160px]"
+                        title={item.projectName}
+                      >
                         <Folder className="h-3.5 w-3.5 text-[var(--color-fg-faint)] shrink-0" />
-                        <span className="truncate max-w-[150px]">{item.projectName}</span>
-                      </div>
+                        <span className="truncate">{item.projectName}</span>
+                      </button>
                     </td>
 
                     {/* Updated */}
-                    <td className="py-2.5 px-4 whitespace-nowrap">
+                    <td className="py-2.5 px-4 whitespace-nowrap text-[12px] tabular-nums text-[var(--color-fg-dim)]">
                       <Tip content={fmtDate(updatedAt)}>
-                        <span className="text-[12px] text-[var(--color-fg-dim)] cursor-default">
+                        <span className="cursor-default">
                           {fmtRelative(updatedAt)}
                         </span>
                       </Tip>
@@ -560,17 +598,17 @@ export function TodosView() {
 
                     {/* Actions */}
                     <td className="py-2.5 px-6 whitespace-nowrap text-right">
-                      <div className="flex items-center justify-end gap-1.5">
+                      <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
                         <Button
                           size="sm"
                           variant="secondary"
                           onClick={() => handleStartTask(item)}
                           data-testid="todos-start-task"
-                          className="h-6 px-2 text-[11px] gap-1"
+                          className="h-6 px-2.5 text-[11px] font-medium gap-1 shadow-2xs hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
                         >
                           {item.kind === "issue" ? (
                             <>
-                              <Play className="h-3 w-3" />
+                              <Play className="h-3 w-3 fill-current" />
                               <span>{t("todos.startTask")}</span>
                             </>
                           ) : (
@@ -585,7 +623,7 @@ export function TodosView() {
                             type="button"
                             onClick={() => handleOpenBrowser(item)}
                             data-testid="todos-open-browser"
-                            className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-fg)]"
+                            className="rounded-md p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] transition-colors"
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                           </button>
