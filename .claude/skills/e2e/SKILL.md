@@ -127,8 +127,11 @@ old/non-e2e binary).
    (see the section above); fall back to store state only for rule 4.
 4. **Terminal content is NOT in the DOM.** xterm renders to a WebGL canvas, so
    `innerText` never contains PTY output no matter how long you wait. Assert
-   terminal activity via store state — e.g. `tab.lastOutputAt` (bytes flowed)
+   terminal activity via store state — e.g. `tab.lastOutputAt` (non-query output)
    or `tab.liveTitle` (the agent's OSC title) read through `window.__termic`.
+   For raw liveness, including cursor/status queries, use
+   `window.__termic.lastPtyOutputAt(tab)` or `waitPtyQuiet`. The UI snapshot
+   deliberately skips query-only traffic; see docs/performance.md item 14.
    All OTHER UI (sidebar, tabs, dialogs, Git panel) is normal DOM.
    `scripts/fake-agent.sh` mimics claude: it drives the OSC title with claude's
    glyphs (`✳` idle / Braille spinner working). NOTE: the working indicator

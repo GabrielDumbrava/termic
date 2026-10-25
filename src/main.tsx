@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -80,9 +80,12 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/lib/i18n"),
         import("@/lib/schedules/runner"),
         import("@/store/guide"),
+        import("@/lib/ptyOutputActivity"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
+      // Raw traffic includes cursor queries that do not publish UI state.
+      lastPtyOutputAt: ptyActivity.lastPtyOutputAt,
       useUI: ui.useUI,
       usePrefs: prefs.usePrefs,
       useRace: race.useRace,
