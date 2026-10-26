@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.19.0",
+      "date": "2026-10-26",
+      "summary": "Keep your computer awake while agents work, triage todos, share shell history."
+    },
+    {
       "version": "1.18.2",
       "date": "2026-10-20",
       "summary": "Review tasks get names, pins sit atop the file tree, usage limits read as waiting."

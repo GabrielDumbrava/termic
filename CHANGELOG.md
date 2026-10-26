@@ -4,6 +4,30 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.19.0] - 2026-10-26
+
+Keep your computer awake while agents work, triage todos, share shell history.
+
+### Features
+- Keep awake: a coffee button at the bottom left of the sidebar stops your computer from sleeping for a set time, until a date and time, or while agents are working. The screen can still sleep and lock. Optionally it also keeps a closed-lid Mac awake, and puts normal sleep back when the session ends, at logout, or when Termic quits.
+- Todos: a new sidebar view gathers the issues and pull requests from every project, filtered by kind and by what needs you, with one click to start a task from an issue or review a PR. It can be hidden in Settings, Appearance.
+- Agent customizations: skills and MCP servers kept per profile are added to every task for Claude, Codex and agents that read `.agents/`, with a project able to opt out or opt in on its own.
+- Sandbox: a per-task Block Keychain access option for Seatbelt-caged tasks, so the agent cannot read the macOS Keychain.
+- Shell history is kept when you close a terminal tab, and zsh tabs share one history as you type (on by default, Settings, Appearance).
+- Sidebar: a task can show its branch name after the name, on the right or below it. Off by default, in the Projects menu and Settings, Appearance.
+- Task finder: ⌘1 to ⌘6 (Ctrl on Linux and Windows) filter by All, Working, Settled, Attention, Review and Backlog, shown as chips in the footer.
+- Settings, Agents & Terminals: agents are a vertical list beside their card, and Agent hooks and Agent customizations sit below them.
+
+### Bug fixes
+- A Codex permission prompt no longer rings again every 10 seconds while it waits.
+- Clicking Install hooks for every agent right after opening Settings is no longer undone a moment later.
+- Codex accounts on credits show their budget in the usage footer instead of "Usage unknown".
+- Antigravity (agy) no longer drops the first prompt of a new tab, and new folders no longer stop at its trust question.
+- Agents started with termic new or tab, or the MCP tools, are told to report back to the agent that started them.
+- The Git tab keeps its Push button after you commit every change, so the commit can still be pushed ([#426](https://github.com/simion/termic/issues/426)).
+- Dropping files from Finder onto a terminal works on Retina displays.
+- The Run script hints say a server must stay in the foreground: one started with &, nohup or --background keeps its port after Stop.
+
 ## [1.18.2] - 2026-10-20
 
 Review tasks get names, pins sit atop the file tree, usage limits read as waiting.
