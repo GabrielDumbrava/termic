@@ -295,8 +295,10 @@ it keeps now (the "Lens" concept of the sidebar rethink):
 - **Location cues are a choice.** A sidebar worktree gets a branch icon and
   its branch inline; the icon tooltip names the branch too. A main-checkout
   task on the project's base branch gets no extra mark, while a different
-  branch gets a link icon and its name inline. The branch is the snapshot read
-  when that task opens; the sidebar does not poll Git. The `taskLocationIcon`
+  branch gets a link icon and its name inline. Main-checkout branch labels
+  refresh when a branch is switched in Termic, when the app starts, and when
+  its window regains focus; the sidebar does not poll Git in the background.
+  The `taskLocationIcon`
   pref (Settings > Appearance > Sidebar, and a submenu in the Projects list
   options) selects the main-checkout cue, the worktree cue, both, or none.
   Other surfaces (board cards, the dashboard, History, and the breadcrumb)

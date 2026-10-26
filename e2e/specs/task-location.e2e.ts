@@ -118,6 +118,33 @@ describe("sidebar task location cues (GH #73)", () => {
     expect(shownBranch.title).toContain(mainBranch);
     expect(shownBranch.iconBranch).toBe(mainBranch);
     expect(shownBranch.rowBranch).toBe(mainBranch);
+
+    // The task remains open while an external Git switch changes the live
+    // checkout. Returning focus refreshes its label without background polling.
+    execFileSync("git", ["switch", originalBranch], {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+    await browser.execute(() => window.dispatchEvent(new Event("focus")));
+    await browser.waitUntil(
+      async () => await browser.execute((id) =>
+        document.querySelector(`[data-sidebar-task-id="${id}"] [data-testid="task-main-branch"]`) === null,
+      mainTask),
+      { timeout: 10_000, timeoutMsg: "main-checkout branch cue did not clear after returning to the base branch" },
+    );
+
+    execFileSync("git", ["switch", mainBranch], {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+    await browser.execute(() => window.dispatchEvent(new Event("focus")));
+    await browser.waitUntil(
+      async () => await browser.execute((id, branch) =>
+        document.querySelector(`[data-sidebar-task-id="${id}"] [data-testid="task-main-branch"]`)
+          ?.getAttribute("data-branch") === branch,
+      mainTask, mainBranch),
+      { timeout: 10_000, timeoutMsg: "main-checkout branch cue did not refresh after switching back" },
+    );
     await snap("task-location-non-default-main.png");
   });
 

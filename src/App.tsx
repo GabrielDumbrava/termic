@@ -42,6 +42,7 @@ import { useUpdate } from "@/store/update";
 import { usePrefs } from "@/store/prefs";
 import { focusMainTab } from "@/lib/tabFocus";
 import { recordFirstPaint } from "@/lib/perfMarks";
+import { refreshMainCheckoutBranches } from "@/lib/mainCheckoutBranches";
 
 export function App() {
   const { t } = useTranslation("chrome");
@@ -88,6 +89,7 @@ export function App() {
     // reject the very link that launched the app. A failed load still wires
     // the listener, so later links keep working.
     const loaded = Promise.resolve(loadAll()).catch(() => {});
+    void loaded.then(() => refreshMainCheckoutBranches());
     const deepLinks = loaded.then(() => initDeepLinks());
     // PR/MR status for every task that has one, not just the task whose Git
     // tab happens to be open (issue #281) - that is what colours the sidebar
@@ -175,7 +177,7 @@ export function App() {
     // this window's Zustand state (lib/activityTitleBridge.ts).
     const stopActivityTitles = initActivityTitleBridge();
     const onFocus = () => {
-      loadAll();
+      void loadAll().then(() => refreshMainCheckoutBranches()).catch(() => {});
       // Restore focus to whichever terminal/editor was last active when the
       // window lost focus. One rAF lets the click event settle first so we
       // don't race with elements that capture focus from the triggering click.
