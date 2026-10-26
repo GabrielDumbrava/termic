@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, rmTree } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, clickWhenVisible, createWorktreeTask, dismissOverlays, ensureActiveTask, openRightTab, flushEditorMeasure, openTask, requireTermicApi, setInputValue, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, waitForAttr, rmTree } from "../helpers";
 
 /** `execSync` for git against the shared fixture, retrying a moment on
  *  `index.lock`. The app runs its own git on this repo (the Git panel's status
@@ -1601,13 +1601,10 @@ describe("git commit & push", () => {
     await openRightTab("Git");
     await selectGitView("commit");
     await waitForText("Working tree is clean");
-    await browser.waitUntil(
-      async () => (await $('[data-testid="git-push"]').getAttribute("data-ahead")) === "1",
-      { timeout: 8_000, timeoutMsg: "clean tree did not offer Push with 1 unpushed commit" },
-    );
+    await waitForAttr('[data-testid="git-push"]', "data-ahead", "1", 8_000);
     await snap("git-clean-push.png");
 
-    await $('[data-testid="git-push"]').click();
+    await clickWhenVisible('[data-testid="git-push"]');
     await browser.waitUntil(
       () => {
         try {
