@@ -1,12 +1,12 @@
 # Caffeinate
 
-The coffee mug at the end of the sidebar footer controls
+The coffee mug in the sidebar footer's bottom-left corner controls
 machine-wide sleep prevention. All profile windows share one native manager.
 The display can sleep and the session can lock; no display-awake assertion or
 simulated input is used.
 
-The original footer order remains Theme, Report a bug, Contact, Shortcuts,
-Activity and Settings, followed by the new coffee mug. All actions stay direct
+The footer order is the coffee mug, then Theme, Report a bug, Contact,
+Shortcuts and Activity, with Settings alone on the right. All actions stay direct
 icons at narrow widths. The footer keeps its shared height, and the compact
 sidebar keeps the same order in a vertical stack.
 

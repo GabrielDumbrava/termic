@@ -158,10 +158,11 @@ describe("sidebar filter bar", () => {
     // openTask opens the repo root, so a, b and c are main checkouts.
     wt = await createWorktreeTask("sfilter-worktree", "sfilter-worktree", false);
     await waitVisible(TREE_ROW(wt));
+    // data-location, not the aria-label: the label names the branch too.
     const glyphs = () => browser.execute((main, worktree) => {
-      const has = (id: string, label: string) =>
-        !!document.querySelector(`[data-sidebar-task-row="${id}"] [aria-label="${label}"]`);
-      return { main: has(main, "main checkout"), worktree: has(worktree, "worktree") };
+      const has = (id: string, location: string) =>
+        !!document.querySelector(`[data-sidebar-task-row="${id}"] [data-testid="task-location-icon"][data-location="${location}"]`);
+      return { main: has(main, "main"), worktree: has(worktree, "worktree") };
     }, b, wt);
     const setMode = (m: string) => browser.execute(v => window.__termic!.usePrefs.getState().setTaskLocationIcon(v as any), m);
     try {

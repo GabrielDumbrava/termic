@@ -449,6 +449,8 @@ function SidebarSection() {
   const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
   const taskLocationIcon = usePrefs(s => s.taskLocationIcon);
   const setTaskLocationIcon = usePrefs(s => s.setTaskLocationIcon);
+  const taskBranchName = usePrefs(s => s.taskBranchName);
+  const setTaskBranchName = usePrefs(s => s.setTaskBranchName);
   const taskPrBadge = usePrefs(s => s.taskPrBadge);
   const setTaskPrBadge = usePrefs(s => s.setTaskPrBadge);
   const sidebarHoverReveal = usePrefs(s => s.sidebarHoverReveal);
@@ -524,6 +526,33 @@ function SidebarSection() {
                   : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
               )}
             >{label}</button>
+          ))}
+        </div>
+      </div>
+      {/* The branch text, separate from the git icon above. Also a submenu
+          in the sidebar's Project list options menu; both write the same pref. */}
+      <div className="flex items-start justify-between gap-6" data-testid="task-branch-name-setting">
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-medium">{t("appearance.taskBranchName.label")}</div>
+          <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+            {t("appearance.taskBranchName.hint")}
+          </div>
+        </div>
+        <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+          {(["none", "inline", "right", "below"] as const).map(id => (
+            <button
+              key={id}
+              type="button"
+              data-value={id}
+              aria-pressed={taskBranchName === id}
+              onClick={() => setTaskBranchName(id)}
+              className={cn(
+                "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
+                taskBranchName === id
+                  ? "bg-[var(--color-accent-deep)] text-white"
+                  : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+              )}
+            >{t(`appearance.taskBranchName.${id}`)}</button>
           ))}
         </div>
       </div>

@@ -1,8 +1,3 @@
-export type MainCheckoutBranchState =
-  | { kind: "unknown" }
-  | { kind: "default" }
-  | { kind: "different"; branch: string };
-
 type MainCheckoutTask = {
   project_id: string;
   branch: string;
@@ -27,26 +22,4 @@ export function updateMainCheckoutBranches<T extends MainCheckoutTask>(
     return { ...task, branch };
   });
   return changed ? next : tasks;
-}
-
-/** Classify the branch the main checkout is currently on.
- *  Project defaults are stored as remote refs (usually `origin/main`), while
- *  the checked-out branch is the local name (`main`). */
-export function mainCheckoutBranchState(
-  branch: string | null | undefined,
-  baseBranch: string | null | undefined,
-  remote: string | null | undefined,
-): MainCheckoutBranchState {
-  if (!branch) return { kind: "unknown" };
-  if (!baseBranch) return { kind: "different", branch };
-
-  const remotePrefix = remote ? `${remote}/` : "";
-  const localBase =
-    remotePrefix && baseBranch.startsWith(remotePrefix)
-      ? baseBranch.slice(remotePrefix.length)
-      : baseBranch;
-
-  return branch === localBase
-    ? { kind: "default" }
-    : { kind: "different", branch };
 }

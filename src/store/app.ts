@@ -30,6 +30,7 @@ import { visitMayClearWorking } from "@/lib/taskBoardState";
 import { unreadClearsOnSight } from "@/lib/taskWorkState";
 import { scoped } from "@/lib/profileScope";
 import { pruneMemberSets } from "@/components/dialogs/memberModes";
+import { updateMainCheckoutBranches } from "@/lib/taskLocation";
 
 /** An agent tab closed via the "X", snapshotted just before its session
  *  becomes unreachable. Powers the "+" menu's Resume section — in-memory
@@ -850,11 +851,18 @@ export const useApp = create<AppState>((set, get) => ({
     // Agents drive spawn args via spawnArgsForCli, so this list must be
     // fresh whenever the user edits Settings → Agents and immediately
     // opens a new terminal.
-    const [projects, tasks, settings] = await Promise.all([
+    const [projects, diskTasks, settings] = await Promise.all([
       ipc.projectsList(),
       ipc.tasksList(),
       ipc.settingsLoad().catch(() => ({ agents: [] } as Partial<import("@/lib/types").Settings>)),
     ]);
+    // The disk copy of a main checkout's branch is only rewritten when the
+    // task opens, so keep the live one refreshMainCheckoutBranches already
+    // read, or every window focus repaints the stale branch for a beat.
+    const liveMainBranches = new Map(get().tasks
+      .filter(t => t.is_main_checkout && !t.archived)
+      .map(t => [t.project_id, t.branch] as const));
+    const tasks = updateMainCheckoutBranches(diskTasks, liveMainBranches);
     // Prune UI state for groups that no longer exist (groups are
     // derived from Project.group — dissolving / renaming one would
     // otherwise leave its entries in localStorage forever, and a stale

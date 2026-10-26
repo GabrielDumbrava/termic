@@ -41,7 +41,6 @@ import { agentDisplayName, workDoneCapable } from "@/lib/agents";
 import { effectiveSandboxMode, isSandboxEnforced, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
-import { mainCheckoutBranchState } from "@/lib/taskLocation";
 import { taskLabel, useTaskLabel } from "@/lib/taskLabel";
 import { TaskLabelText } from "@/components/TaskLabelText";
 import { useProfilesSync } from "@/components/ProfileChip";
@@ -182,6 +181,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const showStatusSection = usePrefs(s => s.showStatusSection);
   const taskLocationIcon = usePrefs(s => s.taskLocationIcon);
   const setTaskLocationIcon = usePrefs(s => s.setTaskLocationIcon);
+  const taskBranchName = usePrefs(s => s.taskBranchName);
+  const setTaskBranchName = usePrefs(s => s.setTaskBranchName);
   const taskPrBadge = usePrefs(s => s.taskPrBadge);
   const setTaskPrBadge = usePrefs(s => s.setTaskPrBadge);
   const showBoard = usePrefs(s => s.showBoard);
@@ -1425,6 +1426,25 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     ))}
                   </DropdownSubContent>
                 </DropdownSub>
+                {/* The branch text, a separate choice from the glyph above.
+                    Mirrored in Settings > Appearance > Sidebar. */}
+                <DropdownSub>
+                  <DropdownSubTrigger data-testid="sidebar-task-branch-name" className="justify-between">
+                    <span>{t("taskBranchName")}</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-[12px] text-[var(--color-fg-faint)]">{t(TASK_BRANCH_NAME_LABELS[taskBranchName])}</span>
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                    </span>
+                  </DropdownSubTrigger>
+                  <DropdownSubContent>
+                    {(["none", "inline", "right", "below"] as const).map(id => (
+                      <DropdownItem key={id} data-branch-value={id} onSelect={(e) => { e.preventDefault(); setTaskBranchName(id); }} className="items-center">
+                        <Check className={cn("h-4 w-4 shrink-0 text-[var(--color-accent)]", taskBranchName === id ? "opacity-100" : "opacity-0")} />
+                        <span className="flex-1">{t(TASK_BRANCH_NAME_LABELS[id])}</span>
+                      </DropdownItem>
+                    ))}
+                  </DropdownSubContent>
+                </DropdownSub>
                 {/* The same shape for the row's PR mark. Mirrored in Settings
                     > Appearance > Sidebar, which writes the same pref. */}
                 <DropdownSub>
@@ -2540,7 +2560,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               opens the user's default mail client. Compact mode is
               flex-col, so left/right ordering collapses into a top/bottom
               stack. */}
-          {/* Theme, first in the row. It came down from the title bar when the
+          {/* Coffee leads the row: it is the one footer control with live
+              state (keeping the Mac awake), so it gets the corner. */}
+          <CaffeinateControl compact={compact} />
+          {/* Theme, next in the row. It came down from the title bar when the
               profile chip took that space: it is a set-once preference, not a
               thing you reach for while driving an agent, and this footer is
               where the other set-once affordances already live. */}
@@ -2577,8 +2600,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               <Activity className={iconSize(compact)} />
             </Button>
           </Tip>
-          {/* Keep the original actions in order, with Settings after Activity.
-              Coffee is appended after the last existing icon.
+          {/* Settings sits alone on the right.
 
               The PROFILE control that used to sit beside it moved to the title
               bar with the rest of the profile UI (GH #280). "Add project" was
@@ -2591,7 +2613,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               <Settings className={iconSize(compact)} />
             </Button>
           </Tip>
-          <CaffeinateControl compact={compact} />
         </div>
       </div>
 
@@ -2955,9 +2976,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const labelIsBranch = label !== w.name;
 
   const project = useApp(s => s.projects.find(p => p.id === w.project_id) ?? null);
-  const mainCheckoutBranch = w.is_main_checkout
-    ? mainCheckoutBranchState(w.branch, project?.base_branch, project?.remote)
-    : null;
+  // The branch text is its own pref, apart from the location glyph. A
+  // branch-labelled row already shows it, and a plain folder has none.
+  const branchMode = usePrefs(s => s.taskBranchName);
+  const branchText = branchMode !== "none" && w.branch && w.branch !== "HEAD" && !labelIsBranch ? w.branch : null;
+  const branchBelow = branchMode === "below" && !!branchText;
   const spotlightTaskId = useApp(s => s.spotlightTaskId[w.project_id] ?? null);
   const isSpotlighted = spotlightTaskId === w.id;
   // Spotlight is worktree-only: non-repo-root, single-repo, git, spotlight_enabled.
@@ -3239,7 +3262,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           // Fixed height rather than padding around a line box: the line box
           // is the system's to decide (see --task-row-h) and the rows have to
           // stay level with each other and with the empty-project placeholder.
-          "group/wsrow ml-3 flex h-[var(--task-row-h)] items-center gap-1 rounded-md px-1 text-[13px] cursor-pointer select-none transition-colors",
+          "group/wsrow ml-3 flex items-center gap-1 rounded-md px-1 text-[13px] cursor-pointer select-none transition-colors",
+          // "Below" is a two-line row by choice; every other row keeps the fixed height.
+          branchBelow ? "min-h-[var(--task-row-h)] py-1" : "h-[var(--task-row-h)]",
           // Strong selection on the header when active AND no child row
           // carries it: collapsed (children hidden) OR the active tab is an
           // edit/diff view (no row). Expanded with an active terminal tab
@@ -3268,7 +3293,8 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             </button>
         }
 
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 items-center gap-1.5">
           {taskRenaming !== null ? (
             <input
               ref={taskRenameInputRef}
@@ -3300,39 +3326,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 title={labelIsBranch ? t("taskNameTitle", { name: w.name }) : undefined}
                 className={cn("font-medium", labelIsBranch && "font-mono text-[12px]")}
               />
-              {/* Which locations get a cue is the taskLocationIcon pref
+              {/* Which locations get a glyph is the taskLocationIcon pref
                   (docs/ui.md "One glyph per meaning"). */}
-              {showLocation && (w.is_main_checkout ? (
-                mainCheckoutBranch?.kind === "different" ? (
-                  <>
-                    <TaskLocationIcon isMainCheckout branch={mainCheckoutBranch.branch} size="h-3.5 w-3.5" />
-                    <span
-                      data-testid="task-main-branch"
-                      data-branch={mainCheckoutBranch.branch}
-                      title={tChrome("taskLocation.mainBranch", { branch: mainCheckoutBranch.branch })}
-                      className="min-w-0 truncate font-mono text-[11px] text-[var(--color-fg-dim)]"
-                    >
-                      · {mainCheckoutBranch.branch}
-                    </span>
-                  </>
-                ) : mainCheckoutBranch?.kind === "unknown" ? (
-                  <TaskLocationIcon isMainCheckout branch={w.branch} size="h-3.5 w-3.5" />
-                ) : null
-              ) : (
-                <>
-                  <TaskLocationIcon isMainCheckout={false} branch={w.branch} size="h-3.5 w-3.5" />
-                  {w.branch && w.branch !== "HEAD" && !labelIsBranch ? (
-                    <span
-                      data-testid="task-worktree-branch"
-                      data-branch={w.branch}
-                      title={tChrome("taskLocation.worktreeBranch", { branch: w.branch })}
-                      className="min-w-0 truncate font-mono text-[11px] text-[var(--color-fg-dim)]"
-                    >
-                      · {w.branch}
-                    </span>
-                  ) : null}
-                </>
-              ))}
+              {showLocation && <TaskLocationIcon isMainCheckout={w.is_main_checkout} branch={w.branch} size="h-3.5 w-3.5" />}
+              {branchMode === "inline" && branchText && <TaskBranchText branch={branchText} placement="inline" />}
               {w.spawned_by && <SpawnedFromMark task={w} />}
               {/* Mode (sandbox, docker, dangerous YOLO; absent when there is
                   none), inline with the name's other marks. It had a trailing
@@ -3408,6 +3405,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               isMounted={isMounted}
             />
           ))}
+          {!taskRenaming && branchMode === "right" && branchText && <TaskBranchText branch={branchText} placement="right" />}
+        </div>
+        {!taskRenaming && branchBelow && <TaskBranchText branch={branchText!} placement="below" />}
         </div>
 
         {/* PR/MR state, carrying its number so it reads as a link and not one
@@ -4089,17 +4089,51 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The location cues a `taskLocationIcon` choice puts on task rows, as a
- *  sample beside the option that picks it: a non-default main-branch label,
- *  the worktree marker, or both split by a hairline. "none" draws nothing. */
+/** The glyphs a `taskLocationIcon` choice puts on task rows, as a sample
+ *  beside the option that picks it: link for the main checkout, branch for a
+ *  worktree, both split by a hairline. A drawn rule and not a "/" character,
+ *  so the row's text stays its label alone (specs and screen readers match on
+ *  it). "none" draws nothing, which is the sample. */
 function TaskLocationSamples({ value }: { value: "both" | "main" | "worktree" | "none" }) {
   if (value === "none") return null;
   return (
     <span data-testid="task-location-samples" data-value={value} className="flex shrink-0 items-center gap-1.5">
-      {value !== "worktree" && <span aria-hidden className="font-mono text-[10px] text-[var(--color-fg-faint)]">topic</span>}
+      {value !== "worktree" && <TaskLocationIcon isMainCheckout size="h-3.5 w-3.5" />}
       {value === "both" && <span aria-hidden className="h-3 w-px bg-[var(--color-border)]" />}
-      {value !== "main" && <TaskLocationIcon isMainCheckout={false} branch="topic" size="h-3.5 w-3.5" />}
+      {value !== "main" && <TaskLocationIcon isMainCheckout={false} size="h-3.5 w-3.5" />}
     </span>
+  );
+}
+
+const TASK_BRANCH_NAME_LABELS = {
+  none: "taskBranchNameNone",
+  inline: "taskBranchNameInline",
+  right: "taskBranchNameRight",
+  below: "taskBranchNameBelow",
+} as const;
+
+/** A task row's branch, placed by the `taskBranchName` pref. On the name's
+ *  line it never shrinks below its text up to 60% of the row; "right"
+ *  pushes itself to the row's end inside the name column so the PR numbers
+ *  keep one right edge. */
+function TaskBranchText({ branch, placement }: { branch: string; placement: "inline" | "right" | "below" }) {
+  return (
+    <span
+      data-testid="task-branch"
+      data-placement={placement}
+      data-branch={branch}
+      title={branch}
+      className={cn(
+        // fg-faint, a step under the name, so the branch reads as metadata.
+        "min-w-0 truncate font-mono text-[11px] text-[var(--color-fg-faint)]",
+        // Never shrinks, capped at 60% so the name keeps 40%. A shared shrink
+        // turned "main" into "m…" beside a long name; a 45% cap cut a long
+        // branch off with room to spare.
+        placement !== "below" && "max-w-[60%] shrink-0",
+        placement === "right" && "ml-auto pl-2",
+        placement === "below" && "leading-tight",
+      )}
+    >{placement === "inline" ? `· ${branch}` : branch}</span>
   );
 }
 

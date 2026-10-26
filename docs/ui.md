@@ -3,7 +3,7 @@
 The sidebar coffee mug opens [Caffeinate](caffeinate.md), with duration,
 deadline and automatic agent-work modes. Its indicator reflects native power
 state, with separate closed-lid status and errors. All original footer icons
-retain their order and stay directly accessible; Coffee is appended after Settings.
+retain their order and stay directly accessible; Coffee leads the row, before Theme.
 The footer retains the shared bottom-bar height in expanded and compact modes.
 
 Profile-wide **Agent customizations** live in Settings → Agents & Terminals,
@@ -292,17 +292,24 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   moved again on a row with no PR. Do not put an optional mark in the
   trailing columns. Marks beside the name are ragged by nature, so there
   is nothing there to align.
-- **Location cues are a choice.** A sidebar worktree gets a branch icon and
-  its branch inline; the icon tooltip names the branch too. A main-checkout
-  task on the project's base branch gets no extra mark, while a different
-  branch gets a link icon and its name inline. Main-checkout branch labels
-  refresh when a branch is switched in Termic, when the app starts, and when
-  its window regains focus; the sidebar does not poll Git in the background.
-  The `taskLocationIcon`
-  pref (Settings > Appearance > Sidebar, and a submenu in the Projects list
-  options) selects the main-checkout cue, the worktree cue, both, or none.
-  Other surfaces (board cards, the dashboard, History, and the breadcrumb)
-  keep both location icons, with branch-aware tooltips.
+- **Location glyphs are a choice.** The tree draws a link for the main
+  checkout and a branch for a worktree by default, and the glyph's tooltip
+  names the branch; the `taskLocationIcon` pref (Settings > Appearance >
+  Sidebar, and a submenu in the Projects list options) narrows that to main
+  checkout only, worktree only, or none, since whichever one you mostly use
+  is noise. Other surfaces (board cards, the dashboard, History, the
+  breadcrumb) always show both.
+- **The branch name is a separate choice.** The `taskBranchName` pref
+  (same two places, its own row, never folded into the glyph setting)
+  prints the row's branch after the name, right-aligned inside the name
+  column (so PR numbers keep their edge), or on a second line, which is the
+  one row that is taller than `--task-row-h`. Off by default: a worktree's
+  branch is usually `<prefix>/<task name>`, and printing it doubled the row
+  width (GH #73 shipped it always-on and it was walked back the same day).
+  A branch-labelled row (GH #260) never repeats it. Main-checkout branches
+  refresh when a branch is switched in Termic, at startup and on window
+  focus; `loadAll` keeps the live value over the disk copy, which is only
+  rewritten when the task opens. The sidebar does not poll Git.
 - **The PR mark is a choice too.** A task row with a PR draws its number
   (`#367`) by default, in the state's colour; the `taskPrBadge` pref
   (Settings > Appearance > Sidebar, and a submenu in the Projects list

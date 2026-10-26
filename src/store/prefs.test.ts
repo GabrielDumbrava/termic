@@ -852,6 +852,18 @@ describe("prefs: status section", () => {
     expect(second.usePrefs.getState().taskLocationIcon).toBe("main");
   });
 
+  it("the task branch name: off by default, and a placement survives a reload", async () => {
+    const first = await import("./prefs");
+    expect(first.usePrefs.getState().taskBranchName).toBe("none");
+    expect(first.parseTaskBranchName("junk")).toBe("none");
+    for (const m of ["none", "inline", "right", "below"] as const) expect(first.parseTaskBranchName(m)).toBe(m);
+    first.usePrefs.getState().setTaskBranchName("below");
+    expect(localStorage.getItem("taskBranchName")).toBe("below");
+    vi.resetModules();
+    const second = await import("./prefs");
+    expect(second.usePrefs.getState().taskBranchName).toBe("below");
+  });
+
   it("the task PR mark: the number alone by default, and a choice survives a reload", async () => {
     const first = await import("./prefs");
     expect(first.usePrefs.getState().taskPrBadge).toBe("number");

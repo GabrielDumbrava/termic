@@ -116,6 +116,7 @@ const LS_NEW_TASK_BUTTON = scoped("newTaskButton");
 const LS_LAUNCHER_VISIBILITY = scoped("launcherVisibility");
 const LS_TASK_LOCATION_ICON = scoped("taskLocationIcon");
 const LS_TASK_PR_BADGE = scoped("taskPrBadge");
+const LS_TASK_BRANCH_NAME = scoped("taskBranchName");
 const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
 const LS_STATUS_TASK_EXPANDED = scoped("statusTaskExpanded");
 const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
@@ -874,6 +875,7 @@ interface PrefsState {
    *  (`#367`), both, or nothing. The number alone by default: it carries the
    *  state's colour, so the glyph beside it says the same thing twice. */
   taskPrBadge: TaskPrBadgeMode;
+  taskBranchName: TaskBranchNameMode;
   /** Per-bucket overrides of the default fold (count-only buckets start
    *  closed). Only buckets the user toggled are stored. */
   statusBucketCollapsed: StatusBucketCollapsed;
@@ -1080,6 +1082,7 @@ interface PrefsState {
   setLauncherVisibility: (id: string, v: LauncherVisibility | null) => void;
   setTaskLocationIcon: (m: TaskLocationIconMode) => void;
   setTaskPrBadge: (m: TaskPrBadgeMode) => void;
+  setTaskBranchName: (m: TaskBranchNameMode) => void;
   setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
   /** `liveIds`: the tasks that still exist, so dead ids are pruned on write. */
   setStatusTaskExpanded: (taskId: string, expanded: boolean, liveIds: readonly string[]) => void;
@@ -1133,6 +1136,12 @@ export function parseTaskLocationIcon(raw: string): TaskLocationIconMode {
   return raw === "main" || raw === "worktree" || raw === "none" ? raw : "both";
 }
 export type TaskPrBadgeMode = "both" | "icon" | "number" | "none";
+/** Where a sidebar task row prints its branch, separate from the location
+ *  glyph: off, after the name, right-aligned on the row, or on a second line. */
+export type TaskBranchNameMode = "none" | "inline" | "right" | "below";
+export function parseTaskBranchName(raw: string): TaskBranchNameMode {
+  return raw === "inline" || raw === "right" || raw === "below" ? raw : "none";
+}
 export function parseTaskPrBadge(raw: string): TaskPrBadgeMode {
   return raw === "both" || raw === "icon" || raw === "none" ? raw : "number";
 }
@@ -1366,6 +1375,7 @@ function readStoredPrefs() {
   const initialLauncherVisibility = parseLauncherVisibility(lsGet(LS_LAUNCHER_VISIBILITY, ""));
   const initialTaskLocationIcon = parseTaskLocationIcon(lsGet(LS_TASK_LOCATION_ICON, ""));
   const initialTaskPrBadge = parseTaskPrBadge(lsGet(LS_TASK_PR_BADGE, ""));
+  const initialTaskBranchName = parseTaskBranchName(lsGet(LS_TASK_BRANCH_NAME, ""));
   const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
   const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
   const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
@@ -1469,6 +1479,7 @@ function readStoredPrefs() {
     launcherVisibility: initialLauncherVisibility,
     taskLocationIcon: initialTaskLocationIcon,
     taskPrBadge: initialTaskPrBadge,
+    taskBranchName: initialTaskBranchName,
     statusBucketCollapsed: initialStatusBucketCollapsed,
     statusTaskExpanded: initialStatusTaskExpanded,
     statusGroupCollapsed: initialStatusGroupCollapsed,
@@ -1921,6 +1932,11 @@ export const usePrefs = create<PrefsState>(set => ({
     if (s.taskLocationIcon === m) return s;
     try { localStorage.setItem(LS_TASK_LOCATION_ICON, m); } catch {}
     return { taskLocationIcon: m };
+  }),
+  setTaskBranchName: (m) => set(s => {
+    if (s.taskBranchName === m) return s;
+    try { localStorage.setItem(LS_TASK_BRANCH_NAME, m); } catch {}
+    return { taskBranchName: m };
   }),
   setTaskPrBadge: (m) => set(s => {
     if (s.taskPrBadge === m) return s;
