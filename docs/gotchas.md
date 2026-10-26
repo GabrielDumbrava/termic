@@ -1320,3 +1320,37 @@ generated shim (`<data dir>/shell/zsh/.zshenv`) that sources the user's real
 `.zshenv`, restores `ZDOTDIR` (zsh then looks up `.zprofile` / `.zshrc` in the
 real directory, verified) and enables `SHARE_HISTORY`. The shim only ever
 touches interactive zsh; bash and fish are left to their own configs.
+
+## An edge that was dropped is a queue that never drains
+
+Messages other agents send (`termic send`, MCP `task_send`) queue while the
+receiving agent is "working" and drain on its turn end, which is `fireDone`.
+So any turn end that does not reach `fireDone` strands the queue, and nothing
+else releases it: the kick effect fires on a NEW queue item, not on a state
+change, and the stall watchdog only looks at tabs still reading "working".
+
+Measured with codex and `approvals_reviewer = "auto_review"`: PreToolUse
+(working), PermissionRequest (needs-you, which sets the tab to done and clears
+`localBusy`), the reviewer approves on its own, the turn ends, Stop. There is
+no working report between the needs-you and the done, because the command's
+PreToolUse fired BEFORE its permission request. `goIdle` then drops the done as
+"not working", and every report from the tasks the orchestrator started sat
+queued for good. A real prompt the user answers can end the same way.
+
+The fix is one line in `goIdle`: a HOOK done that finds the tab not working
+still drains the queue. The rule to carry forward: **a guard that drops a
+signal because the state already moved on must ask what ELSE was waiting on
+that signal.** The notification half of a done is safe to drop; the queue half
+is not. e2e: "a queue behind a needs-you that resolved itself" (agent.e2e.ts,
+fixture `#autoapproved`).
+
+Two traps from reproducing it, both of which cost a wrong conclusion first:
+
+- **A fixture agent without `setHooksOwnState(cli, true)` does not test a
+  hooked agent.** The title fallbacks stand down only for a hooked tab, so on
+  an unhooked fixture they drained the queue and the case passed WITHOUT the
+  fix. Check the spawn line's `hooksInstalled=` in termic-workstate-e2e.log.
+- **The e2e data dir and its `e2e-agent-prompts.log` persist across runs.**
+  "The log contains my message" passed on a line from the previous run. Count
+  the lines before the action and wait for the count to grow.
+

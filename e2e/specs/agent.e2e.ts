@@ -771,6 +771,60 @@ describe("message queue", () => {
 // evicted and re-read from disk; an item that came due while the task was
 // closed is delivered once on reopen; removing one clears it on disk; closing
 // a secondary tab that holds one asks first.
+// A hooked turn that reports a needs-you and then ends with no working report
+// in between: codex with `approvals_reviewer = "auto_review"` approving a
+// command itself (measured on 0.164.0; the command's PreToolUse fires BEFORE
+// its permission request). The needs-you left the tab on "done", the turn's own
+// done hook was then dropped as "not working", and nothing ever released what
+// other agents had queued: their reports sat there for good.
+describe("a queue behind a needs-you that resolved itself", () => {
+  let taskId!: string;
+  after(async () => {
+    await setHooksOwnState("fakeagent", false);
+    if (taskId) await archiveTask(taskId);
+  });
+
+  function delivered(): number {
+    try {
+      return readFileSync(join(dataDir, "e2e-agent-prompts.log"), "utf8")
+        .split("\n").filter((l) => l.includes("after-autoapproved")).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  it("drains when the turn's done hook arrives", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await requireWorkBadges();
+    await setHooksOwnState("fakeagent", true);
+    taskId = await openTask("e2e-queue-autoapproved");
+    await waitForAgentReady(taskId);
+    const before = delivered();
+
+    await submitToAgent(taskId, "#autoapproved");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 10_000,
+      message: "agent never showed a working badge",
+    });
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      s.enqueueAgentMessage(id, s.tabs[id][0].id, "after-autoapproved");
+    }, taskId);
+    await browser.waitUntil(async () => (await queuedCount(taskId!)) === 1, {
+      timeout: 8_000,
+      timeoutMsg: "the message was not held while the agent worked",
+    });
+
+    await browser.waitUntil(() => delivered() > before, {
+      timeout: 20_000,
+      interval: 300,
+      timeoutMsg: "the queued message was never delivered after the turn ended",
+    });
+    expect(await queuedCount(taskId)).toBe(0);
+  });
+});
+
 describe("scheduled messages", () => {
   let taskId!: string;
   after(async () => {

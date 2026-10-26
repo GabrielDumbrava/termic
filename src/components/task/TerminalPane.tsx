@@ -1830,7 +1830,16 @@ const captureArmedRef = useRef(false);
         // localBusy false), a late OSC 9 from the same turn must not re-fire
         // done — the user already acknowledged it. fireDone also enforces
         // one-done-per-submit as a second layer.
-        if (!wasWorking) return;
+        if (!wasWorking) {
+          // A hook done still ends the turn for the QUEUE. A needs-you moves
+          // the tab off "working", and a turn can end straight after it with
+          // no working report between: codex's auto_review approving a command
+          // itself (that command's PreToolUse fired BEFORE its permission
+          // request). Dropping that done left every queued report from other
+          // agents waiting for a turn end that had already happened.
+          if (fromHook) sendNextQueuedRef.current?.();
+          return;
+        }
         fireDone(reason, "done", false, false, fromHook);
         return;
       }

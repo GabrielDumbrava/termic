@@ -1249,6 +1249,16 @@ to check and the easiest to get wrong.
 
 ## Traps
 
+- **Measuring a real codex outside termic: pass `--no-daemon`.** Without it
+  codex runs through its shared background daemon, which fires hooks with the
+  environment of whichever session started the daemon, so `TERMIC_PTY` points
+  at an earlier run's target and the run under test reports nothing at all. An
+  afternoon went into "hooks do not fire unless `-c approval_policy` is set"
+  before this: any `-c` happened to force a fresh process. termic itself
+  always passes `--no-daemon` (`lib/agents.ts`). To capture a session, run the
+  TUI in a pty with `TERMIC_TASK_ID` set and `TERMIC_PTY` pointing at a plain
+  file, and answer the folder-trust prompt.
+
 - **`/dev/tty` does not work from a hook on the host.** No controlling terminal
   (measured on grok, rc=1). Opening the slave BY NAME needs none.
 - **`SubagentStop` is not a done.** 107 fires against 2 real Stops in one run.

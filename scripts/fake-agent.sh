@@ -476,6 +476,20 @@ while IFS= read -r line; do
       set_title "✳ ${name}"
       osc777 "termic;agent delegated: ${line#\#delegated }"
       continue ;;
+    "#autoapproved")
+      # codex with `approvals_reviewer = "auto_review"`, as measured on
+      # 0.164.0: the turn starts, a permission request is reported, the
+      # reviewer approves it on its own, the command runs, and the turn ends.
+      # No working report between the needs-you and the done: the command's
+      # PreToolUse fired BEFORE its permission request.
+      osc133 C
+      spin
+      sleep 3                            # mid-turn: a message sent now queues
+      osc777 "termic;needs your permission: Bash"
+      sleep 2
+      echo "FAKE-AGENT ran the auto-approved command"
+      osc133 D
+      continue ;;
     "#hookattn")
       spin
       echo "FAKE-AGENT needs your permission to continue"
