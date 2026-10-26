@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { useTodos, type TodoItem, type KindFilter, type ScopeFilter, type StatusFilter } from "@/store/todos";
+import { useTodos, type TodoItem, type KindFilter, type ScopeFilter } from "@/store/todos";
 import { openPath } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -50,14 +50,14 @@ function fmtRelative(iso: string): string {
   if (!iso) return "";
   const diffMs = Date.now() - new Date(iso).getTime();
   if (isNaN(diffMs) || diffMs < 0) return fmtDate(iso);
+  const rtf = new Intl.RelativeTimeFormat(i18n.language, { numeric: "auto", style: "short" });
   const diffMins = Math.floor(diffMs / 60_000);
-  if (diffMins < 1) return "just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffMins < 1) return rtf.format(0, "second");
+  if (diffMins < 60) return rtf.format(-diffMins, "minute");
   const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) return rtf.format(-diffHours, "hour");
   const diffDays = Math.floor(diffHours / 24);
-  if (diffDays === 1) return "yesterday";
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 7) return rtf.format(-diffDays, "day");
   return fmtDate(iso);
 }
 
@@ -71,14 +71,12 @@ export function TodosView() {
   const selectedProjectId = useTodos((s) => s.selectedProjectId);
   const kindFilter = useTodos((s) => s.kindFilter);
   const scopeFilter = useTodos((s) => s.scopeFilter);
-  const statusFilter = useTodos((s) => s.statusFilter);
   const searchQuery = useTodos((s) => s.searchQuery);
   const isRefreshing = useTodos((s) => s.isRefreshing);
 
   const setSelectedProjectId = useTodos((s) => s.setSelectedProjectId);
   const setKindFilter = useTodos((s) => s.setKindFilter);
   const setScopeFilter = useTodos((s) => s.setScopeFilter);
-  const setStatusFilter = useTodos((s) => s.setStatusFilter);
   const setSearchQuery = useTodos((s) => s.setSearchQuery);
   const fetchVisibleTodos = useTodos((s) => s.fetchVisibleTodos);
 
@@ -178,21 +176,11 @@ export function TodosView() {
     const allItems = Array.from(itemsById.values());
     const totalUnfiltered = allItems.length;
 
-    // Filter by status (all / open / closed)
-    const statusFiltered = allItems.filter((item) => {
-      if (statusFilter === "all") return true;
-      const st = (item.state || "open").toLowerCase();
-      const isClosed = st === "closed" || st === "merged";
-      if (statusFilter === "open") return !isClosed;
-      if (statusFilter === "closed") return isClosed;
-      return true;
-    });
-
     // Filter by text search if present
     const rawQ = searchQuery.trim().toLowerCase();
     const cleanQ = rawQ.replace(/^[#!]/, "");
     const filtered = rawQ
-      ? statusFiltered.filter((item) => {
+      ? allItems.filter((item) => {
           const title = item.kind === "issue" ? item.issue.title : item.pr.title;
           const author = item.kind === "issue" ? item.issue.author : item.pr.author;
           const num = item.kind === "issue" ? String(item.issue.number) : String(item.pr.number);
@@ -209,7 +197,7 @@ export function TodosView() {
             pName.toLowerCase().includes(rawQ)
           );
         })
-      : statusFiltered;
+      : allItems;
 
     // Sort newest updated first
     filtered.sort((a, b) => {
@@ -219,7 +207,7 @@ export function TodosView() {
     });
 
     return { items: filtered, totalUnfiltered, errors: collectedErrors };
-  }, [gitProjects, selectedProjectId, scopeFilter, kindFilter, statusFilter, cache, searchQuery]);
+  }, [gitProjects, selectedProjectId, scopeFilter, kindFilter, cache, searchQuery]);
 
   const { issueCount, prCount, assignedCount, reviewCount, authoredCount, projectCount } = useMemo(() => {
     let issues = 0;
@@ -382,31 +370,6 @@ export function TodosView() {
             ))}
           </div>
 
-          <div className="h-4 w-px bg-[var(--color-border-soft)]" />
-
-          {/* Status Filter Pills */}
-          <div className="flex items-center rounded-md bg-[var(--color-bg-1)] p-0.5 border border-[var(--color-border-soft)]">
-            {(["all", "open", "closed"] as const).map((st) => (
-              <button
-                key={st}
-                type="button"
-                onClick={() => setStatusFilter(st)}
-                data-testid={`todos-status-${st}`}
-                className={cn(
-                  "rounded px-2.5 py-1 text-[11.5px] font-medium transition-colors",
-                  statusFilter === st
-                    ? "bg-[var(--color-bg-2)] text-[var(--color-fg)] shadow-xs"
-                    : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
-                )}
-              >
-                {st === "all"
-                  ? t("todos.statusAll")
-                  : st === "open"
-                    ? t("todos.statusOpen")
-                    : t("todos.statusClosed")}
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* Text Search Bar */}
@@ -474,13 +437,10 @@ export function TodosView() {
                 const updatedAt = item.kind === "issue" ? item.issue.updated_at : item.pr.updated_at;
                 const labels = item.kind === "issue" ? item.issue.labels : [];
                 const isDraft = item.kind === "pr" ? item.pr.draft : false;
-                const isClosed = item.state && (item.state.toLowerCase() === "closed" || item.state.toLowerCase() === "merged");
 
                 const iconColor = isDraft
                   ? "text-[var(--color-fg-faint)]"
-                  : isClosed
-                    ? "text-purple-500 dark:text-purple-400"
-                    : "text-emerald-500 dark:text-emerald-400";
+                  : "text-emerald-500 dark:text-emerald-400";
 
                 const hasAction = item.action !== "open";
                 const actionLabel =
@@ -552,11 +512,6 @@ export function TodosView() {
                       {isDraft && (
                         <span className="rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-fg-faint)] border border-[var(--color-border-subtle)] shrink-0">
                           draft
-                        </span>
-                      )}
-                      {isClosed && item.state && (
-                        <span className="rounded bg-[var(--color-warn)]/10 px-1.5 py-0.5 text-[10px] uppercase font-semibold text-[var(--color-warn)] border border-[var(--color-warn)]/20 shrink-0">
-                          {item.state.toLowerCase()}
                         </span>
                       )}
                       {labels.slice(0, 3).map((l) => (
@@ -641,11 +596,14 @@ export function TodosView() {
       >
         <div className="flex items-center gap-2">
           <span className="font-medium text-[var(--color-fg)]">
-            {t("todos.footerTotal", { count: items.length })}
+            {t(items.length === 1 ? "todos.footerTotal_one" : "todos.footerTotal_other", { count: items.length })}
           </span>
           <span className="text-[var(--color-border-subtle)]">•</span>
           <span>
-            {t("todos.footerBreakdown", { issues: issueCount, prs: prCount })}
+            {t("todos.footerBreakdown", {
+              issues: t(issueCount === 1 ? "todos.footerIssues_one" : "todos.footerIssues_other", { count: issueCount }),
+              prs: t(prCount === 1 ? "todos.footerPrs_one" : "todos.footerPrs_other", { count: prCount }),
+            })}
           </span>
           {items.length !== totalUnfiltered && (
             <>
@@ -675,7 +633,7 @@ export function TodosView() {
           )}
           <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-fg-faint)]">
             <Folder className="h-3 w-3" />
-            {t("todos.footerProjects", { count: projectCount })}
+            {t(projectCount === 1 ? "todos.footerProjects_one" : "todos.footerProjects_other", { count: projectCount })}
           </span>
         </div>
       </footer>

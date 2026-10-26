@@ -342,100 +342,9 @@ describe("TodosView component", () => {
     });
   });
 
-  it("filters items by status (open vs closed)", async () => {
-    useTodos.setState({
-      scopeFilter: "all",
-      statusFilter: "all",
-      cache: {
-        "p1:issues:all": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p1:issue:1",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "open",
-              state: "open",
-              issue: {
-                provider: "github",
-                number: 1,
-                title: "Open issue",
-                url: "",
-                body: "",
-                author: "a",
-                comments: 0,
-                labels: [],
-                updated_at: "2026-10-24T10:00:00Z",
-              },
-            },
-            {
-              id: "p1:issue:2",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "open",
-              state: "closed",
-              issue: {
-                provider: "github",
-                number: 2,
-                title: "Closed issue",
-                url: "",
-                body: "",
-                author: "b",
-                comments: 0,
-                labels: [],
-                updated_at: "2026-10-24T09:00:00Z",
-              },
-            },
-          ],
-        },
-      },
-    });
-
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(createElement(TodosView));
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    // In "all", both rows show
-    expect(container.querySelectorAll('[data-testid="todos-row"]')).toHaveLength(2);
-    expect(container.textContent).toContain("Open issue");
-    expect(container.textContent).toContain("Closed issue");
-
-    // Click "Open" status filter
-    const openStatusBtn = container.querySelector('[data-testid="todos-status-open"]') as HTMLButtonElement;
-    await act(async () => {
-      openStatusBtn.click();
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    expect(container.querySelectorAll('[data-testid="todos-row"]')).toHaveLength(1);
-    expect(container.textContent).toContain("Open issue");
-    expect(container.textContent).not.toContain("Closed issue");
-
-    // Click "Closed" status filter
-    const closedStatusBtn = container.querySelector('[data-testid="todos-status-closed"]') as HTMLButtonElement;
-    await act(async () => {
-      closedStatusBtn.click();
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    expect(container.querySelectorAll('[data-testid="todos-row"]')).toHaveLength(1);
-    expect(container.textContent).not.toContain("Open issue");
-    expect(container.textContent).toContain("Closed issue");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
   it("renders sticky footer with total count, breakdown, metrics and project count", async () => {
     useTodos.setState({
       scopeFilter: "all",
-      statusFilter: "all",
       cache: {
         "p1:issues:assigned": {
           status: "ok",
@@ -498,7 +407,7 @@ describe("TodosView component", () => {
     const footer = container.querySelector('[data-testid="todos-footer"]');
     expect(footer).not.toBeNull();
     expect(footer?.textContent).toContain("2 items");
-    expect(footer?.textContent).toContain("1 issues, 1 PRs");
+    expect(footer?.textContent).toContain("1 issue, 1 PR");
     expect(footer?.textContent).toContain("1 assigned");
     expect(footer?.textContent).toContain("1 review");
     expect(footer?.textContent).toContain("2 projects");

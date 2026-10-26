@@ -14,7 +14,6 @@ export type TodoItem =
       projectName: string;
       issue: ForgeIssue;
       action: "assigned" | "mentioned" | "open";
-      state?: string;
     }
   | {
       id: string;
@@ -23,12 +22,10 @@ export type TodoItem =
       projectName: string;
       pr: ForgePr;
       action: "review_requested" | "authored" | "open";
-      state?: string;
     };
 
 export type KindFilter = "all" | "issues" | "prs";
 export type ScopeFilter = "all" | "for_me" | "review" | "open";
-export type StatusFilter = "all" | "open" | "closed";
 
 export type TodoQueryKey = string; // `${projectId}:${kind}:${scope}`
 
@@ -55,14 +52,12 @@ export interface TodosState {
   selectedProjectId: string | null;
   kindFilter: KindFilter;
   scopeFilter: ScopeFilter;
-  statusFilter: StatusFilter;
   searchQuery: string;
   isRefreshing: boolean;
 
   setSelectedProjectId: (id: string | null) => void;
   setKindFilter: (kind: KindFilter) => void;
   setScopeFilter: (scope: ScopeFilter) => void;
-  setStatusFilter: (status: StatusFilter) => void;
   setSearchQuery: (query: string) => void;
   fetchVisibleTodos: (force?: boolean) => Promise<void>;
   clearCache: () => void;
@@ -77,7 +72,6 @@ export const useTodos = create<TodosState>((set, get) => ({
   selectedProjectId: null,
   kindFilter: "all",
   scopeFilter: "for_me",
-  statusFilter: "all",
   searchQuery: "",
   isRefreshing: false,
 
@@ -97,11 +91,6 @@ export const useTodos = create<TodosState>((set, get) => ({
     if (get().scopeFilter === scope) return;
     set({ scopeFilter: scope });
     void get().fetchVisibleTodos(false);
-  },
-
-  setStatusFilter: (status) => {
-    if (get().statusFilter === status) return;
-    set({ statusFilter: status });
   },
 
   setSearchQuery: (query) => {
@@ -318,7 +307,9 @@ async function executeTask(task: QueryTask, prevEntry?: QueryCacheEntry): Promis
         res.message.toLowerCase().includes("unsupported");
       return {
         items: prevEntry?.items ?? [],
-        fetchedAt: prevEntry?.fetchedAt ?? now,
+        // A failure is cached for the TTL like a success, or every filter
+        // change re-ran the failing CLI. Refresh still forces a retry.
+        fetchedAt: now,
         status: isUnsupported ? "unsupported" : "error",
         errorMessage: res.message || res.status,
       };
@@ -330,7 +321,6 @@ async function executeTask(task: QueryTask, prevEntry?: QueryCacheEntry): Promis
       projectId: task.projectId,
       projectName: task.projectName,
       issue: i,
-      state: (i as unknown as { state?: string }).state || "open",
       action: task.scope === "assigned" ? "assigned" : task.scope === "mentions" ? "mentioned" : "open",
     }));
 
@@ -348,7 +338,9 @@ async function executeTask(task: QueryTask, prevEntry?: QueryCacheEntry): Promis
         res.message.toLowerCase().includes("unsupported");
       return {
         items: prevEntry?.items ?? [],
-        fetchedAt: prevEntry?.fetchedAt ?? now,
+        // A failure is cached for the TTL like a success, or every filter
+        // change re-ran the failing CLI. Refresh still forces a retry.
+        fetchedAt: now,
         status: isUnsupported ? "unsupported" : "error",
         errorMessage: res.message || res.status,
       };
@@ -360,7 +352,6 @@ async function executeTask(task: QueryTask, prevEntry?: QueryCacheEntry): Promis
       projectId: task.projectId,
       projectName: task.projectName,
       pr: p,
-      state: (p as unknown as { state?: string }).state || "open",
       action: task.scope === "review" ? "review_requested" : task.scope === "mine" ? "authored" : "open",
     }));
 

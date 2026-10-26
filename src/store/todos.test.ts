@@ -210,12 +210,29 @@ describe("todos store", () => {
     expect(entry?.items[0].id).toBe("p1:issue:99");
   });
 
-  it("updates statusFilter via setStatusFilter", () => {
-    expect(useTodos.getState().statusFilter).toBe("all");
-    useTodos.getState().setStatusFilter("open");
-    expect(useTodos.getState().statusFilter).toBe("open");
-    useTodos.getState().setStatusFilter("closed");
-    expect(useTodos.getState().statusFilter).toBe("closed");
+  it("caches a failed fetch for the TTL instead of re-running it on every filter change", async () => {
+    useApp.setState({
+      projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project],
+    });
+    useTodos.setState({ kindFilter: "issues", scopeFilter: "for_me" });
+    vi.mocked(ipc.projectForgeIssues).mockResolvedValue({
+      provider: "github",
+      remote_url: "",
+      status: "error",
+      message: "gh: not logged in",
+      issues: [],
+    } as unknown as IssueLookup);
+
+    await useTodos.getState().fetchVisibleTodos(false);
+    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(1);
+    expect(useTodos.getState().cache["p1:issues:assigned"]?.fetchedAt).toBeGreaterThan(0);
+
+    await useTodos.getState().fetchVisibleTodos(false);
+    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(1);
+
+    // Refresh still retries.
+    await useTodos.getState().fetchVisibleTodos(true);
+    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(2);
   });
 
   it("queues both broad and user queries when scope is 'all'", async () => {
