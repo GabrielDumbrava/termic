@@ -1587,6 +1587,40 @@ describe("git commit & push", () => {
     expect(log).toContain("e2e push commit");
     await snap("commit-push.png");
   });
+
+  // GH #426: a plain Commit of every file leaves the tree clean, and the
+  // clean tree used to drop the whole commit form, Push with it.
+  it("keeps Push on a clean tree after a commit without push", async () => {
+    await browser.execute(async (id) => {
+      const orig = await window.__termic!.ipc.taskFileRead(id, "README.md");
+      await window.__termic!.ipc.taskFileWrite(id, "README.md", orig + "\nunpushed\n");
+      await window.__termic!.ipc.taskStage(id, "", ["README.md"]);
+      await window.__termic!.ipc.taskCommit(id, "", "e2e unpushed commit", "", false, false);
+    }, taskId);
+
+    await openRightTab("Git");
+    await selectGitView("commit");
+    await waitForText("Working tree is clean");
+    await browser.waitUntil(
+      async () => (await $('[data-testid="git-push"]').getAttribute("data-ahead")) === "1",
+      { timeout: 8_000, timeoutMsg: "clean tree did not offer Push with 1 unpushed commit" },
+    );
+    await snap("git-clean-push.png");
+
+    await $('[data-testid="git-push"]').click();
+    await browser.waitUntil(
+      () => {
+        try {
+          return execSync(`git -C "${bare}" log --oneline main`, { stdio: ["ignore", "pipe", "ignore"] })
+            .toString()
+            .includes("e2e unpushed commit");
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 10_000, timeoutMsg: "Push from the clean tree did not reach the remote" },
+    );
+  });
 });
 
 // GH #157: inline review comments are CodeMirror block widgets, and CodeMirror

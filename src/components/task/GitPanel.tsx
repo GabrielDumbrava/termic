@@ -509,6 +509,40 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
   // which is why it is not disabled on a 0 count.
   const ahead = repo?.ahead ?? 0;
   const pushDisabled = pushing || committing || nonGit;
+  // Rendered in the commit form and, on a clean tree, under "No changes": a
+  // plain Commit of every file leaves the tree clean, and Push must not go
+  // with the form (GH #426).
+  const pushButton = (
+    <button
+      data-testid="git-push"
+      data-ahead={ahead}
+      disabled={pushDisabled}
+      onClick={doPush}
+      title={ahead > 0
+        ? (ahead === 1 ? t("gitPanel.pushTipOne") : t("gitPanel.pushTipMany", { count: ahead }))
+        : t("gitPanel.pushTipNew")}
+      className={cn(
+        FOOTER_BTN,
+        "mr-auto shrink-0 gap-1.5 rounded-md border border-[var(--color-border)] px-2.5",
+        pushDisabled
+          ? "cursor-not-allowed text-[var(--color-fg-faint)] opacity-50"
+          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+      )}
+    >
+      {pushing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
+      {pushing ? t("gitPanel.pushing") : t("gitPanel.push")}
+      {/* Sized as a pill, not as a text box: `h-4` + centering keeps it
+          on the button's optical centre line (a bare span inherits the
+          button's `leading-none`, so its height was whatever the digits
+          happened to be), and `min-w-4` stops "1" from rendering as a
+          sliver next to "15". */}
+      {ahead > 0 && (
+        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent-soft)] px-1 text-[10.5px] leading-none tabular-nums text-[var(--color-accent)]">
+          {ahead}
+        </span>
+      )}
+    </button>
+  );
 
   // ⌘/Ctrl+Enter from either commit field fires the commit button (the
   // remembered Commit / Commit-and-Push mode), so you never have to reach
@@ -684,8 +718,9 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           and their two localStorage keys are gone with it. */}
       <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
         {clean && view === "commit" ? (
-          <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
+          <div className="flex flex-col items-start gap-2 px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
             {t("gitPanel.clean")}
+            {!nonGit && pushButton}
           </div>
         ) : view === "history" ? (
           <HistoryPanel
@@ -773,35 +808,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
             the one you are about to make: an agent's, or your own from the
             terminal. Its badge is how many are waiting. */}
         <div className="flex items-center justify-end gap-1.5">
-          <button
-            data-testid="git-push"
-            data-ahead={ahead}
-            disabled={pushDisabled}
-            onClick={doPush}
-            title={ahead > 0
-              ? (ahead === 1 ? t("gitPanel.pushTipOne") : t("gitPanel.pushTipMany", { count: ahead }))
-              : t("gitPanel.pushTipNew")}
-            className={cn(
-              FOOTER_BTN,
-              "mr-auto shrink-0 gap-1.5 rounded-md border border-[var(--color-border)] px-2.5",
-              pushDisabled
-                ? "cursor-not-allowed text-[var(--color-fg-faint)] opacity-50"
-                : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-            )}
-          >
-            {pushing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
-            {pushing ? t("gitPanel.pushing") : t("gitPanel.push")}
-            {/* Sized as a pill, not as a text box: `h-4` + centering keeps it
-                on the button's optical centre line (a bare span inherits the
-                button's `leading-none`, so its height was whatever the digits
-                happened to be), and `min-w-4` stops "1" from rendering as a
-                sliver next to "15". */}
-            {ahead > 0 && (
-              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent-soft)] px-1 text-[10.5px] leading-none tabular-nums text-[var(--color-accent)]">
-                {ahead}
-              </span>
-            )}
-          </button>
+          {pushButton}
           {/* Commit + its caret are one split button, so they sit in their own
               flex box with no gap. The pair is what gives way when the panel is
               narrow: the label truncates on one line instead of wrapping, which
