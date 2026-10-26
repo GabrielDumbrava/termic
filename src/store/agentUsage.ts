@@ -122,14 +122,14 @@ export interface CostEntry {
  *  readout). Anything short of that is "usage unknown": a reading that has not
  *  reached the API says nothing about the account. */
 export function usageKnown(entry: UsageEntry | undefined, spend: number): boolean {
-  return !!entry && (!!entry.session || !!entry.weekly || !!entry.consumed || costChipVisible(entry, spend));
+  return !!entry && (!!entry.session || !!entry.weekly || !!entry.budget || !!entry.consumed || costChipVisible(entry, spend));
 }
 
 export function costChipVisible(entry: UsageEntry | undefined, spend: number): boolean {
   if (!entry) return false;
   if (entry.sawPlan) return false;
-  // Only claude's status line reports cost at all. codex's feed is plan
-  // windows and nothing else, so a window-less codex reading would otherwise
+  // Only claude's status line reports USD cost. Codex reports allowances in
+  // percentages and credits, so an empty Codex reading would otherwise
   // print "$0.00" for a number it never sent.
   if (entry.source !== "statusline") return false;
   if (!(spend >= 0)) return false;
@@ -253,8 +253,12 @@ export const useAgentUsage = create<AgentUsageState>((set, get) => ({
     // window is at most as old as that label already admits.
     if (cur && cur.source === source) {
       usage = {
-        session: usage.session ?? cur.session,
-        weekly: usage.weekly ?? cur.weekly,
+        // A credit-budget snapshot can replace rolling limits on a changed
+        // Codex plan. Do not resurrect the previous plan's windows there.
+        session: usage.budget ? usage.session : usage.session ?? cur.session,
+        weekly: usage.budget ? usage.weekly : usage.weekly ?? cur.weekly,
+        // RPC budgets are complete snapshots, not partial status-line fields.
+        budget: usage.budget ?? null,
         // Carried the same way, for the same reason: claude reports cost on
         // every turn but a turn that never reached the API carries none, and
         // blanking the figure on those would make it flicker.
@@ -272,7 +276,7 @@ export const useAgentUsage = create<AgentUsageState>((set, get) => ({
     // `updatedAt` is deliberately NOT part of the comparison. Refreshing it on
     // an unchanged reading would defeat the bail entirely, and the staleness it
     // feeds is about the NUMBER's age, not the poll's.
-    const hasWindow = !!(usage.session || usage.weekly);
+    const hasWindow = !!(usage.session || usage.weekly || usage.budget);
     // A restored session can start from a total it already had, so the proof
     // is a RISE within one session, never a nonzero figure on its own.
     const rose = source === "statusline" && !hasWindow

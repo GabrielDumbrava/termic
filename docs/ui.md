@@ -2313,6 +2313,14 @@ behind its own figure: `85% wk` sits on a box filled 85% of the way across,
 with the unused part left as a visible track. It has been three designs, and
 the reasons are worth keeping because they are not about this chip.
 
+Codex credit-based plans can report an `individualLimit` with no rolling
+windows. This is a separate credit-budget gauge (`NN% credits`), never
+labelled `5h` or `wk`. Its popover shows the provider's used/limit amounts,
+the full reset date, and that credits are shared with other OpenAI products.
+Zero is a valid reading. If a budget and rolling windows coexist, all are
+shown and the highest used percentage drives the warning and account switch
+offer. Credit amounts remain credits, without conversion to tokens or USD.
+
 The context window (`NN% ctx`) is a third gauge of the same kind, LEADING the
 chip because it is this conversation's number rather than the account's. It
 uses its own thresholds (80 / 90, `contextLevel`), later than the plan's,

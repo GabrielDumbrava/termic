@@ -590,6 +590,58 @@ describe("agent credentials", () => {
     }
   });
 
+  it("shows Codex credit budgets, their amounts and reset, and updates the warning", async () => {
+    await resetUsage();
+    await clearAccounts(FAKE_CODEX);
+    const taskId = await openTaskWith(FAKE_CODEX, "codex-credits");
+    const seedBudget = async (usedPercent: number, used: number) => {
+      await browser.execute((agent, percent, amount) => {
+        window.__termic!.useAgentUsage.getState().report(agent, null, {
+          session: null, weekly: null, sessionCostUsd: null,
+          budget: { usedPercent: percent, used: amount, limit: 8000, resetsAt: 1906502400 },
+        }, "rpc");
+      }, FAKE_CODEX, usedPercent, used);
+    };
+    try {
+      await browser.waitUntil(async () => await browser.execute((id) =>
+        ((window.__termic!.useApp.getState().tabs[id] || []) as any[]).some(t => t.ptyId && !t.liveAccount),
+      taskId), { timeout: 30_000, timeoutMsg: "Codex fixture never spawned" });
+      await seedBudget(8, 640.25);
+      await waitVisible('[data-usage-window="credits"]');
+      const chip = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.textContent ?? "");
+      expect(chip).toContain("8% credits");
+      expect(chip).not.toContain("wk");
+      expect(chip).not.toContain("Usage unknown");
+      await clickWhenVisible('[data-testid="usage-chip"]');
+      await waitVisible('[data-testid="usage-budget-row"]');
+      const row = await browser.execute(() =>
+        document.querySelector('[data-testid="usage-budget-row"]')?.textContent ?? "");
+      expect(row).toContain("Credit budget");
+      expect(row).toContain("640.25 / 8,000 credits used");
+      expect(row).toContain("2030");
+      expect(row).toContain("Shared across Codex");
+      expect((await panelGeometry()).inside).toBe(true);
+      await snap("credentials-codex-credits.png");
+      // An amount-only update must survive the store's equality bail.
+      await seedBudget(8, 641);
+      await waitForText("641 / 8,000 credits used");
+      await seedBudget(97, 7760);
+      await browser.waitUntil(async () => await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.getAttribute("data-usage-level") === "critical"));
+      await waitForText("Over 90% of the credit budget limit.");
+      await snap("credentials-codex-credits-critical.png");
+      await seedBudget(0, 0);
+      await waitForText("0 / 8,000 credits used");
+      expect(await browser.execute(() =>
+        document.querySelector('[data-testid="usage-chip"]')?.textContent ?? "")).toContain("0% credits");
+    } finally {
+      await removeTask(taskId);
+      await dismissOverlays();
+      await resetUsage();
+    }
+  });
+
   it("offers a switch, by name, once the running account is nearly out", async () => {
     // The manual half, and the one every agent gets. `switchCandidate` decides
     // WHICH account: the pill only renders the answer, so the assertion is on
