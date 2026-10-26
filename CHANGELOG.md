@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.19.0] - 2026-10-26
+## [1.19.1] - 2026-10-26
 
 Keep your computer awake while agents work, triage todos, share shell history.
 
@@ -20,6 +20,7 @@ Keep your computer awake while agents work, triage todos, share shell history.
 
 ### Bug fixes
 - A Codex permission prompt no longer rings again every 10 seconds while it waits.
+- With Codex's automatic approval review on, a command it approves by itself no longer marks the tab as needing you. Only a prompt a person has to answer does.
 - Clicking Install hooks for every agent right after opening Settings is no longer undone a moment later.
 - Codex accounts on credits show their budget in the usage footer instead of "Usage unknown".
 - Antigravity (agy) no longer drops the first prompt of a new tab, and new folders no longer stop at its trust question.

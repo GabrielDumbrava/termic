@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "1.19.0",
+      "version": "1.19.1",
       "date": "2026-10-26",
       "summary": "Keep your computer awake while agents work, triage todos, share shell history."
     },
