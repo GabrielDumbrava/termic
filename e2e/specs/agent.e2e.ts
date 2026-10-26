@@ -3767,3 +3767,49 @@ IFS= read -r -n 1 hold
     }, { timeoutMsg: "real output stopped updating terminal activity" });
   });
 });
+
+// codex blinks its title once a second while an approval prompt waits. Each
+// blink classified as attention, and once ATTENTION_ECHO_MS (10s) ran out the
+// next blink counted as news: one unanswered prompt rang every 10 seconds.
+describe("a blinking attention title", () => {
+  let taskId!: string;
+  after(async () => {
+    await browser.execute(() => (window as any).__blinkUnsub?.()).catch(() => {});
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("marks one prompt once, however long it blinks", async function () {
+    this.timeout(60_000);
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-blink-attention", true, "fakecodex");
+    await waitForAgentReady(taskId);
+    await browser.execute((id) => {
+      const w = window as any;
+      w.__blinkMarks = 0;
+      w.__blinkNews = 0;
+      w.__blinkUnsub = window.__termic!.useApp.subscribe((s, prev) => {
+        const now = s.tabs[id]?.[0]?.unread, was = prev.tabs[id]?.[0]?.unread;
+        if (now === was || now?.reason !== "attention") return;
+        w.__blinkMarks++;
+        if (!now.repeat) w.__blinkNews++;
+      });
+    }, taskId);
+    await submitToAgent(taskId, "#blink");
+    // Conditions, not a timer: the blink starts, then the fixture paints its
+    // idle glyph once all 12 blinks (past the 10s echo window) are done.
+    const title = () => browser.execute((id) =>
+      (window.__termic!.useApp.getState().tabs[id]?.[0] as any)?.liveTitle as string | undefined, taskId);
+    await browser.waitUntil(async () => (await title())?.includes("needs your permission") ?? false,
+      { timeout: 15_000, timeoutMsg: "the fixture never started blinking" });
+    await browser.waitUntil(async () => (await title())?.startsWith("✳") ?? false,
+      { timeout: 25_000, timeoutMsg: "the blink never ended" });
+    const counts = await browser.execute(() => ({
+      marks: (window as any).__blinkMarks as number,
+      news: (window as any).__blinkNews as number,
+    }));
+    // 2 news and ~12 marks before the fix.
+    expect(counts).toEqual({ marks: 1, news: 1 });
+  });
+});
+

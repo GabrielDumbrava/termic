@@ -301,6 +301,16 @@ while IFS= read -r line; do
       echo "✻ Waiting for ${line#\#pending } background agents to finish"
       set_title "✳ ${name}"              # idle glyph WHILE work is outstanding
       continue ;;
+    "#blink")
+      # codex's approval prompt: the title blinks "[ ! ]"/"[ . ]" once a second
+      # until answered (captured on codex 0.164.0). 12 blinks outlast the 10s
+      # ATTENTION_ECHO_MS, which is where each blink used to ring again.
+      for i in $(seq 1 12); do
+        if (( i % 2 )); then set_title "[ ! ] needs your permission"; else set_title "[ . ] needs your permission"; fi
+        sleep 1
+      done
+      set_title "✳ ${name}"
+      continue ;;
     "#settle")
       # Enough lines to push the pending status line out of the bottom-of-screen
       # window the check looks at. That IS the real behaviour: claude's words

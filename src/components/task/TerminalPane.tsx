@@ -2126,7 +2126,10 @@ const captureArmedRef = useRef(false);
           wdlog(`title idle suppressed (no submit since spawn)`);
         }
       } else if (state === "attention") {
-        goAttention(`title attention`);
+        // Edge only, like busy and idle. codex blinks "[ ! ]"/"[ . ] Action
+        // Required" once a second while a prompt waits, and marking each blink
+        // re-rang the prompt every ATTENTION_ECHO_MS (10s) until it was answered.
+        if (lastTitleState !== "attention") goAttention(`title attention`);
       } else if (state === "busy") {
         // Hooks own BOTH edges, not just the end of a turn.
         //

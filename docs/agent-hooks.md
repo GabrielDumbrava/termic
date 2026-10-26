@@ -496,6 +496,14 @@ permission prompt now marks attention twice, once from each source. That is the
 same shape as claude's hook-then-`OSC 9` pair and it is handled by the same
 `ATTENTION_ECHO_MS` window, so it costs one banner, not two.
 
+The title source is also EDGE-gated (only a change INTO attention marks), and
+the window alone was not enough: while a prompt waits, codex 0.164.0 blinks
+the title `[ ! ]`/`[ . ] Action Required` once a second. Every blink marked
+attention, and the first one past the 10s window counted as news, so an
+unanswered prompt rang every 10 seconds (12 marks and 2 banners in a 12s
+blink, measured by the "a blinking attention title" e2e case; 1 and 1 with the
+gate).
+
 **0.154.0 put model-written prose in that title, and the second source went
 bad.** Codex renames the thread mid-turn and renders the generated name through
 the same `activity` title item. Captured across one turn, in a real pty:

@@ -43,6 +43,9 @@ describe("recordHook", () => {
     expect(hookSignal("agent done")).toBe("done");
     expect(hookSignal("agent delegated: 1 subagent a1")).toBe("delegated");
     expect(hookSignal("agent needs your permission: Bash")).toBe("attention");
+    // The bodies the hook really sends name the tool with no "agent " prefix.
+    expect(hookSignal("needs your permission: Bash")).toBe("attention");
+    expect(hookSignal("needs your answer: ask_user_question")).toBe("attention");
     expect(hookSignal("agent needs your input")).toBe("attention");
     expect(hookSignal("agent ready for input")).toBe("ready");
     expect(hookSignal("session 1234")).toBe("session");

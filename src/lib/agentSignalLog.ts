@@ -69,8 +69,9 @@ export function hookSignal(body: string): HookSignal {
   if (body === HOOK_OSC_DONE_BODY) return "done";
   if (body === HOOK_OSC_READY_BODY) return "ready";
   if (body.startsWith(HOOK_OSC_DELEGATED_PREFIX)) return "delegated";
-  // "agent needs your input" and "agent needs your permission: <tool>".
-  if (body.startsWith(HOOK_OSC_BODY.slice(0, "agent needs your".length))) return "attention";
+  // "agent needs your input", plus the hook's tool-naming bodies, which carry
+  // no "agent " prefix ("needs your permission: Bash", agent_hooks.rs).
+  if (body.startsWith(HOOK_OSC_BODY.slice(0, "agent needs your".length)) || body.startsWith("needs your ")) return "attention";
   if (body.startsWith(HOOK_OSC_SESSION_PREFIX)) return "session";
   if (body.startsWith("usage ")) return "usage";
   if (body.startsWith("ctx ")) return "context";
