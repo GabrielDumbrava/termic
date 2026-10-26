@@ -24,9 +24,19 @@ export function refreshMainCheckoutBranches(): Promise<void> {
       )];
       if (projectIds.length === 0) continue;
 
+      // `projectGitCurrentBranch` returns null for both detached HEAD and
+      // non-Git projects. The project record distinguishes plain folders so
+      // they can clear any stale branch snapshot instead of displaying HEAD.
+      const nonGitProjectIds = new Set(
+        useApp.getState().projects
+          .filter(project => project.non_git)
+          .map(project => project.id),
+      );
+
       const results = await Promise.all(projectIds.map(async projectId => {
+        if (nonGitProjectIds.has(projectId)) return [projectId, ""] as const;
         try {
-          // Keep detached HEAD distinguishable from a failed branch query.
+          // In Git repos, a null branch means detached HEAD.
           return [projectId, (await projectGitCurrentBranch(projectId)) ?? "HEAD"] as const;
         } catch {
           return null;
