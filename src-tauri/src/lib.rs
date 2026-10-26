@@ -87,6 +87,7 @@ mod agent_dirs;
 mod profiles;
 mod schedules;
 mod sudo_touchid;
+mod caffeinate;
 #[cfg(test)]
 mod test_support;
 use sandbox::SandboxBundle;
@@ -3593,7 +3594,9 @@ pub(crate) fn pty_write_inner(manager: &PtyManager, pty_id: &str, data: &[u8]) -
     };
     let mut w = writer.lock();
     w.write_all(data).map_err(|e| e.to_string())?;
-    w.flush().map_err(|e| e.to_string())
+    w.flush().map_err(|e| e.to_string())?;
+    caffeinate::input(pty_id, data);
+    Ok(())
 }
 
 /// Resize a PTY by id; same sharing rationale as `pty_write_inner`.
@@ -4588,6 +4591,14 @@ fn pty_spawn(
     // the user has no other way to see.
     let out_bytes = Arc::new(AtomicU64::new(0));
 
+    // Native power tracking sees both PTY output and Windows hook-pipe bytes.
+    // Only agent PTYs participate; an idle shell is not agent work.
+    let power_decoder = if args.role.as_ref().is_some_and(|r| r.kind == "agent")
+        && args.agent_id.as_deref().is_some_and(|a| a != "shell") {
+        Some((Arc::new(Mutex::new(caffeinate::Decoder::default())), caffeinate::register(&id)))
+    } else { None };
+    let power_r = power_decoder.clone();
+
     // Reader thread: drain PTY bytes into the shared buffer and wake the
     // flusher only when there is actually something to flush.
     let buf_r = pty_buf.clone();
@@ -4616,9 +4627,15 @@ fn pty_spawn(
         let path = pipe.env_path();
         let buf_h = pty_buf.clone();
         let feed_h = feed.clone();
+        // Pipe and PTY frames can fragment independently.
+        let power_h = power_decoder.as_ref().map(|_| Mutex::new(caffeinate::Decoder::default()));
+        let power_id = id.clone();
+        let power_activity = power_decoder.as_ref().map(|(_, activity)| activity.clone());
         pipe.serve(
             reader_done.clone(),
             Arc::new(move |bytes: &[u8]| {
+                if let Some(decoder) = &power_h { caffeinate::output(&power_id, decoder.lock().feed(bytes)); }
+                if let Some(activity) = &power_activity { caffeinate::activity(activity); }
                 buf_h.0.lock().extend_from_slice(bytes);
                 buf_h.1.notify_all();
                 if let Some(feed) = &feed_h {
@@ -4634,6 +4651,10 @@ fn pty_spawn(
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    if let Some((decoder, activity)) = &power_r {
+                        caffeinate::activity(activity);
+                        caffeinate::output(&id_final, decoder.lock().feed(&buf[..n]));
+                    }
                     out_bytes_r.fetch_add(n as u64, Ordering::Relaxed);
                     buf_r.0.lock().extend_from_slice(&buf[..n]);
                     buf_r.1.notify_all();
@@ -4739,6 +4760,7 @@ fn pty_spawn(
     let window_w = pty_window;
     thread::spawn(move || {
         let status = child.wait().ok();
+        caffeinate::exited(&id_w);
         let code = status.and_then(|s| i32::try_from(s.exit_code()).ok());
         dlog(&format!("[pty/{id_w}] child exited code={code:?}"));
         // ConPTY keeps its output pipe open until the pseudoconsole itself is
@@ -4871,6 +4893,7 @@ fn pty_resize(
 fn pty_kill(state: State<'_, PtyManager>, pty_id: String) -> Result<(), String> {
     let slot = state.inner.lock().remove(&pty_id);
     if let Some(mut slot) = slot {
+        caffeinate::exited(&pty_id);
         // Hang up, then SIGTERM, a short grace, then SIGKILL
         // (`graceful_then_kill`, the same contract quit/archive/tab-close
         // already use). A bare SIGKILL gave an interactive shell no chance
@@ -10585,6 +10608,7 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     dlog(&format!("[profile] build {label}: builder.build"));
     let win = without_browser_accelerators(with_grayscale_text(without_writing_tools(builder))).build()?;
     dlog(&format!("[profile] build {label}: built"));
+    caffeinate::configure_window(&win);
     #[cfg(all(target_os = "macos", feature = "e2e"))]
     hide_window_from_user_in_e2e(&win);
 
@@ -26200,6 +26224,7 @@ fn focused_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 }
 
 pub fn run() {
+    if caffeinate::run_guard_if_requested() { return; }
     let _ = BOOT.set(Instant::now());
     // WebKitGTK 2.42+ defaults to its DMA-BUF renderer. It's the FAST path on
     // AMD/Intel (X11 and Wayland) and MUST stay on there: disabling it drops
@@ -26347,6 +26372,7 @@ pub fn run() {
         })
         .manage(PtyManager::default())
         .setup(|app| {
+            caffeinate::start(app.handle().clone());
             // FIRST thing, e2e only. Accessory was already set before the
             // window is shown, and that is too late for the very first launch:
             // macOS activates a Regular app while it starts up, before any
@@ -26667,6 +26693,10 @@ pub fn run() {
             cli_server::cli_rpc_ready,
             cli_server::cli_rpc_progress,
             cli_server::cli_agent_states,
+            caffeinate::caffeinate_status,
+            caffeinate::caffeinate_set,
+            caffeinate::caffeinate_permission,
+            caffeinate::caffeinate_recover,
             cli_server::cli_prompt_report,
             cli_server::cli_install_symlink,
             cli_server::cli_add_to_path,
@@ -26719,6 +26749,7 @@ pub fn run() {
             // bottom-split shells, etc.). SIGKILL because we're on
             // our way out the door — no time for graceful SIGTERMs.
             if matches!(event, tauri::RunEvent::Exit) {
+                caffeinate::shutdown();
                 cleanup_children(app);
             }
             // ⌘Q / tray Quit / the close prompt's Quit all land here first.

@@ -1,5 +1,16 @@
 # E2E coverage map & checklist
 
+`caffeinate.e2e.ts` covers the coffee popover's three modes, draft validation,
+16/24-hour presets, accepted-duration restoration, explicit status/confirmation
+copy, direct Bug/Contact footer controls,
+expiry while administrator authorization remains pending,
+native expiry, adapter errors, real-PTY delegated activity, optional lid
+permission/control, a failed restore finished through the approval
+fallback, compact/narrow layouts, and guard cleanup on parent EOF, deadline
+expiry, quit and SIGTERM. It uses an OS adapter compiled only under `e2e`;
+real sleep/lid/display behaviour belongs to the hardware checks in
+[Caffeinate](caffeinate.md).
+
 **Status: reference.** Not a plan to implement and then delete: it is a
 living map, updated by nearly every feature commit, which is why it sits in
 `docs/` rather than `docs/plans/`.

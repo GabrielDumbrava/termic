@@ -124,6 +124,14 @@ windows-sys = { version = "0.60", features = [
   "Win32_Security",
   "Win32_System_IO",
   "Win32_System_Registry",
+  "Win32_System_Power",
+  "Win32_Devices_Display",
+  "Win32_System_SystemInformation",
+  "Win32_System_Shutdown",
+  "Win32_UI_WindowsAndMessaging",
+  # The closed-lid guard's hidden window, which receives WM_ENDSESSION.
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
   # GetAdaptersAddresses, to join the mDNS group on every interface
   # (mdns.rs). Features of a crate we already link, no new crate.
   "Win32_NetworkManagement_IpHelper",
@@ -151,6 +159,9 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRe
 # WKWebViewConfiguration to disable Apple Intelligence Writing Tools / Campo (GH #355).
 # Already in the tree via tauri/wry.
 objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.15", features = ["blocking-api"] }
 
 [dev-dependencies]
 tempfile = "3"

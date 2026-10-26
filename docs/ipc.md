@@ -1,5 +1,12 @@
 # IPC
 
+Power controls: `caffeinate_status`, `caffeinate_set` (`{ request }`),
+`caffeinate_permission` (`{ install }`) and `caffeinate_recover` return a
+revisioned native status snapshot, including the original `duration_minutes`
+and the current `deadline_ms`. `caffeinate://status` broadcasts changes
+across profile windows. Configuration, authorization and recovery are async;
+the manager and timers live outside the webview. See [Caffeinate](caffeinate.md).
+
 Profile customizations use `customizations_open` and
 `customizations_set_enabled { enabled }`, both async commands with blocking
 filesystem work off the UI thread. They resolve the calling window's profile.
