@@ -25,22 +25,31 @@ beforeEach(async () => {
   root = createRoot(host);
   await act(async () => root.render(createElement(AgentCustomizationsBlock)));
 });
+const expand = () => act(async () => host.querySelector<HTMLButtonElement>('[data-testid="customizations-toggle"]')!.click());
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
 });
 
 describe("agent customizations", () => {
+  it("collapsed shows only the title and the default toggle", () => {
+    expect(host.querySelector('[data-testid="customizations-default"] [role="switch"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="customizations-open"]')).toBeNull();
+    expect(host.querySelector('[data-testid="customizations-layout"]')).toBeNull();
+  });
+
   it("opens only on demand and displays the exact backend path", async () => {
+    await expand();
     expect(ipc.customizationsOpen).not.toHaveBeenCalled();
     const path = "/Users/alice/Library/Application Support/termic_dev/profiles/work/customizations";
     ipc.customizationsOpen.mockResolvedValue(path);
     await act(async () => button().click());
     expect(host.querySelector('[data-testid="customizations-path"]')?.textContent).toBe(path);
-    expect(host.textContent).toContain("Use profile customizations by default");
+    expect(host.textContent).toContain("Add them to every task");
   });
 
   it("prevents duplicate opens, surfaces failure, and allows retry", async () => {
+    await expand();
     let reject!: (error: Error) => void;
     ipc.customizationsOpen.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
     await act(async () => { button().click(); button().click(); });

@@ -539,6 +539,14 @@ export default {
       worktree: "工作树",
       none: "无",
     },
+    taskBranchName: {
+      label: "任务分支名",
+      hint: "在侧边栏任务行上显示任务的分支，与 git 图标分开：名称之后、右侧或下一行。",
+      none: "隐藏",
+      inline: "名称后",
+      right: "右侧",
+      below: "下方",
+    },
     taskPrBadge: {
       label: "任务 PR",
       hint: "侧边栏任务行为其拉取请求显示什么：状态图标、编号、两者，或都不显示。点击任意一个都会打开该 PR。",
@@ -955,11 +963,12 @@ export default {
   agents: {
     customizations: {
       title: "智能体自定义",
-      hint: "在此配置文件的项目之间共享技能、MCP 服务器和智能体角色。提供 Claude Code、Codex 和 Antigravity 的原生适配。其他智能体工具仅部分兼容，具体取决于功能和版本。打开文件夹即可添加或编辑文件。",
+      summary: "放在一个文件夹里的技能、MCP 服务器和角色，提供给每个任务中的智能体。",
+      hint: "把文件放进该文件夹，之后你在任务中启动的每个智能体都会获得它：Termic 会把它链接到任务工作树中各智能体读取的位置（Claude Code、Codex 和 Antigravity 为原生支持，其他智能体部分支持）。修改文件夹后，请重启任务的智能体。",
       open: "打开自定义文件夹",
       opening: "正在打开…",
-      defaultLabel: "默认使用配置文件自定义项",
-      defaultHint: "适用于选择“使用配置文件默认值”的项目，保留项目的显式覆盖设置。重启智能体后生效。",
+      defaultLabel: "添加到每个任务",
+      defaultHint: "项目可以在自己的项目设置中选择退出或单独启用。重启智能体后生效。",
       layout: "文件放在哪里",
       skills: "技能：<1>skills/example/SKILL.md</1>",
       personas: "角色：<1>agents/example.md</1>",

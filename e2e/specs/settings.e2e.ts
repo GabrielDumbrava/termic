@@ -3241,52 +3241,24 @@ describe("settings reorder drags", () => {
       }, original);
     });
 
-    // The strip scrolls with no scrollbar, so the fade is the only sign that
-    // pills are out of sight, and it has to be on the end that has them.
-    it("hides the strip's scrollbar and fades the end with more pills", async () => {
-      const strip = '[data-testid="agents-strip"]';
-      const read = () => browser.execute((sel) => {
-        const el = document.querySelector(sel) as HTMLElement;
-        const cs = getComputedStyle(el);
+    // A vertical list beside the card: a dozen agents no longer fit a
+    // horizontal strip, so every one is stacked and the list never scrolls sideways.
+    it("lists agents vertically beside the card", async () => {
+      const layout = await browser.execute(() => {
+        const strip = document.querySelector('[data-testid="agents-strip"]') as HTMLElement;
+        const pills = [...strip.querySelectorAll<HTMLElement>("[data-agent-id]")].map(p => p.getBoundingClientRect());
+        const card = document.querySelector("[data-agent-card]")!.getBoundingClientRect();
         return {
-          overflows: el.scrollWidth > el.clientWidth + 1,
-          // `.no-scrollbar` hides it two ways, and which one a WebKit reports
-          // depends on its age: `scrollbar-width` is the standard property,
-          // and the CI runner's WebKit predates it (the computed value comes
-          // back undefined there), so the `::-webkit-scrollbar` rule is the
-          // one doing the work on it. Either is the scrollbar being hidden.
-          scrollbar: cs.scrollbarWidth === "none"
-            || getComputedStyle(el, "::-webkit-scrollbar").display === "none",
-          mask: cs.webkitMaskImage || cs.maskImage,
-          left: el.hasAttribute("data-more-left"),
-          right: el.hasAttribute("data-more-right"),
+          count: pills.length,
+          sameLeft: pills.every(r => Math.abs(r.left - pills[0].left) < 1),
+          descending: pills.every((r, i) => i === 0 || r.top > pills[i - 1].top),
+          sideways: strip.scrollWidth > strip.clientWidth + 1,
+          cardRightOfList: card.left >= strip.getBoundingClientRect().right,
         };
-      }, strip);
-      const scrollTo = (x: number) => browser.execute((sel, left) => {
-        (document.querySelector(sel) as HTMLElement).scrollLeft = left;
-      }, strip, x);
-
-      await scrollTo(0);
-      const start = await read();
-      expect(start.scrollbar).toBe(true);
-      expect(start.left).toBe(false);
-      // A window wide enough for every pill has nothing to fade, and must not.
-      if (!start.overflows) {
-        expect(start.right).toBe(false);
-        expect(start.mask).toBe("none");
-        return;
-      }
-      expect(start.right).toBe(true);
-      expect(start.mask).toContain("linear-gradient");
-
-      await scrollTo(100_000);
-      await browser.waitUntil(async () => {
-        const s = await read();
-        return s.left && !s.right;
-      }, { timeout: 5_000, timeoutMsg: `the fade did not move to the left end: ${JSON.stringify(await read())}` });
-      await scrollTo(0);
-      await browser.waitUntil(async () => !(await read()).left,
-        { timeout: 5_000, timeoutMsg: "the left fade stayed after scrolling back" });
+      });
+      expect(layout.count).toBeGreaterThan(1);
+      expect(layout).toEqual({ ...layout, sameLeft: true, descending: true, sideways: false, cardRightOfList: true });
+      await snap("agents-vertical-list.png");
     });
 
     it("reorders agent pills within their kind", async () => {
@@ -3297,8 +3269,8 @@ describe("settings reorder drags", () => {
       )) as string[];
       expect(kindOrder.length).toBeGreaterThan(1);
 
-      // The strip is horizontal: to move left, land on the target's left edge.
-      await pointerDrag(pill(kindOrder[1]), pill(kindOrder[0]), { land: "left" });
+      // The list is vertical: to move up, land on the target's top edge.
+      await pointerDrag(pill(kindOrder[1]), pill(kindOrder[0]), { land: "top" });
       await browser.waitUntil(
         async () => {
           const ids = (await agentIds()) as string[];
@@ -3541,7 +3513,7 @@ describe("project default CLI vs the agent registry", () => {
     await pointerDrag(
       `[data-agent-id="${strip[strip.length - 1]}"]`,
       `[data-agent-id="${strip[0]}"]`,
-      { land: "left" },
+      { land: "top" },
     );
     await browser.waitUntil(
       async () => (await agentIds())[0] === strip[strip.length - 1],

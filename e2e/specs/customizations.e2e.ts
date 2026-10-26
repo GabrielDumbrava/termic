@@ -52,8 +52,21 @@ describe("profile agent customizations", () => {
     else writeFileSync(openedLog, originalLog);
   });
 
+  // The block starts collapsed: the folder button and layout live behind its chevron.
+  const expandCustomizations = async () => {
+    const sel = '[data-testid="customizations-toggle"]';
+    await waitVisible(sel);
+    if (await browser.execute((s) => document.querySelector(s)?.getAttribute("aria-expanded"), sel) !== "true") await clickWhenVisible(sel);
+  };
+
+  it("starts collapsed to its title and the default toggle", async () => {
+    await waitVisible('[data-testid="customizations-default"] [role="switch"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="customizations-open"]'))).toBe(false);
+  });
+
   it("initializes the current profile folder on click and explains its layout", async () => {
     expect(existsSync(folder)).toBe(false);
+    await expandCustomizations();
     await clickWhenVisible('[data-testid="agent-customizations"] summary');
     expect(await textOf('[data-testid="customizations-layout"]')).toContain("skills/example/SKILL.md");
     await clickWhenVisible('[data-testid="customizations-open"]');
@@ -91,6 +104,7 @@ describe("profile agent customizations", () => {
     const saved = path.join(backup, "retry");
     renameSync(folder, saved);
     writeFileSync(folder, "Synthetic obstruction");
+    await expandCustomizations();
     try {
       await clickWhenVisible('[data-testid="customizations-open"]');
       await waitVisible('[data-testid="customizations-error"]');

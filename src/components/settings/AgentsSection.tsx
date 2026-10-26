@@ -409,9 +409,27 @@ export function AgentsSection() {
 
       {err && <div className="text-[13px] text-[var(--color-err)]">{err}</div>}
 
-      <AgentCustomizationsBlock />
+      <AgentsTabs
+        agents={agents}
+        activeId={activeId}
+        setActiveId={setActiveId}
+        autoFocusId={autoFocusId}
+        defaults={defaults}
+        isModified={isModified}
+        patchAgent={patchAgent}
+        dockerSandboxOn={dockerSandboxOn}
+        onCommitId={commitAgentId}
+        patchCaps={patchCaps}
+        requestRemoveAgent={requestRemoveAgent}
+        resetAgent={resetAgent}
+        cloneAgent={cloneAgent}
+        resetOverrides={resetOverrides}
+        reorderAgent={reorderAgent}
+        onAutoFocusConsumed={() => setAutoFocusId(null)}
+      />
 
-      {/* Above the per-agent tabs, because what is left in it is one decision
+      {/* Below the per-agent list: hooks install themselves, so this is
+          rarely touched. What is left in it is one decision
           across all of them (install for every agent) plus the coverage count.
           Each agent's own install lives on its card's Agent state section, and
           the rows and gap line in here jump to it. It belongs on this page at
@@ -436,24 +454,8 @@ export function AgentsSection() {
         }}
       />
 
-      <AgentsTabs
-        agents={agents}
-        activeId={activeId}
-        setActiveId={setActiveId}
-        autoFocusId={autoFocusId}
-        defaults={defaults}
-        isModified={isModified}
-        patchAgent={patchAgent}
-        dockerSandboxOn={dockerSandboxOn}
-        onCommitId={commitAgentId}
-        patchCaps={patchCaps}
-        requestRemoveAgent={requestRemoveAgent}
-        resetAgent={resetAgent}
-        cloneAgent={cloneAgent}
-        resetOverrides={resetOverrides}
-        reorderAgent={reorderAgent}
-        onAutoFocusConsumed={() => setAutoFocusId(null)}
-      />
+      {/* After hooks: an opt-in folder most people never open. */}
+      <AgentCustomizationsBlock />
 
       {/* Settings that apply to every terminal rather than to one registry
           entry. "Copy on select" lived in General until the settings split;
@@ -619,52 +621,32 @@ function AgentsTabs({
 
   // Drag-to-reorder — same pointer-based pattern as TabBar (no HTML5 DnD;
   // WKWebView's native drag is unreliable and Tauri intercepts it).
-  const stripRef = useRef<HTMLDivElement>(null);
-  // Which ends of the strip have pills scrolled out of sight. The scrollbar
-  // is hidden, so a fade on that end is the only sign there are more.
-  const [stripMore, setStripMore] = useState({ left: false, right: false });
-  useLayoutEffect(() => {
-    const strip = stripRef.current;
-    if (!strip) return;
-    const measure = () => {
-      const left = strip.scrollLeft > 1;
-      const right = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
-      setStripMore(m => (m.left === left && m.right === right ? m : { left, right }));
-    };
-    measure();
-    strip.addEventListener("scroll", measure, { passive: true });
-    const ro = new ResizeObserver(measure);
-    ro.observe(strip);
-    return () => { strip.removeEventListener("scroll", measure); ro.disconnect(); };
-  }, [agents.length]);
-  const stripMask = stripMore.left || stripMore.right
-    ? `linear-gradient(to right, ${stripMore.left ? "transparent, black 40px" : "black"}, ${stripMore.right ? "black calc(100% - 56px), transparent" : "black"})`
-    : undefined;
+  const stripRef = useRef<HTMLElement>(null);
   const [dragId, setDragId] = useState<string | null>(null);
-  const [dragTx, setDragTx] = useState(0);
+  const [dragTy, setDragTy] = useState(0);
   const dragRef = useRef<{
-    id: string; grabOffset: number; startX: number; pointerX: number; started: boolean; appliedTx: number;
+    id: string; grabOffset: number; startY: number; pointerY: number; started: boolean; appliedTy: number;
   } | null>(null);
 
-  function computeTx(clientX: number): number {
+  function computeTy(clientY: number): number {
     const strip = stripRef.current;
     const d = dragRef.current;
     if (!strip || !d) return 0;
     const pill = strip.querySelector(`[data-agent-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
     if (!pill) return 0;
-    const layoutLeft = pill.getBoundingClientRect().left - d.appliedTx;
-    const tx = (clientX - d.grabOffset) - layoutLeft;
-    d.appliedTx = tx;
-    return tx;
+    const layoutTop = pill.getBoundingClientRect().top - d.appliedTy;
+    const ty = (clientY - d.grabOffset) - layoutTop;
+    d.appliedTy = ty;
+    return ty;
   }
 
-  function maybeReorder(clientX: number) {
+  function maybeReorder(clientY: number) {
     const strip = stripRef.current;
     const d = dragRef.current;
     if (!strip || !d) return;
     const pill = strip.querySelector(`[data-agent-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
     if (!pill) return;
-    const draggedCenter = (clientX - d.grabOffset) + pill.offsetWidth / 2;
+    const draggedCenter = (clientY - d.grabOffset) + pill.offsetHeight / 2;
     // Reorder within the dragged pill's own group only — agents and
     // terminals render as separate groups, so the target index counts
     // same-kind pills and `reorderAgent` maps it back into the array.
@@ -674,7 +656,7 @@ function AgentsTabs({
     for (const p of pills) {
       if (p.dataset.agentId === d.id || p.dataset.kind !== movedKind) continue;
       const r = p.getBoundingClientRect();
-      if (r.left + r.width / 2 < draggedCenter) target++;
+      if (r.top + r.height / 2 < draggedCenter) target++;
     }
     reorderAgent(d.id, target);
   }
@@ -682,14 +664,14 @@ function AgentsTabs({
   function onDragPointerMove(e: PointerEvent) {
     const d = dragRef.current;
     if (!d) return;
-    d.pointerX = e.clientX;
+    d.pointerY = e.clientY;
     if (!d.started) {
-      if (Math.abs(e.clientX - d.startX) < 5) return;
+      if (Math.abs(e.clientY - d.startY) < 5) return;
       d.started = true;
       setDragId(d.id);
     }
-    setDragTx(computeTx(e.clientX));
-    maybeReorder(e.clientX);
+    setDragTy(computeTy(e.clientY));
+    maybeReorder(e.clientY);
   }
 
   function onDragPointerUp() {
@@ -697,7 +679,7 @@ function AgentsTabs({
     window.removeEventListener("pointerup", onDragPointerUp);
     dragRef.current = null;
     setDragId(null);
-    setDragTx(0);
+    setDragTy(0);
   }
 
   function startDrag(agentId: string, e: React.PointerEvent) {
@@ -705,11 +687,11 @@ function AgentsTabs({
     const pill = e.currentTarget as HTMLElement;
     dragRef.current = {
       id: agentId,
-      grabOffset: e.clientX - pill.getBoundingClientRect().left,
-      startX: e.clientX,
-      pointerX: e.clientX,
+      grabOffset: e.clientY - pill.getBoundingClientRect().top,
+      startY: e.clientY,
+      pointerY: e.clientY,
       started: false,
-      appliedTx: 0,
+      appliedTy: 0,
     };
     window.addEventListener("pointermove", onDragPointerMove);
     window.addEventListener("pointerup", onDragPointerUp);
@@ -717,7 +699,7 @@ function AgentsTabs({
 
   useLayoutEffect(() => {
     const d = dragRef.current;
-    if (d?.started) setDragTx(computeTx(d.pointerX));
+    if (d?.started) setDragTy(computeTy(d.pointerY));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents]);
 
@@ -744,7 +726,7 @@ function AgentsTabs({
   const displayedAgents = filter === "terminals" ? [] : agentEntries;
   const displayedTerms = filter === "agents" ? [] : termEntries;
 
-  const pill = (a: Agent, first: boolean) => (
+  const pill = (a: Agent) => (
     <button
       key={a.id}
       type="button"
@@ -752,15 +734,15 @@ function AgentsTabs({
       data-kind={isTerminalEntry(a) ? "terminal" : "agent"}
       onClick={() => setActiveId(a.id)}
       onPointerDown={(e) => startDrag(a.id, e)}
+      aria-current={a.id === active.id ? "true" : undefined}
       className={cn(
-        "relative -mb-px flex items-center gap-1.5 py-2 text-[13px] font-medium transition-colors select-none",
-        first ? "pr-3" : "px-3",
+        "relative flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors select-none",
         dragId === a.id ? "z-30 opacity-80" : "",
         a.id === active.id
-          ? "text-[var(--color-fg)]"
-          : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+          ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
-      style={dragId === a.id ? { transform: `translateX(${dragTx}px)` } : undefined}
+      style={dragId === a.id ? { transform: `translateY(${dragTy}px)` } : undefined}
     >
       {/* Resolved: a clone leaves icon_id empty and inherits its parent's, so
           reading it raw showed the generic terminal glyph for what is visibly
@@ -773,18 +755,9 @@ function AgentsTabs({
       >
         <CliIcon cli={resolveIconId(a.id, agents)} className="h-3.5 w-3.5" />
       </span>
-      <span className="truncate max-w-[140px]">{a.display_name || a.id}</span>
+      <span className="min-w-0 flex-1 truncate">{a.display_name || a.id}</span>
       {isModified(a) && (
         <span title={t("agents.card.modifiedTip")} className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
-      )}
-      {a.id === active.id && (
-        <span className={cn(
-          "absolute bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]",
-          // First tab: underline hugs the left edge so it lines
-          // up with the page gutter; subsequent tabs get the
-          // standard inset.
-          first ? "left-0 right-2" : "inset-x-2",
-        )} />
       )}
     </button>
   );
@@ -836,37 +809,28 @@ function AgentsTabs({
         </div>
       </div>
 
-      {/* Tab strip — mirrors the Repository sub-tab style: bottom
-          border under inactive tabs, accent underline beneath the
-          active one. Keeps the visual language consistent across
-          settings pages. */}
-      {/* The border sits on the wrapper so the fade below takes the pills
-          and leaves the rule under them whole. */}
-      <div className="border-b border-[var(--color-border-soft)]">
-      <div
+      {/* Vertical list beside the card: a horizontal strip stopped fitting
+          once there were a dozen agents. Sticky, so it stays in reach while
+          the card scrolls. */}
+      <div className="flex items-start gap-4">
+      <nav
         ref={stripRef}
         data-testid="agents-strip"
-        data-more-left={stripMore.left || undefined}
-        data-more-right={stripMore.right || undefined}
-        // A mask, not a gradient overlay: it fades the pills themselves, so it
-        // needs no knowledge of the surface colour behind them and cannot sit
-        // on top of a pill and eat its click.
-        style={stripMask ? { maskImage: stripMask, WebkitMaskImage: stripMask } : undefined}
-        className="no-scrollbar flex items-center gap-1 overflow-x-auto overflow-y-hidden"
+        aria-label={t("rail.agents")}
+        className="sticky top-0 flex w-44 shrink-0 flex-col gap-0.5"
       >
-        {displayedAgents.map((a, idx) => pill(a, idx === 0))}
+        {displayedAgents.map(a => pill(a))}
         {filter === "all" && termEntries.length > 0 && agentEntries.length > 0 && (
-          <span className="ml-4 mr-1 shrink-0 select-none text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+          <span className="mt-3 mb-1 px-2.5 select-none text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
             {t("agents.terminalsGroup")}
           </span>
         )}
-        {displayedTerms.map((a, idx) => pill(a, displayedAgents.length === 0 && idx === 0))}
-      </div>
-      </div>
+        {displayedTerms.map(a => pill(a))}
+      </nav>
 
       {/* Active agent card. Mount-keyed by id so internal state
-          (refs, drafts) resets cleanly when the user switches tabs. */}
-      <div className="mt-3">
+          (refs, drafts) resets cleanly when the user switches agents. */}
+      <div className="min-w-0 flex-1">
         {filter === "terminals" && termEntries.length === 0 ? (
           <div className="rounded-lg border border-dashed border-[var(--color-border-soft)] p-8 text-center text-[13px] text-[var(--color-fg-dim)]">
             {t("agents.noTerminals")}
@@ -893,6 +857,7 @@ function AgentsTabs({
             onReset={defaults.find(d => d.id === active.id) ? () => resetAgent(active.id) : undefined}
           />
         )}
+      </div>
       </div>
     </div>
   );

@@ -63,7 +63,9 @@ export function AgentHooksBlock({ onSelectAgent }: {
   autoRef.current = auto;
   const autoLoaded = auto !== null;
   useEffect(() => {
-    void agentHooksAutoGet().then(setAuto).catch(() => setAuto(false));
+    // `prev ??`: a click that beats this read already set the value, and the
+    // stale read landing after it flipped the switch back and lost the install.
+    void agentHooksAutoGet().then(v => setAuto(prev => prev ?? v)).catch(() => setAuto(prev => prev ?? false));
   }, []);
   // Arriving from the Agents section's link: scroll to this block and flash it
   // once. Same one-shot contract as GeneralSection's, so a later manual visit

@@ -162,7 +162,7 @@ export function Settings() {
 
       {/* Right pane */}
       <section data-testid="settings-pane" className="min-h-0 overflow-auto">
-        <div className="mx-auto max-w-5xl p-8">
+        <div className="max-w-6xl p-8">
           {tab === "general"     && <GeneralSection />}
           {tab === "tasks"       && <TasksSection />}
           {tab === "notifications" && <NotificationsSection />}

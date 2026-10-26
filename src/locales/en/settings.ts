@@ -528,6 +528,14 @@ export default {
       worktree: "Worktree",
       none: "None",
     },
+    taskBranchName: {
+      label: "Task branch name",
+      hint: "Prints each task's branch on its sidebar row, separate from the git icon: after the name, on the right, or on a line below.",
+      none: "Hidden",
+      inline: "Inline",
+      right: "Right",
+      below: "Below",
+    },
     taskPrBadge: {
       label: "Task PR",
       hint: "What a sidebar task row shows for its pull request: the state icon, the number, both, or nothing. Either one opens the PR.",
@@ -977,11 +985,12 @@ export default {
   agents: {
     customizations: {
       title: "Agent customizations",
-      hint: "Share skills, MCP servers, and personas across projects in this profile. Native adapters are provided for Claude Code, Codex, and Antigravity. Other harnesses have partial compatibility that varies by feature and version. Open the folder to add or edit files.",
+      summary: "Skills, MCP servers and personas kept in one folder and handed to the agents in every task.",
+      hint: "Put a file in the folder and every agent you start in a task gets it: Termic links it into the task's worktree where each agent looks (natively for Claude Code, Codex and Antigravity, partly for the rest). Restart a task's agents after editing the folder.",
       open: "Open customizations folder",
       opening: "Opening…",
-      defaultLabel: "Use profile customizations by default",
-      defaultHint: "Applies to projects using “Use profile default”. Explicit project overrides are kept. Restart agents to pick up changes.",
+      defaultLabel: "Add them to every task",
+      defaultHint: "A project can opt out, or opt in on its own, in its project settings. Restart agents to pick up changes.",
       layout: "Where to put files",
       skills: "Skills: <1>skills/example/SKILL.md</1>",
       personas: "Personas: <1>agents/example.md</1>",
