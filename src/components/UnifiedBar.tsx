@@ -223,14 +223,14 @@ export function UnifiedBar() {
             {taskCrumb === task.branch ? (
               <>
                 <span className="truncate font-mono text-[13px] leading-tight text-[var(--color-fg)]">{task.branch}</span>
-                <TaskLocationIcon isMainCheckout={task.is_main_checkout} className="self-center" />
+                <TaskLocationIcon isMainCheckout={task.is_main_checkout} branch={task.branch} className="self-center" />
               </>
             ) : (
               <>
                 <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]" title={taskCrumb === task.name ? undefined : t("taskNameTitle", { name: task.name })}>{taskCrumb}</span>
                 <span className="leading-tight text-[var(--color-fg-faint)]">{t("unifiedBar.onBranch")}</span>
                 <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{task.branch}</span>
-                <TaskLocationIcon isMainCheckout={task.is_main_checkout} className="self-center" />
+                <TaskLocationIcon isMainCheckout={task.is_main_checkout} branch={task.branch} className="self-center" />
               </>
             )}
             {/* Multi-repo: just a small chip with the member count.

@@ -6,6 +6,7 @@ import { useTranslation, Trans } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
+import { refreshMainCheckoutBranches } from "@/lib/mainCheckoutBranches";
 import { usePrefs } from "@/store/prefs";
 import { parsePrRef } from "@/lib/prReview";
 import { usePr } from "@/store/pr";
@@ -1047,6 +1048,7 @@ export function NewTaskDialog() {
         // every other main-checkout task, the editor and any dev server.
         const res = await projectGitCheckout(projectId, branch);
         if (stale()) return;
+        void refreshMainCheckoutBranches();
         setPrMode(false);
         setName(n => n.trim() || `pr-${pr.number}`);
         useUI.getState().pushToast(

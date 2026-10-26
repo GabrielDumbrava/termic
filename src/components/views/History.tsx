@@ -281,7 +281,7 @@ export function HistoryView() {
                     </span>
 
                     <span className="flex min-w-0 items-center gap-1.5">
-                      <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3 w-3" />
+                      <TaskLocationIcon isMainCheckout={w.is_main_checkout} branch={w.branch} size="h-3 w-3" />
                       <span className="min-w-0 truncate font-medium text-[var(--color-fg)]" title={w.name}>{w.name}</span>
                     </span>
 

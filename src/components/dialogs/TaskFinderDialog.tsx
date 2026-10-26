@@ -448,7 +448,7 @@ export function TaskFinderDialog() {
                   )}
 
                   {/* Task kind / Location icon */}
-                  <TaskLocationIcon isMainCheckout={r.task.is_main_checkout} size="h-3.5 w-3.5" />
+                  <TaskLocationIcon isMainCheckout={r.task.is_main_checkout} branch={r.task.branch} size="h-3.5 w-3.5" />
 
                   {/* Task name */}
                   <span className="min-w-0 truncate font-medium text-[var(--color-fg)]">

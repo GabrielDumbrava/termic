@@ -1006,7 +1006,7 @@ const BoardCard = memo(function BoardCard({ task: w, ctx, column, lane, isDragSo
         )}
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{w.branch}</span>
         <span className="flex shrink-0 items-center gap-1.5">
-          <TaskLocationIcon isMainCheckout={w.is_main_checkout} />
+          <TaskLocationIcon isMainCheckout={w.is_main_checkout} branch={w.branch} />
           <TaskSandboxBadge task={w} tabs={tabs} t={t} />
           {badge && <TaskWorkBadge reason={badge} />}
         </span>

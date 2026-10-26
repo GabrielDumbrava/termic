@@ -9,20 +9,30 @@ import { cn } from "@/lib/utils";
 //   - worktree      -> GitBranch  (an isolated branch checkout)
 //   - main checkout -> Link2      (the repo's own live checkout)
 // Native `title` gives a hover tooltip without the weight of a portal on every
-// sidebar row. `className` styles the WRAPPER (add `self-center` inside a
-// baseline-aligned row); `size` sizes the glyph.
+// sidebar row, and includes the branch when the caller has it. `className`
+// styles the WRAPPER (add `self-center` inside a baseline-aligned row);
+// `size` sizes the glyph.
 export function TaskLocationIcon({
   isMainCheckout,
+  branch,
   className,
   size = "h-3.5 w-3.5",
 }: {
   isMainCheckout: boolean | undefined;
+  branch?: string;
   className?: string;
   size?: string;
 }) {
   const { t } = useTranslation("chrome");
   const Icon = isMainCheckout ? Link2 : GitBranch;
-  const label = isMainCheckout ? t("taskLocation.main") : t("taskLocation.worktree");
+  const branchName = branch && branch !== "HEAD" ? branch : undefined;
+  const label = isMainCheckout
+    ? branchName
+      ? t("taskLocation.mainBranch", { branch: branchName })
+      : t("taskLocation.main")
+    : branchName
+      ? t("taskLocation.worktreeBranch", { branch: branchName })
+      : t("taskLocation.worktree");
   // One neutral gray for both states, a touch more faded than the task title.
   // The glyph shape (link = main checkout, branch = worktree) carries the
   // distinction; the color is deliberately quiet.
@@ -30,6 +40,9 @@ export function TaskLocationIcon({
     <span
       title={label}
       aria-label={label}
+      data-testid="task-location-icon"
+      data-location={isMainCheckout ? "main" : "worktree"}
+      data-branch={branchName}
       className={cn("inline-flex shrink-0 items-center text-[var(--color-loc)]", className)}
     >
       <Icon className={size} />

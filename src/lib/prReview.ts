@@ -13,6 +13,7 @@
 import type { ForgePr, ForgeProvider } from "@/lib/types";
 import { forgeName, prNoun, prRef } from "@/lib/forge";
 import { projectFetchPrBranch, projectForgePrs, projectGitCheckout } from "@/lib/ipc";
+import { refreshMainCheckoutBranches } from "@/lib/mainCheckoutBranches";
 
 /** A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
  *  0 for anything else, which callers report rather than guess at. */
@@ -108,5 +109,8 @@ export async function fetchPrForReview(projectId: string, n: number): Promise<{ 
 /** Move the project's main checkout onto the PR branch. Stash-safe on the
  *  Rust side; the result says whether local work was stashed or conflicted. */
 export function checkoutPrInMain(projectId: string, branch: string) {
-  return projectGitCheckout(projectId, branch);
+  return projectGitCheckout(projectId, branch).then(result => {
+    void refreshMainCheckoutBranches();
+    return result;
+  });
 }

@@ -31,6 +31,7 @@ import {
 import type { Task, GitStatus, GitRepo, GitFile, UpdateMode, UpdateInfo } from "@/lib/types";
 import { taskStage, taskUnstage, taskCommit, taskDiscard, taskGitBranches, taskGitCheckout, taskGitUpdate, taskGitUpdateAll, taskGitUpdateInfo, taskGitPush } from "@/lib/ipc";
 import { useApp } from "@/store/app";
+import { refreshMainCheckoutBranches } from "@/lib/mainCheckoutBranches";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { useFileViewed, useIsViewed } from "@/store/fileViewed";
@@ -974,6 +975,7 @@ function BranchBar({ task, branch, dir, multi, right }: {
         setBranches(null);   // stale after a switch - reload on next open
         // Checkout rewrote the working tree — full fan-out, not just status.
         useApp.getState().bumpFsRevision(task.id);
+        void refreshMainCheckoutBranches();
         if (r.conflicted) {
           pushToast(t("gitPanel.switchedConflict", { branch: r.branch }), "error", { ttlMs: 8000 });
         } else if (r.stashed) {

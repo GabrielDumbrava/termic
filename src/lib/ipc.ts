@@ -957,6 +957,10 @@ export const projectGitBranches = (projectId: string) =>
  *  project default is one) and so can't use projectGitBranches. */
 export const projectBranchContext = (projectId: string) =>
   invoke<BranchContext>("project_branch_context", { projectId });
+/** Current branch in a project's main checkout. Returns null for detached
+ *  HEAD; unlike projectBranchContext this does not enumerate local/remote refs. */
+export const projectGitCurrentBranch = (projectId: string) =>
+  invoke<string | null>("project_git_current_branch", { projectId });
 /** Fork-style switch: stash local work, checkout `branch`, re-apply the stash. */
 export const taskGitCheckout = (id: string, dirName: string, branch: string) =>
   invoke<CheckoutResult>("task_git_checkout", { id, dirName, branch });

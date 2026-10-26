@@ -237,7 +237,9 @@ export default {
   },
   taskLocation: {
     main: "main checkout",
+    mainBranch: "main checkout on branch {{branch}}",
     worktree: "worktree",
+    worktreeBranch: "worktree on branch {{branch}}",
   },
   themePicker: {
     autoBadge: "auto",
