@@ -41,7 +41,7 @@ target.
 | grok | not measured | `UserPromptSubmit`, `PreToolUse` | `Notification` | `Stop` + `StopCancelled`, `Stop` guarded on `backgroundTasks` (see Delegated work) | `StopCancelled` |
 | agy | not measured | `PreInvocation` | none exists (see below) | `Stop`, guarded on `fullyIdle`, which reports an unlabelled hold | none exists |
 | opencode | not measured | `chat.message`, `permission.replied` | `permission.asked` | `session.idle` | `session.idle`, on the SECOND escape |
-| codex | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | `PermissionRequest` | `Stop` | none exists |
+| codex | `SessionStart` | `UserPromptSubmit`, `PreToolUse` | none: the `Action Required` title (see below) | `Stop` | none exists |
 | devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest`, plus `PreToolUse` on `ask_user_question` | `Stop` | none exists |
 | copilot | none (trust dialog precedes `sessionStart`) | `userPromptSubmitted`, `preToolUse`, `postToolUse` | `permissionRequest` | `agentStop` | none exists |
 | pi | none (`session_start` precedes the input box) | `before_agent_start`, `tool_call` | `ui_prompt_start` (an extension's own prompt; pi has no permission prompts) | `agent_settled` | none exists |
@@ -491,10 +491,25 @@ measured separately by driving the real TUI to an approval prompt: the hook
 fired the instant the prompt painted, carrying `"tool_name":"Bash"`, which is
 what the shared attention body turns into `needs your permission: Bash`.
 
-One interaction worth knowing: codex's title ALSO reports `Action Required`, so a
-permission prompt now marks attention twice, once from each source. That is the
-same shape as claude's hook-then-`OSC 9` pair and it is handled by the same
-`ATTENTION_ECHO_MS` window, so it costs one banner, not two.
+**codex's `PermissionRequest` is no longer installed (schema v16).** It fires
+for every approval REQUEST, including the ones `approvals_reviewer =
+"auto_review"` answers itself, and its payload has no field naming the
+reviewer. Measured on 0.164.0, a real TUI asked to run a network command:
+
+```text
+reviewer=user         hook +0ms   title "[ . ] Action Required" +10ms, then blinks
+reviewer=auto_review  hook +0ms   title keeps its working spinner, command runs +3s
+```
+
+So with auto review on, every escalated command rang a needs-you that nobody
+had to answer. The title only says `Action Required` when a person is asked,
+and termic reads title attention on a hooked agent too, so the title is now
+codex's only attention source. Install also strips our entries from any event
+the current set no longer registers: it only ever merged, so a dropped event
+kept firing from an older install.
+
+Before v16 the hook and the title both marked a real prompt, the same shape as
+claude's hook-then-`OSC 9` pair, absorbed by the `ATTENTION_ECHO_MS` window.
 
 The title source is also EDGE-gated (only a change INTO attention marks), and
 the window alone was not enough: while a prompt waits, codex 0.164.0 blinks

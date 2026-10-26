@@ -808,8 +808,9 @@ export const BUILTIN_NOTIFY_ATTENTION: Record<string, string[]> = {
  *
  *  And it never uses `OSC 9` for the state that WOULD deserve one: driving a
  *  live codex to a permission prompt produced 80 `OSC 0` titles, one `OSC 10`,
- *  one `OSC 11` and zero `OSC 9`. Its needs-you is the `Action Required` title
- *  plus the `PermissionRequest` hook, both of which termic already reads.
+ *  one `OSC 11` and zero `OSC 9`. Its needs-you is the `Action Required` title,
+ *  which termic already reads (its `PermissionRequest` hook is not installed:
+ *  it also fires for approvals auto_review grants itself, see agent_hooks.rs).
  *
  *  WHY THIS ONLY APPEARED WITH HOOKS, since that is the confusing part: the
  *  body was always chatter, but `notifyAttention` drops a notification that

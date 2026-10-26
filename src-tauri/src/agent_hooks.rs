@@ -108,7 +108,12 @@ use std::path::{Path, PathBuf};
 // shell running spins until the 20-minute ceiling and every later turn in
 // that session is swallowed too. That is the whole bug, so an install that
 // does not re-sync does not get the fix.
-pub const SCHEMA_VERSION: u32 = 15;
+// v16 drops codex's `PermissionRequest`, which also fires for requests
+// `auto_review` approves on its own, and has install strip our entries from
+// any event the current set no longer registers (an upgrade only ever merged,
+// so a dropped event kept firing). Stale-and-harmful: a v15 codex install
+// rings needs-you for every auto-reviewed command.
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// Directory we create inside the agent's config dir. Also the prefix that
 /// identifies our entries for removal, which is why it must never be renamed
@@ -821,11 +826,22 @@ pub fn hooks_for(agent: &str) -> &'static [(&'static str, Signal)] {
         // `HookEventName` enum lists the same set. Same mapping, same reasons,
         // one difference: codex's hooks do not run until they are TRUSTED (see
         // codex_trust.rs), which is the whole of the extra work here.
+        //
+        // No `PermissionRequest`, and this time the reason is measured. It
+        // fires for EVERY approval request, including the ones
+        // `approvals_reviewer = "auto_review"` answers itself, and its payload
+        // has no field saying which reviewer will answer. Measured on 0.164.0
+        // driving a real TUI at a network command: with the user as reviewer
+        // the hook fired and the title went `[ . ] Action Required` 10ms
+        // later; with auto_review the hook fired just the same, the title kept
+        // its working spinner, and the command ran 3s later. So the hook rang
+        // a needs-you for every auto-reviewed command, and the title, which
+        // termic still reads for attention on a hooked agent, is the one
+        // source that knows a person is being asked.
         "codex" => &[
             ("SessionStart", Signal::Ready),
             ("UserPromptSubmit", Signal::Working),
             ("PreToolUse", Signal::Working),
-            ("PermissionRequest", Signal::Attention),
             ("Stop", Signal::Done),
         ],
         // devin speaks the same claude-shaped hook protocol (its docs call it
@@ -1933,6 +1949,24 @@ fn strip_ours(root: &mut Value, prefix: &str, event: &str) -> bool {
     removed
 }
 
+/// Strip our entries from every event the current set no longer registers.
+/// Merging alone only ever adds, so an event dropped from `hooks_for` kept
+/// firing from an older install forever.
+fn without_retired_events(root: &Value, prefix: &str, hooks: &[(&str, Signal)]) -> Value {
+    let mut out = root.clone();
+    let events: Vec<String> = root
+        .get("hooks")
+        .and_then(Value::as_object)
+        .map(|h| h.keys().cloned().collect())
+        .unwrap_or_default();
+    for event in events {
+        if !hooks.iter().any(|(e, _)| *e == event) {
+            strip_ours(&mut out, prefix, &event);
+        }
+    }
+    out
+}
+
 /// Insert our entry, replacing any older one of ours. Every unknown key at
 /// every level is preserved: we only ever touch `hooks.<EVENT>`.
 pub fn merge(existing: &Value, command: &str, prefix: &str, event: &str, status: &str) -> Value {
@@ -2893,7 +2927,7 @@ pub fn install(target: &Target) -> Result<(), String> {
     let prefix = command_prefix(target)?;
     let merged = match schema_for(&agent) {
         Schema::ClaudeCompatible => {
-            let mut acc = root;
+            let mut acc = without_retired_events(&root, &prefix, hooks);
             for (event, command, sig) in &commands {
                 acc = merge(&acc, command, &prefix, event, sig.status_message());
             }
@@ -3560,6 +3594,24 @@ fn an_install_missing_a_newly_added_event_is_still_ours() {
         let ours_present = hooks.iter().any(|(e, _)| has(&cfg, e));
         assert!(!installed, "a v3 config should NOT satisfy the v4 set");
         assert!(ours_present, "a v3 config is still ours, and still needs upgrading");
+    }
+
+    #[test]
+    fn an_upgrade_strips_our_entry_from_a_retired_event_and_keeps_the_users() {
+        let mut cfg = serde_json::json!({});
+        for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop"] {
+            cfg = merge(&cfg, &format!("{P}{ev}.sh"), P, ev, SM);
+        }
+        cfg = merge(&cfg, "/Users/u/bin/my-hook.sh", "/Users/u/bin/", "PermissionRequest", "");
+        let after = without_retired_events(&cfg, P, hooks_for("codex"));
+        let perm = after["hooks"]["PermissionRequest"].to_string();
+        assert!(!perm.contains(P), "our PermissionRequest entry survived: {perm}");
+        assert!(perm.contains("my-hook.sh"), "the user's own hook was removed: {perm}");
+        for (ev, _) in hooks_for("codex") {
+            assert_eq!(after["hooks"][ev], cfg["hooks"][ev], "{ev} was disturbed");
+        }
+        // Nothing of ours retired: untouched.
+        assert_eq!(without_retired_events(&after, P, hooks_for("codex")), after);
     }
 
     #[test]
@@ -4627,7 +4679,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // dialogs, v4 holds a tab on `working` for the rest of the session,
         // v14 says nothing at all when a done is held and spins until the
         // ceiling.
-        assert_eq!(SCHEMA_VERSION, 15, "bump me with the hook set, or installs go stale silently");
+        assert_eq!(SCHEMA_VERSION, 16, "bump me with the hook set, or installs go stale silently");
     }
 
     #[test]
@@ -4669,7 +4721,7 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
 
     #[test]
     fn attention_comes_from_a_hook_wherever_the_agent_has_such_an_event() {
-        for agent in ["claude", "grok", "opencode", "codex", "devin"] {
+        for agent in ["claude", "grok", "opencode", "devin"] {
             assert!(
                 hooks_for(agent).iter().any(|(_, s)| *s == Signal::Attention),
                 "{agent} has an attention-shaped event and must use it"
@@ -4678,6 +4730,10 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
         // agy is the documented exception: no attention-shaped event exists,
         // so needs-you there stays on termic's byte-quiet fallback.
         assert!(!hooks_for("agy").iter().any(|(_, s)| *s == Signal::Attention));
+        // codex has one, `PermissionRequest`, and it is wrong: it also fires
+        // for approvals auto_review grants itself. Its title says when a person
+        // is asked. See `hooks_for`.
+        assert!(!hooks_for("codex").iter().any(|(_, s)| *s == Signal::Attention));
     }
 
     #[test]
