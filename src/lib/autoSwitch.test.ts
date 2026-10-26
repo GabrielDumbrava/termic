@@ -39,6 +39,16 @@ const view = (
 });
 
 describe("isSpent", () => {
+  it("respects a Codex credit budget and its billing reset", () => {
+    const budget: AccountReading = {
+      session: null, weekly: null, sessionCostUsd: null, updatedAt: NOW,
+      budget: { usedPercent: 97, used: 7760, limit: 8000, resetsAt: (NOW + HOUR) / 1000 },
+    };
+    expect(isSpent(budget, NOW)).toBe(true);
+    expect(isSpent(budget, NOW + 2 * HOUR)).toBe(false);
+    expect(isSpent({ ...budget, budget: { ...budget.budget!, usedPercent: 8 } }, NOW)).toBe(false);
+  });
+
   it("is false for an account nobody has heard from", () => {
     // Silence is not evidence. Treating it as spent would rule out every
     // account that has not run yet, which is all of them on a fresh install.

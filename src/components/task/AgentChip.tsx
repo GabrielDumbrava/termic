@@ -35,7 +35,7 @@ import {
   formatPercent, formatReset, formatUsd, formatConsumed, formatPeriod, usageLevel, drivingWindow, shortWindowWords,
   USAGE_WARN_PERCENT, USAGE_CRITICAL_PERCENT,
   blocksUsageFeed, blockedReason,
-  type UsageLevel, type UsageWindow, type StatusLineOwner,
+  type UsageLevel, type UsageWindow, type CreditBudget, type StatusLineOwner,
 } from "@/lib/agentUsage";
 import { builtinBaseId, agentDisplayName } from "@/lib/agents";
 import { useAgentAccounts, type AgentAccounts } from "@/hooks/useAgentAccounts";
@@ -216,7 +216,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
             // the agents' own spend data is token counts and ACUs, not
             // dollars. Turning that into USD would mean a per-model price
             // table in termic, which goes silently wrong the day prices move.
-            { session: u.session, weekly: u.weekly, sessionCostUsd: null, consumed: u.consumed ?? null },
+            { session: u.session, weekly: u.weekly, sessionCostUsd: null, consumed: u.consumed ?? null, budget: u.budget ?? null },
             "rpc");
         })
         // No banner: the agent may not be installed, may not be logged in, or
@@ -455,6 +455,11 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               window={entry.weekly} unit="wk" stale={stale} testid="wk"
             />
           )}
+          {entry?.budget && (
+            <UsageWindowReadout
+              window={entry.budget} unit={t("agentChip.creditsChip")} stale={stale} testid="credits"
+            />
+          )}
           {/* Spend since launch, and ONLY for an account with no plan, which
               is the case this feed exists for. On a subscription the
               percentages are the readout: a dollar figure beside them is a
@@ -464,7 +469,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
           {/* An uncapped plan (devin Enterprise, ACU-billed): what it used this
               billing period, as a plain count. No bar and no warn colour,
               because there is no limit for it to approach. */}
-          {entry?.consumed && !entry.session && !entry.weekly && (
+          {entry?.consumed && !entry.session && !entry.weekly && !entry.budget && (
             <span data-testid="usage-consumed" className="tabular-nums">{formatConsumed(entry.consumed)}</span>
           )}
           {costChipVisible(entry, spend) && (
@@ -533,7 +538,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
   entry: UsageEntry | undefined;
   level: UsageLevel;
   /** `null` on an account with no plan windows, which has no driving one. */
-  driver: { window: UsageWindow; label: "5h" | "wk" } | null;
+  driver: ReturnType<typeof drivingWindow>;
   /** USD spent on this account since launch. */
   spend: number;
   /** The agent can report usage and has not yet: the panel explains why. */
@@ -581,12 +586,18 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
       <div className="flex flex-col gap-2.5 px-3 py-2.5 empty:hidden">
         {unknown ? (
           <UsageUnknown agentId={agentId} sources={sources} show={show} onNavigate={onNavigate} />
-        ) : !entry ? null : (entry.session || entry.weekly) ? (
+        ) : !entry ? null : (entry.session || entry.weekly || entry.budget) ? (
           <>
-            <UsageRow label={words.label} sub={words.sub} window={entry.session}
-              driving={driver?.label === "5h"} level={level} source={entry.source} />
-            <UsageRow label={t("agentChip.weekly")} sub={t("agentChip.weeklySub")} window={entry.weekly}
-              driving={driver?.label === "wk"} level={level} source={entry.source} />
+            {(entry.session || entry.weekly) && (
+              <>
+                <UsageRow label={words.label} sub={words.sub} window={entry.session}
+                  driving={driver?.label === "5h"} level={level} source={entry.source} />
+                <UsageRow label={t("agentChip.weekly")} sub={t("agentChip.weeklySub")} window={entry.weekly}
+                  driving={driver?.label === "wk"} level={level} source={entry.source} />
+              </>
+            )}
+            {entry.budget && <CreditBudgetRow budget={entry.budget}
+              driving={driver?.label === "credits"} level={level} />}
           </>
         ) : entry.consumed ? (
           <div data-testid="usage-consumed-row" className="flex items-baseline justify-between">
@@ -655,7 +666,8 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
           <div className={cn("mb-1", LEVEL_TEXT[level])}>
             {t("agentChip.overLimit", {
               percent: level === "critical" ? USAGE_CRITICAL_PERCENT : USAGE_WARN_PERCENT,
-              window: driver.label === "5h" ? words.limit : "weekly",
+              window: driver.label === "credits" ? t("agentChip.creditBudgetLimit")
+                : driver.label === "5h" ? words.limit : "weekly",
             })}
           </div>
         )}
@@ -675,7 +687,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
           checkbox lives there. Two copies of that checkbox is what the merge
           removed. */}
       <AccountRow agentId={agentId} view={accountsView} refresh={refreshAccounts} onNavigate={onNavigate}
-        uncapped={!!entry?.consumed && !entry.session && !entry.weekly} />
+        uncapped={!!entry?.consumed && !entry.session && !entry.weekly && !entry.budget} />
     </div>
   );
 }
@@ -849,8 +861,31 @@ function AccountRow({ agentId, view, refresh, onNavigate, uncapped }: {
   );
 }
 
+/** A credit allowance can have a billing reset without a known duration. */
+function CreditBudgetRow({ budget, driving, level }: {
+  budget: CreditBudget; driving: boolean; level: UsageLevel;
+}) {
+  const { t, i18n } = useTranslation("task");
+  const number = (n: number) => n.toLocaleString(i18n.resolvedLanguage, { maximumFractionDigits: 2 });
+  const amounts = budget.used != null && budget.limit != null
+    ? t("agentChip.creditsUsed", { used: number(budget.used), limit: number(budget.limit) })
+    : t("agentChip.creditAllowance");
+  const reset = budget.resetsAt == null ? undefined : t("agentChip.budgetResets", {
+    date: new Date(budget.resetsAt * 1000).toLocaleDateString(i18n.resolvedLanguage, {
+      month: "short", day: "numeric", year: "numeric",
+    }),
+  });
+  return (
+    <div data-testid="usage-budget-row" className="flex flex-col gap-1">
+      <UsageRow label={t("agentChip.creditBudget")} sub={amounts} window={budget}
+        driving={driving} level={level} source="rpc" reset={reset} />
+      <div className="text-[11px] text-[var(--color-fg-faint)]">{t("agentChip.sharedCredits")}</div>
+    </div>
+  );
+}
+
 /** One window: name, percentage, its own full-width bar, and when it resets. */
-function UsageRow({ label, sub, window: w, driving, level, source }: {
+function UsageRow({ label, sub, window: w, driving, level, source, reset }: {
   label: string;
   sub: string;
   window: UsageWindow | null;
@@ -861,6 +896,8 @@ function UsageRow({ label, sub, window: w, driving, level, source }: {
   /** Which transport reported it. Decides what a MISSING window means, and
    *  the two meanings are not interchangeable. */
   source: UsageEntry["source"];
+  /** Budget periods need a full date rather than a rolling-window clock. */
+  reset?: string;
 }) {
   const { t } = useTranslation("task");
   // A window that is not here. Said in WORDS, because an omitted row reads as
@@ -898,9 +935,9 @@ function UsageRow({ label, sub, window: w, driving, level, source }: {
           style={{ width: `${Math.max(2, Math.round(w.usedPercent))}%` }}
         />
       </div>
-      <div className="mt-1 flex items-baseline justify-between text-[var(--color-fg-faint)]">
+      <div className={cn("mt-1 flex items-baseline justify-between text-[var(--color-fg-faint)]", reset && "flex-col")}>
         <span>{sub}</span>
-        <span>{formatReset(w) || t("agentChip.resetUnknown")}</span>
+        <span>{reset || formatReset(w) || t("agentChip.resetUnknown")}</span>
       </div>
     </div>
   );

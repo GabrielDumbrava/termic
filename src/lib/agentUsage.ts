@@ -34,6 +34,12 @@ export interface UsageWindow {
   resetsAt: number | null;
 }
 
+/** A plan's credit allowance, with provider-reported amounts and reset. */
+export interface CreditBudget extends UsageWindow {
+  used: number | null;
+  limit: number | null;
+}
+
 /** What an UNCAPPED plan has used this billing period. devin Enterprise is
  *  billed in ACUs with no quota, so it has no percentage to show and this is
  *  the whole readout. Never set alongside a window (agent_usage.rs). */
@@ -69,6 +75,8 @@ export interface AgentUsage {
   weekly: UsageWindow | null;
   /** Consumption on a plan with no cap. Only the pull transports set it. */
   consumed?: PeriodConsumption | null;
+  /** Codex's individual credit allowance, separate from rolling windows. */
+  budget?: CreditBudget | null;
 }
 
 /** A money field: any non-negative number, unclamped.
@@ -145,7 +153,13 @@ export function sameUsage(a: AgentUsage | undefined, b: AgentUsage | undefined):
     // while a window stays on the same whole number), so leaving it out of the
     // comparison would bail on exactly the writes worth making.
     && a.sessionCostUsd === b.sessionCostUsd
-    && sameConsumption(a.consumed ?? null, b.consumed ?? null);
+    && sameConsumption(a.consumed ?? null, b.consumed ?? null)
+    && sameBudget(a.budget ?? null, b.budget ?? null);
+}
+
+function sameBudget(a: CreditBudget | null, b: CreditBudget | null): boolean {
+  if (!a || !b) return a === b;
+  return sameWindow(a, b) && a.used === b.used && a.limit === b.limit;
 }
 
 function sameConsumption(a: PeriodConsumption | null, b: PeriodConsumption | null): boolean {
@@ -244,13 +258,15 @@ export function usageLevel(usedPercent: number): UsageLevel {
  *  The session window is the one people watch, but it is not always the one
  *  that stops them. 30% of five hours next to 95% of the week is a footer that
  *  has to say "week", or it reports a comfortable number right up until the
- *  turn that fails. Returns null only when neither window was reported. */
-export function drivingWindow(u: AgentUsage): { window: UsageWindow; label: "5h" | "wk" } | null {
+ *  turn that fails. Includes credit allowances; returns null only when no
+ *  window or budget was reported. */
+export function drivingWindow(u: AgentUsage): { window: UsageWindow; label: "5h" | "wk" | "credits" } | null {
   const s = u.session ? { window: u.session, label: "5h" as const } : null;
   const w = u.weekly ? { window: u.weekly, label: "wk" as const } : null;
-  if (!s) return w;
-  if (!w) return s;
-  return w.window.usedPercent > s.window.usedPercent ? w : s;
+  const rolling = !s ? w : !w ? s : w.window.usedPercent > s.window.usedPercent ? w : s;
+  const budget = u.budget ? { window: u.budget, label: "credits" as const } : null;
+  if (!rolling) return budget;
+  return budget && budget.window.usedPercent > rolling.window.usedPercent ? budget : rolling;
 }
 
 /** The short window's name, per agent. claude and codex roll over in hours;

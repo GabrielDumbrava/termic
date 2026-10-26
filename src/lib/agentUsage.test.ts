@@ -166,6 +166,60 @@ describe("the warning thresholds", () => {
   });
 });
 
+describe("Codex credit budgets", () => {
+  const budget = { usedPercent: 8, resetsAt: 1906502400, used: 640.25, limit: 8000 };
+  const reading = { session: null, weekly: null, sessionCostUsd: null, budget };
+  beforeEach(() => useAgentUsage.setState({ byAgent: {}, cost: {} }));
+
+  it("recognizes a credit allowance as known plan usage, including zero", () => {
+    const s = useAgentUsage.getState();
+    s.report("codex", "Work", reading, "rpc");
+    const entry = useAgentUsage.getState().byAgent[usageKey("codex", "Work")];
+    expect(usageKnown(entry, 0)).toBe(true);
+    expect(entry.sawPlan).toBe(true);
+    expect(costChipVisible(entry, 0)).toBe(false);
+    expect(drivingWindow(entry)?.label).toBe("credits");
+    expect(drivingWindow({ ...reading, budget: { ...budget, usedPercent: 0, used: 0 } })?.window.usedPercent).toBe(0);
+  });
+
+  it("updates amounts even when the rounded percentage stays the same, and skips identical writes", () => {
+    const s = useAgentUsage.getState();
+    s.report("codex", null, reading, "rpc");
+    const before = useAgentUsage.getState();
+    s.report("codex", null, { ...reading, budget: { ...budget } }, "rpc");
+    expect(useAgentUsage.getState()).toBe(before);
+    for (const change of [{ used: 641 }, { limit: 9000 }, { resetsAt: 1906588800 }, { usedPercent: 9 }]) {
+      expect(sameUsage(reading, { ...reading, budget: { ...budget, ...change } })).toBe(false);
+    }
+    s.report("codex", null, { ...reading, budget: { ...budget, used: 641 } }, "rpc");
+    expect(useAgentUsage.getState().byAgent[usageKey("codex", null)].budget?.used).toBe(641);
+  });
+
+  it("replaces old rolling windows with the budget, and removes it when rolling limits return", () => {
+    const s = useAgentUsage.getState();
+    const rolling = { session: { usedPercent: 30, resetsAt: null }, weekly: null, sessionCostUsd: null };
+    s.report("codex", "Work", rolling, "rpc");
+    s.report("codex", "Personal", { ...reading, budget: { ...budget, usedPercent: 80 } }, "rpc");
+    s.report("codex", "Work", reading, "rpc");
+    let entry = useAgentUsage.getState().byAgent[usageKey("codex", "Work")];
+    expect(entry.session).toBeNull();
+    expect(entry.budget).toEqual(budget);
+    s.report("codex", "Work", rolling, "rpc");
+    entry = useAgentUsage.getState().byAgent[usageKey("codex", "Work")];
+    expect(entry.budget).toBeNull();
+    expect(entry.session?.usedPercent).toBe(30);
+    expect(useAgentUsage.getState().byAgent[usageKey("codex", "Personal")].budget?.usedPercent).toBe(80);
+  });
+
+  it("warns about whichever allowance is closest to exhaustion", () => {
+    expect(drivingWindow({ ...reading, session: { usedPercent: 95, resetsAt: null } })?.label).toBe("5h");
+    const driver = drivingWindow({ ...reading, budget: { ...budget, usedPercent: 97 },
+      weekly: { usedPercent: 40, resetsAt: null } });
+    expect(driver?.label).toBe("credits");
+    expect(usageLevel(driver!.window.usedPercent)).toBe("critical");
+  });
+});
+
 describe("formatUsd", () => {
   it("shows cents below ten dollars, where the movement is", () => {
     // Watching a session tick from $0.40 to $0.85 is the point. Rounding both

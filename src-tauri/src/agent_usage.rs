@@ -1,4 +1,4 @@
-//! Subscription usage: how much of an account's rolling limits is spent
+//! Subscription usage: how much of an account's limits or credit budget is spent
 //! (GH #277).
 //!
 //! Two providers, two transports, and they are different on purpose.
@@ -57,6 +57,8 @@ pub struct UsageWindow {
 pub struct AgentUsage {
     pub session: Option<UsageWindow>,
     pub weekly: Option<UsageWindow>,
+    /// Codex's individual credit allowance, independent of rolling windows.
+    pub budget: Option<CreditBudget>,
     /// `free`, `plus`, `pro`, `team`… Passed through verbatim rather than
     /// matched: the enum has a dozen arms and gains more.
     pub plan_type: Option<String>,
@@ -70,6 +72,15 @@ pub struct AgentUsage {
     /// only ever say "Usage unknown". `None` whenever a window is present,
     /// because a percentage of a cap is the readout that matters.
     pub consumed: Option<PeriodConsumption>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditBudget {
+    pub used_percent: f64,
+    pub resets_at: Option<i64>,
+    pub used: Option<f64>,
+    pub limit: Option<f64>,
 }
 
 /// An amount used in the current billing period, with no cap attached.
@@ -126,7 +137,15 @@ pub fn classify(primary: Option<(UsageWindow, u64)>, secondary: Option<(UsageWin
 
 /// Parse the `result` of `account/rateLimits/read`.
 pub fn parse_codex_result(result: &serde_json::Value) -> AgentUsage {
-    let rl = result.get("rateLimits");
+    // Prefer the main bucket, never a model-specific allowance. Older CLIs
+    // only expose the single-bucket view.
+    let rl = result.get("rateLimitsByLimitId")
+        .and_then(|r| r.get("codex"))
+        .filter(|r| r.is_object())
+        .or_else(|| result.get("rateLimits").filter(|r| {
+            r.get("limitId").and_then(serde_json::Value::as_str)
+                .is_none_or(|id| id.is_empty() || id == "codex")
+        }));
     let (session, weekly) = match rl {
         Some(rl) => classify(
             rl.get("primary").and_then(window),
@@ -137,6 +156,18 @@ pub fn parse_codex_result(result: &serde_json::Value) -> AgentUsage {
     AgentUsage {
         session,
         weekly,
+        budget: rl.and_then(|r| r.get("individualLimit")).and_then(|b| {
+            let remaining = b.get("remainingPercent").and_then(as_f64)
+                .filter(|v| v.is_finite())?;
+            let amount = |key| b.get(key).and_then(as_f64)
+                .filter(|v| v.is_finite() && *v >= 0.0);
+            Some(CreditBudget {
+                used_percent: (100.0 - remaining).clamp(0.0, 100.0),
+                resets_at: b.get("resetsAt").and_then(serde_json::Value::as_i64),
+                used: amount("used"),
+                limit: amount("limit"),
+            })
+        }),
         plan_type: rl
             .and_then(|r| r.get("planType"))
             .and_then(serde_json::Value::as_str)
@@ -144,7 +175,8 @@ pub fn parse_codex_result(result: &serde_json::Value) -> AgentUsage {
         account_id: result
             .get("accountId")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string),        consumed: None,
+            .map(str::to_string),
+        consumed: None,
     }
 }
 
@@ -434,7 +466,9 @@ pub fn parse_devin_result(result: &serde_json::Value) -> AgentUsage {
         account_id: us
             .and_then(|u| u.get("userId"))
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string),        consumed,
+            .map(str::to_string),
+        consumed,
+        budget: None,
     }
 }
 
@@ -652,6 +686,7 @@ pub fn parse_copilot_cache(text: &str) -> Result<AgentUsage, String> {
         plan_type: newest.get("copilot_plan").and_then(|p| p.as_str()).map(str::to_string),
         account_id: None,
         consumed: None,
+        budget: None,
     })
 }
 
@@ -732,7 +767,7 @@ pub fn parse_omp_usage(v: &serde_json::Value) -> Result<AgentUsage, String> {
             break;
         }
     }
-    Ok(AgentUsage { session, weekly, plan_type: None, account_id: None, consumed: None })
+    Ok(AgentUsage { session, weekly, plan_type: None, account_id: None, consumed: None, budget: None })
 }
 
 /// Where omp's own config root is for THIS entry, so `PI_CONFIG_DIR` can point
@@ -989,8 +1024,8 @@ mod tests {
         let usage = fetch_codex("codex", false, None).expect("codex should answer account/rateLimits/read");
         println!("{}", serde_json::to_string_pretty(&usage).unwrap());
         assert!(
-            usage.session.is_some() || usage.weekly.is_some(),
-            "a logged-in account reports at least one window"
+            usage.session.is_some() || usage.weekly.is_some() || usage.budget.is_some(),
+            "a logged-in account reports a rolling window or credit budget"
         );
         for w in [usage.session.as_ref(), usage.weekly.as_ref()].into_iter().flatten() {
             assert!((0.0..=100.0).contains(&w.used_percent), "{w:?}");
@@ -1068,6 +1103,70 @@ mod tests {
         assert_eq!(u.session.as_ref().unwrap().resets_at, Some(1790000000));
         assert_eq!(u.plan_type.as_deref(), Some("pro"));
         assert!(u.account_id.is_some());
+    }
+
+    #[test]
+    fn codex_credit_budget_survives_without_rolling_windows() {
+        let result = serde_json::json!({
+            "rateLimits": {
+                "primary": null, "secondary": null, "planType": "business",
+                "credits": { "hasCredits": true, "unlimited": false, "balance": null },
+                "individualLimit": {
+                    "limit": "8000", "used": "640.25",
+                    "remainingPercent": 92, "resetsAt": 1906502400i64
+                }
+            }
+        });
+        let u = parse_codex_result(&result);
+        assert!(u.session.is_none() && u.weekly.is_none());
+        assert_eq!(u.plan_type.as_deref(), Some("business"));
+        assert_eq!(u.budget, Some(CreditBudget {
+            used_percent: 8.0, used: Some(640.25), limit: Some(8000.0),
+            resets_at: Some(1906502400),
+        }));
+        let wire = serde_json::to_value(&u).unwrap();
+        assert_eq!(wire["budget"]["usedPercent"], 8.0);
+        assert_eq!(wire["budget"]["resetsAt"], 1906502400i64);
+    }
+
+    #[test]
+    fn codex_prefers_main_bucket_and_keeps_budget_alongside_windows() {
+        let mut result = paid();
+        let mut main = result["rateLimits"].clone();
+        main["individualLimit"] = serde_json::json!({ "remainingPercent": 3 });
+        result["rateLimitsByLimitId"] = serde_json::json!({ "codex": main });
+        let u = parse_codex_result(&result);
+        assert_eq!(u.session.unwrap().used_percent, 58.0);
+        assert_eq!(u.weekly.unwrap().used_percent, 41.0);
+        assert_eq!(u.budget.unwrap().used_percent, 97.0);
+        result["rateLimits"] = serde_json::json!({"limitId": "codex_other"});
+        result["rateLimitsByLimitId"] = serde_json::json!({"codex_other": main});
+        let other = parse_codex_result(&result);
+        assert!(other.session.is_none() && other.weekly.is_none() && other.budget.is_none());
+    }
+
+    #[test]
+    fn codex_budget_handles_zero_missing_and_invalid_amounts() {
+        for (remaining, expected) in [(100, 0.0), (0, 100.0), (-5, 100.0), (105, 0.0)] {
+            let u = parse_codex_result(&serde_json::json!({
+                "rateLimits": { "individualLimit": {
+                    "remainingPercent": remaining, "used": "NaN", "limit": "-1"
+                }}
+            }));
+            let b = u.budget.unwrap();
+            assert_eq!(b.used_percent, expected);
+            assert!(b.used.is_none() && b.limit.is_none() && b.resets_at.is_none());
+        }
+        for individual in [serde_json::json!(null), serde_json::json!({}),
+            serde_json::json!({"remainingPercent": "NaN"})] {
+            assert!(parse_codex_result(&serde_json::json!({
+                "rateLimits": { "individualLimit": individual }
+            })).budget.is_none());
+        }
+        let u = parse_codex_result(&serde_json::json!({
+            "rateLimits": { "individualLimit": {"remainingPercent": 100, "used": "0", "limit": "0"}}
+        }));
+        assert_eq!(u.budget.unwrap().used, Some(0.0));
     }
 
     /// The bug this exists to prevent: reading `primary` as "the session

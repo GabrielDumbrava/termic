@@ -31,6 +31,12 @@ free, but it is a different number and would need its own label.
   agent hooks (schema v7). It prints nothing and writes one OSC 777 on the
   hook channel, so the agent looks unchanged.
 - **codex** is asked, over `account/rateLimits/read` on `codex app-server`.
+  The main `codex` bucket in `rateLimitsByLimitId` takes precedence over the
+  legacy `rateLimits` view. Credit-based plans can leave both rolling
+  windows null and report `individualLimit` instead: `remainingPercent`
+  becomes used percentage, while `used`, `limit` and `resetsAt` supply the
+  credit-budget details. The allowance is shared with other OpenAI products
+  on the plan, so it is not a counter of Codex-only tokens.
 - **devin** is asked too, over Connect `GetUserStatus` on the seat-management
   service named in the account's own `credentials.toml` - the same call the
   TUI's "Pro · N% remaining" header makes. No child process at all: the
