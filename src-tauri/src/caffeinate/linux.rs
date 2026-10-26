@@ -97,7 +97,7 @@ fn battery_low_at(root: &Path) -> bool {
 pub fn set_permission(_: bool) -> Result<(), String> {
     Ok(())
 }
-pub fn recover(_: &Path) -> Result<(), String> {
+pub fn recover(_: &Path, _: bool) -> Result<(), String> {
     Ok(())
 }
 pub struct Lid {
@@ -183,7 +183,7 @@ impl Lid {
         };
         check_inhibitor(connection, "handle-lid-switch")
     }
-    pub fn restore(&mut self, _: &Path) -> Result<(), String> {
+    pub fn restore(&mut self, _: &Path, _: bool) -> Result<(), String> {
         self.held.take();
         Ok(())
     }

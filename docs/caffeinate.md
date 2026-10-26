@@ -72,9 +72,11 @@ Quota resets and future scheduled jobs do not wake a sleeping computer.
 Use a timed session when unattended work must remain reachable through a long
 permission prompt, quota wait or an agent without reliable hooks.
 
-On macOS 14 and later, an enabled caffeinate session uses WebKit's `Throttle`
-background policy so queued messages and CLI orchestration can still be
-delivered while hidden. Turning it off restores the normal `Suspend` policy.
+On macOS 14 and later, an enabled caffeinate session switches each window to
+WebKit's `Throttle` background policy so queued messages and CLI
+orchestration can still be delivered while hidden. Windows are left alone
+while caffeinate is off, and turning it off puts back the value each window
+had before, rather than assuming WebKit's default.
 This does not keep terminal renderers on
 screen: their existing geometry/presence gates still apply. OS lock/display
 and prolonged background behaviour require hardware validation. Tauri does
@@ -93,6 +95,14 @@ the desktop dies; an independent three-minute heartbeat lease handles a
 stalled manager, and a session deadline is enforced in the helper too. The
 helper has no socket, service registration or persistent daemon. It exits
 after restoration. A file lock serializes helper/recovery ownership.
+
+Logout and shutdown can end the helper without closing its pipe. On macOS
+and Linux it blocks SIGTERM, SIGHUP and SIGINT and takes them on one thread;
+on Windows a hidden top-level window receives `WM_ENDSESSION` and waits up to
+five seconds for the restore. Quitting Termic, which is how macOS logout and
+restart begin, sends the helper `quit` over its pipe. In each of these cases
+the helper restores without requesting sleep. Only expiry, Stop and the
+desktop dying (EOF) re-evaluate a lid that is still closed.
 
 macOS and Windows write the original state to an atomic recovery journal
 **before** changing it. Failed restoration retains the journal and surfaces a
@@ -116,6 +126,15 @@ unsandboxed programs running as that user can execute those commands too.
 Remove closed-lid permission removes the rule, after active changes and any
 recovery journal have been cleared. Dragging the app to Trash does not remove
 this permission automatically.
+
+If the rule disappears while closed-lid control is active, the manager's
+minute check stops closed-lid control at once, while someone is more likely
+to be there to approve the fallback. Without the rule the unattended restore
+cannot write the setting back, so the journal stays and the error says what
+happened. Restore normal sleep then asks for administrator approval through
+`osascript` to run `pmset disablesleep 0`. The restore runs off the policy
+worker, like permission setup, so an unanswered prompt does not stall
+expiry, Stop or battery checks.
 
 An IOKit lid observer requests real display sleep on closure. Lock/password
 timing follows the user's macOS lock-screen settings. Restoration checks the

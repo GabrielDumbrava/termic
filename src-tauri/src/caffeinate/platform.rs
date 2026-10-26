@@ -70,8 +70,17 @@ mod native {
         // Production adapters use the OS suspend-aware monotonic clock.
         super::super::now_ms()
     }
-    pub fn recover(path: &Path) -> Result<(), String> {
+    pub fn recover(path: &Path, interactive: bool) -> Result<(), String> {
         if cfg!(feature = "e2e") && path.exists() {
+            // A written e2e case models a revoked macOS permission: only the
+            // interactive restore (the administrator prompt) can clear it.
+            let revoked = path.with_extension("needs-approval");
+            if revoked.exists() {
+                if !interactive {
+                    return Err(super::super::RESTORE_NEEDS_APPROVAL.into());
+                }
+                std::fs::remove_file(revoked).map_err(|e| e.to_string())?;
+            }
             std::fs::remove_file(path).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -87,8 +96,8 @@ mod native {
         pub fn check(&self) -> Result<(), String> {
             Ok(())
         }
-        pub fn restore(&mut self, path: &Path) -> Result<(), String> {
-            recover(path)
+        pub fn restore(&mut self, path: &Path, _resleep: bool) -> Result<(), String> {
+            recover(path, false)
         }
     }
 }

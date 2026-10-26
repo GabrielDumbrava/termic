@@ -313,7 +313,7 @@ impl Lid {
             Ok(())
         })();
         if let Err(error) = result {
-            let _ = recover(path);
+            let _ = recover(path, false);
             return Err(error);
         }
         let mut notification = null_mut();
@@ -332,7 +332,7 @@ impl Lid {
             )
         };
         if result != 0 {
-            let _ = recover(path);
+            let _ = recover(path, false);
             return Err(format!("Cannot monitor lid closure ({result})"));
         }
         Ok(Self {
@@ -351,12 +351,12 @@ impl Lid {
             Ok(())
         }
     }
-    pub fn restore(&mut self, path: &Path) -> Result<(), String> {
+    pub fn restore(&mut self, path: &Path, resleep: bool) -> Result<(), String> {
         unsafe {
             PowerSettingUnregisterNotification(self.notification as isize);
         }
         self.notification = null_mut();
-        recover(path)
+        restore(path, resleep)
     }
 }
 unsafe extern "system" fn lid_changed(
@@ -376,7 +376,10 @@ unsafe extern "system" fn lid_changed(
     }
     0
 }
-pub fn recover(path: &Path) -> Result<(), String> {
+pub fn recover(path: &Path, _interactive: bool) -> Result<(), String> {
+    restore(path, true)
+}
+fn restore(path: &Path, resleep: bool) -> Result<(), String> {
     let record: Journal = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     if record.version != 1 || record.ac > 3 || record.dc > 3 {
@@ -395,7 +398,7 @@ pub fn recover(path: &Path) -> Result<(), String> {
             checked(PowerSetActiveScheme(null_mut(), &guid))?;
         }
     }
-    if current {
+    if current && resleep {
         let mut power = SYSTEM_POWER_STATUS::default();
         if unsafe { GetSystemPowerStatus(&mut power) } != 0 && power.ACLineStatus <= 1 {
             // Re-read after restoration, preserving any independent user edits.

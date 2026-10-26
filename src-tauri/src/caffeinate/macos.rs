@@ -228,9 +228,30 @@ fn write_disabled(on: bool) -> Result<(), String> {
         .output()
         .map_err(|e| e.to_string())?;
     if !result.status.success() {
-        return Err("Could not change macOS closed-lid sleep. Check closed-lid permission.".into());
+        return Err(if !on && !permission() {
+            super::super::RESTORE_NEEDS_APPROVAL.into()
+        } else {
+            "Could not change macOS closed-lid sleep. Check closed-lid permission.".into()
+        });
     }
     if disabled()? != on {
+        return Err("macOS did not apply the closed-lid setting".into());
+    }
+    Ok(())
+}
+/// The fallback when the sudoers rule is gone: the user's own approval.
+fn restore_as_administrator() -> Result<(), String> {
+    let result = Command::new("/usr/bin/osascript")
+        .args(["-e", "do shell script \"/usr/bin/pmset disablesleep 0\" with administrator privileges with prompt \"Termic needs administrator approval to restore normal sleep.\""])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !result.status.success() {
+        return Err(
+            "Normal sleep was not restored. Approve the administrator request, or run sudo pmset disablesleep 0 in Terminal."
+                .into(),
+        );
+    }
+    if disabled()? {
         return Err("macOS did not apply the closed-lid setting".into());
     }
     Ok(())
@@ -259,16 +280,16 @@ impl Lid {
             },
         )?;
         if let Err(error) = write_disabled(true) {
-            let _ = recover(path);
+            let _ = recover(path, false);
             return Err(error);
         }
         // This observer is confined to the guard, whose exit releases it.
         std::thread::spawn(watch_lid);
         Ok(Self { owned: true })
     }
-    pub fn restore(&mut self, path: &Path) -> Result<(), String> {
+    pub fn restore(&mut self, path: &Path, resleep: bool) -> Result<(), String> {
         if self.owned {
-            recover(path)?;
+            restore(path, resleep, false)?;
             self.owned = false;
         }
         Ok(())
@@ -281,19 +302,27 @@ impl Lid {
         }
     }
 }
-pub fn recover(path: &Path) -> Result<(), String> {
+pub fn recover(path: &Path, interactive: bool) -> Result<(), String> {
+    restore(path, true, interactive)
+}
+fn restore(path: &Path, resleep: bool, interactive: bool) -> Result<(), String> {
     let journal: Journal = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     if journal.version != 1 || journal.prior_disabled {
         return Err("Unrecognized closed-lid recovery record".into());
     }
     if disabled()? {
-        write_disabled(false)?;
+        match write_disabled(false) {
+            Ok(()) => {}
+            Err(_) if interactive => restore_as_administrator()?,
+            Err(error) => return Err(error),
+        }
     }
     std::fs::remove_file(path).map_err(|e| e.to_string())?;
     // Re-evaluate a lid that closed while the global override was held.
     // AppleClamshellCausesSleep is false in supported docked configurations.
-    if lid_closed() == Some(true)
+    if resleep
+        && lid_closed() == Some(true)
         && property("AppleClamshellCausesSleep") == Some(true)
         && !other_sleep_blockers()
     {

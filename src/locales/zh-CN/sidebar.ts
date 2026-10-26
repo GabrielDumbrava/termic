@@ -15,6 +15,7 @@ export default {
     setup: "设置合盖权限…", removePermission: "移除合盖权限…",
     limited: "操作系统或桌面环境可能限制熄屏或合盖工作，尤其是使用电池的 Windows 现代待机设备。无人值守前请验证当前设置。",
     recovery: "合盖设置仍需恢复。移除权限前请恢复正常休眠。", restore: "恢复正常休眠",
+    recoveryNeedsApproval: "恢复正常休眠前，合盖权限已被移除。恢复正常休眠需要管理员批准。",
     warning: "电源控制需要注意",
     invalidDuration: "请输入大于零且不超过 24 小时的时长。",
     invalidTime: "请选择未来 24 小时内有效的本地时间。",

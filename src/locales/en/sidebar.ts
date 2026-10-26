@@ -15,6 +15,7 @@ export default {
     setup: "Set up closed-lid permission…", removePermission: "Remove closed-lid permission…",
     limited: "Your OS or desktop may restrict screen-off or closed-lid work, especially Windows Modern Standby on battery. Verify this setup before relying on unattended work.",
     recovery: "A closed-lid setting still needs restoration. Restore sleep before removing permission.", restore: "Restore normal sleep",
+    recoveryNeedsApproval: "Closed-lid permission was removed before normal sleep was restored. Restore normal sleep asks for administrator approval.",
     warning: "Power control needs attention",
     invalidDuration: "Enter a duration greater than zero and at most 24 hours.",
     invalidTime: "Choose a valid future local time within the next 24 hours.",

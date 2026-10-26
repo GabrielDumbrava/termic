@@ -17,25 +17,58 @@ use std::{
 use tauri::{Emitter, Manager as _};
 
 pub(crate) fn configure_window(window: &tauri::WebviewWindow) {
-    let enabled = caffeinate_status().is_ok_and(|s| s.mode != Mode::Off || s.active);
-    window_background_policy(window, enabled);
+    // A new window keeps its own policy unless a session is already on.
+    if caffeinate_status().is_ok_and(|s| s.mode != Mode::Off || s.active) {
+        window_background_policy(window, true);
+    }
 }
 fn window_background_policy(window: &tauri::WebviewWindow, enabled: bool) {
     #[cfg(target_os = "macos")]
     if crate::darwin_major_version().is_some_and(|version| version >= 23) {
+        let label = window.label().to_owned();
         let _ = window.with_webview(move |webview| unsafe {
             use objc2::{msg_send, runtime::AnyObject};
             let view = webview.inner().cast::<AnyObject>();
             let config: *mut AnyObject = msg_send![view, configuration];
             let preferences: *mut AnyObject = msg_send![config, preferences];
-            // WKInactiveSchedulingPolicy: normal Suspend=0, Throttle=1.
             // Only an enabled caffeinate session keeps hidden queues alive.
-            let _: () = msg_send![preferences, setInactiveSchedulingPolicy: if enabled { 1isize } else { 0isize }];
+            let current: isize = msg_send![preferences, inactiveSchedulingPolicy];
+            if let Some(policy) = SCHEDULING.lock().next(&label, enabled, current) {
+                let _: () = msg_send![preferences, setInactiveSchedulingPolicy: policy];
+            }
         });
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (window, enabled);
 }
+/// WKInactiveSchedulingPolicy: Suspend=0, Throttle=1, None=2.
+#[cfg(any(target_os = "macos", test))]
+const THROTTLE: isize = 1;
+/// Each window's policy from before the session changed it, so ending the
+/// session puts back what was there instead of assuming WebKit's default.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct SchedulingMemo(std::collections::BTreeMap<String, isize>);
+#[cfg(any(target_os = "macos", test))]
+impl SchedulingMemo {
+    /// The value to write to `label`'s window, given its current one.
+    fn next(&mut self, label: &str, enabled: bool, current: isize) -> Option<isize> {
+        if enabled {
+            self.0.entry(label.to_owned()).or_insert(current);
+            (current != THROTTLE).then_some(THROTTLE)
+        } else {
+            self.0.remove(label).filter(|prior| *prior != current)
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+static SCHEDULING: Mutex<SchedulingMemo> =
+    Mutex::new(SchedulingMemo(std::collections::BTreeMap::new()));
+
+/// A revoked macOS permission leaves the override set until the user approves
+/// an interactive restore.
+#[cfg(any(target_os = "macos", feature = "e2e"))]
+const RESTORE_NEEDS_APPROVAL: &str = "Closed-lid permission was removed, so normal sleep was not restored automatically. Choose Restore normal sleep and approve the administrator request.";
 
 const MAX_SESSION_MS: u64 = 24 * 60 * 60 * 1000;
 const SETTLE_GRACE_MS: u64 = 120_000;
@@ -369,6 +402,7 @@ enum Message {
         mpsc::Sender<Result<Status, String>>,
     ),
     Recover(mpsc::Sender<Result<Status, String>>),
+    RecoverDone(Result<(), String>, mpsc::Sender<Result<Status, String>>),
     Shutdown(mpsc::Sender<()>),
 }
 struct Manager {
@@ -448,6 +482,7 @@ fn worker(
     let mut lid: Option<guard::Client> = None;
     let mut pending = Vec::<mpsc::Sender<Result<Status, String>>>::new();
     let mut permission_pending = false;
+    let mut recovering = false;
     let journal = crate::global_dir().map(|dir| dir.join("caffeinate-lid.json"));
     let preference = crate::global_dir().map(|dir| dir.join("caffeinate-policy.json"));
     if let Ok(path) = &preference {
@@ -460,7 +495,7 @@ fn worker(
         }
     }
     if let Ok(path) = &journal {
-        if let Err(error) = guard::recover(path) {
+        if let Err(error) = guard::recover(path, false) {
             status.error = Some(error);
         }
     }
@@ -474,6 +509,17 @@ fn worker(
             first_battery_check = false;
             battery_check = Instant::now();
             status.lid_permission = platform::permission();
+            if lid.is_some() && !status.lid_permission {
+                // Restoring needs that permission. Stop now, while someone is
+                // more likely to be here to approve the fallback.
+                status.error = Some(
+                    lid.take()
+                        .map_or(Ok(()), guard::Client::stop)
+                        .err()
+                        .unwrap_or_else(|| "Closed-lid permission was removed".into()),
+                );
+                policy.request.closed_lid = false;
+            }
             if status.active {
                 if let Err(error) = backend.check() {
                     let _ = backend.set_awake(false);
@@ -508,9 +554,12 @@ fn worker(
                 }
             }
         }
-        let want_lid = status.active && policy.request.closed_lid && !permission_pending;
+        let want_lid =
+            status.active && policy.request.closed_lid && !permission_pending && !recovering;
         if !want_lid {
-            lid.take();
+            if let Some(Err(error)) = lid.take().map(guard::Client::stop) {
+                status.error = Some(error);
+            }
         } else if lid.is_none() {
             let result = journal
                 .as_ref()
@@ -529,8 +578,9 @@ fn worker(
         }
         if let Some(client) = &mut lid {
             if let Err(error) = client.heartbeat(policy.guard_deadline()) {
-                status.error = Some(error);
-                lid.take();
+                // The guard's own restore result says more than "it ended".
+                let restored = lid.take().map_or(Ok(()), guard::Client::stop);
+                status.error = Some(restored.err().unwrap_or(error));
                 policy.request.closed_lid = false;
             }
         }
@@ -631,6 +681,9 @@ fn worker(
                         if request.closed_lid && permission_pending {
                             return Err("Closed-lid permission is being changed".into());
                         }
+                        if request.closed_lid && recovering {
+                            return Err("Normal sleep is still being restored".into());
+                        }
                         if request.closed_lid && !platform::permission() {
                             return Err("Set up closed-lid permission first".into());
                         }
@@ -667,7 +720,11 @@ fn worker(
                 }
             }
             Ok(Message::Permission(install, reply)) => {
-                if lid.is_some() || (!install && status.recovery_pending) || permission_pending {
+                if lid.is_some()
+                    || (!install && status.recovery_pending)
+                    || permission_pending
+                    || recovering
+                {
                     let _ = reply.send(Err(
                         "Stop closed-lid mode and restore sleep before changing permission".into(),
                     ));
@@ -700,14 +757,26 @@ fn worker(
                 }
             }
             Ok(Message::Recover(reply)) => {
-                let result = if lid.is_some() {
-                    Err("Stop closed-lid mode before restoring sleep".into())
-                } else {
-                    journal
-                        .as_ref()
-                        .map_err(|e| e.to_string())
-                        .and_then(|path| guard::recover(path))
+                if lid.is_some() || permission_pending || recovering {
+                    let _ = reply.send(Err("Stop closed-lid mode before restoring sleep".into()));
+                    continue;
+                }
+                let path = match &journal {
+                    Ok(path) => path.clone(),
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                        continue;
+                    }
                 };
+                recovering = true;
+                // A revoked permission falls back to an administrator prompt,
+                // which can wait on the user for minutes.
+                std::thread::spawn(move || {
+                    send(Message::RecoverDone(guard::recover(&path, true), reply));
+                });
+            }
+            Ok(Message::RecoverDone(result, reply)) => {
+                recovering = false;
                 match result {
                     Ok(()) => {
                         status.error = None;
@@ -720,7 +789,10 @@ fn worker(
             }
             Ok(Message::Shutdown(reply)) => {
                 let _ = backend.set_awake(false);
-                lid.take();
+                // Logout and restart quit Termic first; never sleep mid-restart.
+                if let Some(client) = lid.take() {
+                    client.quit();
+                }
                 let _ = reply.send(());
                 break;
             }
@@ -779,7 +851,7 @@ pub(crate) async fn caffeinate_recover() -> Result<Status, String> {
             .tx
             .send(Message::Recover(tx))
             .map_err(|e| e.to_string())?;
-        rx.recv_timeout(Duration::from_secs(30))
+        rx.recv_timeout(Duration::from_secs(600))
             .map_err(|e| e.to_string())?
     })
     .await
@@ -797,6 +869,20 @@ pub(crate) fn run_guard_if_requested() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_policy_is_untouched_without_a_session_and_restored_after() {
+        let mut memo = SchedulingMemo::default();
+        // Off: a window's policy is never written.
+        assert_eq!(memo.next("main", false, 0), None);
+        // On: throttle, remembering what was there; a repeat keeps the first.
+        assert_eq!(memo.next("main", true, 2), Some(THROTTLE));
+        assert_eq!(memo.next("main", true, THROTTLE), None);
+        assert_eq!(memo.next("main", false, THROTTLE), Some(2));
+        assert_eq!(memo.next("main", false, 2), None);
+        // Already throttled by someone else: nothing to change or undo.
+        assert_eq!(memo.next("other", true, THROTTLE), None);
+        assert_eq!(memo.next("other", false, THROTTLE), None);
+    }
     fn agent(policy: &mut Policy, id: &str) {
         policy.agents.insert(
             id.into(),

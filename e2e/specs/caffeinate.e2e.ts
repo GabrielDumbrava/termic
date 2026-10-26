@@ -215,6 +215,30 @@ describe("caffeinate", () => {
     await browser.waitUntil(async () => !await browser.execute(() => !!document.querySelector('[data-testid="caffeinate-lid-status"]')));
   });
 
+  it("reports a restore that needs approval and finishes it from Restore normal sleep", async () => {
+    // The fake adapter models a revoked macOS rule: the unattended restore
+    // fails, and only the interactive one behind the button can clear it.
+    const revoked = path.join(dataDir, "caffeinate-lid.needs-approval");
+    try {
+      await open(); await clickWhenVisible('[data-testid="caffeinate-choice-duration"]');
+      await setInputValue('[data-testid="caffeinate-hours"]', "1");
+      if (!await browser.execute(() => document.querySelector<HTMLInputElement>('[data-testid="caffeinate-lid"]')!.checked)) {
+        await clickWhenVisible('[data-testid="caffeinate-lid"]');
+      }
+      await clickWhenVisible(APPLY);
+      await browser.waitUntil(async () => await browser.execute(() => document.querySelector('[data-testid="caffeinate-lid-status"]')?.getAttribute("data-active") === "true"));
+      writeFileSync(revoked, "");
+      await clickWhenVisible(STOP);
+      await waitVisible('[data-testid="caffeinate-restore"]');
+      expect(await text(ERROR)).toContain("Restore normal sleep");
+      expect(existsSync(path.join(dataDir, "caffeinate-lid.json"))).toBe(true);
+      await clickWhenVisible('[data-testid="caffeinate-restore"]');
+      await waitGone('[data-testid="caffeinate-restore"]');
+      expect(existsSync(revoked)).toBe(false);
+      expect(existsSync(path.join(dataDir, "caffeinate-lid.json"))).toBe(false);
+    } finally { rmSync(revoked, { force: true }); }
+  });
+
   it("expires while administrator authorization is still pending", async function () {
     if (process.platform !== "darwin") { this.skip(); return; }
     await stop();
@@ -276,18 +300,25 @@ describe("caffeinate", () => {
     await browser.execute(sidebarWidth => window.__termic!.useApp.setState({ sidebarWidth }), sidebarBefore!.sidebarWidth);
   });
 
-  it("the guard restores its fake override after parent EOF and deadline expiry", async () => {
+  it("the guard restores its fake override after parent EOF, deadline expiry, quit and a termination signal", async () => {
     const dir = mkdtempSync(path.join(dataDir, "e2e-caffeinate-guard-"));
     const binary = process.env.TERMIC_E2E_BINARY || path.resolve(dataDir, "../../src-tauri/target/debug", process.platform === "win32" ? "termic.exe" : "termic");
     try {
-      for (const eof of [true, false]) {
-        const journal = path.join(dir, eof ? "eof.json" : "deadline.json");
+      // Logout and shutdown send SIGTERM instead of closing the pipe, and a
+      // quitting Termic says `quit`. Windows ends a session through
+      // WM_ENDSESSION, which no spec can send.
+      const endings: ("eof" | "deadline" | "quit" | "signal")[] = ["eof", "deadline", "quit", ...(process.platform === "win32" ? [] : ["signal" as const])];
+      for (const ending of endings) {
+        const journal = path.join(dir, `${ending}.json`);
         const child = spawn(binary, ["--termic-caffeinate-guard", journal], { stdio: ["pipe", "pipe", "pipe"] });
         const exited = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error(`guard exit ${code}`))); });
         try {
-          child.stdin.write(`${JSON.stringify({ wall: eof ? null : Date.now() + 2_000, elapsed: null })}\n`);
+          child.stdin.write(`${JSON.stringify({ wall: ending === "deadline" ? Date.now() + 2_000 : null, elapsed: null })}\n`);
           await browser.waitUntil(() => existsSync(journal), { timeout: 5_000 });
-          if (eof) child.stdin.end();
+          if (ending === "eof") child.stdin.end();
+          if (ending === "quit") child.stdin.end("quit\n");
+          // Exit code 0, not death by signal: the guard caught it and restored.
+          if (ending === "signal") child.kill("SIGTERM");
           await exited;
           expect(existsSync(journal)).toBe(false);
         } finally { if (child.exitCode == null) child.kill(); }

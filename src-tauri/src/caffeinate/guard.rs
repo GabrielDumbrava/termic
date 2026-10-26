@@ -1,5 +1,6 @@
 //! A bounded, local child, not a service. EOF on its dedicated pipe restores
-//! global lid settings even when the desktop crashes. A lease handles hangs.
+//! global lid settings even when the desktop crashes. A lease handles hangs,
+//! and logout/shutdown signals restore before the OS ends the process.
 use super::{now_ms, platform};
 use std::{
     fs::{self, File, OpenOptions},
@@ -93,12 +94,14 @@ pub(super) fn save<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), St
     result
 }
 
-pub(super) fn recover(path: &Path) -> Result<(), String> {
+/// `interactive` may ask the user to approve the restore (a revoked macOS
+/// permission leaves no other way to write the setting back).
+pub(super) fn recover(path: &Path, interactive: bool) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
     let _lock = LeaseLock::acquire(path)?;
-    platform::recover(path)
+    platform::recover(path, interactive)
 }
 
 #[derive(Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -172,6 +175,35 @@ impl Client {
             Ok(client)
         }
     }
+    /// Close the pipe and return the guard's own restoration result, so a
+    /// failed restore reaches the status instead of being dropped.
+    pub(super) fn stop(mut self) -> Result<(), String> {
+        self.input.take();
+        let result = self
+            .replies
+            .recv_timeout(Duration::from_secs(8))
+            .unwrap_or_else(|_| {
+                Err("Closed-lid control did not confirm that normal sleep was restored".into())
+            });
+        self.reap();
+        result
+    }
+    /// Termic is quitting, so the user is at the machine or the OS is ending
+    /// the session: restore, but never request sleep. Drop closes the pipe and
+    /// waits for the restore.
+    pub(super) fn quit(mut self) {
+        if let Some(input) = &mut self.input {
+            let _ = writeln!(input, "quit").and_then(|_| input.flush());
+        }
+    }
+    fn reap(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            // Reap off-thread if restoration is slow; never kill a restore.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
     pub(super) fn heartbeat(&mut self, deadline: Deadline) -> Result<(), String> {
         if self.deadline == deadline
             && self
@@ -206,11 +238,132 @@ impl Drop for Client {
         if self.child.is_some() {
             let _ = self.replies.recv_timeout(Duration::from_secs(8));
         }
-        if let Some(mut child) = self.child.take() {
-            // Reap off-thread if restoration is slow; never kill a restore.
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
+        self.reap();
+    }
+}
+
+/// What the guard loop hears. The parent closing the pipe is an ordinary stop;
+/// the OS ending the session, or Termic quitting, must restore without
+/// forcing a sleep.
+enum Input {
+    Deadline(Deadline),
+    Closed,
+    Terminate,
+}
+
+/// Logout and shutdown signal the guard rather than closing its pipe. Block
+/// the signals before any thread exists and take them on one thread, so none
+/// can kill the process before it restores. Children get a clean mask from
+/// `Command`.
+#[cfg(unix)]
+fn watch_session_end(tx: mpsc::Sender<Input>) {
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::sigemptyset(&mut set);
+        for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+            libc::sigaddset(&mut set, signal);
+        }
+        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
+            return;
+        }
+    }
+    std::thread::spawn(move || {
+        let mut signal = 0;
+        if unsafe { libc::sigwait(&set, &mut signal) } == 0 {
+            let _ = tx.send(Input::Terminate);
+        }
+    });
+}
+#[cfg(windows)]
+fn watch_session_end(tx: mpsc::Sender<Input>) {
+    session_end::watch(tx);
+}
+
+/// Logoff and shutdown end a windowless process without closing its pipe. A
+/// hidden top-level window receives WM_ENDSESSION, and its procedure waits
+/// for the restore before letting the session end.
+#[cfg(windows)]
+mod session_end {
+    use super::Input;
+    use std::{
+        sync::{mpsc, Condvar, Mutex, OnceLock},
+        time::Duration,
+    };
+    use windows_sys::Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW, MSG,
+            WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW,
+        },
+    };
+    static SENDER: OnceLock<mpsc::Sender<Input>> = OnceLock::new();
+    static RESTORED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+    pub(super) fn watch(tx: mpsc::Sender<Input>) {
+        if SENDER.set(tx).is_err() {
+            return;
+        }
+        std::thread::spawn(|| unsafe {
+            let class: Vec<u16> = "TermicCaffeinateGuard\0".encode_utf16().collect();
+            let instance = GetModuleHandleW(std::ptr::null());
+            let mut definition: WNDCLASSW = std::mem::zeroed();
+            definition.lpfnWndProc = Some(procedure);
+            definition.hInstance = instance;
+            definition.lpszClassName = class.as_ptr();
+            if RegisterClassW(&definition) == 0 {
+                return;
+            }
+            // Never shown, but top-level: message-only windows miss the
+            // session-end broadcast.
+            let window = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            );
+            if window.is_null() {
+                return;
+            }
+            let mut message: MSG = std::mem::zeroed();
+            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+                DispatchMessageW(&message);
+            }
+        });
+    }
+    pub(super) fn restored() {
+        *RESTORED.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        RESTORED.1.notify_all();
+    }
+    unsafe extern "system" fn procedure(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_QUERYENDSESSION => 1,
+            WM_ENDSESSION => {
+                if wparam != 0 {
+                    if let Some(tx) = SENDER.get() {
+                        let _ = tx.send(Input::Terminate);
+                    }
+                    let done = RESTORED.0.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = RESTORED
+                        .1
+                        .wait_timeout_while(done, Duration::from_secs(5), |done| !*done);
+                }
+                0
+            }
+            _ => DefWindowProcW(window, message, wparam, lparam),
         }
     }
 }
@@ -229,12 +382,14 @@ pub(super) fn run_if_requested() -> bool {
     let Some(path) = args.next().map(PathBuf::from) else {
         return true;
     };
+    let (tx, rx) = mpsc::channel();
+    // First, before any other thread starts (see `watch_session_end`).
+    watch_session_end(tx.clone());
     let result = (|| -> Result<(), String> {
         let _lock = LeaseLock::acquire(&path)?;
         if path.exists() {
-            platform::recover(&path)?;
+            platform::recover(&path, false)?;
         }
-        let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let stdin = std::io::stdin();
             let mut reader = stdin.lock();
@@ -243,10 +398,14 @@ pub(super) fn run_if_requested() -> bool {
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
                     Ok(0) | Err(_) => break,
+                    Ok(_) if line.trim() == "quit" => {
+                        let _ = tx.send(Input::Terminate);
+                        break;
+                    }
                     Ok(_) if line.len() <= 128 => {
                         match serde_json::from_str::<Deadline>(line.trim()) {
                             Ok(value) => {
-                                if tx.send(value).is_err() {
+                                if tx.send(Input::Deadline(value)).is_err() {
                                     break;
                                 }
                             }
@@ -256,10 +415,14 @@ pub(super) fn run_if_requested() -> bool {
                     _ => break,
                 }
             }
+            // The session-end watcher holds a sender too, so say so explicitly.
+            let _ = tx.send(Input::Closed);
         });
-        let mut deadline = rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|e| e.to_string())?;
+        let mut deadline = match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Input::Deadline(deadline)) => deadline,
+            Ok(_) => return Err("The closed-lid session ended before it started".into()),
+            Err(error) => return Err(error.to_string()),
+        };
         if deadline
             .remaining(now_ms(), platform::elapsed_ms())
             .is_zero()
@@ -270,6 +433,7 @@ pub(super) fn run_if_requested() -> bool {
         ack(&Ok(()));
         let mut lease = Instant::now() + Duration::from_secs(180);
         let mut battery_check = None::<Instant>;
+        let mut resleep = true;
         loop {
             let deadline_remaining = deadline.remaining(now_ms(), platform::elapsed_ms());
             if deadline_remaining.is_zero() {
@@ -290,16 +454,24 @@ pub(super) fn run_if_requested() -> bool {
             }
             let remaining = remaining.min(deadline_remaining);
             match rx.recv_timeout(remaining.min(Duration::from_secs(60))) {
-                Ok(next) => {
+                Ok(Input::Deadline(next)) => {
                     deadline = next;
                     lease = Instant::now() + Duration::from_secs(180);
                 }
+                Ok(Input::Terminate) => {
+                    // Never request sleep while the OS is logging out or
+                    // shutting down.
+                    resleep = false;
+                    break;
+                }
+                Ok(Input::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        lid.restore(&path)
+        lid.restore(&path, resleep)
     })();
+    #[cfg(windows)]
+    session_end::restored();
     ack(&result);
     true
 }

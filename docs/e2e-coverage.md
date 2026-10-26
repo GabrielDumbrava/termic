@@ -5,9 +5,10 @@
 copy, direct Bug/Contact footer controls,
 expiry while administrator authorization remains pending,
 native expiry, adapter errors, real-PTY delegated activity, optional lid
-permission/control, compact/narrow layouts, and guard cleanup on parent EOF
-and deadline expiry. It uses an OS adapter compiled only under `e2e`; real
-sleep/lid/display behaviour belongs to the hardware checks in
+permission/control, a failed restore finished through the approval
+fallback, compact/narrow layouts, and guard cleanup on parent EOF, deadline
+expiry, quit and SIGTERM. It uses an OS adapter compiled only under `e2e`;
+real sleep/lid/display behaviour belongs to the hardware checks in
 [Caffeinate](caffeinate.md).
 
 **Status: reference.** Not a plan to implement and then delete: it is a

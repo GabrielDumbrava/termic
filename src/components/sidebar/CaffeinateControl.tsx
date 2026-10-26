@@ -171,8 +171,8 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
             </div>
             {status?.limited && (closedLid ? <p className="text-[12px] leading-relaxed text-[var(--color-fg-dim)]">{t("caffeinate.limited")}</p> : <details className="text-[12px] text-[var(--color-fg-dim)]"><summary className="cursor-pointer">{t("caffeinate.deviceLimits")}</summary><p className="mt-1 leading-relaxed">{t("caffeinate.limited")}</p></details>)}
             {status?.recovery_pending && <div className="space-y-2 rounded-lg border border-[var(--color-err)]/30 bg-[var(--color-err)]/5 p-3">
-              <p role="alert" className="text-[12px] text-[var(--color-err)]">{t("caffeinate.recovery")}</p>
-              <Button size="sm" disabled={busy} onClick={() => void act(recoverCaffeinate)}>{t("caffeinate.restore")}</Button>
+              <p role="alert" className="text-[12px] text-[var(--color-err)]">{t(IS_MAC && !status.lid_permission ? "caffeinate.recoveryNeedsApproval" : "caffeinate.recovery")}</p>
+              <Button size="sm" disabled={busy} onClick={() => void act(recoverCaffeinate)} data-testid="caffeinate-restore">{t("caffeinate.restore")}</Button>
             </div>}
             {warning && <p role="alert" data-testid="caffeinate-error" className="text-[12px] text-[var(--color-err)]">{warning}</p>}
             <div className="border-t border-[var(--color-border-soft)] pt-3">
