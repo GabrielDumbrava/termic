@@ -192,7 +192,10 @@ the task's sidebar row (`prop ticket ABC-1`); and keep notes, plans, findings, l
 should READ in a scratchpad (`scratchpad new`, `scratchpad write`), a tab \
 in your task that updates live and stays out of git: use one instead of \
 dropping temporary .md files into the repo, and tidy up after yourself with \
-`scratchpad rm` (one pad) or `scratchpad clear` (all of a task's). Coordinate by prompting \
+`scratchpad rm` (one pad) or `scratchpad clear` (all of a task's). A multi-repo \
+project holds several repos, possibly many (`project list` shows each project's \
+type and members): `new --member <name>`, repeated, worktrees only the members \
+named (none without it). Coordinate by prompting \
 each other rather than blocking: end a prompt with the `send` back to your task \
 you want run when the work is done. If this machine is paired with others on \
 its network (`peer list`), the global `--peer <machine>` runs any verb THERE \
