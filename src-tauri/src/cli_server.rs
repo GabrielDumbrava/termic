@@ -1434,6 +1434,19 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         (None, true) => Some("main"),
         (None, false) => mode.as_deref(),
     };
+    // Each member's mode is settled here too, from the disk-read project: a
+    // webview store that lags a member edit would send a plain folder out
+    // as a worktree, and `git branch` fails on it.
+    let member_specs = member_paths.as_ref().map(|paths| {
+        paths
+            .iter()
+            .map(|root| {
+                let non_git = proj.members.iter().any(|m| &m.root_path == root && m.non_git);
+                let member_mode = if mode == Some("main") || non_git { "repo_root" } else { "worktree" };
+                serde_json::json!({ "root_path": root, "mode": member_mode })
+            })
+            .collect::<Vec<_>>()
+    });
 
     // Same-name collision is a clean error naming the existing task,
     // never cleanup (docs/plans/cli.md: task_create_sync's orphan
@@ -1569,7 +1582,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         "prompt": prompt,
         "promptId": prompt_id,
         "pr": pr,
-        "members": member_paths,
+        "members": member_specs,
     });
     // Forward setup output; heartbeat on idle. A dead client cannot
     // cancel the create (it already committed app-side), so emit
@@ -7394,11 +7407,18 @@ mod tests {
         // Typed order, case and repeats change nothing: project order, once each.
         let params = sent(&host, member_cmd("t1", &["docs", "API", "api"]));
         assert_eq!(params["projectId"], "p3");
-        assert_eq!(params["members"], serde_json::json!(["/src/api", "/src/docs"]));
+        // The plain-folder member is linked, decided from the disk read.
+        assert_eq!(
+            params["members"],
+            serde_json::json!([
+                { "root_path": "/src/api", "mode": "worktree" },
+                { "root_path": "/src/docs", "mode": "repo_root" },
+            ])
+        );
         // Members mean worktrees, never the GUI's remembered mode.
         assert_eq!(params["mode"], "worktree");
         let params = sent(&host, member_cmd("t2", &["WEB", " web "]));
-        assert_eq!(params["members"], serde_json::json!(["/src/web"]));
+        assert_eq!(params["members"], serde_json::json!([{ "root_path": "/src/web", "mode": "worktree" }]));
         // No members: the pre-v24 params, mode left to the webview.
         let params = sent(&host, new_cmd("t3", Some("mono")));
         assert!(params["members"].is_null(), "{params}");
@@ -7414,7 +7434,7 @@ mod tests {
         }
         let params = sent(&host, cmd);
         assert_eq!(params["mode"], "main");
-        assert_eq!(params["members"], serde_json::json!(["/src/api"]));
+        assert_eq!(params["members"], serde_json::json!([{ "root_path": "/src/api", "mode": "repo_root" }]));
     }
 
     #[test]

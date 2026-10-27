@@ -71,7 +71,7 @@ import { slugify } from "@/lib/utils";
 import { checkoutTaskName, remoteNames } from "@/lib/existingBranch";
 import { padHandler } from "@/lib/scratchCli";
 import { scheduleHandler } from "@/lib/scheduleCli";
-import type { SandboxMode, Task, TerminalTab } from "@/lib/types";
+import type { CreateMultiMember, SandboxMode, Task, TerminalTab } from "@/lib/types";
 import {
   collectTaskProps, propKeyProblem, propValueProblem, PROP_KEYS_PER_TAB, type CollectedProp,
 } from "@/lib/tabProps";
@@ -155,10 +155,11 @@ interface NewTaskParams {
    *  resolved the review library prompt into it) gets the PR's details in
    *  front. The server derived `name` as review-pr-<n> when none was given. */
   pr?: number;
-  /** `new --member` (v24): member root_paths of a multi-repo project, already
-   *  resolved from names and ordered by the server. Worktrees each one (a
-   *  plain-folder member is linked), or links them into the main checkout. */
-  members?: string[];
+  /** `new --member` (v24): members of a multi-repo project, already resolved
+   *  from names, ordered and given their mode by the server against the
+   *  disk-read project (a plain-folder member, or any in a main checkout, is
+   *  `repo_root`). */
+  members?: Pick<CreateMultiMember, "root_path" | "mode">[];
 }
 
 /** The main checkout stays uncaged unless explicitly opted in, and
@@ -213,7 +214,7 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
     if (mode === "repo_root") {
       const sandbox = pins ? await mainCheckoutSandbox(p.projectId, pins) : undefined;
       // yolo is applied after the create (newTaskHandler); no members links every one.
-      return taskOpenRepo(p.projectId, cli, name, sandbox, undefined, resume, undefined, p.agentArgs, undefined, members);
+      return taskOpenRepo(p.projectId, cli, name, sandbox, undefined, resume, undefined, p.agentArgs, undefined, members?.map(m => m.root_path));
     }
     if (slugify(name) === "") {
       throw new Error("Task name must contain at least one letter or number.");
@@ -245,7 +246,6 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
       // non-git edge or transient git failure; keep the derived branch
     }
     if (members) {
-      const known = useApp.getState().projects.find(pr => pr.id === p.projectId)?.members ?? [];
       // Member branch and base stay unset, so Rust falls back to the task
       // branch and each member's own base, as the dialog does.
       return taskCreateMulti({
@@ -256,11 +256,7 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
         agent_args: p.agentArgs,
         base_branch: base_branch ?? undefined,
         branch,
-        // A plain-folder member has no branches, so it is linked, never worktreed.
-        members: members.map(root_path => ({
-          root_path,
-          mode: known.find(m => m.root_path === root_path)?.non_git ? "repo_root" : "worktree",
-        })),
+        members,
         ...(pins ?? {}),
       });
     }
@@ -283,9 +279,9 @@ function checkoutBranchOf(p: NewTaskParams): string | undefined {
   return typeof p.checkout === "string" && p.checkout.trim() ? p.checkout.trim() : undefined;
 }
 
-/** The member root_paths `new --member` asked for, or undefined for any other
- *  create (the server sends null then). */
-function membersOf(p: NewTaskParams): string[] | undefined {
+/** The members `new --member` asked for, or undefined for any other create
+ *  (the server sends null then). */
+function membersOf(p: NewTaskParams): NewTaskParams["members"] {
   return Array.isArray(p.members) && p.members.length ? p.members : undefined;
 }
 
