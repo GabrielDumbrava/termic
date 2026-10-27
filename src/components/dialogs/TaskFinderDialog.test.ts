@@ -19,6 +19,7 @@ vi.mock("@/lib/tabFocus", () => ({
 
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
+import { useShortcuts } from "@/hooks/useShortcuts";
 import { DEFAULT_BINDINGS, SHORTCUT_DEFS } from "@/lib/shortcuts";
 import { shortcutLabel } from "@/lib/shortcutCopy";
 import { i18n } from "@/lib/i18n";
@@ -30,7 +31,7 @@ import type { Task, Project } from "@/lib/types";
 
 describe("TaskFinder shortcut and state", () => {
   beforeEach(() => {
-    useUI.setState({ taskFinderOpen: false });
+    useUI.setState({ taskFinderOpen: false, taskFinderInitialFilter: "all" });
   });
 
   it("has a task-finder shortcut registered with Cmd+O / Ctrl+O", () => {
@@ -108,6 +109,7 @@ describe("task matching logic for TaskFinder", () => {
 
 describe("resolveStatusQualifier and STATUS_QUALIFIER_RE", () => {
   it("resolves English status names and aliases", () => {
+    expect(resolveStatusQualifier("OPEN")).toBe("open");
     expect(resolveStatusQualifier("working")).toBe("working");
     expect(resolveStatusQualifier("work")).toBe("working");
     expect(resolveStatusQualifier("running")).toBe("working");
@@ -180,16 +182,17 @@ describe("resolveStatusQualifier and STATUS_QUALIFIER_RE", () => {
 });
 
 describe("FILTER_OPTIONS and quick filter shortcuts", () => {
-  it("defines 6 filter options with numeric shortcuts 1-6", () => {
-    expect(FILTER_OPTIONS).toHaveLength(6);
-    expect(FILTER_OPTIONS.map(o => o.key)).toEqual(["1", "2", "3", "4", "5", "6"]);
-    expect(FILTER_OPTIONS.map(o => o.column)).toEqual([null, "working", "settled", "attention", "review", "backlog"]);
+  it("defines 7 filter options while preserving existing shortcuts", () => {
+    expect(FILTER_OPTIONS).toHaveLength(7);
+    expect(FILTER_OPTIONS.map(o => o.key)).toEqual(["1", "2", "3", "4", "5", "6", "7"]);
+    expect(FILTER_OPTIONS.map(o => o.column)).toEqual([null, "working", "settled", "attention", "review", "backlog", "open"]);
     expect(FILTER_OPTIONS[0].labelKey).toBe("taskFinder.filterAll");
     expect(FILTER_OPTIONS[1].labelKey).toBe("taskFinder.filterWorking");
     expect(FILTER_OPTIONS[2].labelKey).toBe("taskFinder.filterSettled");
     expect(FILTER_OPTIONS[3].labelKey).toBe("taskFinder.filterAttention");
     expect(FILTER_OPTIONS[4].labelKey).toBe("taskFinder.filterReview");
     expect(FILTER_OPTIONS[5].labelKey).toBe("taskFinder.filterBacklog");
+    expect(FILTER_OPTIONS[6].labelKey).toBe("taskFinder.filterOpen");
   });
 
   it("resolves all filter label keys in en and zh-CN", () => {
@@ -211,6 +214,7 @@ describe("FILTER_OPTIONS and quick filter shortcuts", () => {
     expect(tEn("taskFinder.filterAttention")).toBe("attention");
     expect(tEn("taskFinder.filterReview")).toBe("review");
     expect(tEn("taskFinder.filterBacklog")).toBe("backlog");
+    expect(tEn("taskFinder.filterOpen")).toBe("open");
 
     expect(tZh("taskFinder.filterAll")).toBe("全部");
     expect(tZh("taskFinder.filterWorking")).toBe("进行中");
@@ -218,6 +222,7 @@ describe("FILTER_OPTIONS and quick filter shortcuts", () => {
     expect(tZh("taskFinder.filterAttention")).toBe("需要注意");
     expect(tZh("taskFinder.filterReview")).toBe("审查中");
     expect(tZh("taskFinder.filterBacklog")).toBe("未开始");
+    expect(tZh("taskFinder.filterOpen")).toBe("已打开");
   });
 
   it("toggles and resets filter column states correctly", () => {
@@ -265,6 +270,27 @@ describe("mounted TaskFinderDialog interactions", () => {
     });
   }
 
+  const rowNames = () => Array.from(document.querySelectorAll("[data-row]"), row => row.textContent);
+
+  async function seedOpenTasks() {
+    await act(async () => {
+      const extra = ["idle-agent", "shell-only", "editor-only", "exited-agent", "archived-agent"].map(name => ({
+        id: name, name, project_id: "p1", branch: name, cli: "claude", archived: name === "archived-agent",
+      }));
+      useApp.setState({
+        tasks: [...useApp.getState().tasks, ...extra] as Task[],
+        tabs: {
+          "t-review": [{ id: "review-tab", type: "terminal", cli: "codex", ptyId: "pty-review" }],
+          "idle-agent": [{ id: "idle-tab", type: "terminal", cli: "claude", ptyId: "pty-idle", workState: "idle" }],
+          "shell-only": [{ id: "shell-tab", type: "terminal", cli: "shell", ptyId: "pty-shell" }],
+          "editor-only": [{ id: "editor-tab", type: "editor" }],
+          "exited-agent": [{ id: "exited-tab", type: "terminal", cli: "claude", ptyId: null }],
+          "archived-agent": [{ id: "archived-tab", type: "terminal", cli: "claude", ptyId: "pty-archived" }],
+        } as any,
+      });
+    });
+  }
+
   beforeEach(async () => {
     useApp.setState({
       tasks: [
@@ -278,7 +304,7 @@ describe("mounted TaskFinderDialog interactions", () => {
       agents: [],
       groupColors: {},
     });
-    useUI.setState({ taskFinderOpen: true });
+    useUI.setState({ taskFinderOpen: true, taskFinderInitialFilter: "all" });
     host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);
@@ -352,6 +378,63 @@ describe("mounted TaskFinderDialog interactions", () => {
     expect(document.querySelectorAll("[data-row]")).toHaveLength(2);
   });
 
+  it.each([{ ctrlKey: true }, { metaKey: true }])("filters live agents across statuses with shortcut 7 (%j)", async modifiers => {
+    await seedOpenTasks();
+    await pressShortcut("7", modifiers as any);
+    expect(filterBtn("open").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(2);
+    expect(rowNames().join(" ")).toContain("idle-agent");
+    expect(rowNames().join(" ")).toContain("review-task");
+
+    await typeQuery("idle");
+    expect(rowNames()).toHaveLength(1);
+    expect(rowNames()[0]).toContain("idle-agent");
+
+    await pressShortcut("7", modifiers as any);
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(searchInput().value).toBe("idle");
+    await typeQuery("");
+    expect(rowNames()).toHaveLength(6);
+  });
+
+  it("gives typed is:open precedence and toggles it off on the first click", async () => {
+    await seedOpenTasks();
+    await pressShortcut("5");
+    await typeQuery("is:open idle");
+    expect(filterBtn("open").dataset.active).toBe("true");
+    expect(filterBtn("review").dataset.active).toBeUndefined();
+    expect(rowNames()).toHaveLength(1);
+    expect(rowNames()[0]).toContain("idle-agent");
+
+    await act(async () => { filterBtn("open").click(); });
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(searchInput().value).toBe("idle");
+    expect(document.activeElement).toBe(searchInput());
+
+    await typeQuery("status:open");
+    await pressShortcut("7");
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(searchInput().value).toBe("");
+  });
+
+  it("updates Open results when the last agent exits and resets to All", async () => {
+    await seedOpenTasks();
+    await pressShortcut("7");
+    await act(async () => {
+      useApp.setState({ tabs: {} });
+    });
+    expect(rowNames()).toHaveLength(0);
+    expect(document.body.textContent).toContain("No matching tasks");
+    await pressShortcut("1");
+    expect(rowNames()).toHaveLength(6);
+
+    await pressShortcut("7");
+    await act(async () => { useUI.getState().closeTaskFinder(); });
+    await act(async () => { useUI.getState().openTaskFinder(); });
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(6);
+  });
+
   it("resets query and filter state on reopen", async () => {
     await pressShortcut("5");
     expect(filterBtn("review").dataset.active).toBe("true");
@@ -364,6 +447,48 @@ describe("mounted TaskFinderDialog interactions", () => {
     });
 
     expect(filterBtn("all").dataset.active).toBe("true");
+    expect(searchInput().value).toBe("");
+  });
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])("opens with Open from the shortcut and All from the default action (%j)", async modifiers => {
+    function FinderWithShortcuts() {
+      useShortcuts();
+      return createElement(TaskFinderDialog);
+    }
+
+    await seedOpenTasks();
+    await act(async () => {
+      useUI.getState().closeTaskFinder();
+      root.render(createElement(FinderWithShortcuts));
+    });
+    const pressFinder = async () => act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "o", code: "KeyO", bubbles: true, cancelable: true, ...modifiers,
+      }));
+    });
+
+    await pressFinder();
+    expect(filterBtn("open").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(2);
+    expect(rowNames().join(" ")).toContain("idle-agent");
+    expect(rowNames().join(" ")).toContain("review-task");
+
+    await pressShortcut("1", modifiers as any);
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(6);
+    await typeQuery("review");
+    await pressFinder();
+    expect(useUI.getState().taskFinderOpen).toBe(false);
+    await pressFinder();
+    expect(filterBtn("open").dataset.active).toBe("true");
+    expect(searchInput().value).toBe("");
+    expect(rowNames()).toHaveLength(2);
+
+    await pressFinder();
+    // The command palette uses this default action without a filter argument.
+    await act(async () => { useUI.getState().openTaskFinder(); });
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(6);
     expect(searchInput().value).toBe("");
   });
 });

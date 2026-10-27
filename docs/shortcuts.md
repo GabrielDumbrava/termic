@@ -501,6 +501,9 @@ the body and choose a target.
 `task-finder` (default ⌘O) opens `TaskFinderDialog.tsx`: a centered
 fuzzy-search palette to quickly jump to any active task across all
 projects without touching the mouse or disturbing the sidebar tree layout.
+The keyboard shortcut starts with Open selected; opening the finder from
+the command palette starts with All. Each opening resets the query and
+filter to its opening default. ⌘1 (Ctrl+1 off macOS) switches to All.
 When the query is empty, it orders tasks by recency (`recentTasks`),
 placing the current task first. Querying matches across task names, project
 names, git branches, and agent CLIs. Enter activates the task
@@ -508,10 +511,15 @@ names, git branches, and agent CLIs. Enter activates the task
 whichever element was previously focused.
 
 Quick filter shortcuts switch or toggle status filters on the fly: ⌘1
-(All), ⌘2 (Working), ⌘3 (Settled), ⌘4 (Attention), ⌘5 (Review), and ⌘6
-(Backlog). The footer bar renders interactive hint buttons displaying the
-current active filter and its key chord (⌘1..6 on macOS, Ctrl+1..6 off
-macOS).
+(All), ⌘2 (Working), ⌘3 (Settled), ⌘4 (Attention), ⌘5 (Review), ⌘6
+(Backlog), and ⌘7 (Open). Open shows unarchived tasks with a live agent
+terminal, including idle agents, across all statuses. Shells, editors, and
+exited agents do not qualify. `is:open` or `status:open` selects the same
+filter and can be combined with search text. A typed qualifier takes
+priority over the selected footer filter; selecting the active filter again
+returns to All while keeping the search text.
+The footer bar renders interactive hint buttons displaying the current
+active filter and its key chord (⌘1..7 on macOS, Ctrl+1..7 off macOS).
 
 ## Add selection to agent (⇧⌘L)
 

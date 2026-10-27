@@ -252,7 +252,7 @@ export function useShortcuts() {
           e.preventDefault();
           const ui = useUI.getState();
           if (ui.taskFinderOpen) ui.closeTaskFinder();
-          else ui.openTaskFinder();
+          else ui.openTaskFinder("open");
           return;
         }
 

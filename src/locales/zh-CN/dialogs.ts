@@ -585,6 +585,7 @@ export default {
     filterAttention: "需要注意",
     filterReview: "审查中",
     filterBacklog: "未开始",
+    filterOpen: "已打开",
     count_one: "{{count}} 个任务",
     count_other: "{{count}} 个任务",
   },

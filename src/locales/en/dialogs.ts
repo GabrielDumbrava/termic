@@ -591,6 +591,7 @@ export default {
     filterAttention: "attention",
     filterReview: "review",
     filterBacklog: "backlog",
+    filterOpen: "open",
     count_one: "{{count}} task",
     count_other: "{{count}} tasks",
   },
