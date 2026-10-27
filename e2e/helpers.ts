@@ -148,6 +148,9 @@ export interface TermicApi {
       yolo?: boolean;
     }) => Promise<string[]>;
   };
+  /** The Todos view's query cache and filters. Seeded by todos.e2e.ts, since
+   *  the fixture repo has no forge remote to fill it. */
+  useTodos: { getState: () => any; setState: (p: any) => void };
   /** Tasks mid-creation (GH #242 — non-blocking worktree create). Seeding an
    *  entry directly lets specs catch PendingTaskRow / CreatingTaskPane in
    *  their "creating" state without racing the fixture repo's near-instant

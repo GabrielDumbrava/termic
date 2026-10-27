@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { useApp } from "@/store/app";
 import { projectForgeIssues, projectForgePrs } from "@/lib/ipc";
+import { scoped } from "@/lib/profileScope";
 import type { ForgeIssue, ForgePr, IssueScope, PrScope, Project } from "@/lib/types";
 
 export type TodoItem =
@@ -49,13 +50,16 @@ interface QueryTask {
 
 export interface TodosState {
   cache: Record<TodoQueryKey, QueryCacheEntry>;
-  selectedProjectId: string | null;
+  /** The projects the view is narrowed to; empty is every project. Persisted,
+   *  and read through `pickedProjects`, never directly: it can still name a
+   *  project that has since been removed. */
+  selectedProjectIds: string[];
   kindFilter: KindFilter;
   scopeFilter: ScopeFilter;
   searchQuery: string;
   isRefreshing: boolean;
 
-  setSelectedProjectId: (id: string | null) => void;
+  setSelectedProjectIds: (ids: string[]) => void;
   setKindFilter: (kind: KindFilter) => void;
   setScopeFilter: (scope: ScopeFilter) => void;
   setSearchQuery: (query: string) => void;
@@ -67,17 +71,61 @@ export function makeQueryKey(projectId: string, kind: "issues" | "prs", scope: s
   return `${projectId}:${kind}:${scope}`;
 }
 
+const LS_TODOS_PROJECTS = scoped("todosProjects");
+
+/** Stored JSON back to a project id list. Anything malformed reads as every
+ *  project: a filter that cannot be read must not hide the whole inbox. */
+export function parseTodosProjects(raw: string | null): string[] {
+  if (!raw) return [];
+  let doc: unknown;
+  try { doc = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(doc)) return [];
+  return [...new Set(doc.filter((id): id is string => typeof id === "string" && id !== ""))];
+}
+
+function persistProjects(ids: string[]) {
+  try {
+    if (ids.length) localStorage.setItem(LS_TODOS_PROJECTS, JSON.stringify(ids));
+    else localStorage.removeItem(LS_TODOS_PROJECTS);
+  } catch { /* private mode */ }
+}
+
+/** The git projects the selection still names, in sidebar order. Empty means
+ *  every project, and so does a selection naming none that exist.
+ *
+ *  Derived on every read and never written back. The saved ids are only
+ *  checked against the project list here, because a launch reads the list
+ *  AFTER this store: pruning on a write would see no projects yet and wipe
+ *  the saved selection. */
+export function pickedProjects(projects: Project[], selected: string[]): Project[] {
+  if (!selected.length) return [];
+  const ids = new Set(selected);
+  return projects.filter((p) => !p.non_git && ids.has(p.id));
+}
+
+/** The git projects the view covers: the picked ones, or all of them. */
+export function coveredProjects(projects: Project[], selected: string[]): Project[] {
+  const picked = pickedProjects(projects, selected);
+  return picked.length ? picked : projects.filter((p) => !p.non_git);
+}
+
+const sameIds = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((id, i) => id === b[i]);
+
 export const useTodos = create<TodosState>((set, get) => ({
   cache: {},
-  selectedProjectId: null,
+  selectedProjectIds: (() => {
+    try { return parseTodosProjects(localStorage.getItem(LS_TODOS_PROJECTS)); } catch { return []; }
+  })(),
   kindFilter: "all",
   scopeFilter: "for_me",
   searchQuery: "",
   isRefreshing: false,
 
-  setSelectedProjectId: (id) => {
-    if (get().selectedProjectId === id) return;
-    set({ selectedProjectId: id });
+  setSelectedProjectIds: (ids) => {
+    if (sameIds(get().selectedProjectIds, ids)) return;
+    set({ selectedProjectIds: ids });
+    persistProjects(ids);
     void get().fetchVisibleTodos(false);
   },
 
@@ -104,15 +152,8 @@ export const useTodos = create<TodosState>((set, get) => ({
   },
 
   fetchVisibleTodos: async (force = false) => {
-    const { selectedProjectId, kindFilter, scopeFilter, cache } = get();
-    const allProjects = useApp.getState().projects;
-
-    // Filter candidate projects (only git-enabled projects)
-    const candidateProjects = allProjects.filter((p) => {
-      if (p.non_git) return false;
-      if (selectedProjectId && p.id !== selectedProjectId) return false;
-      return true;
-    });
+    const { selectedProjectIds, kindFilter, scopeFilter, cache } = get();
+    const candidateProjects = coveredProjects(useApp.getState().projects, selectedProjectIds);
 
     if (candidateProjects.length === 0) return;
 

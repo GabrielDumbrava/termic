@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { makeQueryKey, TODOS_CACHE_TTL_MS, useTodos } from "./todos";
+import { coveredProjects, makeQueryKey, parseTodosProjects, pickedProjects, TODOS_CACHE_TTL_MS, useTodos } from "./todos";
 import { useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
 import type { IssueLookup, PrPickList, Project } from "@/lib/types";
@@ -9,12 +9,29 @@ vi.mock("@/lib/ipc", () => ({
   projectForgePrs: vi.fn(),
 }));
 
+// node vitest has no localStorage. Installed before the store module runs, so
+// its init-time read of the saved project filter sees this stub too.
+const stored = vi.hoisted(() => {
+  const map = new Map<string, string>();
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => { map.set(k, String(v)); },
+    removeItem: (k: string) => { map.delete(k); },
+    clear: () => map.clear(),
+  };
+  return map;
+});
+
+const okIssues = { provider: "github", remote_url: "", status: "ok", message: "", issues: [] } as unknown as IssueLookup;
+const okPrs = { provider: "github", remote_url: "", status: "ok", message: "", prs: [] } as unknown as PrPickList;
+
 describe("todos store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stored.clear();
     useTodos.getState().clearCache();
     useTodos.setState({
-      selectedProjectId: null,
+      selectedProjectIds: [],
       kindFilter: "all",
       scopeFilter: "for_me",
       searchQuery: "",
@@ -268,5 +285,96 @@ describe("todos store", () => {
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "open", limit: 30 });
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "review", limit: 30 });
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "mine", limit: 30 });
+  });
+
+  describe("project selection", () => {
+    const projects = [
+      { id: "p1", name: "Repo 1", non_git: false } as Project,
+      { id: "p2", name: "Repo 2", non_git: false } as Project,
+      { id: "p3", name: "Repo 3", non_git: false } as Project,
+      { id: "p-plain", name: "Plain Folder", non_git: true } as Project,
+    ];
+
+    it("fetches only the picked projects", async () => {
+      useApp.setState({ projects });
+      vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
+      vi.mocked(ipc.projectForgePrs).mockResolvedValue(okPrs);
+      useTodos.setState({ selectedProjectIds: ["p1", "p3"], kindFilter: "issues" });
+
+      await useTodos.getState().fetchVisibleTodos(true);
+
+      const fetched = vi.mocked(ipc.projectForgeIssues).mock.calls.map((c) => c[0]).sort();
+      expect(fetched).toEqual(["p1", "p3"]);
+    });
+
+    it("fetches every git project when nothing is picked", async () => {
+      useApp.setState({ projects });
+      vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
+      useTodos.setState({ kindFilter: "issues" });
+
+      await useTodos.getState().fetchVisibleTodos(true);
+
+      const fetched = vi.mocked(ipc.projectForgeIssues).mock.calls.map((c) => c[0]).sort();
+      expect(fetched).toEqual(["p1", "p2", "p3"]);
+    });
+
+    it("fetches only the newly picked project when one is added to a cached selection", async () => {
+      useApp.setState({ projects });
+      vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
+      useTodos.setState({
+        kindFilter: "issues",
+        selectedProjectIds: ["p1"],
+        cache: { "p1:issues:assigned": { items: [], fetchedAt: Date.now(), status: "ok" } },
+      });
+
+      useTodos.getState().setSelectedProjectIds(["p1", "p2"]);
+      await vi.waitFor(() => expect(useTodos.getState().isRefreshing).toBe(false));
+
+      expect(vi.mocked(ipc.projectForgeIssues).mock.calls.map((c) => c[0])).toEqual(["p2"]);
+    });
+
+    it("treats a selection naming only removed projects as every project", () => {
+      expect(pickedProjects(projects, ["gone"])).toEqual([]);
+      expect(coveredProjects(projects, ["gone"]).map((p) => p.id)).toEqual(["p1", "p2", "p3"]);
+      // A removed id beside a live one narrows to the live one.
+      expect(coveredProjects(projects, ["gone", "p2"]).map((p) => p.id)).toEqual(["p2"]);
+      // A non-git project cannot be picked, even by a stored id.
+      expect(pickedProjects(projects, ["p-plain"])).toEqual([]);
+    });
+
+    it("persists the selection and clears the key for every project", () => {
+      useTodos.getState().setSelectedProjectIds(["p2", "p1"]);
+      expect(JSON.parse(stored.get("todosProjects") ?? "null")).toEqual(["p2", "p1"]);
+
+      useTodos.getState().setSelectedProjectIds([]);
+      expect(stored.has("todosProjects")).toBe(false);
+    });
+
+    it("does not write an unchanged selection", () => {
+      useTodos.getState().setSelectedProjectIds(["p1"]);
+      const before = useTodos.getState();
+      const listener = vi.fn();
+      const unsub = useTodos.subscribe(listener);
+      useTodos.getState().setSelectedProjectIds(["p1"]);
+      unsub();
+      expect(listener).not.toHaveBeenCalled();
+      expect(useTodos.getState()).toBe(before);
+    });
+
+    it("reads the saved selection back on a fresh load", async () => {
+      useTodos.getState().setSelectedProjectIds(["p3", "p1"]);
+      vi.resetModules();
+      const fresh = await import("./todos");
+      expect(fresh.useTodos.getState().selectedProjectIds).toEqual(["p3", "p1"]);
+    });
+
+    it("parses malformed stored values as every project", () => {
+      expect(parseTodosProjects(null)).toEqual([]);
+      expect(parseTodosProjects("")).toEqual([]);
+      expect(parseTodosProjects("{not json")).toEqual([]);
+      expect(parseTodosProjects('{"p1":true}')).toEqual([]);
+      expect(parseTodosProjects('"p1"')).toEqual([]);
+      expect(parseTodosProjects('["p1", 7, null, "", "p2", "p1"]')).toEqual(["p1", "p2"]);
+    });
   });
 });

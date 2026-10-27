@@ -249,6 +249,7 @@ export default {
   todos: {
     title: "Todos",
     allProjects: "All projects",
+    projectsPicked: "{{count}} projects",
     refresh: "Refresh",
     refreshing: "Refreshing…",
     searchPlaceholder: "Search by title, #number, author, label…",

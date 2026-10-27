@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { useTodos, type TodoItem, type KindFilter, type ScopeFilter } from "@/store/todos";
+import { useTodos, pickedProjects, type TodoItem, type KindFilter, type ScopeFilter } from "@/store/todos";
 import { openPath } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -28,6 +28,7 @@ import {
   DropdownTrigger,
   DropdownMenu,
   DropdownItem,
+  DropdownCheckboxItem,
   DropdownSeparator,
 } from "@/components/ui/Dropdown";
 import { cn } from "@/lib/utils";
@@ -68,13 +69,13 @@ export function TodosView() {
   const openReviewPr = useUI((s) => s.openReviewPr);
 
   const cache = useTodos((s) => s.cache);
-  const selectedProjectId = useTodos((s) => s.selectedProjectId);
+  const selectedProjectIds = useTodos((s) => s.selectedProjectIds);
   const kindFilter = useTodos((s) => s.kindFilter);
   const scopeFilter = useTodos((s) => s.scopeFilter);
   const searchQuery = useTodos((s) => s.searchQuery);
   const isRefreshing = useTodos((s) => s.isRefreshing);
 
-  const setSelectedProjectId = useTodos((s) => s.setSelectedProjectId);
+  const setSelectedProjectIds = useTodos((s) => s.setSelectedProjectIds);
   const setKindFilter = useTodos((s) => s.setKindFilter);
   const setScopeFilter = useTodos((s) => s.setScopeFilter);
   const setSearchQuery = useTodos((s) => s.setSearchQuery);
@@ -86,14 +87,17 @@ export function TodosView() {
   }, []);
 
   const gitProjects = useMemo(() => projects.filter((p) => !p.non_git), [projects]);
-  const activeProject = gitProjects.find((p) => p.id === selectedProjectId) ?? null;
+  // A removed project drops out here rather than out of the saved selection,
+  // which is checked against the list only on read (see pickedProjects).
+  const picked = useMemo(() => pickedProjects(gitProjects, selectedProjectIds), [gitProjects, selectedProjectIds]);
+  const pickedIds = useMemo(() => new Set(picked.map((p) => p.id)), [picked]);
 
-  // Reset orphaned project filter if the selected project was removed
-  useEffect(() => {
-    if (selectedProjectId && !gitProjects.some((p) => p.id === selectedProjectId)) {
-      setSelectedProjectId(null);
-    }
-  }, [selectedProjectId, gitProjects, setSelectedProjectId]);
+  // Built from what is on screen, so a toggle also drops any saved id whose
+  // project is gone.
+  const toggleProject = (id: string) =>
+    setSelectedProjectIds(
+      gitProjects.filter((p) => (p.id === id ? !pickedIds.has(id) : pickedIds.has(p.id))).map((p) => p.id)
+    );
 
   const handleKindClick = (k: KindFilter) => {
     if (k === "issues" && scopeFilter === "review") {
@@ -111,9 +115,7 @@ export function TodosView() {
 
   // Aggregate items from matching cache entries
   const { items, totalUnfiltered, errors } = useMemo(() => {
-    const candidateProjects = gitProjects.filter((p) =>
-      selectedProjectId ? p.id === selectedProjectId : true
-    );
+    const candidateProjects = picked.length ? picked : gitProjects;
 
     const relevantKeys: string[] = [];
     for (const p of candidateProjects) {
@@ -207,7 +209,7 @@ export function TodosView() {
     });
 
     return { items: filtered, totalUnfiltered, errors: collectedErrors };
-  }, [gitProjects, selectedProjectId, scopeFilter, kindFilter, cache, searchQuery]);
+  }, [gitProjects, picked, scopeFilter, kindFilter, cache, searchQuery]);
 
   const { issueCount, prCount, assignedCount, reviewCount, authoredCount, projectCount } = useMemo(() => {
     let issues = 0;
@@ -280,24 +282,37 @@ export function TodosView() {
               >
                 <Folder className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
                 <span className="max-w-[150px] truncate">
-                  {activeProject ? activeProject.name : t("todos.allProjects")}
+                  {picked.length === 0
+                    ? t("todos.allProjects")
+                    : picked.length === 1
+                      ? picked[0].name
+                      : t("todos.projectsPicked", { count: picked.length })}
                 </span>
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>
             </DropdownTrigger>
             <DropdownMenu align="end" className="w-56">
-              <DropdownItem onSelect={() => setSelectedProjectId(null)}>
+              {/* All closes the menu, a project row does not: All is a whole
+                  answer that clears the rest, a project is one tick of several. */}
+              <DropdownItem
+                data-testid="todos-project-all"
+                data-checked={picked.length === 0 ? "true" : "false"}
+                onSelect={() => setSelectedProjectIds([])}
+              >
                 <span className="truncate">{t("todos.allProjects")}</span>
-                {!selectedProjectId && <Check className="ml-auto h-3.5 w-3.5 text-[var(--color-accent)]" />}
+                {picked.length === 0 && <Check className="ml-auto h-3.5 w-3.5 text-[var(--color-accent)]" />}
               </DropdownItem>
               <DropdownSeparator />
               {gitProjects.map((p) => (
-                <DropdownItem key={p.id} onSelect={() => setSelectedProjectId(p.id)}>
+                <DropdownCheckboxItem
+                  key={p.id}
+                  data-testid="todos-project-option"
+                  data-project-id={p.id}
+                  checked={pickedIds.has(p.id)}
+                  onCheckedChange={() => toggleProject(p.id)}
+                >
                   <span className="truncate">{p.name}</span>
-                  {selectedProjectId === p.id && (
-                    <Check className="ml-auto h-3.5 w-3.5 text-[var(--color-accent)]" />
-                  )}
-                </DropdownItem>
+                </DropdownCheckboxItem>
               ))}
             </DropdownMenu>
           </DropdownRoot>
@@ -531,7 +546,7 @@ export function TodosView() {
                     <div className="min-w-0">
                       <button
                         type="button"
-                        onClick={() => setSelectedProjectId(item.projectId)}
+                        onClick={() => setSelectedProjectIds([item.projectId])}
                         className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11.5px] font-medium text-[var(--color-fg-muted)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)] transition-colors max-w-full"
                         title={item.projectName}
                       >

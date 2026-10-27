@@ -161,7 +161,7 @@ interface TodosState {
   inFlightKeys: Set<TodoQueryKey>;
 
   // Active UI filters (kept in memory, or stored in prefs)
-  selectedProjectId: string | null; // null = all projects
+  selectedProjectIds: string[]; // empty = all projects; persisted (scoped `todosProjects`)
   kindFilter: "all" | "issues" | "prs";
   scopeFilter: "for_me" | "review" | "open";
   searchQuery: string;
@@ -169,7 +169,7 @@ interface TodosState {
   // Actions
   fetchQuery: (projectId: string, kind: "issues" | "prs", scope: string, force?: boolean) => Promise<void>;
   fetchVisibleTodos: (force?: boolean) => Promise<void>;
-  setSelectedProjectId: (id: string | null) => void;
+  setSelectedProjectIds: (ids: string[]) => void;
   setKindFilter: (kind: "all" | "issues" | "prs") => void;
   setScopeFilter: (scope: "for_me" | "review" | "open") => void;
   setSearchQuery: (query: string) => void;

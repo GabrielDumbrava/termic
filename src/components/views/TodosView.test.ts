@@ -21,6 +21,7 @@ import { useTodos } from "@/store/todos";
 import { useUI } from "@/store/ui";
 import { openPath } from "@/lib/ipc";
 import type { Project } from "@/lib/types";
+import type { TodoItem } from "@/store/todos";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -32,9 +33,10 @@ describe("TodosView component", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
 
+    localStorage.clear();
     useTodos.getState().clearCache();
     useTodos.setState({
-      selectedProjectId: null,
+      selectedProjectIds: [],
       kindFilter: "all",
       scopeFilter: "for_me",
       searchQuery: "",
@@ -255,22 +257,6 @@ describe("TodosView component", () => {
     });
   });
 
-  it("resets selectedProjectId when that project is no longer in projects list", async () => {
-    useTodos.setState({ selectedProjectId: "removed-project-id" });
-
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(createElement(TodosView));
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    expect(useTodos.getState().selectedProjectId).toBeNull();
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
   it("preserves 'assigned' action badge over generic 'open' when deduplicating items", async () => {
     useTodos.setState({
       scopeFilter: "all",
@@ -414,6 +400,163 @@ describe("TodosView component", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  describe("project picker", () => {
+    const issueIn = (projectId: string, projectName: string, number: number): TodoItem => ({
+      id: `${projectId}:issue:${number}`,
+      kind: "issue",
+      projectId,
+      projectName,
+      action: "assigned",
+      issue: {
+        provider: "github",
+        number,
+        title: `Issue ${number} in ${projectName}`,
+        url: "",
+        body: "",
+        author: "alice",
+        comments: 0,
+        labels: [],
+        updated_at: "2026-10-24T10:00:00Z",
+      },
+    });
+
+    beforeEach(() => {
+      useApp.setState({
+        projects: [
+          { id: "p1", name: "Backend API", non_git: false } as Project,
+          { id: "p2", name: "Frontend Web", non_git: false } as Project,
+          { id: "p3", name: "Infra", non_git: false } as Project,
+        ],
+      });
+      const entry = (item: TodoItem) => ({ status: "ok" as const, fetchedAt: Date.now(), items: [item] });
+      useTodos.setState({
+        kindFilter: "issues",
+        cache: {
+          "p1:issues:assigned": entry(issueIn("p1", "Backend API", 1)),
+          "p2:issues:assigned": entry(issueIn("p2", "Frontend Web", 2)),
+          "p3:issues:assigned": entry(issueIn("p3", "Infra", 3)),
+        },
+      });
+    });
+
+    async function render() {
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(createElement(TodosView));
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      return root;
+    }
+
+    const rowTitles = () =>
+      Array.from(container.querySelectorAll('[data-testid="todos-row"]'), (r) => r.textContent ?? "");
+    const triggerText = () => container.querySelector('[data-testid="todos-project-filter"]')?.textContent ?? "";
+
+    it("shows only the rows of the picked projects, and names them on the trigger", async () => {
+      useTodos.setState({ selectedProjectIds: ["p1", "p3"] });
+      const root = await render();
+
+      const rows = rowTitles();
+      expect(rows).toHaveLength(2);
+      expect(rows.some((r) => r.includes("Issue 1 in Backend API"))).toBe(true);
+      expect(rows.some((r) => r.includes("Issue 3 in Infra"))).toBe(true);
+      expect(rows.some((r) => r.includes("Frontend Web"))).toBe(false);
+      expect(triggerText()).toContain("2 projects");
+
+      await act(async () => useTodos.getState().setSelectedProjectIds(["p2"]));
+      expect(rowTitles()).toHaveLength(1);
+      expect(triggerText()).toContain("Frontend Web");
+
+      await act(async () => useTodos.getState().setSelectedProjectIds([]));
+      expect(rowTitles()).toHaveLength(3);
+      expect(triggerText()).toContain("All projects");
+
+      await act(async () => root.unmount());
+    });
+
+    it("narrows to one project from a row's project chip", async () => {
+      useTodos.setState({ selectedProjectIds: ["p1", "p2"] });
+      const root = await render();
+
+      const chip = Array.from(container.querySelectorAll('[data-testid="todos-row"] button')).find(
+        (b) => b.getAttribute("title") === "Frontend Web"
+      ) as HTMLButtonElement;
+      await act(async () => chip.click());
+
+      expect(useTodos.getState().selectedProjectIds).toEqual(["p2"]);
+      expect(rowTitles()).toHaveLength(1);
+
+      await act(async () => root.unmount());
+    });
+
+    it("falls back to every project when the picked ones were removed, without forgetting the pick", async () => {
+      useTodos.setState({ selectedProjectIds: ["removed-project-id"] });
+      const root = await render();
+
+      expect(rowTitles()).toHaveLength(3);
+      expect(triggerText()).toContain("All projects");
+      // Derived, not written back: the saved pick stays as it was.
+      expect(useTodos.getState().selectedProjectIds).toEqual(["removed-project-id"]);
+
+      await act(async () => root.unmount());
+    });
+
+    it("keeps the saved pick through a render before the project list has loaded", async () => {
+      useApp.setState({ projects: [] });
+      useTodos.setState({ selectedProjectIds: ["p3"] });
+      const root = await render();
+
+      expect(useTodos.getState().selectedProjectIds).toEqual(["p3"]);
+
+      await act(async () => {
+        useApp.setState({
+          projects: [
+            { id: "p1", name: "Backend API", non_git: false } as Project,
+            { id: "p3", name: "Infra", non_git: false } as Project,
+          ],
+        });
+      });
+      expect(triggerText()).toContain("Infra");
+      expect(rowTitles()).toEqual([expect.stringContaining("Issue 3 in Infra")]);
+
+      await act(async () => root.unmount());
+    });
+
+    it("ticks projects in the open menu one click at a time, and All clears them", async () => {
+      const root = await render();
+      const trigger = container.querySelector('[data-testid="todos-project-filter"]') as HTMLButtonElement;
+      await act(async () => {
+        trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, ctrlKey: false }));
+      });
+
+      const option = (id: string) =>
+        document.querySelector(`[data-testid="todos-project-option"][data-project-id="${id}"]`) as HTMLElement;
+      expect(option("p1")).not.toBeNull();
+      expect(option("p1").getAttribute("role")).toBe("menuitemcheckbox");
+      expect(option("p1").getAttribute("aria-checked")).toBe("false");
+
+      await act(async () => option("p1").click());
+      expect(useTodos.getState().selectedProjectIds).toEqual(["p1"]);
+      // Still open after the tick, and the row reports the new state.
+      expect(option("p1")).not.toBeNull();
+      expect(option("p1").getAttribute("aria-checked")).toBe("true");
+
+      await act(async () => option("p3").click());
+      expect(useTodos.getState().selectedProjectIds).toEqual(["p1", "p3"]);
+
+      await act(async () => option("p1").click());
+      expect(useTodos.getState().selectedProjectIds).toEqual(["p3"]);
+      expect(JSON.parse(localStorage.getItem("todosProjects") ?? "null")).toEqual(["p3"]);
+
+      const all = document.querySelector('[data-testid="todos-project-all"]') as HTMLElement;
+      await act(async () => all.click());
+      expect(useTodos.getState().selectedProjectIds).toEqual([]);
+      expect(localStorage.getItem("todosProjects")).toBeNull();
+
+      await act(async () => root.unmount());
     });
   });
 });
