@@ -117,4 +117,7 @@ export interface PreviewEditTarget {
   undo(): void;
   redo(): void;
   save(): void;
+  /** the block editor holds text not yet applied: the tab counts as dirty
+   *  meanwhile, so closing it asks first */
+  pending?(on: boolean): void;
 }

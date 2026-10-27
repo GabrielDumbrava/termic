@@ -263,7 +263,12 @@ Every edit made on the preview is a `DocEdit`, sent to the
   what `⌘Z` / `⇧⌘Z` / `⌘S` do while the preview has focus (a text field
   inside the preview keeps its own keys). Undo and redo go through the same
   save policy as an edit: undoing an auto-saved tick unticks the file, not
-  just the buffer.
+  just the buffer. Only a step the preview made, though: a preview edit
+  carries a `previewStep` effect that `previewHistory` (in the tab editor's
+  extensions) re-attaches on undo and redo, and an undo of anything else
+  (typing, a disk reload) stays unsaved. A disk reload is its own isolated
+  history step, so ⌘Z after an agent's write reverts it in the buffer and
+  never writes the old text back over the agent's file.
 - `canEdit` false (an external file) or no target at all (diff view, folder
   listing, Changelog) makes the preview read-only: checkboxes disabled, no
   block editor.
@@ -286,7 +291,9 @@ menu's "Save edits" switch; read when the edit lands; `previewSaveAction`):
   dirty. The banner's Keep mine accepts the newer file as the one the next
   save replaces. `⌘S` goes through the same check. A save clears the dirty
   dot only if the buffer is still the doc it wrote: an edit made while the
-  read and write were in flight stays dirty.
+  read and write were in flight stays dirty. Saves are queued one at a
+  time, and a save in flight does not count as "other unsaved changes":
+  two quick ticks both save, in order.
 - on, buffer already dirty: the edit stays in the buffer, nothing is
   saved, and the toast says so. The toggle never saves editor typing.
 - off: never saved (dirty dot, `⌘S`).
@@ -315,6 +322,9 @@ theme come from the same `langForId` / `resolveEditorTheme` /
   focus moving within the editor, the window losing focus, and a rebuild
   moving the slot. `Esc` / Cancel discards. An unchanged commit just
   closes.
+- While its text differs from the lines it opened on, the tab shows dirty
+  (`PreviewEditTarget.pending`, `EditorHandle.holdDirty`), so `⌘W` asks
+  before the unmount drops it.
 - The editor holds a line range and the source it is a range of. After
   every rebuild `place()`, and every commit against the live buffer
   (`text()`), follow it with `remapRange(before, after, range)`

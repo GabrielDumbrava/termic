@@ -181,6 +181,12 @@ describe("markdown reader", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
     }, taskId, v, key);
+  /** ⌘G with focus left where it is (the find bar's input) */
+  const pressGoToFromFind = () =>
+    browser.execute(() => {
+      const mac = /^(mac|darwin)/i.test(navigator.platform);
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "g", [mac ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true }));
+    });
   const gotoBar = () =>
     browser.execute((id) => document.querySelector(`[data-task-id="${id}"] [data-testid="md-goto"]`)?.textContent ?? null, taskId);
 
@@ -207,6 +213,29 @@ describe("markdown reader", () => {
         .some(el => el.dataset.srcLine === "7"), taskId),
       { timeout: 5_000, timeoutMsg: "blank line 6 did not land on the list item at 7" },
     );
+  });
+
+  it("⌘G in the find bar is find next, not go to line", async () => {
+    const counter = () => browser.execute((id) =>
+      document.querySelector(`[data-task-id="${id}"] [data-testid="md-find"]`)?.textContent ?? null, taskId);
+    await browser.execute((id) => {
+      const host = Array.from(document.querySelectorAll<HTMLElement>(`[data-task-id="${id}"] .markdown-body`))
+        .find(h => h.getBoundingClientRect().width > 0)!;
+      host.closest<HTMLElement>("[tabindex]")!.focus();
+      const mac = /^(mac|darwin)/i.test(navigator.platform);
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", [mac ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true }));
+    }, taskId);
+    await browser.waitUntil(async () => (await counter()) !== null, { timeout: 5_000, timeoutMsg: "find never opened" });
+    await browser.execute(() => {
+      const input = document.activeElement as HTMLInputElement;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "paragraph");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await browser.waitUntil(async () => (await counter())?.includes("1/2") ?? false, { timeout: 5_000, timeoutMsg: "find never counted 2 matches" });
+    await pressGoToFromFind();
+    await browser.waitUntil(async () => (await counter())?.includes("2/2") ?? false, { timeout: 5_000, timeoutMsg: "⌘G did not step to the next match" });
+    expect(await gotoBar()).toBeNull();
+    await browser.execute(() => (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   });
 
   it("closes on Escape without jumping", async () => {

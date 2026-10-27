@@ -91,6 +91,8 @@ interface Session {
   /** "Use mine" was pressed while the buffer was ahead of the render: the
    *  next place() that confirms the block runs it */
   pendingMine: boolean;
+  /** the text differs from `original`: the tab is held dirty */
+  pending: boolean;
   setConflict(on: boolean): void;
   setLost(): void;
   setLabel(): void;
@@ -111,6 +113,7 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
     const s = sessionRef.current;
     if (!s) return;
     sessionRef.current = null;
+    if (s.pending) live.current.edit?.pending?.(false);
     s.view.destroy();
     s.slot.remove();
     if (s.block) setBlockHidden(s.block, false);
@@ -217,6 +220,12 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
           drawSelection(),
           keymap.of([...defaultKeymap, ...historyKeymap]),
           EditorView.lineWrapping,
+          // unapplied text holds the tab dirty, so ⌘W asks instead of dropping it
+          EditorView.updateListener.of(u => {
+            if (!u.docChanged) return;
+            const on = trimNewlines(u.state.doc.toString()) !== original;
+            if (on !== s.pending) { s.pending = on; live.current.edit?.pending?.(on); }
+          }),
           lang.of([]),
           resolveEditorTheme(appIsLight ? p.editorThemeIdLight : p.editorThemeIdDark, appIsLight),
           editorSurfaceTheme(p.editorFontSize, p.codeLigatures),
@@ -233,7 +242,7 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
 
     const s: Session = {
       slot, view, startLine, endLine, text: live.current.text, placed: live.current.text, tag: el.tagName, original, block: el,
-      conflict: false, lost: false, pendingMine: false,
+      conflict: false, lost: false, pendingMine: false, pending: false,
       setConflict(on) {
         s.conflict = on;
         bar.hidden = !on;

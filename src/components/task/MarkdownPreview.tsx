@@ -862,6 +862,13 @@ export function MarkdownPreview(
       const c = containerRef.current;
       if (!c) return;
       const ae = document.activeElement as HTMLElement | null;
+      // in the find bar ⌘G is find next, as in the editor's own search
+      if (goto && ae && ae === findInputRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!flushFind()) gotoMatch(findIndexRef.current + 1);
+        return;
+      }
       // a field in a slot (the block editor, a comment composer) keeps its
       // own keys: taking ⌘F / ⌘G there would also blur, and so commit, it
       if (inChrome(ae)) return;
@@ -1413,7 +1420,7 @@ function FindBar({
   const { t } = useTranslation("panels");
   const navBtn = "flex h-6 w-6 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--color-fg-dim)]";
   return (
-    <div className="absolute right-4 top-3 z-10 flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] py-1 pl-2.5 pr-1 shadow-lg">
+    <div data-testid="md-find" className="absolute right-4 top-3 z-10 flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] py-1 pl-2.5 pr-1 shadow-lg">
       <input
         ref={inputRef}
         value={query}

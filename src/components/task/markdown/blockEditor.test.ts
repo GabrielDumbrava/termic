@@ -48,7 +48,7 @@ describe("useBlockEditor", () => {
 
   // a buffer standing in for the editor: applies DocEdits like the real target
   function setup(text = DOC) {
-    const buf = { text, edits: [] as DocEdit[] };
+    const buf = { text, edits: [] as DocEdit[], pending: [] as boolean[] };
     const edit: PreviewEditTarget = {
       canEdit: true,
       apply(e) {
@@ -61,6 +61,7 @@ describe("useBlockEditor", () => {
       read: (a, b) => buf.text.split("\n").slice(a - 1, b).join("\n"),
       text: () => buf.text,
       undo() {}, redo() {}, save() {},
+      pending: on => { buf.pending.push(on); },
     };
     const host = document.createElement("div");
     host.className = "markdown-body";
@@ -109,6 +110,26 @@ describe("useBlockEditor", () => {
     button("Save").click();
     expect(editor()).toBeNull();
     expect(buf.edits).toEqual([]);
+  });
+
+  it("holds the tab dirty while it has unapplied text, and lets go on close", () => {
+    const { buf, host, type, button, open } = setup();
+    open(host.querySelector("li")!);
+    const orig = buf.text.split("\n").find(l => l.startsWith("- "))!;
+    type(orig + " more");
+    type(orig + " more!");
+    expect(buf.pending).toEqual([true]);
+    type(orig);
+    expect(buf.pending).toEqual([true, false]);
+    type(orig + " again");
+    button("Save").click();
+    expect(buf.pending).toEqual([true, false, true, false]);
+    // an unmount (⌘W) releases the hold too
+    open(host.querySelector("li")!);
+    type("changed");
+    act(() => root!.unmount());
+    root = null;
+    expect(buf.pending.at(-1)).toBe(false);
   });
 
   it("survives a rebuild that shifts its block, and commits at the new lines", () => {

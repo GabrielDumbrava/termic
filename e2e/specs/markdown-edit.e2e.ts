@@ -252,4 +252,43 @@ describe("markdown preview edits", () => {
     expect(disk()).toBe(await mainCm());
     expect((await tab())?.dirty).toBe(false);
   });
+
+  it("two quick ticks both save, and the buffer ends clean", async () => {
+    const [a, b] = [await lineOf("first"), await lineOf("second")];
+    const before = disk();
+    // the second lands while the first's save is still in flight
+    await browser.execute((sa, sb) => { window.__mdEditShown!(sa)!.click(); window.__mdEditShown!(sb)!.click(); }, box(a), box(b));
+    await browser.waitUntil(async () => disk() !== before && disk() === await mainCm(),
+      { timeout: 5_000, timeoutMsg: "the second tick never reached the file" });
+    await browser.waitUntil(async () => (await tab())?.dirty === false,
+      { timeout: 5_000, timeoutMsg: "the second tick left the buffer dirty" });
+  });
+
+  it("an open block editor with changed text holds the tab dirty, so a close asks", async () => {
+    await openHeadingEditor("# Plan, edited");
+    await browser.waitUntil(async () => (await tab())?.dirty === true,
+      { timeout: 5_000, timeoutMsg: "unapplied block editor text did not dirty the tab" });
+    await browser.execute(() =>
+      Array.from(window.__mdEditShown!(".tc-block-editor")!.querySelectorAll("button")).find(b => b.textContent === "Cancel")!.click());
+    await browser.waitUntil(async () => (await tab())?.dirty === false,
+      { timeout: 5_000, timeoutMsg: "cancelling the block editor left the tab dirty" });
+  });
+
+  it("⌘Z in the preview never saves the undo of an agent's reload", async () => {
+    await browser.execute((s) => window.__mdEditShown!(s)!.click(), box(await lineOf("first")));
+    await browser.waitUntil(async () => disk() === await mainCm() && (await tab())?.dirty === false,
+      { timeout: 5_000, timeoutMsg: "the tick never saved" });
+    // the agent rewrites the file and its turn settles: the clean buffer reloads
+    const theirs = disk() + "agent three\n";
+    writeFileSync(path.join(fixture, NAME), theirs);
+    await browser.execute((id) => window.__termic!.useApp.getState().bumpFsRevision(id), taskId);
+    await browser.waitUntil(async () => (await mainCm()).includes("agent three"), { timeout: 5_000, timeoutMsg: "the buffer never reloaded" });
+    await previewKey("z");
+    await browser.waitUntil(async () => !(await mainCm()).includes("agent three"), { timeout: 5_000, timeoutMsg: "⌘Z did not undo the reload" });
+    // the policy picks its toast before any write: "Unsaved" means no save ran
+    await browser.waitUntil(() => browser.execute(() => document.body.textContent?.includes("Undone. Unsaved") ?? false),
+      { timeout: 5_000, timeoutMsg: "the undo was not left unsaved" });
+    expect(disk()).toBe(theirs);
+    expect((await tab())?.dirty).toBe(true);
+  });
 });

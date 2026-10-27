@@ -144,14 +144,15 @@ export function MarkdownPane(
     return editorEditTarget(editorView, {
       canEdit: canEditPreview,
       isDirty: () => handle()?.isDirty() ?? true,
-      onApplied: (label, wasDirty) => {
+      onApplied: (label, wasDirty, preview) => {
         // re-render now rather than after the typing debounce: the edit was
         // made ON the preview, so the reader is looking right at it
         if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
         setBuf({ path: srcKey, text: editorView.state.doc.toString() });
         const what = label ?? t("mdEdit.edited");
         const toast = useUI.getState().pushToast;
-        switch (previewSaveAction(usePrefs.getState().markdownSavePreviewEdits, wasDirty, !isPad)) {
+        // an undo of a step the preview did not make never auto-saves
+        switch (previewSaveAction(preview && usePrefs.getState().markdownSavePreviewEdits, wasDirty, !isPad)) {
           case "save":
             handle()?.persist()
               ?.then(() => toast(t("mdEdit.saved", { what, name }), "success"))
@@ -163,6 +164,7 @@ export function MarkdownPane(
         }
       },
       save: () => handle()?.save(),
+      pending: on => handle()?.holdDirty(on),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorView, srcKey, canEditPreview, isPad]);

@@ -10,9 +10,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { EditTab, ScratchTab, ExternalTab, Task } from "@/lib/types";
-import { EditorState, Compartment, Annotation, type Extension } from "@codemirror/state";
+import { EditorState, Compartment, Annotation, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, tooltips } from "@codemirror/view";
-import { indentWithTab } from "@codemirror/commands";
+import { indentWithTab, isolateHistory } from "@codemirror/commands";
+import { previewHistory } from "./markdown/editTarget";
 import { basicSetup } from "codemirror";
 import { search } from "@codemirror/search";
 import { lintGutter, setDiagnostics } from "@codemirror/lint";
@@ -123,8 +124,13 @@ export interface EditorHandle {
   save(): void;
   /** the write alone, no toast; null when there is nowhere to write */
   persist(): Promise<void> | null;
-  /** unsaved changes in the buffer (always true for an untitled pad) */
+  /** unsaved changes in the buffer (always true for an untitled pad), not
+   *  counting what a save still in flight is writing: a second preview edit
+   *  landing mid-save is not "other unsaved changes" */
   isDirty(): boolean;
+  /** show the tab dirty while `on` even though the buffer is not (the
+   *  block editor's unapplied text), so closing it asks */
+  holdDirty(on: boolean): void;
 }
 const EDITOR_HANDLES = new WeakMap<EditorView, EditorHandle>();
 export const editorHandle = (view: EditorView): EditorHandle | undefined => EDITOR_HANDLES.get(view);
@@ -461,8 +467,20 @@ export function EditorPane({ task, tab, active, onContent }: {
         // file) and clear `dirty` once it lands. Null when there is nowhere to
         // write: an untitled pad, an external file. Shared by ⌘S below and by
         // the markdown preview's save policy (editorHandle), so there is one
-        // save path.
+        // save path. Saves run one at a time, so two quick preview edits
+        // can't land on disk out of order; `saving` is the doc the newest one
+        // writes.
+        let chain: Promise<unknown> = Promise.resolve();
+        let saving: Text | null = null;
         const persist = (v: EditorView): Promise<void> | null => {
+          const p = write(v);
+          if (!p) return null;
+          saving = v.state.doc;
+          const run = chain.then(p);
+          chain = run.catch(() => {});
+          return run;
+        };
+        const write = (v: EditorView): (() => Promise<void>) | null => {
           const doc = v.state.doc;
           const text = doc.toString();
           // only when the buffer is still what was written: an edit made
@@ -474,13 +492,14 @@ export function EditorPane({ task, tab, active, onContent }: {
             useApp.getState().patchTab(task.id, tab.id, { dirty: false });
           };
           if (tab.type === "scratch" && tab.path) {
-            return scratchFileWrite(tab.scope ?? "global", tab.projectId, tab.path, text).then(clean);
+            const p = tab.path;
+            return () => scratchFileWrite(tab.scope ?? "global", tab.projectId, p, text).then(clean);
           }
           if (tab.type !== "edit") return null;
           const path = tab.path;
           // ponytail: read-then-write, so a write landing between the two
           // still wins. The window is one IPC round trip, not a whole turn.
-          return taskFileRead(task.id, path).then(d => d, () => null).then(disk => {
+          return () => taskFileRead(task.id, path).then(d => d, () => null).then(disk => {
             const now = disk == null ? null : normalizeEol(disk);
             if (now != null && diskTextRef.current != null && now !== diskTextRef.current && now !== text) {
               setDiskChanged(true);
@@ -554,6 +573,7 @@ export function EditorPane({ task, tab, active, onContent }: {
               // bracket matching, close-brackets, autocomplete, active-line +
               // selection-match highlight, and the default/search/history keymaps.
               basicSetup,
+              previewHistory,
               search({ top: true }),
               // CodeMirror's search panel inputs inherit WKWebView's
               // browser defaults (spellcheck + autocorrect ON), which
@@ -643,7 +663,13 @@ export function EditorPane({ task, tab, active, onContent }: {
         EDITOR_HANDLES.set(view, {
           save: () => { saveDoc(view); },
           persist: () => persist(view),
-          isDirty: () => dirtyRef.current,
+          isDirty: () => dirtyRef.current && view.state.doc !== saving,
+          holdDirty: on => {
+            const dirty = on || dirtyRef.current;
+            // gone already (a close unmounting the block editor) or unchanged: no write
+            const cur = (useApp.getState().tabs[task.id] ?? []).find(t => t.id === tab.id) as { dirty?: boolean } | undefined;
+            if (cur && !!cur.dirty !== dirty) useApp.getState().patchTab(task.id, tab.id, { dirty });
+          },
         });
         elog("view created");
         if (tab.type === "scratch" && !tab.path) {
@@ -809,7 +835,9 @@ export function EditorPane({ task, tab, active, onContent }: {
       v.dispatch({
         effects: indentCompRef.current.reconfigure(indentExtension(detectIndent(content))),
         changes: { from: 0, to: v.state.doc.length, insert: content },
-        annotations: ExternalReload.of(true),
+        // isolated: one undo step of its own, never merged with an edit
+        // either side, so ⌘Z from the preview can tell it is not a preview edit
+        annotations: [ExternalReload.of(true), isolateHistory.of("full")],
       });
     diskTextRef.current = normalizeEol(content);
     // The buffer now matches disk again, so blame can be trusted again. Same
