@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { AgentPills } from "./AgentPills";
 import { visibleCliIds } from "@/lib/agents";
 import { projectForgePrs } from "@/lib/ipc";
+import { afterRevalidate, cachedForgeList, fetchForgeList } from "@/store/forgeLists";
 import { prRef } from "@/lib/forge";
 import { parsePrRef, repoSlug } from "@/lib/prReview";
 import { DEFAULT_REVIEW_GROUP, existingReviewTask, startPrReview, type ReviewWhere } from "@/lib/prReviewTask";
@@ -108,9 +109,13 @@ export function ReviewPrDialog() {
   useEffect(() => {
     if (!open || !projectId) return;
     let cancelled = false;
-    setWaiting(null);
-    projectForgePrs(projectId, { scope: "review", limit: 8 })
-      .then(r => { if (!cancelled) setWaiting(r); })
+    // Painted from the shared cache when it has the list, then re-fetched.
+    // A failed re-fetch keeps the rows: a failure only ever hid this list.
+    const query = { projectId, kind: "prs", scope: "review", limit: 8 } as const;
+    const shown = cachedForgeList(query);
+    setWaiting(shown);
+    fetchForgeList(query)
+      .then(r => { if (!cancelled) setWaiting(afterRevalidate(shown, r).lookup); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [open, projectId]);

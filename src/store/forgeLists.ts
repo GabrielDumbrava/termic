@@ -278,6 +278,25 @@ export function fetchForgeList(q: ForgeListQuery): Promise<ForgeListAnswer> {
   return p;
 }
 
+const sameRows = (a: ForgeListAnswer, b: ForgeListAnswer) =>
+  a.provider === b.provider && a.remote_url === b.remote_url
+  && JSON.stringify("issues" in a ? a.issues : a.prs) === JSON.stringify("issues" in b ? b.issues : b.prs);
+
+/** What a dialog's list shows once the re-fetch behind a cached paint
+ *  answers. A fresh list with the same rows keeps the object on screen, so
+ *  nothing re-renders and no row moves under a cursor about to click it. A
+ *  failure with rows already shown keeps them and says why, rather than
+ *  swapping a usable list for an error card; with nothing shown, the failure
+ *  is the answer, as before. */
+export function afterRevalidate<L extends ForgeListAnswer>(
+  shown: L | null,
+  answer: L,
+): { lookup: L; refreshErr: string | null } {
+  if (answer.status === "ok") return { lookup: shown && sameRows(shown, answer) ? shown : answer, refreshErr: null };
+  if (shown) return { lookup: shown, refreshErr: answer.message || answer.status };
+  return { lookup: answer, refreshErr: null };
+}
+
 /** Fetch a list unless a fresh answer (or failure) is cached, or `force`. */
 export async function refreshForgeList(q: ForgeListQuery, force = false): Promise<void> {
   const e = useForgeLists.getState().entries[forgeListKey(q)];

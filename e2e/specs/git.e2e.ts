@@ -2965,6 +2965,54 @@ describe("the forge pickers: work that pulled you in", () => {
     }
   });
 
+  it("paints a cached list at once and keeps it when the re-fetch fails, saying why", async () => {
+    // The shared list cache (src/store/forgeLists.ts) as Todos or the launch
+    // snapshot leaves it. The fixture is not a forge, so the re-fetch behind
+    // the paint fails, which is the case under test: the rows stay, and the
+    // pane says the list is the last one rather than swapping it for the
+    // error sentence.
+    const CACHED = "e2e-cached-assigned-issue";
+    await browser.execute((id, title) => {
+      const t = window.__termic!;
+      const query = { projectId: id, kind: "issues", scope: "assigned", limit: 50 };
+      t.useForgeLists.setState((s: any) => ({
+        entries: {
+          ...s.entries,
+          [`${id}:issues:assigned:50`]: {
+            query, status: "ok", okAt: Date.now(), fetchedAt: Date.now(),
+            ok: {
+              provider: "github", remote_url: "", status: "ok", message: "",
+              issues: [{
+                provider: "github", number: 42, title, url: "", body: "", author: "alice",
+                comments: 0, labels: [], updated_at: "2026-10-24T10:00:00Z",
+              }],
+            },
+          },
+        },
+      }));
+    }, projectId, CACHED);
+    try {
+      await clickWhenVisible('[data-testid="issue-scope"] [data-issue-scope="assigned"]');
+      await issueColumnSays(new RegExp(CACHED));
+      await waitVisible('[data-testid="list-refresh-failed"]');
+      const notice = (await browser.execute(
+        () => (document.querySelector('[data-testid="list-refresh-failed"]') as HTMLElement).innerText,
+      )) as string;
+      expect(notice).toMatch(/^Showing the last list\. Refreshing it failed: /);
+      expect(notice).toMatch(/not a GitHub, GitLab, or Azure DevOps host|No git remote/);
+      // Still the cached row, after the failure landed.
+      await issueColumnSays(new RegExp(CACHED));
+      await snap("issue-list-cached-refresh-failed.png");
+
+      // Another scope is a different list: its own answer, and no notice.
+      await clickWhenVisible('[data-testid="issue-scope"] [data-issue-scope="all"]');
+      await issueColumnSays(/not a GitHub, GitLab, or Azure DevOps host|No git remote/);
+      expect(await browser.execute(() => !!document.querySelector('[data-testid="list-refresh-failed"]'))).toBe(false);
+    } finally {
+      await browser.execute(() => window.__termic!.clearForgeLists());
+    }
+  });
+
   it("re-entering the issue source starts back on All", async () => {
     await clickWhenVisible('[data-testid="issue-scope"] [data-issue-scope="mentions"]');
     await browser.waitUntil(async () => (await pressedScope()).join() === "mentions", {

@@ -424,6 +424,7 @@ export default {
     prFork: "复刻",
     prFetching: "正在获取分支…",
     loadingPrs: "正在加载你的拉取请求…",
+    listRefreshFailed: "显示的是上次的列表，刷新失败：{{message}}",
     loadingOpenPrs: "正在加载未关闭的拉取请求…",
     fromWorkItem: "从 {{forge}} work item 创建",
     needsCli: "（需要 {{cli}}）",

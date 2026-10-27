@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  afterRevalidate,
   cachedForgeList,
   clearForgeLists,
   fetchForgeList,
@@ -169,6 +170,35 @@ describe("forge lists", () => {
     d.resolve(issuesOk([issue(1)]));
     await p;
     expect(useForgeLists.getState().entries).toEqual({});
+  });
+
+  describe("a dialog's re-fetch behind a cached paint", () => {
+    it("keeps the object on screen when the rows did not change, so nothing moves", () => {
+      const shown = issuesOk([issue(1), issue(2)]);
+      const same = issuesOk([issue(1), issue(2)]);
+      const r = afterRevalidate(shown, same);
+      expect(r.lookup).toBe(shown);
+      expect(r.refreshErr).toBeNull();
+    });
+
+    it("swaps in a list that changed", () => {
+      const shown = issuesOk([issue(1)]);
+      const fresh = issuesOk([issue(2), issue(1)]);
+      expect(afterRevalidate(shown, fresh)).toEqual({ lookup: fresh, refreshErr: null });
+    });
+
+    it("keeps the rows it showed through a failure, and says why", () => {
+      const shown = prsOk([pr(4)]);
+      const failed = { provider: "github", remote_url: "", status: "cli-unauthed", message: "gh: not logged in", prs: [] } as PrPickList;
+      expect(afterRevalidate(shown, failed)).toEqual({ lookup: shown, refreshErr: "gh: not logged in" });
+      // No message: the status names it.
+      expect(afterRevalidate(shown, { ...failed, message: "" }).refreshErr).toBe("cli-unauthed");
+    });
+
+    it("answers with the failure when nothing was shown, as before the cache", () => {
+      const failed = { provider: "github", remote_url: "", status: "cli-missing", message: "no gh", issues: [] } as IssueLookup;
+      expect(afterRevalidate(null, failed)).toEqual({ lookup: failed, refreshErr: null });
+    });
   });
 
   describe("launch snapshot", () => {
