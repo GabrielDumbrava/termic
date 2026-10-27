@@ -155,6 +155,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "prSnapshots", scoped: true, class: "local", reason: "last-known PR status per task, a first-paint cache the next poll overwrites" },
   { key: "hideInactiveProjects", scoped: true, class: "local", reason: "sidebar filter toggled in place, over this machine's tasks" },
   { key: "todosProjects", scoped: true, class: "local", reason: "Todos project filter, a list of project ids, which a profile owns" },
+  { key: "forgeListSnapshot", scoped: true, class: "local", reason: "last-known issue and PR lists per project, a first-paint cache the next fetch overwrites" },
   { key: "compactSidebar", scoped: false, class: "local", reason: "collapse state" },
   { key: "collapsedProjects", scoped: true, class: "local", reason: "collapse state" },
   { key: "collapsedTasks", scoped: true, class: "local", reason: "collapse state" },

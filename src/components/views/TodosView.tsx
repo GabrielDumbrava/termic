@@ -1,5 +1,6 @@
 // Todos view: cross-project triage workspace for issues and PRs (docs/ideas/todos-view.md).
-// Reads useTodos for cache and filter state; does not write to useApp (bear traps 5 and 8).
+// Filters live in useTodos and the lists in useForgeLists; does not write to
+// useApp (bear traps 5 and 8).
 
 import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
@@ -19,7 +20,8 @@ import {
 } from "lucide-react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { useTodos, pickedProjects, type TodoItem, type KindFilter, type ScopeFilter } from "@/store/todos";
+import { useTodos, pickedProjects, todoQueries, todoRows, type TodoItem, type KindFilter, type ScopeFilter } from "@/store/todos";
+import { forgeListKey, useForgeLists } from "@/store/forgeLists";
 import { openPath } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -68,23 +70,17 @@ export function TodosView() {
   const openNewTask = useUI((s) => s.openNewTask);
   const openReviewPr = useUI((s) => s.openReviewPr);
 
-  const cache = useTodos((s) => s.cache);
+  const entries = useForgeLists((s) => s.entries);
   const selectedProjectIds = useTodos((s) => s.selectedProjectIds);
   const kindFilter = useTodos((s) => s.kindFilter);
   const scopeFilter = useTodos((s) => s.scopeFilter);
   const searchQuery = useTodos((s) => s.searchQuery);
-  const isRefreshing = useTodos((s) => s.isRefreshing);
 
   const setSelectedProjectIds = useTodos((s) => s.setSelectedProjectIds);
   const setKindFilter = useTodos((s) => s.setKindFilter);
   const setScopeFilter = useTodos((s) => s.setScopeFilter);
   const setSearchQuery = useTodos((s) => s.setSearchQuery);
   const fetchVisibleTodos = useTodos((s) => s.fetchVisibleTodos);
-
-  // Eager load when the view is mounted
-  useEffect(() => {
-    void fetchVisibleTodos(false);
-  }, []);
 
   const gitProjects = useMemo(() => projects.filter((p) => !p.non_git), [projects]);
   // A removed project drops out here rather than out of the saved selection,
@@ -113,69 +109,22 @@ export function TodosView() {
     setScopeFilter(s);
   };
 
-  // Aggregate items from matching cache entries
-  const { items, totalUnfiltered, errors } = useMemo(() => {
-    const candidateProjects = picked.length ? picked : gitProjects;
+  const queries = useMemo(
+    () => todoQueries(picked.length ? picked : gitProjects, kindFilter, scopeFilter),
+    [picked, gitProjects, kindFilter, scopeFilter]
+  );
+  const querySig = useMemo(() => queries.map(forgeListKey).join("|"), [queries]);
 
-    const relevantKeys: string[] = [];
-    for (const p of candidateProjects) {
-      if (scopeFilter === "for_me") {
-        if (kindFilter === "all" || kindFilter === "issues") {
-          relevantKeys.push(`${p.id}:issues:assigned`);
-        }
-        if (kindFilter === "all" || kindFilter === "prs") {
-          relevantKeys.push(`${p.id}:prs:review`);
-          relevantKeys.push(`${p.id}:prs:mine`);
-        }
-      } else if (scopeFilter === "review") {
-        if (kindFilter !== "issues") {
-          relevantKeys.push(`${p.id}:prs:review`);
-        }
-      } else if (scopeFilter === "all" || scopeFilter === "open") {
-        if (kindFilter === "all" || kindFilter === "issues") {
-          relevantKeys.push(`${p.id}:issues:all`);
-          relevantKeys.push(`${p.id}:issues:assigned`);
-        }
-        if (kindFilter === "all" || kindFilter === "prs") {
-          relevantKeys.push(`${p.id}:prs:open`);
-          relevantKeys.push(`${p.id}:prs:review`);
-          relevantKeys.push(`${p.id}:prs:mine`);
-        }
-      }
-    }
+  // On mount and whenever the lists the filters read change: a filter, the
+  // picked projects, or a project list that arrived after the view did.
+  // Within the TTL this fetches nothing.
+  useEffect(() => {
+    void fetchVisibleTodos(false);
+  }, [querySig, fetchVisibleTodos]);
 
-    const ACTION_WEIGHT: Record<string, number> = {
-      assigned: 5,
-      review_requested: 4,
-      authored: 3,
-      mentioned: 2,
-      open: 1,
-    };
+  const { items, totalUnfiltered, errors, pending } = useMemo(() => {
+    const { items: allItems, errors, pending } = todoRows(queries, entries, gitProjects);
 
-    const itemsById = new Map<string, TodoItem>();
-    const collectedErrors: Array<{ key: string; message: string }> = [];
-
-    for (const k of relevantKeys) {
-      const entry = cache[k];
-      if (!entry) continue;
-      if ((entry.status === "error" || entry.status === "unsupported") && entry.errorMessage) {
-        collectedErrors.push({ key: k, message: entry.errorMessage });
-      }
-      for (const item of entry.items) {
-        const existing = itemsById.get(item.id);
-        if (!existing) {
-          itemsById.set(item.id, item);
-        } else {
-          const existingWeight = ACTION_WEIGHT[existing.action] ?? 0;
-          const newWeight = ACTION_WEIGHT[item.action] ?? 0;
-          if (newWeight > existingWeight) {
-            itemsById.set(item.id, item);
-          }
-        }
-      }
-    }
-
-    const allItems = Array.from(itemsById.values());
     const totalUnfiltered = allItems.length;
 
     // Filter by text search if present
@@ -208,8 +157,8 @@ export function TodosView() {
       return tB - tA;
     });
 
-    return { items: filtered, totalUnfiltered, errors: collectedErrors };
-  }, [gitProjects, picked, scopeFilter, kindFilter, cache, searchQuery]);
+    return { items: filtered, totalUnfiltered, errors, pending };
+  }, [queries, entries, gitProjects, searchQuery]);
 
   const { issueCount, prCount, assignedCount, reviewCount, authoredCount, projectCount } = useMemo(() => {
     let issues = 0;
@@ -321,13 +270,13 @@ export function TodosView() {
           <Button
             size="sm"
             variant="secondary"
-            disabled={isRefreshing}
+            disabled={pending}
             onClick={() => void fetchVisibleTodos(true)}
             data-testid="todos-refresh-button"
             className="h-7 text-[12px] gap-1.5"
           >
-            <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
-            <span>{isRefreshing ? t("todos.refreshing") : t("todos.refresh")}</span>
+            <RefreshCw className={cn("h-3.5 w-3.5", pending && "animate-spin")} />
+            <span>{pending ? t("todos.refreshing") : t("todos.refresh")}</span>
           </Button>
         </div>
       </div>
@@ -425,14 +374,25 @@ export function TodosView() {
       {/* Content Table / List */}
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-3" data-testid="todos-list">
         {items.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center p-8 text-center">
+          // "No items" only once every list has answered: before that it would
+          // be a claim about lists that are still on their way.
+          <div
+            data-testid={pending && totalUnfiltered === 0 ? "todos-loading" : "todos-empty"}
+            className="flex h-full flex-col items-center justify-center p-8 text-center"
+          >
             <div className="mb-3 rounded-full bg-[var(--color-bg-2)] p-3 text-[var(--color-fg-faint)]">
               <ListTodo className="h-8 w-8" />
             </div>
-            <h3 className="text-[14px] font-medium text-[var(--color-fg)]">{t("todos.emptyTitle")}</h3>
-            <p className="mt-1 max-w-sm text-[12.5px] text-[var(--color-fg-muted)]">
-              {t("todos.emptyDescription")}
-            </p>
+            {pending && totalUnfiltered === 0 ? (
+              <h3 className="text-[14px] font-medium text-[var(--color-fg)]">{t("todos.loadingTitle")}</h3>
+            ) : (
+              <>
+                <h3 className="text-[14px] font-medium text-[var(--color-fg)]">{t("todos.emptyTitle")}</h3>
+                <p className="mt-1 max-w-sm text-[12.5px] text-[var(--color-fg-muted)]">
+                  {t("todos.emptyDescription")}
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <div className="w-full">

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createElement, act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
@@ -10,37 +10,61 @@ vi.mock("@/lib/ipc", async (importOriginal) => {
   return {
     ...actual,
     openPath: vi.fn().mockResolvedValue(undefined),
-    projectForgeIssues: vi.fn().mockResolvedValue({ status: "ok", issues: [] }),
-    projectForgePrs: vi.fn().mockResolvedValue({ status: "ok", prs: [] }),
+    projectForgeIssues: vi.fn(),
+    projectForgePrs: vi.fn(),
   };
 });
 
 import { TodosView } from "./TodosView";
 import { useApp } from "@/store/app";
 import { useTodos } from "@/store/todos";
+import { clearForgeLists, forgeListKey, useForgeLists, type ForgeListQuery } from "@/store/forgeLists";
 import { useUI } from "@/store/ui";
-import { openPath } from "@/lib/ipc";
-import type { Project } from "@/lib/types";
-import type { TodoItem } from "@/store/todos";
+import * as ipc from "@/lib/ipc";
+import type { ForgeIssue, ForgePr, IssueLookup, PrPickList, Project } from "@/lib/types";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const issue = (number: number, title: string, over: Partial<ForgeIssue> = {}): ForgeIssue => ({
+  provider: "github", number, title, url: "", body: "", author: "alice", comments: 0, labels: [],
+  updated_at: "2026-10-24T10:00:00Z", ...over,
+});
+const pr = (number: number, title: string, over: Partial<ForgePr> = {}): ForgePr => ({
+  provider: "github", number, title, url: "", body: "", author: "bob", head_ref: "feat",
+  cross_repository: false, draft: false, updated_at: "2026-10-24T11:00:00Z", ...over,
+});
+const issuesOk = (issues: ForgeIssue[]): IssueLookup => ({ provider: "github", remote_url: "", status: "ok", message: "", issues });
+const prsOk = (prs: ForgePr[]): PrPickList => ({ provider: "github", remote_url: "", status: "ok", message: "", prs });
+
+/** Put a fresh answer in the shared lists, as a fetch that just landed would. */
+function seed(query: ForgeListQuery, ok: IssueLookup | PrPickList, over: { status?: "ok" | "loading"; fetchedAt?: number } = {}) {
+  const key = forgeListKey(query);
+  useForgeLists.setState((s) => ({
+    entries: {
+      ...s.entries,
+      [key]: { query, status: over.status ?? "ok", ok, okAt: 1, fetchedAt: over.fetchedAt ?? Date.now() },
+    },
+  }));
+}
 
 describe("TodosView component", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Lists nobody seeded answer empty, so the mount's fetch settles.
+    vi.mocked(ipc.projectForgeIssues).mockResolvedValue(issuesOk([]));
+    vi.mocked(ipc.projectForgePrs).mockResolvedValue(prsOk([]));
     container = document.createElement("div");
     document.body.appendChild(container);
 
     localStorage.clear();
-    useTodos.getState().clearCache();
+    clearForgeLists();
     useTodos.setState({
       selectedProjectIds: [],
       kindFilter: "all",
       scopeFilter: "for_me",
       searchQuery: "",
-      isRefreshing: false,
     });
     useApp.setState({
       projects: [
@@ -50,61 +74,35 @@ describe("TodosView component", () => {
     });
   });
 
-  it("renders view title, project filter, and kind/scope pills", async () => {
+  async function render(): Promise<Root> {
     const root = createRoot(container);
     await act(async () => {
       root.render(createElement(TodosView));
       await new Promise((r) => setTimeout(r, 10));
     });
+    return root;
+  }
 
-    expect(container.querySelector('[data-testid="todos-view"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="todos-project-filter"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="todos-refresh-button"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="todos-kind-all"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="todos-scope-for_me"]')).toBeDefined();
-
-    await act(async () => {
-      root.unmount();
-    });
+  it("renders view title, project filter, and kind/scope pills", async () => {
+    const root = await render();
+    expect(container.querySelector('[data-testid="todos-view"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="todos-project-filter"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="todos-refresh-button"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="todos-kind-all"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="todos-scope-for_me"]')).not.toBeNull();
+    await act(async () => root.unmount());
   });
 
-  it("displays items from cache with action badges and labels", async () => {
-    useTodos.setState({
-      cache: {
-        "p1:issues:assigned": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p1:issue:101",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "assigned",
-              issue: {
-                provider: "github",
-                number: 101,
-                title: "Fix memory leak in buffer pool",
-                url: "https://github.com/acme/backend/issues/101",
-                body: "Leaking memory during streaming",
-                author: "alice",
-                comments: 3,
-                labels: ["bug", "p0"],
-                updated_at: "2026-10-24T10:00:00Z",
-              },
-            },
-          ],
-        },
-      },
-    });
-
+  it("displays issue rows with action badges and labels, and starts a task from one", async () => {
+    seed(
+      { projectId: "p1", kind: "issues", scope: "assigned" },
+      issuesOk([issue(101, "Fix memory leak in buffer pool", {
+        url: "https://github.com/acme/backend/issues/101", body: "Leaking memory during streaming",
+        comments: 3, labels: ["bug", "p0"],
+      })]),
+    );
     const openNewTaskSpy = vi.spyOn(useUI.getState(), "openNewTask");
-
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(createElement(TodosView));
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    const root = await render();
 
     expect(container.textContent).toContain("Fix memory leak in buffer pool");
     expect(container.textContent).toContain("#101");
@@ -113,282 +111,110 @@ describe("TodosView component", () => {
     expect(container.textContent).toContain("bug");
 
     const startBtn = container.querySelector('[data-testid="todos-start-task"]') as HTMLButtonElement;
-    expect(startBtn).toBeDefined();
-    await act(async () => {
-      startBtn.click();
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
+    await act(async () => startBtn.click());
     expect(openNewTaskSpy).toHaveBeenCalledWith("p1", expect.objectContaining({
       mode: "worktree",
-      issue: expect.objectContaining({ number: 101 }),
+      issue: expect.objectContaining({ number: 101, body: "Leaking memory during streaming" }),
     }));
-
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => root.unmount());
   });
 
-  it("displays PR items with draft badge and handles review action and browser link", async () => {
-    useTodos.setState({
-      cache: {
-        "p1:prs:review": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p1:pr:55",
-              kind: "pr",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "review_requested",
-              pr: {
-                provider: "github",
-                number: 55,
-                title: "Add telemetry metrics",
-                url: "https://github.com/acme/backend/pull/55",
-                body: "Telemetry metrics for PTY",
-                author: "bob",
-                head_ref: "feature/telemetry",
-                cross_repository: false,
-                draft: true,
-                updated_at: "2026-10-24T11:00:00Z",
-              },
-            },
-          ],
-        },
-      },
-    });
-
+  it("displays PR rows with the draft badge, and handles review and the browser link", async () => {
+    seed(
+      { projectId: "p1", kind: "prs", scope: "review" },
+      prsOk([pr(55, "Add telemetry metrics", { url: "https://github.com/acme/backend/pull/55", draft: true })]),
+    );
     const openReviewPrSpy = vi.spyOn(useUI.getState(), "openReviewPr");
-
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(createElement(TodosView));
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    const root = await render();
 
     expect(container.textContent).toContain("Add telemetry metrics");
     expect(container.textContent).toContain("!55");
     expect(container.textContent).toContain("draft");
     expect(container.textContent).toContain("by bob");
 
-    const reviewBtn = container.querySelector('[data-testid="todos-start-task"]') as HTMLButtonElement;
-    await act(async () => {
-      reviewBtn.click();
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => (container.querySelector('[data-testid="todos-start-task"]') as HTMLButtonElement).click());
+    expect(openReviewPrSpy).toHaveBeenCalledWith("p1", { number: 55, url: "https://github.com/acme/backend/pull/55" });
 
-    expect(openReviewPrSpy).toHaveBeenCalledWith("p1", {
-      number: 55,
-      url: "https://github.com/acme/backend/pull/55",
-    });
-
-    const browserBtn = container.querySelector('[data-testid="todos-open-browser"]') as HTMLButtonElement;
-    await act(async () => {
-      browserBtn.click();
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    expect(openPath).toHaveBeenCalledWith("https://github.com/acme/backend/pull/55");
-
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => (container.querySelector('[data-testid="todos-open-browser"]') as HTMLButtonElement).click());
+    expect(ipc.openPath).toHaveBeenCalledWith("https://github.com/acme/backend/pull/55");
+    await act(async () => root.unmount());
   });
 
-  it("renders empty state when there are no items", async () => {
-    const root = createRoot(container);
+  it("says Loading, not No items, while the lists are on their way, then the empty state", async () => {
+    let answer!: (v: IssueLookup) => void;
+    vi.mocked(ipc.projectForgeIssues).mockReturnValue(new Promise<IssueLookup>((r) => { answer = r; }));
+    useTodos.setState({ kindFilter: "issues" });
+    const root = await render();
+
+    expect(container.querySelector('[data-testid="todos-loading"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("No items found");
+    const refresh = container.querySelector('[data-testid="todos-refresh-button"]') as HTMLButtonElement;
+    expect(refresh.disabled).toBe(true);
+
     await act(async () => {
-      root.render(createElement(TodosView));
+      answer(issuesOk([]));
       await new Promise((r) => setTimeout(r, 10));
     });
+    expect(container.querySelector('[data-testid="todos-loading"]')).toBeNull();
+    expect(container.querySelector('[data-testid="todos-empty"]')).not.toBeNull();
+    expect(container.textContent).toContain("No items found");
+    expect(refresh.disabled).toBe(false);
+    await act(async () => root.unmount());
+  });
 
-    expect(container.querySelector('[data-testid="todos-view"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="todos-row"]')).toBeNull();
+  it("keeps the rows it has on screen while a stale list is re-fetched", async () => {
+    let answer!: (v: IssueLookup) => void;
+    vi.mocked(ipc.projectForgeIssues).mockReturnValue(new Promise<IssueLookup>((r) => { answer = r; }));
+    useTodos.setState({ kindFilter: "issues" });
+    // As the launch snapshot restores it: an old answer, past the TTL.
+    seed({ projectId: "p1", kind: "issues", scope: "assigned" }, issuesOk([issue(7, "Remembered issue")]), { fetchedAt: 1 });
+    const root = await render();
+
+    expect(ipc.projectForgeIssues).toHaveBeenCalledWith("p1", 50, "assigned");
+    expect(container.textContent).toContain("Remembered issue");
+    expect(container.querySelector('[data-testid="todos-loading"]')).toBeNull();
 
     await act(async () => {
-      root.unmount();
+      answer(issuesOk([issue(7, "Remembered issue"), issue(8, "New issue")]));
+      await new Promise((r) => setTimeout(r, 10));
     });
+    expect(container.textContent).toContain("New issue");
+    await act(async () => root.unmount());
+  });
+
+  it("renders the empty state when every list answers empty", async () => {
+    const root = await render();
+    expect(container.querySelector('[data-testid="todos-row"]')).toBeNull();
+    expect(container.querySelector('[data-testid="todos-empty"]')).not.toBeNull();
+    await act(async () => root.unmount());
   });
 
   it("matches issue reference numbers with leading # or !", async () => {
-    useTodos.setState({
-      searchQuery: "#101",
-      cache: {
-        "p1:issues:assigned": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p1:issue:101",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "assigned",
-              issue: {
-                provider: "github",
-                number: 101,
-                title: "Memory leak",
-                url: "https://github.com/acme/backend/issues/101",
-                body: "Body",
-                author: "alice",
-                comments: 0,
-                labels: [],
-                updated_at: "2026-10-24T10:00:00Z",
-              },
-            },
-          ],
-        },
-      },
-    });
-
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(createElement(TodosView));
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
+    useTodos.setState({ searchQuery: "#101" });
+    seed({ projectId: "p1", kind: "issues", scope: "assigned" }, issuesOk([issue(101, "Memory leak")]));
+    const root = await render();
     expect(container.querySelector('[data-testid="todos-row"]')).not.toBeNull();
     expect(container.textContent).toContain("Memory leak");
-
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => root.unmount());
   });
 
-  it("preserves 'assigned' action badge over generic 'open' when deduplicating items", async () => {
-    useTodos.setState({
-      scopeFilter: "all",
-      cache: {
-        "p1:issues:all": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p1:issue:13",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "open",
-              issue: {
-                provider: "gitlab",
-                number: 13,
-                title: "Report daily budget",
-                url: "https://gitlab.example.com/backend/issues/13",
-                body: "Body",
-                author: "alice",
-                comments: 1,
-                labels: [],
-                updated_at: "2026-10-24T10:00:00Z",
-              },
-            },
-          ],
-        },
-        "p1:issues:assigned": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p1:issue:13",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "assigned",
-              issue: {
-                provider: "gitlab",
-                number: 13,
-                title: "Report daily budget",
-                url: "https://gitlab.example.com/backend/issues/13",
-                body: "Body",
-                author: "alice",
-                comments: 1,
-                labels: [],
-                updated_at: "2026-10-24T10:00:00Z",
-              },
-            },
-          ],
-        },
-      },
-    });
-
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(createElement(TodosView));
-      await new Promise((r) => setTimeout(r, 10));
-    });
+  it("preserves the 'assigned' badge over a generic 'open' when two lists carry one issue", async () => {
+    useTodos.setState({ scopeFilter: "all" });
+    seed({ projectId: "p1", kind: "issues", scope: "all" }, issuesOk([issue(13, "Report daily budget", { provider: "gitlab" })]));
+    seed({ projectId: "p1", kind: "issues", scope: "assigned" }, issuesOk([issue(13, "Report daily budget", { provider: "gitlab" })]));
+    const root = await render();
 
     const rows = container.querySelectorAll('[data-testid="todos-row"]');
     expect(rows).toHaveLength(1);
-    // Should display assigned badge, not open
     expect(rows[0].textContent).toContain("assigned");
-
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => root.unmount());
   });
 
-  it("renders sticky footer with total count, breakdown, metrics and project count", async () => {
-    useTodos.setState({
-      scopeFilter: "all",
-      cache: {
-        "p1:issues:assigned": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p1:issue:1",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Backend API",
-              action: "assigned",
-              issue: {
-                provider: "github",
-                number: 1,
-                title: "Task 1",
-                url: "",
-                body: "",
-                author: "a",
-                comments: 0,
-                labels: [],
-                updated_at: "2026-10-24T10:00:00Z",
-              },
-            },
-          ],
-        },
-        "p2:prs:review": {
-          status: "ok",
-          fetchedAt: Date.now(),
-          items: [
-            {
-              id: "p2:pr:2",
-              kind: "pr",
-              projectId: "p2",
-              projectName: "Frontend Web",
-              action: "review_requested",
-              pr: {
-                provider: "github",
-                number: 2,
-                title: "PR 2",
-                url: "",
-                body: "",
-                author: "b",
-                head_ref: "feat",
-                cross_repository: false,
-                draft: false,
-                updated_at: "2026-10-24T11:00:00Z",
-              },
-            },
-          ],
-        },
-      },
-    });
-
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(createElement(TodosView));
-      await new Promise((r) => setTimeout(r, 10));
-    });
+  it("renders the sticky footer with total count, breakdown, metrics and project count", async () => {
+    useTodos.setState({ scopeFilter: "all" });
+    seed({ projectId: "p1", kind: "issues", scope: "assigned" }, issuesOk([issue(1, "Task 1")]));
+    seed({ projectId: "p2", kind: "prs", scope: "review" }, prsOk([pr(2, "PR 2")]));
+    const root = await render();
 
     const footer = container.querySelector('[data-testid="todos-footer"]');
     expect(footer).not.toBeNull();
@@ -397,32 +223,10 @@ describe("TodosView component", () => {
     expect(footer?.textContent).toContain("1 assigned");
     expect(footer?.textContent).toContain("1 review");
     expect(footer?.textContent).toContain("2 projects");
-
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => root.unmount());
   });
 
   describe("project picker", () => {
-    const issueIn = (projectId: string, projectName: string, number: number): TodoItem => ({
-      id: `${projectId}:issue:${number}`,
-      kind: "issue",
-      projectId,
-      projectName,
-      action: "assigned",
-      issue: {
-        provider: "github",
-        number,
-        title: `Issue ${number} in ${projectName}`,
-        url: "",
-        body: "",
-        author: "alice",
-        comments: 0,
-        labels: [],
-        updated_at: "2026-10-24T10:00:00Z",
-      },
-    });
-
     beforeEach(() => {
       useApp.setState({
         projects: [
@@ -431,25 +235,11 @@ describe("TodosView component", () => {
           { id: "p3", name: "Infra", non_git: false } as Project,
         ],
       });
-      const entry = (item: TodoItem) => ({ status: "ok" as const, fetchedAt: Date.now(), items: [item] });
-      useTodos.setState({
-        kindFilter: "issues",
-        cache: {
-          "p1:issues:assigned": entry(issueIn("p1", "Backend API", 1)),
-          "p2:issues:assigned": entry(issueIn("p2", "Frontend Web", 2)),
-          "p3:issues:assigned": entry(issueIn("p3", "Infra", 3)),
-        },
-      });
+      useTodos.setState({ kindFilter: "issues" });
+      for (const [id, name, n] of [["p1", "Backend API", 1], ["p2", "Frontend Web", 2], ["p3", "Infra", 3]] as const) {
+        seed({ projectId: id, kind: "issues", scope: "assigned" }, issuesOk([issue(n, `Issue ${n} in ${name}`)]));
+      }
     });
-
-    async function render() {
-      const root = createRoot(container);
-      await act(async () => {
-        root.render(createElement(TodosView));
-        await new Promise((r) => setTimeout(r, 10));
-      });
-      return root;
-    }
 
     const rowTitles = () =>
       Array.from(container.querySelectorAll('[data-testid="todos-row"]'), (r) => r.textContent ?? "");

@@ -265,6 +265,7 @@ export default {
     reviewPr: "审查 PR",
     openInBrowser: "在浏览器中打开",
     emptyTitle: "未找到事项",
+    loadingTitle: "正在加载议题和 PR…",
     emptyDescription: "请尝试更改项目、类别或范围筛选条件。",
     actionAssigned: "指派给我",
     actionReview: "等待审查",

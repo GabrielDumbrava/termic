@@ -63,7 +63,9 @@ export function prCommands(provider: ForgeProvider | null | undefined, n: number
   return { view: `gh pr view ${n} --comments`, diff: `gh pr diff ${n}` };
 }
 
-const BODY_MAX = 4000;
+/** How much PR description a review prompt inlines. Exported for the forge
+ *  list snapshot, which keeps exactly enough to cut it in the same place. */
+export const BODY_MAX = 4000;
 
 /** Control characters other than newline and tab never reach a PTY. */
 function san(s: string): string {

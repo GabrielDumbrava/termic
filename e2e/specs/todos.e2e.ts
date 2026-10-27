@@ -12,8 +12,8 @@ import { clickByText, clickWhenVisible, dismissOverlays, requireTermicApi, snap,
 // clears it and closes the menu; a picked project that is removed falls back
 // to every project without the saved pick being rewritten.
 //
-// Rows are SEEDED into the Todos cache: the fixture's origin is a local path,
-// which no forge CLI answers for, so a real fetch would never fill the list.
+// Rows are SEEDED into the shared forge lists: the fixture's origin is a local
+// path, which no forge CLI answers for, so a real fetch would never fill one.
 describe("todos project filter", () => {
   let dir = "";
   let otherId = "";
@@ -33,11 +33,10 @@ describe("todos project filter", () => {
   after(async () => {
     await browser.execute(async (pid) => {
       const t = window.__termic!;
-      // Straight to the store, not through the setter: the setter fetches,
-      // and a fetch landing after clearCache would leave entries behind.
       t.useTodos.setState({ selectedProjectIds: [], kindFilter: "all" });
       localStorage.removeItem("todosProjects");
-      t.useTodos.getState().clearCache();
+      // The snapshot too: seeded rows must not reappear on the next launch.
+      t.clearForgeLists();
       if (pid) {
         try { await t.ipc.projectRemove(pid); } catch { /* already gone */ }
       }
@@ -103,29 +102,35 @@ describe("todos project filter", () => {
 
     await browser.execute((rows) => {
       const t = window.__termic!;
-      const cache: Record<string, unknown> = {};
-      for (const [pid, pname, title, n] of rows) {
-        cache[`${pid}:issues:assigned`] = {
+      const entries: Record<string, unknown> = {};
+      for (const [pid, title, n] of rows) {
+        const query = { projectId: pid, kind: "issues", scope: "assigned" };
+        // The key forgeListKey builds: a missing limit is the IPC's 50.
+        entries[`${pid}:issues:assigned:50`] = {
+          query,
           status: "ok",
+          ok: {
+            provider: "github", remote_url: "", status: "ok", message: "",
+            issues: [{
+              provider: "github", number: n, title, url: "", body: "", author: "alice",
+              comments: 0, labels: [], updated_at: "2026-10-24T10:00:00Z",
+            }],
+          },
+          okAt: Date.now(),
           // Ahead of now, so the TTL cannot lapse mid-spec and send a real
           // fetch over the seeded rows.
           fetchedAt: Date.now() + 60 * 60 * 1000,
-          items: [{
-            id: `${pid}:issue:${n}`, kind: "issue", projectId: pid, projectName: pname, action: "assigned",
-            issue: {
-              provider: "github", number: n, title, url: "", body: "", author: "alice",
-              comments: 0, labels: [], updated_at: "2026-10-24T10:00:00Z",
-            },
-          }],
         };
       }
       localStorage.removeItem("todosProjects");
+      t.clearForgeLists();
+      t.useForgeLists.setState({ entries });
       // Issues only, so the view asks for nothing the seed does not hold.
-      t.useTodos.setState({ cache, selectedProjectIds: [], kindFilter: "issues", scopeFilter: "for_me", searchQuery: "" });
+      t.useTodos.setState({ selectedProjectIds: [], kindFilter: "issues", scopeFilter: "for_me", searchQuery: "" });
     }, [
-      [fixtureId, "fixture-repo", FIXTURE_TITLE, 1],
-      [otherId, otherName, OTHER_TITLE, 2],
-    ] as Array<[string, string, string, number]>);
+      [fixtureId, FIXTURE_TITLE, 1],
+      [otherId, OTHER_TITLE, 2],
+    ] as Array<[string, string, number]>);
     await browser.execute(() => window.__termic!.useApp.getState().loadAll());
 
     await clickWhenVisible('[data-testid="nav-todos"]');

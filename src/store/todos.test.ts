@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { coveredProjects, makeQueryKey, parseTodosProjects, pickedProjects, TODOS_CACHE_TTL_MS, useTodos } from "./todos";
+import { coveredProjects, parseTodosProjects, pickedProjects, todoQueries, todoRows, useTodos } from "./todos";
+import { clearForgeLists, forgeListKey, type ForgeListEntry, type ForgeListQuery } from "./forgeLists";
 import { useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
-import type { IssueLookup, PrPickList, Project } from "@/lib/types";
+import type { ForgeIssue, ForgePr, IssueLookup, PrPickList, Project } from "@/lib/types";
 
 vi.mock("@/lib/ipc", () => ({
   projectForgeIssues: vi.fn(),
@@ -25,258 +26,70 @@ const stored = vi.hoisted(() => {
 const okIssues = { provider: "github", remote_url: "", status: "ok", message: "", issues: [] } as unknown as IssueLookup;
 const okPrs = { provider: "github", remote_url: "", status: "ok", message: "", prs: [] } as unknown as PrPickList;
 
+const issue = (number: number, title = `Issue ${number}`): ForgeIssue => ({
+  provider: "github", number, title, url: "", body: "", author: "alice", comments: 0, labels: [],
+  updated_at: "2026-10-24T10:00:00Z",
+});
+const pr = (number: number): ForgePr => ({
+  provider: "github", number, title: `PR ${number}`, url: "", body: "", author: "bob",
+  head_ref: "feat", cross_repository: false, draft: false, updated_at: "2026-10-24T11:00:00Z",
+});
+const okEntry = (query: ForgeListQuery, ok: IssueLookup | PrPickList): ForgeListEntry =>
+  ({ query, status: "ok", ok, okAt: 1, fetchedAt: Date.now() });
+
 describe("todos store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     stored.clear();
-    useTodos.getState().clearCache();
+    clearForgeLists();
     useTodos.setState({
       selectedProjectIds: [],
       kindFilter: "all",
       scopeFilter: "for_me",
       searchQuery: "",
-      isRefreshing: false,
     });
-  });
-
-  it("builds consistent query keys", () => {
-    expect(makeQueryKey("p1", "issues", "assigned")).toBe("p1:issues:assigned");
-    expect(makeQueryKey("p2", "prs", "review")).toBe("p2:prs:review");
   });
 
   it("skips non-git projects", async () => {
-    useApp.setState({
-      projects: [
-        { id: "p-nongit", name: "Plain Folder", non_git: true } as Project,
-      ],
-    });
-
+    useApp.setState({ projects: [{ id: "p-nongit", name: "Plain Folder", non_git: true } as Project] });
     await useTodos.getState().fetchVisibleTodos();
     expect(ipc.projectForgeIssues).not.toHaveBeenCalled();
     expect(ipc.projectForgePrs).not.toHaveBeenCalled();
   });
 
-  it("fetches assigned issues and review/mine PRs for scope 'for_me'", async () => {
-    useApp.setState({
-      projects: [
-        { id: "p1", name: "Repo 1", non_git: false } as Project,
-      ],
-    });
-
-    vi.mocked(ipc.projectForgeIssues).mockResolvedValueOnce({
-      provider: "github",
-      remote_url: "git@github.com:acme/repo1.git",
-      status: "ok",
-      message: "",
-      issues: [
-        {
-          provider: "github",
-          number: 10,
-          title: "Fix bug",
-          url: "https://github.com/acme/repo1/issues/10",
-          body: "details",
-          author: "alice",
-          comments: 2,
-          labels: ["bug"],
-          updated_at: "2026-10-24T12:00:00Z",
-        },
-      ],
-    } as IssueLookup);
-
-    vi.mocked(ipc.projectForgePrs).mockResolvedValueOnce({
-      provider: "github",
-      remote_url: "git@github.com:acme/repo1.git",
-      status: "ok",
-      message: "",
-      prs: [
-        {
-          provider: "github",
-          number: 20,
-          title: "PR review",
-          url: "https://github.com/acme/repo1/pull/20",
-          body: "review me",
-          author: "bob",
-          head_ref: "feature/review",
-          cross_repository: false,
-          draft: false,
-          updated_at: "2026-10-24T13:00:00Z",
-        },
-      ],
-    } as PrPickList);
-
-    vi.mocked(ipc.projectForgePrs).mockResolvedValueOnce({
-      provider: "github",
-      remote_url: "git@github.com:acme/repo1.git",
-      status: "ok",
-      message: "",
-      prs: [],
-    } as PrPickList);
+  it("fetches assigned issues and review/mine PRs for 'For me', at the dialogs' limits", async () => {
+    useApp.setState({ projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project] });
+    vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
+    vi.mocked(ipc.projectForgePrs).mockResolvedValue(okPrs);
 
     await useTodos.getState().fetchVisibleTodos();
 
     expect(ipc.projectForgeIssues).toHaveBeenCalledWith("p1", 50, "assigned");
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "review", limit: 30 });
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "mine", limit: 30 });
-
-    const cache = useTodos.getState().cache;
-    expect(cache["p1:issues:assigned"]?.status).toBe("ok");
-    expect(cache["p1:issues:assigned"]?.items).toHaveLength(1);
-    expect(cache["p1:issues:assigned"]?.items[0].id).toBe("p1:issue:10");
-    expect(cache["p1:prs:review"]?.items[0].id).toBe("p1:pr:20");
+    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(1);
+    expect(ipc.projectForgePrs).toHaveBeenCalledTimes(2);
   });
 
-  it("respects cache TTL and skips fresh queries", async () => {
-    useApp.setState({
-      projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project],
-    });
+  it("fetches nothing again within the TTL, and everything on Refresh", async () => {
+    useApp.setState({ projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project] });
+    vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
+    vi.mocked(ipc.projectForgePrs).mockResolvedValue(okPrs);
 
-    useTodos.setState({
-      cache: {
-        "p1:issues:assigned": {
-          items: [],
-          fetchedAt: Date.now(),
-          status: "ok",
-        },
-        "p1:prs:review": {
-          items: [],
-          fetchedAt: Date.now(),
-          status: "ok",
-        },
-        "p1:prs:mine": {
-          items: [],
-          fetchedAt: Date.now(),
-          status: "ok",
-        },
-      },
-    });
-
-    await useTodos.getState().fetchVisibleTodos(false);
-    expect(ipc.projectForgeIssues).not.toHaveBeenCalled();
-    expect(ipc.projectForgePrs).not.toHaveBeenCalled();
-
-    // If force is true, it re-queries
-    vi.mocked(ipc.projectForgeIssues).mockResolvedValue({
-      provider: "github",
-      remote_url: "",
-      status: "ok",
-      message: "",
-      issues: [],
-    } as IssueLookup);
-    vi.mocked(ipc.projectForgePrs).mockResolvedValue({
-      provider: "github",
-      remote_url: "",
-      status: "ok",
-      message: "",
-      prs: [],
-    } as PrPickList);
-
-    await useTodos.getState().fetchVisibleTodos(true);
-    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(1);
-  });
-
-  it("preserves cached rows when a refresh returns an error status", async () => {
-    useApp.setState({
-      projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project],
-    });
-
-    useTodos.setState({
-      kindFilter: "issues",
-      scopeFilter: "for_me",
-      cache: {
-        "p1:issues:assigned": {
-          status: "ok",
-          fetchedAt: 1000,
-          items: [
-            {
-              id: "p1:issue:99",
-              kind: "issue",
-              projectId: "p1",
-              projectName: "Repo 1",
-              action: "assigned",
-              issue: {
-                provider: "github",
-                number: 99,
-                title: "Existing cached issue",
-                url: "https://github.com/acme/repo1/issues/99",
-                body: "Body",
-                author: "alice",
-                comments: 0,
-                labels: [],
-                updated_at: "2026-10-24T10:00:00Z",
-              },
-            },
-          ],
-        },
-      },
-    });
-
-    vi.mocked(ipc.projectForgeIssues).mockResolvedValueOnce({
-      provider: "github",
-      remote_url: "",
-      status: "error",
-      message: "Network unreachable",
-      issues: [],
-    } as unknown as IssueLookup);
-
-    await useTodos.getState().fetchVisibleTodos(true);
-
-    const entry = useTodos.getState().cache["p1:issues:assigned"];
-    expect(entry?.status).toBe("error");
-    expect(entry?.errorMessage).toBe("Network unreachable");
-    expect(entry?.items).toHaveLength(1);
-    expect(entry?.items[0].id).toBe("p1:issue:99");
-  });
-
-  it("caches a failed fetch for the TTL instead of re-running it on every filter change", async () => {
-    useApp.setState({
-      projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project],
-    });
-    useTodos.setState({ kindFilter: "issues", scopeFilter: "for_me" });
-    vi.mocked(ipc.projectForgeIssues).mockResolvedValue({
-      provider: "github",
-      remote_url: "",
-      status: "error",
-      message: "gh: not logged in",
-      issues: [],
-    } as unknown as IssueLookup);
-
-    await useTodos.getState().fetchVisibleTodos(false);
-    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(1);
-    expect(useTodos.getState().cache["p1:issues:assigned"]?.fetchedAt).toBeGreaterThan(0);
-
-    await useTodos.getState().fetchVisibleTodos(false);
+    await useTodos.getState().fetchVisibleTodos();
+    await useTodos.getState().fetchVisibleTodos();
     expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(1);
 
-    // Refresh still retries.
     await useTodos.getState().fetchVisibleTodos(true);
     expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(2);
+    expect(ipc.projectForgePrs).toHaveBeenCalledTimes(4);
   });
 
   it("queues both broad and user queries when scope is 'all'", async () => {
-    useApp.setState({
-      projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project],
-    });
-
-    useTodos.setState({
-      scopeFilter: "all",
-      kindFilter: "all",
-    });
-
-    vi.mocked(ipc.projectForgeIssues).mockResolvedValue({
-      provider: "github",
-      remote_url: "",
-      status: "ok",
-      message: "",
-      issues: [],
-    } as IssueLookup);
-
-    vi.mocked(ipc.projectForgePrs).mockResolvedValue({
-      provider: "github",
-      remote_url: "",
-      status: "ok",
-      message: "",
-      prs: [],
-    } as PrPickList);
+    useApp.setState({ projects: [{ id: "p1", name: "Repo 1", non_git: false } as Project] });
+    useTodos.setState({ scopeFilter: "all", kindFilter: "all" });
+    vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
+    vi.mocked(ipc.projectForgePrs).mockResolvedValue(okPrs);
 
     await useTodos.getState().fetchVisibleTodos(true);
 
@@ -285,6 +98,60 @@ describe("todos store", () => {
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "open", limit: 30 });
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "review", limit: 30 });
     expect(ipc.projectForgePrs).toHaveBeenCalledWith("p1", { scope: "mine", limit: 30 });
+  });
+
+  it("reads only PR lists for 'Review requested', and nothing at all with Issues picked", () => {
+    const p = [{ id: "p1", name: "Repo 1", non_git: false } as Project];
+    expect(todoQueries(p, "all", "review").map(forgeListKey)).toEqual(["p1:prs:review:30"]);
+    expect(todoQueries(p, "issues", "review")).toEqual([]);
+    expect(todoQueries(p, "issues", "for_me").map(forgeListKey)).toEqual(["p1:issues:assigned:50"]);
+  });
+
+  describe("rows", () => {
+    const projects = [{ id: "p1", name: "Renamed Repo", non_git: false } as Project];
+
+    it("gives each issue or PR one row, carrying its most specific role and the project's current name", () => {
+      const queries = todoQueries(projects, "all", "all");
+      const entries = {
+        [forgeListKey(queries[0])]: okEntry(queries[0], { ...okIssues, issues: [issue(13), issue(14)] }),
+        [forgeListKey(queries[1])]: okEntry(queries[1], { ...okIssues, issues: [issue(13)] }),
+        [forgeListKey(queries[2])]: okEntry(queries[2], { ...okPrs, prs: [pr(5)] }),
+        [forgeListKey(queries[4])]: okEntry(queries[4], { ...okPrs, prs: [pr(5)] }),
+      };
+      const { items, pending } = todoRows(queries, entries, projects);
+
+      const byId = Object.fromEntries(items.map((i) => [i.id, i]));
+      expect(Object.keys(byId).sort()).toEqual(["p1:issue:13", "p1:issue:14", "p1:pr:5"]);
+      expect(byId["p1:issue:13"].action).toBe("assigned");
+      expect(byId["p1:issue:14"].action).toBe("open");
+      expect(byId["p1:pr:5"].action).toBe("authored");
+      expect(byId["p1:pr:5"].projectName).toBe("Renamed Repo");
+      // The review list never answered.
+      expect(pending).toBe(true);
+    });
+
+    it("keeps a failed list's last rows and explains the failure", () => {
+      const [q] = todoQueries(projects, "issues", "for_me");
+      const entries = {
+        [forgeListKey(q)]: {
+          ...okEntry(q, { ...okIssues, issues: [issue(99)] }),
+          status: "error" as const,
+          errorMessage: "Network unreachable",
+        },
+      };
+      const { items, errors, pending } = todoRows([q], entries, projects);
+      expect(items.map((i) => i.id)).toEqual(["p1:issue:99"]);
+      expect(errors).toEqual([{ key: forgeListKey(q), message: "Network unreachable" }]);
+      expect(pending).toBe(false);
+    });
+
+    it("is pending while a list is loading, even with rows from before", () => {
+      const [q] = todoQueries(projects, "issues", "for_me");
+      const entries = { [forgeListKey(q)]: { ...okEntry(q, { ...okIssues, issues: [issue(1)] }), status: "loading" as const } };
+      const { items, pending } = todoRows([q], entries, projects);
+      expect(items).toHaveLength(1);
+      expect(pending).toBe(true);
+    });
   });
 
   describe("project selection", () => {
@@ -321,14 +188,12 @@ describe("todos store", () => {
     it("fetches only the newly picked project when one is added to a cached selection", async () => {
       useApp.setState({ projects });
       vi.mocked(ipc.projectForgeIssues).mockResolvedValue(okIssues);
-      useTodos.setState({
-        kindFilter: "issues",
-        selectedProjectIds: ["p1"],
-        cache: { "p1:issues:assigned": { items: [], fetchedAt: Date.now(), status: "ok" } },
-      });
+      useTodos.setState({ kindFilter: "issues", selectedProjectIds: ["p1"] });
+      await useTodos.getState().fetchVisibleTodos();
+      vi.mocked(ipc.projectForgeIssues).mockClear();
 
       useTodos.getState().setSelectedProjectIds(["p1", "p2"]);
-      await vi.waitFor(() => expect(useTodos.getState().isRefreshing).toBe(false));
+      await useTodos.getState().fetchVisibleTodos();
 
       expect(vi.mocked(ipc.projectForgeIssues).mock.calls.map((c) => c[0])).toEqual(["p2"]);
     });

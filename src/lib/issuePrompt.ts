@@ -18,7 +18,7 @@ import { slugify, branchify } from "@/lib/utils";
  *  a description); past a few thousand characters the agent is better served
  *  by the link and the fetch command than by the whole wall of text, and the
  *  first part is where the actual ask lives. */
-const BODY_MAX = 4000;
+export const BODY_MAX = 4000;
 
 /** `#123` everywhere: GitHub, GitLab (issues are #; ! is reserved for merge
  *  requests) and Azure DevOps (work items are #; ! is the PR marker there).

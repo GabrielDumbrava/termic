@@ -148,9 +148,13 @@ export interface TermicApi {
       yolo?: boolean;
     }) => Promise<string[]>;
   };
-  /** The Todos view's query cache and filters. Seeded by todos.e2e.ts, since
-   *  the fixture repo has no forge remote to fill it. */
+  /** The Todos view's filters. */
   useTodos: { getState: () => any; setState: (p: any) => void };
+  /** The forge issue and PR lists (src/store/forgeLists.ts). Seeded by
+   *  todos.e2e.ts, since the fixture repo has no forge remote to fill them. */
+  useForgeLists: { getState: () => any; setState: (p: any) => void };
+  /** Forget every list and the launch snapshot. */
+  clearForgeLists: () => void;
   /** Tasks mid-creation (GH #242 — non-blocking worktree create). Seeding an
    *  entry directly lets specs catch PendingTaskRow / CreatingTaskPane in
    *  their "creating" state without racing the fixture repo's near-instant
