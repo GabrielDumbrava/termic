@@ -462,7 +462,8 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         #[arg(long)]
         main: bool,
         /// Base branch for the worktree (default: the repo's default base).
-        /// With --checkout, what the diff compares against.
+        /// With --checkout, what the diff compares against. On a multi-repo
+        /// project it is the host's; each --member keeps its own base.
         #[arg(long, conflicts_with = "main")]
         base: Option<String>,
         /// Check out this EXISTING branch into the new worktree instead of
