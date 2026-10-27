@@ -86,7 +86,10 @@ extensions" at the end of `src/index.css`; strings are `panels:mdExt.*`.
 - `details`: no parsing (raw `<details>` / `<summary>` are in the base
   allowlist). A `viewState` keeps each one's open or closed state across
   rebuilds, keyed by summary text and the first line stamped inside it
-  (closest line wins, so lines shifting above do not lose it). Find opens
+  (closest line wins, so lines shifting above do not lose it). Only the
+  outer 8 levels of nesting are keyed: each key reads the summary and
+  searches the subtree, so a hostile doc nesting hundreds deep would cost
+  depth x size per rebuild. Find opens
   every `<details>` around the current match (`revealInDetails`, called
   from `gotoMatch`). Allows and trusts nothing.
 - `frontMatter`: YAML front matter (`---` on line 1 through the next `---`
@@ -102,12 +105,20 @@ extensions" at the end of `src/index.css`; strings are `panels:mdExt.*`.
   wrapper but outside the `<pre>`'s horizontal scroll; mermaid fences and a
   document's raw `<pre>` get none. The header is `SLOT_ATTR` chrome with no
   text nodes (label and caption are CSS `content: attr()`), so find, copy
-  and selection text never see it. Allows and trusts nothing.
+  and selection text never see it. A block holding characters the preview
+  draws as nothing or that reorder what is drawn (`HIDDEN_CHARS`: bidi
+  controls, zero-width space, word joiner, BOM; not ZWJ / ZWNJ, which emoji
+  and Persian use) gets a "Hidden characters" warning in its header, since
+  Copy would hand over bytes that are not the command on screen. Allows and
+  trusts nothing.
 - `headingLinks`: hydrate only. A hover-revealed button at the end of each
   heading copies `<filePath>#<slug>` (`cx.filePath`, the bare `#slug`
   without one). The slug is computed at CLICK time by `findHeading`, the
   one walk `findHeadingBySlug` also resolves a `file.md#slug` link with:
-  `headingSlugger` over every DOM heading in order, each read by
+  `headingSlugger` over every DOM heading in order (`headingsOf`: minus any
+  nested inside another, which only raw html can produce, and whose text
+  the outer one's already holds; slugging each would cost depth x size),
+  each read by
   `headingText`, which takes inline math as its TeX (math hydrate keeps it
   in `data-tex`). So the slug is the same before and after KaTeX renders,
   matches GitHub's, and matches `DocModel.headings` (whose text also takes
@@ -141,7 +152,10 @@ extensions" at the end of `src/index.css`; strings are `panels:mdExt.*`.
   needs no CSS, fonts or CSP change. The MathML goes through its own
   DOMPurify config (MathML tags and layout attrs only, no `id` / `href` /
   `style` / `class`, `<annotation>` dropped with its text; DOMPurify's
-  namespace check only admits MathML via `<math>`), is cached per source,
+  namespace check only admits MathML via `<math>`), is cached per source
+  (an LRU of 1000 that never evicts an entry the current hydrate already
+  used, so a doc over the cap re-renders only the overflow instead of
+  missing on every formula),
   and is `cx.claim`ed. Once KaTeX is loaded a rebuild renders in the same
   task, so raw TeX never paints for a frame. A parse error keeps the TeX
   with `.math-error` and the message as its title. Allows and trusts
@@ -265,35 +279,43 @@ Every edit made on the preview is a `DocEdit`, sent to the
   save policy as an edit: undoing an auto-saved tick unticks the file, not
   just the buffer. Only a step the preview made, though: a preview edit
   carries a `previewStep` effect that `previewHistory` (in the tab editor's
-  extensions) re-attaches on undo and redo, and an undo of anything else
-  (typing, a disk reload) stays unsaved. A disk reload is its own isolated
-  history step, so ⌘Z after an agent's write reverts it in the buffer and
-  never writes the old text back over the agent's file.
+  extensions) re-attaches on undo and redo. Undo and redo dry-run the
+  history command first, and when the step is anything else (typing, a
+  disk reload) they leave the buffer alone and say so in a toast: that step
+  is the editor's to undo. A disk reload is its own isolated history step,
+  so ⌘Z from the preview after an agent's write is refused, rather than
+  reverting it in a buffer the reader cannot see and leaving the old text
+  for the next `⌘S` to write over the agent's file.
 - `canEdit` false (an external file) or no target at all (diff view, folder
   listing, Changelog) makes the preview read-only: checkboxes disabled, no
   block editor.
 
 Only `MarkdownPane` builds one (`components/task/markdown/editTarget.ts`,
 over the tab's `EditorView`). An untitled pad edits like any buffer and
-flushes itself. After an edit lands the pane re-renders the preview at
+flushes itself (`keepOnClose`: see the block editor below). After an edit lands the pane re-renders the preview at
 once instead of after the 200ms typing debounce.
 
 Save policy (pref `markdownSavePreviewEdits`, default on, the review
 menu's "Save edits" switch; read when the edit lands; `previewSaveAction`):
 
-- on, buffer clean before the edit: written to disk straight away, through
+- on, a task file (`tab.type === "edit"`), buffer clean before the edit:
+  written to disk straight away, through
   the editor's own save (`editorHandle(view).persist()` in EditorPane, the
   same write `⌘S` does). "Clean" is not "current": there is no file
   watcher, so a clean buffer can sit behind an agent's writes until its
   turn settles. `persist` therefore re-reads the file and refuses
   (`DiskChangedError`, the changed-on-disk banner, a toast) when it moved
-  on since the buffer last read or wrote it. The edit stays in the buffer,
-  dirty. The banner's Keep mine accepts the newer file as the one the next
+  on since the buffer last read or wrote it, or when the read fails (a
+  file now over the 2 MB read cap or not UTF-8 is still writable, and is
+  not the file the buffer loaded). The edit stays in the buffer, dirty. The banner's Keep mine accepts the newer file as the one the next
   save replaces. `⌘S` goes through the same check. A save clears the dirty
   dot only if the buffer is still the doc it wrote: an edit made while the
   read and write were in flight stays dirty. Saves are queued one at a
   time, and a save in flight does not count as "other unsaved changes":
-  two quick ticks both save, in order.
+  two quick ticks both save, in order. A save that fails or is refused
+  counts again, so its text is not swept into the next tick's save.
+- on, a path-backed scratch-tree file: as off. Its save has no disk check
+  to refuse with, so a preview edit never writes it on its own.
 - on, buffer already dirty: the edit stays in the buffer, nothing is
   saved, and the toast says so. The toggle never saves editor typing.
 - off: never saved (dirty dot, `⌘S`).
@@ -319,12 +341,21 @@ theme come from the same `langForId` / `resolveEditorTheme` /
   and the slot goes before it.
 - `⌘Enter`, `⌘S`, the Save button, or blur commits a `DocEdit` with
   `expect` = the lines it opened on (trailing newlines dropped). Blur skips
-  focus moving within the editor, the window losing focus, and a rebuild
-  moving the slot. `Esc` / Cancel discards. An unchanged commit just
+  focus moving within the editor, the window losing focus, a rebuild
+  moving the slot, and a modal taking focus (⌘W's close prompt: a commit
+  there would save the text before the answer). `Esc` / Cancel discards. An unchanged commit just
   closes.
 - While its text differs from the lines it opened on, the tab shows dirty
   (`PreviewEditTarget.pending`, `EditorHandle.holdDirty`), so `⌘W` asks
-  before the unmount drops it.
+  before the unmount drops it. EditorPane keeps the hold apart from the
+  buffer's own dirty state and every write of the flag ORs the two, so a
+  save or a Reload while the editor is open (say behind its conflict bar)
+  does not clear it.
+- A pad's tab (global, project or profile scope) closes without asking,
+  and a pad saves itself, so there the unmount APPLIES unapplied text
+  instead (`keepOnClose`), unless the conflict bar is up. It runs in a
+  layout-effect cleanup: those run before every passive one, and the
+  editor pane's unmount flush, which writes the pad, is passive.
 - The editor holds a line range and the source it is a range of. After
   every rebuild `place()`, and every commit against the live buffer
   (`text()`), follow it with `remapRange(before, after, range)`

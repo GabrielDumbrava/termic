@@ -120,4 +120,7 @@ export interface PreviewEditTarget {
   /** the block editor holds text not yet applied: the tab counts as dirty
    *  meanwhile, so closing it asks first */
   pending?(on: boolean): void;
+  /** the buffer saves itself (an untitled pad): text left in the block
+   *  editor when the preview goes away is applied rather than dropped */
+  keepOnClose?: boolean;
 }

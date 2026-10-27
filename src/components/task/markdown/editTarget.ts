@@ -4,7 +4,7 @@
 // the dirty dot and review-comment re-anchoring all see an ordinary edit.
 // See docs/markdown.md, "Edits".
 
-import { StateEffect, type EditorState, type StateCommand } from "@codemirror/state";
+import { StateEffect, type EditorState, type StateCommand, type Transaction } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { invertedEffects, isolateHistory, redo, undo } from "@codemirror/commands";
 import type { DocEdit, EditOutcome, PreviewEditTarget } from "@/lib/markdown/edit";
@@ -60,21 +60,25 @@ export function editorEditTarget(view: EditorView, opts: {
   canEdit: boolean;
   /** the buffer has unsaved changes (read before the edit lands) */
   isDirty(): boolean;
-  /** `preview` false: an undo / redo of a step the preview did not make
-   *  (typing, a disk reload), which the save policy must never write */
-  onApplied(label: string | undefined, wasDirty: boolean, preview: boolean): void;
+  onApplied(label: string | undefined, wasDirty: boolean): void;
+  /** ⌘Z / ⇧⌘Z from the preview found a step it did not make (typing, a disk
+   *  reload) and left the buffer alone */
+  onNotPreview(redo: boolean): void;
   save(): void;
   pending?(on: boolean): void;
+  keepOnClose?: boolean;
 }): PreviewEditTarget {
   const history = (cmd: StateCommand, key: string) => {
     if (!opts.canEdit) return;
     const wasDirty = opts.isDirty();
-    let preview = false;
-    const ran = cmd({
-      state: view.state,
-      dispatch: tr => { preview = tr.effects.some(e => e.is(previewStep)); view.dispatch(tr); },
-    });
-    if (ran) opts.onApplied(i18n.t(`panels:mdEdit.${key}`), wasDirty, preview);
+    // dry run first: only a step the preview made is undone from it. An
+    // agent's reload undone here would sit in the buffer, unseen, until a
+    // ⌘S wrote the old text over theirs.
+    let tr: Transaction | null = null;
+    if (!cmd({ state: view.state, dispatch: t => { tr = t; } }) || !tr) return;
+    if (!(tr as Transaction).effects.some(e => e.is(previewStep))) { opts.onNotPreview(key === "redone"); return; }
+    view.dispatch(tr);
+    opts.onApplied(i18n.t(`panels:mdEdit.${key}`), wasDirty);
   };
   return {
     canEdit: opts.canEdit,
@@ -89,17 +93,18 @@ export function editorEditTarget(view: EditorView, opts: {
         changes: change, userEvent: "input.preview",
         effects: previewStep.of(null), annotations: isolateHistory.of("full"),
       });
-      opts.onApplied(label, wasDirty, true);
+      opts.onApplied(label, wasDirty);
       return "applied";
     },
     read: (fromLine, toLine) => readLines(view.state, fromLine, toLine),
     text: () => view.state.doc.toString(),
     // ⌘Z / ⇧⌘Z from the preview go through the same save policy as an edit:
     // undoing an auto-saved tick unticks the file too, not just the buffer.
-    // Only a preview step: undoing an agent's reload must not save the old text.
+    // Only a preview step: anything else is the editor's to undo.
     undo: () => { history(undo, "undone"); },
     redo: () => { history(redo, "redone"); },
     save: opts.save,
     pending: opts.pending,
+    keepOnClose: opts.keepOnClose,
   };
 }

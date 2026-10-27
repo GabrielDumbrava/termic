@@ -182,11 +182,11 @@ describe("markdown reader", () => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
     }, taskId, v, key);
   /** ⌘G with focus left where it is (the find bar's input) */
-  const pressGoToFromFind = () =>
-    browser.execute(() => {
+  const pressGoToFromFind = (shift = false) =>
+    browser.execute((shift) => {
       const mac = /^(mac|darwin)/i.test(navigator.platform);
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "g", [mac ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true }));
-    });
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: shift ? "G" : "g", shiftKey: shift, [mac ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true }));
+    }, shift);
   const gotoBar = () =>
     browser.execute((id) => document.querySelector(`[data-task-id="${id}"] [data-testid="md-goto"]`)?.textContent ?? null, taskId);
 
@@ -215,7 +215,7 @@ describe("markdown reader", () => {
     );
   });
 
-  it("⌘G in the find bar is find next, not go to line", async () => {
+  it("⌘G / ⇧⌘G with find open step through matches, not go to line, wherever focus is in the preview", async () => {
     const counter = () => browser.execute((id) =>
       document.querySelector(`[data-task-id="${id}"] [data-testid="md-find"]`)?.textContent ?? null, taskId);
     await browser.execute((id) => {
@@ -235,7 +235,21 @@ describe("markdown reader", () => {
     await pressGoToFromFind();
     await browser.waitUntil(async () => (await counter())?.includes("2/2") ?? false, { timeout: 5_000, timeoutMsg: "⌘G did not step to the next match" });
     expect(await gotoBar()).toBeNull();
-    await browser.execute(() => (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await pressGoToFromFind(true);
+    await browser.waitUntil(async () => (await counter())?.includes("1/2") ?? false, { timeout: 5_000, timeoutMsg: "⇧⌘G did not step back" });
+    // focus back in the document, find still open: still find next
+    const input = () => browser.execute((id) => !!document.querySelector(`[data-task-id="${id}"] [data-testid="md-find"] input`), taskId);
+    await browser.execute((id) => {
+      const host = Array.from(document.querySelectorAll<HTMLElement>(`[data-task-id="${id}"] .markdown-body`))
+        .find(h => h.getBoundingClientRect().width > 0)!;
+      host.closest<HTMLElement>("[tabindex]")!.focus();
+    }, taskId);
+    await pressGoToFromFind();
+    await browser.waitUntil(async () => (await counter())?.includes("2/2") ?? false, { timeout: 5_000, timeoutMsg: "⌘G from the document closed find or opened go to line" });
+    expect(await gotoBar()).toBeNull();
+    expect(await input()).toBe(true);
+    await browser.execute((id) => document.querySelector<HTMLElement>(`[data-task-id="${id}"] [data-testid="md-find"] input`)!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), taskId);
   });
 
   it("closes on Escape without jumping", async () => {

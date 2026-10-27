@@ -230,6 +230,17 @@ export function EditorPane({ task, tab, active, onContent }: {
   // only touches the store on the clean→dirty edge, not every
   // keystroke (patchTab re-renders the whole TabBar).
   const dirtyRef = useRef(false);
+  // the markdown preview's block editor has text not yet applied: the tab
+  // shows dirty for it too, so closing asks (EditorHandle.holdDirty)
+  const heldRef = useRef(false);
+  // every write of the tab's dirty flag goes through here, so a save or a
+  // reload clearing the buffer's half never drops the held half
+  const syncDirty = () => {
+    const dirty = dirtyRef.current || heldRef.current;
+    // gone already (a close unmounting the block editor) or unchanged: no write
+    const cur = (useApp.getState().tabs[task.id] ?? []).find(t => t.id === tab.id) as { dirty?: boolean } | undefined;
+    if (cur && !!cur.dirty !== dirty) useApp.getState().patchTab(task.id, tab.id, { dirty });
+  };
   // Scratchpad flush state (GH #244). The last content and title actually
   // written, so the debounced flush can bail when nothing changed; the
   // pending timer; and the unmount flush, rebound by every mount.
@@ -399,7 +410,7 @@ export function EditorPane({ task, tab, active, onContent }: {
         const markDirty = () => {
           if (dirtyRef.current) return;
           dirtyRef.current = true;
-          useApp.getState().patchTab(task.id, tab.id, { dirty: true });
+          syncDirty();
         };
         if (tab.type === "scratch" && !tab.path) dirtyRef.current = true;
         // ── scratchpad crash safety (GH #244) ──────────────────────────
@@ -475,9 +486,10 @@ export function EditorPane({ task, tab, active, onContent }: {
         const persist = (v: EditorView): Promise<void> | null => {
           const p = write(v);
           if (!p) return null;
-          saving = v.state.doc;
+          const doc = saving = v.state.doc;
           const run = chain.then(p);
-          chain = run.catch(() => {});
+          // a refused or failed save leaves that text unsaved again
+          chain = run.catch(() => { if (saving === doc) saving = null; });
           return run;
         };
         const write = (v: EditorView): (() => Promise<void>) | null => {
@@ -489,7 +501,7 @@ export function EditorPane({ task, tab, active, onContent }: {
           const clean = () => {
             if (v.state.doc !== doc) return;
             dirtyRef.current = false;
-            useApp.getState().patchTab(task.id, tab.id, { dirty: false });
+            syncDirty();
           };
           if (tab.type === "scratch" && tab.path) {
             const p = tab.path;
@@ -499,14 +511,15 @@ export function EditorPane({ task, tab, active, onContent }: {
           const path = tab.path;
           // ponytail: read-then-write, so a write landing between the two
           // still wins. The window is one IPC round trip, not a whole turn.
-          return () => taskFileRead(task.id, path).then(d => d, () => null).then(disk => {
-            const now = disk == null ? null : normalizeEol(disk);
-            if (now != null && diskTextRef.current != null && now !== diskTextRef.current && now !== text) {
-              setDiskChanged(true);
-              throw new DiskChangedError();
-            }
+          // A read that fails refuses too: a file now over the read cap or
+          // not UTF-8 is still writable, and it is not the file we loaded.
+          // (A deleted one fails the write anyway.)
+          const refuse = () => { setDiskChanged(true); throw new DiskChangedError(); };
+          return () => taskFileRead(task.id, path).then(disk => {
+            const now = normalizeEol(disk);
+            if (diskTextRef.current != null && now !== diskTextRef.current && now !== text) refuse();
             return taskFileWrite(task.id, path, text);
-          }).then(() => {
+          }, refuse).then(() => {
             diskTextRef.current = text;
             clean();
             // Git-only tick (NOT bumpFsRevision: that would make every
@@ -664,12 +677,7 @@ export function EditorPane({ task, tab, active, onContent }: {
           save: () => { saveDoc(view); },
           persist: () => persist(view),
           isDirty: () => dirtyRef.current && view.state.doc !== saving,
-          holdDirty: on => {
-            const dirty = on || dirtyRef.current;
-            // gone already (a close unmounting the block editor) or unchanged: no write
-            const cur = (useApp.getState().tabs[task.id] ?? []).find(t => t.id === tab.id) as { dirty?: boolean } | undefined;
-            if (cur && !!cur.dirty !== dirty) useApp.getState().patchTab(task.id, tab.id, { dirty });
-          },
+          holdDirty: on => { heldRef.current = on; syncDirty(); },
         });
         elog("view created");
         if (tab.type === "scratch" && !tab.path) {
@@ -886,7 +894,7 @@ export function EditorPane({ task, tab, active, onContent }: {
     taskFileRead(task.id, filePath).then(content => {
       applyDiskContent(content);
       dirtyRef.current = false;
-      useApp.getState().patchTab(task.id, tab.id, { dirty: false });
+      syncDirty();
     }).catch(() => {});
   }, [task.id, filePath, tab.id, applyDiskContent]);
 

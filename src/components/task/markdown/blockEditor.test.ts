@@ -132,6 +132,26 @@ describe("useBlockEditor", () => {
     expect(buf.pending.at(-1)).toBe(false);
   });
 
+  it("a pad (which saves itself) gets its unapplied text on unmount; any other tab drops it", () => {
+    const pad = setup();
+    pad.edit.keepOnClose = true;
+    const li = pad.host.querySelector("li")!;
+    const orig = pad.buf.text.split("\n").find(l => l.startsWith("- "))!;
+    pad.open(li);
+    pad.type(orig + " kept");
+    act(() => root!.unmount());
+    root = null;
+    expect(pad.buf.text).toContain(orig + " kept");
+    document.body.replaceChildren();
+
+    const file = setup();
+    file.open(file.host.querySelector("li")!);
+    file.type(orig + " dropped");
+    act(() => root!.unmount());
+    root = null;
+    expect(file.buf.edits).toEqual([]);
+  });
+
   it("survives a rebuild that shifts its block, and commits at the new lines", () => {
     const { buf, host, rebuild, editor, cm, type, button, open } = setup();
     open(host.querySelectorAll("li")[1] as HTMLElement);

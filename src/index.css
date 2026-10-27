@@ -1411,6 +1411,14 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   cursor: pointer;
 }
 .markdown-body .md-code-copy:hover { color: var(--color-fg); background: var(--color-hover); }
+/* a code block whose text holds hidden or bidi characters (HIDDEN_CHARS) */
+.markdown-body .md-code-warn {
+  margin-left: auto;
+  margin-right: 6px;
+  color: var(--color-warn);
+  cursor: help;
+}
+.markdown-body .md-code-warn::after { content: attr(data-label); }
 .markdown-body .md-code-copy::after { content: attr(data-label); }
 .markdown-body .md-code-copy::before {
   content: "";

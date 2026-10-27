@@ -2042,7 +2042,8 @@ only "is there one", so dragging a selection across lines re-renders the
 chip, not the pane and its editor. Comment cards already carry their range
 in `.tc-comment-loc`.
 
-**Go to line** (`preview-go-to-line`, ⌘G, docs/shortcuts.md). An input in
+**Go to line** (`preview-go-to-line`, ⌘G, docs/shortcuts.md; while find is
+open, ⌘G / ⇧⌘G step through its matches instead). An input in
 find's slot (`GoToLineBar` in `components/task/markdown/GoToLine.tsx`;
 opening one closes the other); Enter lands on the innermost laid-out block
 holding the line, or the next block from a blank line, scrolls it to 30%

@@ -20,8 +20,9 @@ vi.mock("dompurify", () => ({ default: { sanitize: (s: string) => s, addHook: ()
 
 import { captureViewState, claim, EXTENSIONS, hydrate, renderDoc, restoreViewState } from "./engine";
 import { headingSlugger } from "@/lib/markdownPaths";
-import { renderTex } from "./extensions/math";
+import { newMathPass, renderTex } from "./extensions/math";
 import { footnotes } from "./extensions/footnotes";
+import { findHeading } from "./extensions/headingLinks";
 
 const big = (n: number) => (process.env.CI ? Math.ceil(n / 50) : n);
 
@@ -93,6 +94,21 @@ describe("heading slugs", () => {
   });
 });
 
+describe("nested raw-html headings", () => {
+  // each heading's text holds every heading inside it: slugging them all is
+  // depth x size. Counted by what hydrate touched, not timed.
+  it("only the outermost is slugged and gets a link", () => {
+    const depth = 200;
+    const { host } = mount("<h2><div>".repeat(depth) + "deep text" + "</div></h2>".repeat(depth));
+    expect(host.querySelectorAll("h2")).toHaveLength(depth);
+    expect(host.querySelectorAll(".md-heading-link")).toHaveLength(1);
+    expect(findHeading(host, () => false)).toBeNull();
+    let seen = 0;
+    findHeading(host, () => { seen++; return false; });
+    expect(seen).toBe(1);
+  });
+});
+
 describe("$$ blocks", () => {
   it("stop at a blank line, so prose $$ does not swallow up to a later $$", () => {
     const { host } = mount("$$ is the shell PID\n\nlater text $$\n");
@@ -114,14 +130,26 @@ describe("katex cache", () => {
   it("is an LRU: a recently used formula survives the cap", () => {
     const k = fake();
     const run = (tex: string) => renderTex(k as never, tex, false);
+    newMathPass();
     run("lru-keep");
     for (let i = 0; i < 999; i++) run(`lru-${i}`);
+    newMathPass();
     run("lru-keep"); // touched: now the newest
     run("lru-overflow"); // evicts the oldest, lru-0
     k.renderToString.mockClear();
     run("lru-keep");
     expect(k.renderToString).not.toHaveBeenCalled();
     run("lru-0");
+    expect(k.renderToString).toHaveBeenCalledTimes(1);
+  });
+
+  it("a doc over the cap re-renders only the overflow, not every formula", () => {
+    const k = fake();
+    const pass = () => { newMathPass(); for (let i = 0; i <= 1000; i++) renderTex(k as never, `over-${i}`, false); };
+    pass();
+    k.renderToString.mockClear();
+    pass();
+    // a plain LRU in document order would miss all 1001
     expect(k.renderToString).toHaveBeenCalledTimes(1);
   });
 
@@ -198,6 +226,16 @@ describe("front matter", () => {
 });
 
 describe("details", () => {
+  it("nested hundreds deep, only the outer few are keyed", () => {
+    const depth = 300;
+    const { host } = mount("<details><summary>S</summary>\n".repeat(depth) + "\nbody\n\n" + "</details>\n".repeat(depth));
+    expect(host.querySelectorAll("details")).toHaveLength(depth);
+    const keyed = captureViewState(host)[EXTENSIONS.findIndex(e => e.name === "details")] as unknown[];
+    expect(keyed.length).toBeLessThanOrEqual(8);
+    expect(keyed.length).toBeGreaterThan(0);
+  });
+
+
   // semantics only: the old quadratic restore loop is too cheap per step to
   // outrun happy-dom's own DOM cost at any size that fits the timeout
   it("restores many identical summaries one for one, after lines shift", () => {

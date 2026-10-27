@@ -144,6 +144,8 @@ export default {
     edited: "已编辑",
     undone: "已撤销",
     redone: "已重做",
+    notPreviewUndo: "未撤销：最近的更改不是在预览中做的。请在编辑器中撤销。",
+    notPreviewRedo: "未重做：下一个更改不是在预览中做的。",
     saved: "{{what}}。已保存 {{name}}",
     kept: "{{what}}。未保存：文件还有其他未保存的更改",
     unsaved: "{{what}}。未保存，按 {{combo}} 保存",
@@ -182,6 +184,8 @@ export default {
     code: {
       copy: "复制",
       copyTip: "复制代码",
+      hidden: "隐藏字符",
+      hiddenTip: "这段代码含有不可见字符或改变文字方向的字符，复制的内容可能与看到的不同。打开源码视图可以看到它们。",
       // the noun in the "Copied {{label}}" toast
       label: "代码",
     },

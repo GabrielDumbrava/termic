@@ -853,20 +853,28 @@ export function MarkdownPreview(
   // hold the keyboard right this second", which the store can't see.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const find = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === "f" || e.key === "F");
+      const mod = (e.metaKey || e.ctrlKey) && !e.altKey;
+      const find = mod && !e.shiftKey && (e.key === "f" || e.key === "F");
+      // with find open, ⌘G / ⇧⌘G step through the matches, as in the editor's
+      // own search. The literal keys, not the go-to-line binding: a rebind of
+      // go to line doesn't move find next.
+      const step = !find && findOpenRef.current && mod && (e.key === "g" || e.key === "G") ? (e.shiftKey ? -1 : 1) : 0;
       // go to line rides the same gate: CodeMirror binds Mod-g (find next)
       // and Mod-l, so the preview may only take it while it owns the keys
-      const goto = !find && bindingMatches(e, gotoBinding);
-      if (!find && !goto) return;
+      const goto = !find && !step && bindingMatches(e, gotoBinding);
+      if (!find && !step && !goto) return;
       if (!ownsFind) return;
       const c = containerRef.current;
       if (!c) return;
       const ae = document.activeElement as HTMLElement | null;
-      // in the find bar ⌘G is find next, as in the editor's own search
-      if (goto && ae && ae === findInputRef.current) {
+      const stepFind = () => {
+        // a search that just ran already shows match 1: don't step past it
+        if (!flushFind() || step < 0) gotoMatch(findIndexRef.current + step);
+      };
+      if (step && ae && ae === findInputRef.current) {
         e.preventDefault();
         e.stopPropagation();
-        if (!flushFind()) gotoMatch(findIndexRef.current + 1);
+        stepFind();
         return;
       }
       // a field in a slot (the block editor, a comment composer) keeps its
@@ -898,7 +906,7 @@ export function MarkdownPreview(
 
       e.preventDefault();
       e.stopPropagation();
-      if (find) openFind(); else openGoto();
+      if (find) openFind(); else if (step) stepFind(); else openGoto();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);

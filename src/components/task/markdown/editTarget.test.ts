@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { EditorState, Transaction, type TransactionSpec } from "@codemirror/state";
-import { history, isolateHistory } from "@codemirror/commands";
+import { history, isolateHistory, undo } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
 import { applyDocEdit } from "@/lib/markdown/edit";
 import { editChange, editorEditTarget, previewHistory, previewSaveAction, readLines } from "./editTarget";
@@ -64,9 +64,13 @@ describe("editorEditTarget undo / redo", () => {
       dispatch(t: Transaction | TransactionSpec) { v.state = (t instanceof Transaction ? t : v.state.update(t)).state; },
     };
     const onApplied = vi.fn();
-    const t = editorEditTarget(v as unknown as EditorView, { canEdit, isDirty: () => dirty, onApplied, save: () => {} });
-    return { v, t, onApplied };
+    const onNotPreview = vi.fn();
+    const t = editorEditTarget(v as unknown as EditorView, { canEdit, isDirty: () => dirty, onApplied, onNotPreview, save: () => {} });
+    return { v, t, onApplied, onNotPreview };
   }
+  // what EditorPane's applyDiskContent dispatches
+  const reload = (v: { dispatch(t: TransactionSpec): void; state: EditorState }, text: string) =>
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text }, annotations: isolateHistory.of("full") });
 
   it("goes through the save policy like an edit, so an auto-saved tick is unticked on disk too", () => {
     const { v, t, onApplied } = target();
@@ -74,33 +78,39 @@ describe("editorEditTarget undo / redo", () => {
     t.undo();
     expect(v.state.doc.toString()).toBe("- [ ] a\n");
     expect(onApplied).toHaveBeenCalledTimes(2);
-    expect(onApplied.mock.calls[1].slice(1)).toEqual([false, true]);
+    expect(onApplied.mock.calls[1][1]).toBe(false);
     t.redo();
     expect(v.state.doc.toString()).toBe("- [x] a\n");
     expect(onApplied).toHaveBeenCalledTimes(3);
-    expect(onApplied.mock.calls[2][2]).toBe(true);
   });
 
-  it("an undo of a step the preview did not make (a disk reload) is flagged, so it never auto-saves", () => {
-    const { v, t, onApplied } = target();
+  it("never undoes a step the preview did not make: an agent's reload stays put", () => {
+    const { v, t, onApplied, onNotPreview } = target();
     t.apply({ fromLine: 1, toLine: 1, expect: "- [ ] a", insert: "- [x] a" });
-    // what EditorPane's applyDiskContent dispatches
-    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: "agent rewrite\n" }, annotations: isolateHistory.of("full") });
+    reload(v, "agent rewrite\n");
     t.undo();
-    expect(v.state.doc.toString()).toBe("- [x] a\n");
-    expect(onApplied.mock.calls[1][2]).toBe(false);
-    t.redo();
-    expect(onApplied.mock.calls[2][2]).toBe(false);
-    t.undo();
-    t.undo();
+    expect(v.state.doc.toString()).toBe("agent rewrite\n");
+    expect(onNotPreview).toHaveBeenCalledWith(false);
+    expect(onApplied).toHaveBeenCalledTimes(1);
+  });
+
+  it("never redoes one either", () => {
+    const { v, t, onApplied, onNotPreview } = target();
+    reload(v, "agent rewrite\n");
+    // the editor's own ⌘Z, then ⇧⌘Z from the preview
+    undo(v as unknown as EditorView);
     expect(v.state.doc.toString()).toBe("- [ ] a\n");
-    expect(onApplied.mock.calls[4][2]).toBe(true);
+    t.redo();
+    expect(v.state.doc.toString()).toBe("- [ ] a\n");
+    expect(onNotPreview).toHaveBeenCalledWith(true);
+    expect(onApplied).not.toHaveBeenCalled();
   });
 
   it("reports nothing when there is nothing to undo, or no write path", () => {
     const a = target();
     a.t.undo();
     expect(a.onApplied).not.toHaveBeenCalled();
+    expect(a.onNotPreview).not.toHaveBeenCalled();
     const b = target(false, false);
     b.t.undo();
     expect(b.onApplied).not.toHaveBeenCalled();

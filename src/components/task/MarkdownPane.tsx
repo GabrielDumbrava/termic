@@ -137,6 +137,9 @@ export function MarkdownPane(
   // policy (prefs.markdownSavePreviewEdits) is read when an edit lands.
   const canEditPreview = tab.type !== "external";
   const isPad = tab.type === "scratch" && !tab.path;
+  // only a task file auto-saves a preview edit: its save re-reads disk first
+  // and refuses when the file moved on. A scratch-tree file has no such check.
+  const autoSave = tab.type === "edit";
   const editTarget = useMemo(() => {
     if (!editorView) return undefined;
     const handle = () => editorHandle(editorView);
@@ -144,15 +147,14 @@ export function MarkdownPane(
     return editorEditTarget(editorView, {
       canEdit: canEditPreview,
       isDirty: () => handle()?.isDirty() ?? true,
-      onApplied: (label, wasDirty, preview) => {
+      onApplied: (label, wasDirty) => {
         // re-render now rather than after the typing debounce: the edit was
         // made ON the preview, so the reader is looking right at it
         if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
         setBuf({ path: srcKey, text: editorView.state.doc.toString() });
         const what = label ?? t("mdEdit.edited");
         const toast = useUI.getState().pushToast;
-        // an undo of a step the preview did not make never auto-saves
-        switch (previewSaveAction(preview && usePrefs.getState().markdownSavePreviewEdits, wasDirty, !isPad)) {
+        switch (previewSaveAction(autoSave && usePrefs.getState().markdownSavePreviewEdits, wasDirty, !isPad)) {
           case "save":
             handle()?.persist()
               ?.then(() => toast(t("mdEdit.saved", { what, name }), "success"))
@@ -163,11 +165,13 @@ export function MarkdownPane(
           case "unsaved": toast(t("mdEdit.unsaved", { what, combo: kbd("⌘S") }), "info"); break;
         }
       },
+      onNotPreview: redo => useUI.getState().pushToast(t(redo ? "mdEdit.notPreviewRedo" : "mdEdit.notPreviewUndo"), "info"),
       save: () => handle()?.save(),
       pending: on => handle()?.holdDirty(on),
+      keepOnClose: isPad,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorView, srcKey, canEditPreview, isPad]);
+  }, [editorView, srcKey, canEditPreview, isPad, autoSave]);
 
   // A pending file.md#heading reveal is only consumable by the rendered
   // preview: a tab sitting in source view switches to preview (tab-local

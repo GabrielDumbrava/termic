@@ -13,6 +13,22 @@ import type { MdExtension } from "../extension";
 type Key = { summary: string; line: number };
 type Saved = Key & { open: boolean };
 
+// keying reads the summary text and searches the subtree, so a hostile doc
+// nesting details hundreds deep would cost depth x size per rebuild. Real
+// docs nest a few; deeper ones just don't keep their open state.
+// ponytail: a depth cap, a single document-order pass if it ever matters
+const MAX_DEPTH = 8;
+
+function detailsOf(host: Element): HTMLDetailsElement[] {
+  return Array.from(host.querySelectorAll<HTMLDetailsElement>("details")).filter(d => {
+    let depth = 0;
+    for (let p = d.parentElement?.closest("details"); p; p = p.parentElement?.closest("details")) {
+      if (++depth >= MAX_DEPTH) return false;
+    }
+    return true;
+  });
+}
+
 function keyOf(d: HTMLDetailsElement): Key {
   let summary = "";
   for (const c of Array.from(d.children)) {
@@ -27,7 +43,7 @@ export const details: MdExtension = {
   // both states are kept: a `<details open>` the reader closed stays closed.
   viewState: {
     capture(host): Saved[] {
-      return Array.from(host.querySelectorAll<HTMLDetailsElement>("details"), d => ({ ...keyOf(d), open: d.open }));
+      return detailsOf(host).map(d => ({ ...keyOf(d), open: d.open }));
     },
     restore(host, state) {
       const saved = state as Saved[] | undefined;
@@ -36,7 +52,7 @@ export const details: MdExtension = {
       // walk each summary's candidates with one cursor that only moves
       // forward, taking the closest line still ahead of it.
       const free = new Map<string, { d: HTMLDetailsElement; line: number }[]>();
-      for (const d of Array.from(host.querySelectorAll<HTMLDetailsElement>("details"))) {
+      for (const d of detailsOf(host)) {
         const k = keyOf(d);
         let bucket = free.get(k.summary);
         if (!bucket) free.set(k.summary, bucket = []);

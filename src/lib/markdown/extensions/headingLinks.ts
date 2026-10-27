@@ -12,6 +12,16 @@ import { headingSlug, headingSlugger } from "@/lib/markdownPaths";
 import { i18n } from "@/lib/i18n";
 
 const BTN = "md-heading-link";
+const HEADINGS = "h1,h2,h3,h4,h5,h6";
+
+/** The document's headings, minus any nested inside another. Raw html can
+ *  nest them (a `<div>` between stops the parser closing the outer one), and
+ *  each one's text holds every heading inside it: slugging them all costs
+ *  depth x document size per rebuild. An outer heading's slug already covers
+ *  the inner text, and markdown can't produce a nested heading. */
+export function headingsOf(host: Element): HTMLElement[] {
+  return Array.from(host.querySelectorAll<HTMLElement>(HEADINGS)).filter(h => !h.parentElement?.closest(HEADINGS));
+}
 
 /** A rendered heading's text the way its slug is made: inline math as its TeX
  *  source (math hydrate keeps it in `data-tex`), so the answer is the same
@@ -35,7 +45,7 @@ export function headingText(h: Element): string {
  *  included). The one walk copy-link and `#fragment` resolution share. */
 export function findHeading(host: Element, pick: (h: HTMLElement, slug: string) => boolean): { el: HTMLElement; slug: string } | null {
   const slug = headingSlugger();
-  for (const el of Array.from(host.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6"))) {
+  for (const el of headingsOf(host)) {
     const s = slug(headingText(el));
     if (pick(el, s)) return { el, slug: s };
   }
@@ -46,7 +56,7 @@ export const headingLinks: MdExtension = {
   name: "headingLinks",
   hydrate(host, cx) {
     const tip = i18n.t("panels:mdExt.headingLink.tip");
-    for (const h of Array.from(host.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6"))) {
+    for (const h of headingsOf(host)) {
       if (h.closest(`[${SLOT_ATTR}]`) || !headingSlug(headingText(h))) continue;
       const btn = document.createElement("button");
       btn.type = "button";

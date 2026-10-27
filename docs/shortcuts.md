@@ -563,6 +563,11 @@ line) and Ctrl+G off it (VS Code's again). CodeMirror's Mod-g (find next)
 is untouched: the editor and the preview never hold focus at once, and the
 gate leaves a focused `.cm-editor` alone.
 
+While the preview's find bar is open, ⌘G / ⇧⌘G are find next / previous
+instead (as in CodeMirror's own search), from the find input or anywhere
+in the preview. That matches the literal keys, not the go-to-line binding,
+so rebinding go to line does not move find next.
+
 ## ⌘W on an empty window closes the profile
 
 `close-tab` closes the innermost thing there is to close, and when a window

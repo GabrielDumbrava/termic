@@ -172,6 +172,16 @@ describe("codeHeader", () => {
   });
 });
 
+describe("codeHeader hidden characters", () => {
+  it("flags a block whose bytes are not what it shows, and leaves emoji and plain code alone", () => {
+    const { host } = mount("```sh\nrm -rf /tmp/x \u202E; ls\n```\n\n```sh\necho \u200Bhi\n```\n\n```\nfamily \u{1F468}\u200D\u{1F469}\n```\n\n```sh\necho hi\n```\n");
+    const heads = Array.from(host.querySelectorAll<HTMLElement>(".md-code-head"));
+    expect(heads.map(h => !!h.querySelector(".md-code-warn"))).toEqual([true, true, false, false]);
+    // still chrome without text: find and copy never see the warning
+    expect(heads.every(h => h.textContent === "")).toBe(true);
+  });
+});
+
 describe("headingLinks", () => {
   it("copies path#slug with the same duplicate numbering as #fragment links", () => {
     const { host } = mount("# Usage\n\n## Usage\n\n### Step 04 *x*\n", "docs/spec.md");

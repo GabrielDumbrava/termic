@@ -144,8 +144,15 @@ function loadKatex(): Promise<Katex> {
 type Rendered = { html: string } | { error: string };
 // every rebuild re-renders every formula; most of them did not change. An
 // LRU, so a doc with more formulas than fit only re-renders the overflow.
-const cache = new Map<string, Rendered>();
+// A plain LRU walked in the same order every pass misses on every lookup
+// once it overflows (each miss evicts the next one wanted), so an entry used
+// in the current pass is never evicted: when the oldest one is, the cache is
+// all this pass and the newcomer is rendered without being kept.
+const cache = new Map<string, { r: Rendered; pass: number }>();
 const CACHE_MAX = 1000;
+let pass = 0;
+/** A hydrate starts walking its formulas. Exported for tests. */
+export function newMathPass(): void { pass++; }
 // longer than any real formula: a hostile source this size would cost a
 // synchronous render per rebuild and pin megabytes in a module-scoped cache.
 const TEX_MAX = 5000;
@@ -163,7 +170,8 @@ export function renderTex(katex: Katex, tex: string, display: boolean): Rendered
   if (tex.length > TEX_MAX) return { error: `source longer than ${TEX_MAX} characters` };
   if (MACRO_DEF.test(tex)) return { error: "macro definitions are not supported" };
   const key = (display ? "B" : "I") + tex;
-  let hit = cache.get(key);
+  const entry = cache.get(key);
+  let hit = entry?.r;
   if (hit) {
     cache.delete(key); // re-set below: most recently used goes last
   } else {
@@ -177,9 +185,13 @@ export function renderTex(katex: Katex, tex: string, display: boolean): Rendered
     } catch (e) {
       hit = { error: e instanceof Error ? e.message : String(e) };
     }
-    if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
+    if (cache.size >= CACHE_MAX) {
+      const [oldest, e] = cache.entries().next().value!;
+      if (e.pass === pass) return hit;
+      cache.delete(oldest);
+    }
   }
-  cache.set(key, hit);
+  cache.set(key, { r: hit, pass });
   return hit;
 }
 
@@ -194,6 +206,7 @@ export const math: MdExtension = {
     }));
     if (!jobs.length) return;
     const run = (k: Katex) => {
+      newMathPass();
       for (const { el, tex, display } of jobs) {
         // kept for headingText: a heading's slug is made from the TeX
         el.dataset.tex = tex;

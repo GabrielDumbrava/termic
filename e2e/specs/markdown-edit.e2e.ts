@@ -264,17 +264,31 @@ describe("markdown preview edits", () => {
       { timeout: 5_000, timeoutMsg: "the second tick left the buffer dirty" });
   });
 
+  const confirmTitle = () => browser.execute(() => window.__termic!.useUI.getState().confirm?.req.title ?? null);
+  const cancelBlockEditor = () => browser.execute(() =>
+    Array.from(window.__mdEditShown!(".tc-block-editor")!.querySelectorAll("button")).find(b => b.textContent === "Cancel")!.click());
+
   it("an open block editor with changed text holds the tab dirty, so a close asks", async () => {
     await openHeadingEditor("# Plan, edited");
     await browser.waitUntil(async () => (await tab())?.dirty === true,
       { timeout: 5_000, timeoutMsg: "unapplied block editor text did not dirty the tab" });
-    await browser.execute(() =>
-      Array.from(window.__mdEditShown!(".tc-block-editor")!.querySelectorAll("button")).find(b => b.textContent === "Cancel")!.click());
+    // ⌘W from inside the block editor asks; answering no keeps tab and text
+    await browser.execute((m) => window.__mdEditShown!(".tc-block-editor .cm-content")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "w", [m]: true, bubbles: true, cancelable: true })), mod);
+    await browser.waitUntil(async () => (await confirmTitle()) === "Close without saving?",
+      { timeout: 5_000, timeoutMsg: "⌘W closed over unapplied block editor text without asking" });
+    await browser.execute(() => window.__termic!.useUI.getState().resolveConfirm(false));
+    await browser.waitUntil(async () => (await confirmTitle()) === null, { timeout: 5_000, timeoutMsg: "the close prompt stayed up" });
+    // the prompt taking focus did not commit (and so save) the text behind it
+    expect(await tab()).toBeTruthy();
+    expect(await browser.execute(() => !!window.__mdEditShown!(".tc-block-editor"))).toBe(true);
+    expect(disk()).not.toContain("# Plan, edited");
+    await cancelBlockEditor();
     await browser.waitUntil(async () => (await tab())?.dirty === false,
       { timeout: 5_000, timeoutMsg: "cancelling the block editor left the tab dirty" });
   });
 
-  it("⌘Z in the preview never saves the undo of an agent's reload", async () => {
+  it("⌘Z in the preview never undoes an agent's reload", async () => {
     await browser.execute((s) => window.__mdEditShown!(s)!.click(), box(await lineOf("first")));
     await browser.waitUntil(async () => disk() === await mainCm() && (await tab())?.dirty === false,
       { timeout: 5_000, timeoutMsg: "the tick never saved" });
@@ -284,11 +298,43 @@ describe("markdown preview edits", () => {
     await browser.execute((id) => window.__termic!.useApp.getState().bumpFsRevision(id), taskId);
     await browser.waitUntil(async () => (await mainCm()).includes("agent three"), { timeout: 5_000, timeoutMsg: "the buffer never reloaded" });
     await previewKey("z");
-    await browser.waitUntil(async () => !(await mainCm()).includes("agent three"), { timeout: 5_000, timeoutMsg: "⌘Z did not undo the reload" });
-    // the policy picks its toast before any write: "Unsaved" means no save ran
-    await browser.waitUntil(() => browser.execute(() => document.body.textContent?.includes("Undone. Unsaved") ?? false),
-      { timeout: 5_000, timeoutMsg: "the undo was not left unsaved" });
+    await browser.waitUntil(() => browser.execute(() => document.body.textContent?.includes("Nothing undone") ?? false),
+      { timeout: 5_000, timeoutMsg: "⌘Z over a reload said nothing" });
+    // left alone: nothing for a later ⌘S to write over their file
+    expect(await mainCm()).toContain("agent three");
     expect(disk()).toBe(theirs);
+    expect((await tab())?.dirty).toBe(false);
+  });
+
+  it("a save while the block editor's conflict bar is up keeps the tab dirty for its text", async () => {
+    await openHeadingEditor("# Plan, mine");
+    // the agent rewrites the heading under the open editor
+    writeFileSync(path.join(fixture, NAME), disk().replace(/^# .*$/m, "# Plan, theirs"));
+    await browser.execute((id) => window.__termic!.useApp.getState().bumpFsRevision(id), taskId);
+    await browser.waitUntil(() => browser.execute(() =>
+      window.__mdEditShown!(".tc-block-editor")?.querySelector<HTMLElement>(".tc-block-editor-conflict")?.hidden === false),
+    { timeout: 5_000, timeoutMsg: "the agent's write raised no conflict bar" });
+    // a tick elsewhere auto-saves the buffer
+    const before = disk();
+    await browser.execute((s) => window.__mdEditShown!(s)!.click(), box(await lineOf("second")));
+    await browser.waitUntil(() => disk() !== before, { timeout: 5_000, timeoutMsg: "the tick never saved" });
+    await browser.waitUntil(async () => disk() === await mainCm(), { timeout: 5_000, timeoutMsg: "the save never finished" });
     expect((await tab())?.dirty).toBe(true);
+    await browser.execute(() =>
+      Array.from(window.__mdEditShown!(".tc-block-editor")!.querySelectorAll("button")).find(b => b.textContent === "Take theirs")!.click());
+    await browser.waitUntil(async () => (await tab())?.dirty === false,
+      { timeout: 5_000, timeoutMsg: "closing the block editor left the tab dirty" });
+  });
+
+  // last: it leaves a file the editor cannot read
+  it("a tick never writes over a file the save cannot read back", async () => {
+    // an agent leaves bytes that are not UTF-8: the reload fails, the buffer stays as it was
+    const theirs = Buffer.concat([Buffer.from(disk() + "agent bytes "), Buffer.from([0xff, 0xfe]), Buffer.from("\n")]);
+    writeFileSync(path.join(fixture, NAME), theirs);
+    await browser.execute((id) => window.__termic!.useApp.getState().bumpFsRevision(id), taskId);
+    await browser.execute((s) => window.__mdEditShown!(s)!.click(), box(await lineOf("first")));
+    await browser.waitUntil(() => browser.execute(() => document.body.textContent?.includes("the file changed on disk") ?? false),
+      { timeout: 5_000, timeoutMsg: "the tick did not report the file as changed" });
+    expect(readFileSync(path.join(fixture, NAME)).equals(theirs)).toBe(true);
   });
 });

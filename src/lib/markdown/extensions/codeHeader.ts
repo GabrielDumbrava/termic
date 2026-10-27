@@ -14,12 +14,20 @@ import { i18n } from "@/lib/i18n";
 
 const HEAD = "md-code-head";
 const COPY = "md-code-copy";
+const WARN = "md-code-warn";
+// characters the preview draws as nothing, or that reorder what is drawn, so
+// the copied bytes are not the command on screen ("Trojan Source"). Source
+// view shows them (highlightSpecialChars); the preview, where Copy lives,
+// would not. ZWJ and ZWNJ are left out: emoji and Persian text use them.
+export const HIDDEN_CHARS = /[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
 
 export const codeHeader: MdExtension = {
   name: "codeHeader",
   hydrate(host) {
     const label = i18n.t("panels:mdExt.code.copy");
     const tip = i18n.t("panels:mdExt.code.copyTip");
+    const warnLabel = i18n.t("panels:mdExt.code.hidden");
+    const warnTip = i18n.t("panels:mdExt.code.hiddenTip");
     // stamped = a markdown fence or indented block; a document's raw <pre>
     // cannot carry a stamp, and a mermaid fence is not a <pre> at all.
     for (const pre of Array.from(host.querySelectorAll<HTMLElement>("pre[data-src-line]"))) {
@@ -35,6 +43,12 @@ export const codeHeader: MdExtension = {
       btn.dataset.label = label;
       btn.title = tip;
       btn.setAttribute("aria-label", tip);
+      if (HIDDEN_CHARS.test(code.textContent ?? "")) {
+        const warn = head.appendChild(document.createElement("span"));
+        warn.className = WARN;
+        warn.dataset.label = warnLabel;
+        warn.title = warnTip;
+      }
       head.appendChild(btn);
       // a <pre> under an open block editor is hidden, and its header with it
       head.hidden = pre.hidden;

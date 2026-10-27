@@ -149,6 +149,8 @@ export default {
     edited: "Edited",
     undone: "Undone",
     redone: "Redone",
+    notPreviewUndo: "Nothing undone: the last change was not made in the preview. Undo it in the editor.",
+    notPreviewRedo: "Nothing redone: the next change was not made in the preview.",
     saved: "{{what}}. Saved {{name}}",
     kept: "{{what}}. Not saved: the file has other unsaved changes",
     unsaved: "{{what}}. Unsaved, {{combo}} to save",
@@ -187,6 +189,8 @@ export default {
     code: {
       copy: "Copy",
       copyTip: "Copy code",
+      hidden: "Hidden characters",
+      hiddenTip: "This code has invisible or text-direction characters, so what you copy may not be what you see. Open the source view to see them.",
       // the noun in the "Copied {{label}}" toast
       label: "code",
     },

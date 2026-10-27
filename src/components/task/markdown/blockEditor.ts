@@ -12,7 +12,7 @@
 // the change reaches past the block, where the block went is a guess, so
 // nothing is written: "Use mine" becomes "Copy mine". See docs/markdown.md.
 
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, drawSelection, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
@@ -136,7 +136,7 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
     return true;
   }
 
-  function commit(force: boolean): void {
+  function commit(force: boolean, refocus = true): void {
     const s = sessionRef.current;
     const target = live.current.edit;
     if (!s || !target?.canEdit) return;
@@ -154,7 +154,7 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
     const outcome = expect == null ? "range"
       : target.apply({ fromLine: s.startLine, toLine: s.endLine, expect, insert: mine },
         t("editedRange", { range: rangeLabel(s.startLine, s.endLine) }));
-    if (outcome === "applied") close(true);
+    if (outcome === "applied") close(refocus);
     else s.setConflict(true);
   }
 
@@ -267,12 +267,14 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
     });
     slot.addEventListener("keydown", e => { if (e.key === "Escape") e.stopPropagation(); });
     // blur commits, unless focus only moved within the editor, the window
-    // lost focus, a rebuild is moving the slot, or a conflict is on screen.
+    // lost focus, a rebuild is moving the slot, a conflict is on screen, or a
+    // modal took it (⌘W's "close without saving?": committing there would
+    // save the text before the answer; the modal hands focus back on close).
     // Deferred: focus lands on its new element after focusout.
     slot.addEventListener("focusout", () => {
       setTimeout(() => {
         if (sessionRef.current !== s || s.conflict || !slot.isConnected || !document.hasFocus()) return;
-        if (slot.contains(document.activeElement)) return;
+        if (slot.contains(document.activeElement) || document.activeElement?.closest('[role="dialog"], [role="alertdialog"]')) return;
         commit(false);
       }, 0);
     });
@@ -329,8 +331,15 @@ export function useBlockEditor({ hostRef, edit, text, focusPane }: {
     open(el);
   }
 
+  // A pad saves itself and a scoped pad's tab closes without asking, so its
+  // unapplied text is applied, not dropped. A layout cleanup: it runs before
+  // the editor pane's own unmount flush (a passive one), which then writes it.
+  useLayoutEffect(() => () => {
+    const s = sessionRef.current;
+    if (s?.pending && !s.conflict && live.current.edit?.keepOnClose) commit(false, false);
+    close(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => () => close(false), []);
+  }, []);
   // a read-only preview has nothing to commit to
   useEffect(() => { if (!edit?.canEdit) close(false); }, [edit?.canEdit]);
 
