@@ -1749,6 +1749,10 @@ const TOOLS: &[ToolDef] = &[
         destructive: true,
         read_only: false,
         build: |a| {
+            let date = arg_str(a, "date")?;
+            if let Some(why) = proto::schedule_date_problem(arg_str(a, "cadence")?.as_deref(), date.as_deref()) {
+                return Err(why.to_string());
+            }
             let cadence = match (arg_str(a, "cadence")?, arg_str(a, "time")?) {
                 (Some(kind), Some(time)) => {
                     let weekday = match arg_u64(a, "weekday")? {
@@ -1760,7 +1764,7 @@ const TOOLS: &[ToolDef] = &[
                         kind,
                         time,
                         weekday,
-                        date: arg_str(a, "date")?,
+                        date,
                     })
                 }
                 (None, None) => None,
@@ -4163,6 +4167,27 @@ mod tests {
         // It defaults to the caller's task, like the CLI.
         assert!(SELF_DEFAULT_TOOLS.contains(&"task_prop"));
         assert_eq!(tool_entry(tool)["annotations"]["destructiveHint"], false);
+    }
+
+    #[test]
+    fn schedule_set_once_carries_its_date_and_refuses_a_bad_one() {
+        let tool = TOOLS.iter().find(|t| t.name == "schedule_set").unwrap();
+        let build = |v: serde_json::Value| (tool.build)(v.as_object().unwrap());
+        let c = build(serde_json::json!({ "task": "t", "cadence": "once", "time": "09:00", "date": "2026-10-27" })).unwrap();
+        assert!(matches!(&c, Command::ScheduleSet { cadence: Some(cad), .. }
+            if cad.kind == "once" && cad.time == "09:00" && cad.date.as_deref() == Some("2026-10-27")));
+        // Each mismatch is refused here, the same rule `termic schedule set`
+        // applies before its socket (termic_proto::schedule_date_problem).
+        for (bad, why) in [
+            (serde_json::json!({ "task": "t", "cadence": "once", "time": "09:00" }), "needs a date"),
+            (serde_json::json!({ "task": "t", "cadence": "daily", "time": "09:00", "date": "2026-10-27" }), "only goes with"),
+            (serde_json::json!({ "task": "t", "date": "2026-10-27" }), "needs the once cadence"),
+            (serde_json::json!({ "task": "t", "cadence": "once", "time": "09:00", "date": "27-10-2026" }), "real calendar day"),
+            (serde_json::json!({ "task": "t", "cadence": "once", "time": "09:00", "date": "2026-02-30" }), "real calendar day"),
+        ] {
+            let err = build(bad.clone()).unwrap_err();
+            assert!(err.contains(why), "{bad}: {err}");
+        }
     }
 
     #[test]

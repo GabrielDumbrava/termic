@@ -13,7 +13,7 @@ import {
   updateSchedule,
 } from "@/lib/schedules/runner";
 import { nextRun } from "@/lib/schedules/display";
-import { parseDate } from "@/lib/schedules/slots";
+import { onceProblem, parseDate } from "@/lib/schedules/slots";
 import { lastEntry } from "@/lib/schedules/history";
 import {
   DEFAULT_KEEP_RUNS,
@@ -128,7 +128,9 @@ function toRunWire(r: ScheduleRun): ScheduleRunWire {
   };
 }
 
-function normalizeCadence(wire: ScheduleCadenceWire): ScheduleCadence {
+/** `prev` is the stored cadence on an edit: a one-off whose date and time it
+ *  leaves alone is not re-checked against the clock (see `onceProblem`). */
+function normalizeCadence(wire: ScheduleCadenceWire, now: number, prev?: ScheduleCadence): ScheduleCadence {
   const kind = wire.kind.toLowerCase();
   if (kind !== "daily" && kind !== "weekdays" && kind !== "weekly" && kind !== "once") {
     throw new Error(`cadence kind must be daily, weekdays, weekly, or once, got "${wire.kind}"`);
@@ -138,8 +140,12 @@ function normalizeCadence(wire: ScheduleCadenceWire): ScheduleCadence {
     throw new Error(`time must be in HH:MM 24-hour format, got "${time}"`);
   }
   if (kind === "once") {
-    if (!parseDate(wire.date)) throw new Error(`a once schedule needs a date as YYYY-MM-DD, got "${wire.date ?? ""}"`);
-    return { kind, time, date: wire.date };
+    if (!parseDate(wire.date)) throw new Error(`a once schedule needs a real date as YYYY-MM-DD, got "${wire.date ?? ""}"`);
+    const cadence: ScheduleCadence = { kind, time, date: wire.date };
+    const problem = onceProblem(cadence, now, prev);
+    if (problem === "gap") throw new Error(`${wire.date} has no ${time}: the clocks skip it, pick another time`);
+    if (problem) throw new Error(`${wire.date} ${time} has already passed, pick a date and time still ahead`);
+    return cadence;
   }
   if (kind === "weekly") {
     const weekday = wire.weekday ?? 1;
@@ -218,7 +224,7 @@ export async function scheduleHandler(raw: unknown): Promise<unknown> {
     if (task.schedule) {
       const patch: Partial<ScheduleInput> & { enabled?: boolean } = {};
       if (params.name !== undefined) patch.name = params.name.trim();
-      if (params.cadence !== undefined) patch.cadence = normalizeCadence(params.cadence);
+      if (params.cadence !== undefined) patch.cadence = normalizeCadence(params.cadence, now, task.schedule.cadence);
       if (params.prompt !== undefined) patch.prompt = params.prompt;
       if (params.promptRef !== undefined) patch.prompt_id = params.promptRef;
       if (params.keepRuns !== undefined) patch.keep_runs = params.keepRuns;
@@ -244,7 +250,7 @@ export async function scheduleHandler(raw: unknown): Promise<unknown> {
     if (!params.cadence) {
       throw new Error("cadence is required when creating a schedule");
     }
-    const cadence = normalizeCadence(params.cadence);
+    const cadence = normalizeCadence(params.cadence, now);
     const input: ScheduleInput = {
       name: (params.name && params.name.trim()) || task.name,
       cadence,

@@ -310,6 +310,7 @@ describe("the Scheduled view and dialog", () => {
   let root = "";
   let parent = "";
   let dockerTask = "";
+  let onceParent = "";
   const runs: string[] = [];
   const NAME = "e2e ui schedule";
 
@@ -343,13 +344,13 @@ describe("the Scheduled view and dialog", () => {
   });
 
   after(async () => {
-    if (parent) {
-      await browser.execute(async (id) => {
+    for (const id of [parent, onceParent].filter(Boolean)) {
+      await browser.execute(async (i) => {
         const t = window.__termic!;
-        if (t.useApp.getState().tasks.find((x: any) => x.id === id)?.schedule) await t.scheduleRunner.deleteSchedule(id, true);
-      }, parent).catch(() => {});
+        if (t.useApp.getState().tasks.find((x: any) => x.id === i)?.schedule) await t.scheduleRunner.deleteSchedule(i, true);
+      }, id).catch(() => {});
     }
-    for (const id of [...runs, parent, dockerTask].filter(Boolean)) {
+    for (const id of [...runs, parent, onceParent, dockerTask].filter(Boolean)) {
       const t = await diskTask(id).catch(() => null);
       if (t && !t.archived) await archiveTask(id);
     }
@@ -490,8 +491,41 @@ describe("the Scheduled view and dialog", () => {
     // Refused: nothing was created.
     expect(await browser.execute(() =>
       window.__termic!.useApp.getState().tasks.some((t: any) => t.schedule?.name === "e2e past one-off"))).toBe(false);
-    await browser.keys("Escape");
+
+    // Back to tomorrow (09:00, the default time): created, and the row reads
+    // its date and a next run on it.
+    await browser.execute((sel, pid) => {
+      const s = document.querySelector(sel) as HTMLSelectElement;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, pid);
+      s.dispatchEvent(new Event("change", { bubbles: true }));
+    }, inDialog('[data-testid="schedule-project"]'), projectId);
+    await clickWhenVisible(inDialog('[data-testid="schedule-agent-fakeagent"]'));
+    await setInputValue(dateSel, tomorrow);
+    await clickWhenVisible('[data-testid="schedule-submit"]');
     await waitGone('[data-testid="schedule-dialog"]');
+    onceParent = await browser.waitUntil(
+      () => browser.execute(() => window.__termic!.useApp.getState().tasks.find((t: any) => t.schedule?.name === "e2e past one-off")?.id ?? false),
+      { timeout: 10_000, timeoutMsg: "the dialog never created the one-off" },
+    ) as unknown as string;
+    await waitVisible(rowSel(onceParent));
+    expect(await text(`[data-testid="schedule-cadence-${onceParent}"]`)).toMatch(/^Once on .+ at 09:00$/);
+    expect(await text(`[data-testid="schedule-next-${onceParent}"]`)).toMatch(/^Next /);
+
+    // The app was "closed" over its slot: a pass a day later records it
+    // missed (catch-up is off by default) and the row reads Done, not Paused.
+    const slot = await browser.execute((d) => {
+      const [y, m, day] = d.split("-").map(Number);
+      return new Date(y, m - 1, day, 9, 0).getTime();
+    }, tomorrow);
+    await browser.execute(async (n) => window.__termic!.scheduleRunner.scheduleTickNow(n), slot + 86_400_000);
+    const sched = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.schedule, onceParent) as any;
+    expect(sched.history.map((h: any) => h.outcome)).toEqual(["missed"]);
+    await browser.waitUntil(async () => (await text(`[data-testid="schedule-next-${onceParent}"]`)) === "Done", {
+      timeout: 5_000, timeoutMsg: "a finished one-off did not read Done",
+    });
+    await browser.execute((sel) => document.querySelector(sel)!.scrollIntoView({ block: "center" }), rowSel(onceParent));
+    await snap("schedules-ui-02e-once-done.png");
   });
 
   it("Run now from the view runs it, and the last run links its report", async () => {

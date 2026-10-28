@@ -150,6 +150,45 @@ pub fn compose_task_agent_args(args: &[String], model: Option<&str>) -> Vec<Stri
     out
 }
 
+/// Whether `d` is a real calendar date written `YYYY-MM-DD` (`2026-02-30` is
+/// not one). The webview's runner reads it with `Date(y, m, d)`, which would
+/// roll such a date into March, so every boundary refuses it instead: the CLI,
+/// the MCP tool and `task_set_schedule` (GH #403).
+pub fn calendar_date_ok(d: &str) -> bool {
+    let b = d.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    if !d[..4].bytes().chain(d[5..7].bytes()).chain(d[8..].bytes()).all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let (y, m, day): (u32, u32, u32) = (d[..4].parse().unwrap_or(0), d[5..7].parse().unwrap_or(0), d[8..].parse().unwrap_or(0));
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if leap { 29 } else { 28 },
+        _ => return false,
+    };
+    y >= 1970 && (1..=days).contains(&day)
+}
+
+/// Why `schedule set`'s cadence and date do not go together, or None (GH
+/// #403): a date belongs to the once cadence, which needs one, and it must be
+/// a real day. Shared by the CLI (pre-socket) and the MCP tool. Whether the
+/// date and time are still AHEAD, and exist on the local clock, is the app's
+/// call: it has the clock and the time zone.
+pub fn schedule_date_problem(cadence: Option<&str>, date: Option<&str>) -> Option<&'static str> {
+    let once = cadence.is_some_and(|c| c.eq_ignore_ascii_case("once"));
+    match (cadence, date) {
+        (Some(_), None) if once => Some("a once cadence needs a date, YYYY-MM-DD"),
+        (Some(_), Some(_)) if !once => Some("a date only goes with the once cadence"),
+        (None, Some(_)) => Some("a date needs the once cadence and a time"),
+        (_, Some(d)) if !calendar_date_ok(d) => Some("the date must be a real calendar day, YYYY-MM-DD"),
+        _ => None,
+    }
+}
+
 /// Why `title` cannot be a tab title, or None when it can (GH #331).
 /// Shared by the CLI (pre-socket), the server and the MCP tool, so the
 /// three cannot disagree. Exactly "" is valid: it means "the automatic
@@ -2236,6 +2275,25 @@ pub fn check_protocol(server_protocol: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_schedule_date_is_a_real_day_and_only_goes_with_once() {
+        for ok in ["2026-10-27", "2028-02-29", "2000-02-29", "1970-01-01"] {
+            assert!(super::calendar_date_ok(ok), "{ok}");
+        }
+        for bad in ["2026-02-29", "1900-02-29", "2026-02-30", "2026-13-01", "2026-00-10", "2026-10-00", "27-10-2026", "2026-10-7", "2026/10/27", "", "1969-12-31"] {
+            assert!(!super::calendar_date_ok(bad), "{bad}");
+        }
+        use super::schedule_date_problem as p;
+        assert_eq!(p(Some("once"), Some("2026-10-27")), None);
+        assert_eq!(p(Some("ONCE"), Some("2026-10-27")), None);
+        assert_eq!(p(Some("weekly"), None), None);
+        assert_eq!(p(None, None), None);
+        assert!(p(Some("once"), None).is_some());
+        assert!(p(Some("daily"), Some("2026-10-27")).is_some());
+        assert!(p(None, Some("2026-10-27")).is_some());
+        assert!(p(Some("once"), Some("2026-02-30")).is_some());
+    }
 
     #[test]
     fn parse_pr_ref_reads_every_spelling_and_guesses_at_nothing() {

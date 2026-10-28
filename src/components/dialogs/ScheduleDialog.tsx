@@ -37,7 +37,7 @@ import {
   DEFAULT_KEEP_RUNS, DEFAULT_REPORT_DAYS, MAX_KEEP_RUNS, REPORT_DAY_CHOICES, scheduleSandboxSeed, type ScheduleInput,
 } from "@/lib/schedules/record";
 import { weekdayName } from "@/lib/schedules/display";
-import { localDate, onceSlot } from "@/lib/schedules/slots";
+import { localDate, onceProblem } from "@/lib/schedules/slots";
 import { reportFolder, scheduleSlug } from "@/lib/schedules/runSpec";
 
 const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
@@ -165,12 +165,8 @@ export function ScheduleDialog() {
     if (!name.trim()) return setErr(t("schedule.errName"));
     if (!prompt.trim() && !promptId) return setErr(t("schedule.errPrompt"));
     if (kind === "once") {
-      // A one-off in the past would never run: creating one stamps it as
-      // already passed. An unchanged past date on an edit is allowed through.
-      const at = onceSlot({ kind, time, date });
-      const unchanged = editing && parent!.schedule!.cadence.kind === "once"
-        && parent!.schedule!.cadence.date === date && parent!.schedule!.cadence.time === time;
-      if (at == null || (at <= Date.now() && !unchanged)) return setErr(t("schedule.errDate"));
+      const problem = onceProblem({ kind, time, date }, Date.now(), editing ? parent!.schedule!.cadence : undefined);
+      if (problem) return setErr(t(problem === "gap" ? "schedule.errDateGap" : "schedule.errDate"));
     }
     if (newParent && !cli) return setErr(t("schedule.errAgent"));
     if (newParent && !selection) return setErr(t("schedule.errSandbox"));

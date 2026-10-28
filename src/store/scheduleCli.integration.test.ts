@@ -192,6 +192,65 @@ describe("schedule set", () => {
   });
 });
 
+describe("schedule set --cadence once", () => {
+  const ahead = () => {
+    const d = new Date(Date.now() + 3 * 86_400_000);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  it("creates a one-off with its date and next run on it", async () => {
+    const date = ahead();
+    const res = (await scheduleHandler({
+      op: "set", taskId: "task-bare", cadence: { kind: "once", time: "12:00", date }, prompt: "Ship it",
+    })) as { schedule: any };
+    expect(res.schedule.cadence).toEqual({ kind: "once", time: "12:00", date });
+    const [y, m, d] = date.split("-").map(Number);
+    expect(res.schedule.next_run).toBe(new Date(y, m - 1, d, 12).getTime());
+    expect(res.schedule.last_slot).toBeUndefined();
+  });
+
+  it("refuses a malformed date, a day that does not exist, and a moment already past", async () => {
+    for (const [date, why] of [
+      ["27-10-2026", "real date as YYYY-MM-DD"],
+      ["2026-02-30", "real date as YYYY-MM-DD"],
+      [undefined, "real date as YYYY-MM-DD"],
+      ["2020-01-01", "has already passed"],
+    ] as const) {
+      await expect(scheduleHandler({
+        op: "set", taskId: "task-bare", cadence: { kind: "once", time: "09:00", date }, prompt: "x",
+      })).rejects.toThrow(why);
+    }
+    expect(ipc.taskSetSchedule).not.toHaveBeenCalled();
+  });
+
+  it("an edit may keep a finished one-off's date, and moving it re-arms it", async () => {
+    useApp.setState({
+      tasks: [task({
+        id: "task-once", project_id: "proj-1", name: "once",
+        schedule: { ...TASK.schedule!, slug: "once", cadence: { kind: "once", time: "09:00", date: "2020-01-01" },
+          last_slot: new Date(2020, 0, 1, 9).getTime() },
+      })],
+    });
+    // Renaming a finished one-off sends the same past date back: let through.
+    const renamed = (await scheduleHandler({
+      op: "set", taskId: "task-once", name: "renamed", cadence: { kind: "once", time: "09:00", date: "2020-01-01" },
+    })) as { schedule: any };
+    expect(renamed.schedule.name).toBe("renamed");
+    expect(renamed.schedule.next_run).toBeUndefined();
+    // Moving it to another past date is refused like a new one.
+    await expect(scheduleHandler({
+      op: "set", taskId: "task-once", cadence: { kind: "once", time: "09:00", date: "2020-01-02" },
+    })).rejects.toThrow("has already passed");
+    const date = ahead();
+    const moved = (await scheduleHandler({
+      op: "set", taskId: "task-once", cadence: { kind: "once", time: "09:00", date },
+    })) as { schedule: any };
+    expect(moved.schedule.cadence.date).toBe(date);
+    expect(moved.schedule.last_slot).toBeUndefined();
+    expect(moved.schedule.next_run).toBeGreaterThan(Date.now());
+  });
+});
+
 describe("schedule delete", () => {
   it("removes a schedule and optionally deletes report files", async () => {
     const res = (await scheduleHandler({

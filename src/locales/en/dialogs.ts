@@ -875,6 +875,7 @@ export default {
     once: "Once",
     date: "Date",
     errDate: "Pick a date and time that are still ahead.",
+    errDateGap: "That time does not exist on that date (the clocks skip it). Pick another time.",
     weekday: "Day",
     time: "Time",
     sandbox: "Sandbox",

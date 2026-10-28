@@ -142,7 +142,7 @@ Termic supports recurring schedules on tasks: recurring runs cut child tasks at 
 
 - `"$TERMIC_CLI" schedule list --json` - list recurring schedules.
 - `"$TERMIC_CLI" schedule show <task> --json` - detailed schedule configuration.
-- `"$TERMIC_CLI" schedule set <task> --cadence daily --time 09:00 -p "<prompt>" --yes` - configure or update a schedule.
+- `"$TERMIC_CLI" schedule set <task> --cadence daily --time 09:00 -p "<prompt>" --yes` - configure or update a schedule. A one-off: `--cadence once --date YYYY-MM-DD --time HH:MM` runs a single time, never again.
 - `"$TERMIC_CLI" schedule run <task>` - trigger an immediate run.
 - `"$TERMIC_CLI" schedule delete <task> --yes` - delete a schedule.
 

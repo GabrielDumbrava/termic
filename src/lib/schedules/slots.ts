@@ -53,6 +53,23 @@ export function onceSlot(c: ScheduleCadence): number | null {
   return new Date(date.y, date.mo, date.d, t.h, t.m, 0, 0).getTime();
 }
 
+/** Why a one-off cannot be armed at `now`: a date that is not a real
+ *  `YYYY-MM-DD` (or a broken time), a wall-clock time its date does not have
+ *  (a spring-forward gap, which `onceSlot` would quietly move), or a moment
+ *  already past (`initialLastSlot` would stamp it done and it would never
+ *  run). An edit that leaves a one-off's date and time as `prev` had them is
+ *  let through, so a finished one-off can still be renamed or paused. Shared
+ *  by the dialog and the CLI/MCP handler so they cannot differ. */
+export function onceProblem(c: ScheduleCadence, now: number, prev?: ScheduleCadence): "date" | "gap" | "past" | null {
+  if (prev?.kind === "once" && prev.date === c.date && prev.time === c.time) return null;
+  const slot = onceSlot(c);
+  if (slot == null) return "date";
+  const t = parseTime(c.time)!;
+  const back = new Date(slot);
+  if (back.getHours() !== t.h || back.getMinutes() !== t.m) return "gap";
+  return slot <= now ? "past" : null;
+}
+
 /** The local `YYYY-MM-DD` of `ms`, the value a date input holds. */
 export function localDate(ms: number): string {
   const d = new Date(ms);

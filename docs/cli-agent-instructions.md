@@ -332,7 +332,7 @@ Termic supports recurring schedules on tasks: recurring runs cut child tasks at 
 
 - `"$TERMIC_CLI" schedule list --json` - list recurring schedules with cadence, enabled state, next run, and last outcome.
 - `"$TERMIC_CLI" schedule show <task> --json` - detailed schedule configuration, history, and report files.
-- `"$TERMIC_CLI" schedule set <task> --cadence daily --time 09:00 -p "<prompt>" --yes` - configure or update a schedule. Options include `--name`, `--cadence`, `--time`, `--weekday` (0-6 for weekly), `--date` (`YYYY-MM-DD`, with `--cadence once`: a single run, never repeated), `-p`/`--prompt`, `-P`/`--library`, `--keep-runs`, `--report-days`, `--catch-up` / `--no-catch-up`, `--enable` / `--disable`, and `-y`/`--yes`.
+- `"$TERMIC_CLI" schedule set <task> --cadence daily --time 09:00 -p "<prompt>" --yes` - configure or update a schedule. Options include `--name`, `--cadence`, `--time`, `--weekday` (0-6 for weekly), `--date` (`YYYY-MM-DD`, with `--cadence once`: a single run, never repeated, e.g. `--cadence once --date 2026-10-27 --time 09:00`; a date or time already past, or one the clocks skip, is refused; moving the date re-arms a one-off that already ran), `-p`/`--prompt`, `-P`/`--library`, `--keep-runs`, `--report-days`, `--catch-up` / `--no-catch-up`, `--enable` / `--disable`, and `-y`/`--yes`.
 - `"$TERMIC_CLI" schedule run <task>` - trigger an immediate out-of-band run ("Run now"). Refused if a run is already in progress.
 - `"$TERMIC_CLI" schedule delete <task> --yes` - delete a schedule (add `--delete-reports` to also remove report files on disk).
 

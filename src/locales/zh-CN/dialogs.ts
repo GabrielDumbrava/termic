@@ -867,6 +867,7 @@ export default {
     once: "一次",
     date: "日期",
     errDate: "请选择一个尚未到来的日期和时间。",
+    errDateGap: "该日期没有这个时刻（时钟会跳过它），请选择其他时间。",
     weekday: "星期",
     time: "时刻",
     sandbox: "沙箱",

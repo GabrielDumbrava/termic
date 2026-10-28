@@ -16,18 +16,6 @@ use std::io::Read as _;
 use termic_proto as proto;
 use termic_proto::exit_code;
 
-/// `--date` belongs to a once cadence and a once cadence needs it. Shape only:
-/// whether the date is a real, still-future day is the app's call, which has
-/// the clock and the calendar.
-fn cadence_date_problem(cadence: Option<&str>, date: Option<&str>) -> Option<&'static str> {
-    match (cadence, date) {
-        (Some("once"), None) => Some("--cadence once requires --date YYYY-MM-DD"),
-        (Some(c), Some(_)) if c != "once" => Some("--date requires --cadence once"),
-        (None, Some(_)) => Some("--date requires --cadence once and --time"),
-        _ => None,
-    }
-}
-
 /// `termic hook-emit <target>`: copy stdin (an agent hook's OSC report) to
 /// `target`, the terminal the hook reports to.
 ///
@@ -1749,13 +1737,15 @@ Exit codes: 0 success, 1 unknown or ambiguous task, 4 app not running, \
     #[command(
         after_help = "Configures recurring runs for a task. The cadence is either daily, weekdays, or weekly \
 (with --time HH:MM and optional --weekday 0-6 for weekly), or once \
-(--cadence once --date YYYY-MM-DD --time HH:MM: a single run, never repeated). \
+(--cadence once --date YYYY-MM-DD --time HH:MM: a single run, never repeated; a moment \
+already past, or a time the clocks skip that day, is refused, and moving the date re-arms a \
+one-off that already ran). \
 -p - reads the prompt from stdin. -P/--library delivers a prompt from the prompt library. \
 Without <TASK>, targets your own task ($TERMIC_TASK_ID), then falls back to the current directory.
 
 Prints the updated schedule on stdout. With --output-format json, one object: {\"schedule\": {...}}.
 
-Exit codes: 0 success, 1 error (invalid cadence, time, or prompt), 4 app not running, \
+Exit codes: 0 success, 1 error (invalid cadence, time, date, or prompt), 4 app not running, \
 5 CLI disabled, 6 refused, 8 connection lost."
     )]
     Set {
@@ -1961,7 +1951,7 @@ fn pre_connect_guard(cmd: &Cmd) -> Result<(), CliError> {
     }
     // Cadence and time on `schedule set` must be specified together.
     if let Cmd::Schedule(ScheduleCmd::Set { cadence, time, weekday, date, .. }) = cmd {
-        if let Some(msg) = cadence_date_problem(cadence.as_deref(), date.as_deref()) {
+        if let Some(msg) = proto::schedule_date_problem(cadence.as_deref(), date.as_deref()) {
             return Err(CliError::new(exit_code::ERROR, msg));
         }
         match (cadence.as_deref(), time.as_deref()) {
@@ -4504,13 +4494,19 @@ mod tests {
         let Cmd::Schedule(ScheduleCmd::Set { cadence, date, .. }) = &once.cmd else { panic!("not schedule set") };
         assert_eq!(cadence.as_deref(), Some("once"));
         assert_eq!(date.as_deref(), Some("2026-10-27"));
-        assert_eq!(cadence_date_problem(cadence.as_deref(), date.as_deref()), None);
+        assert!(pre_connect_guard(&once.cmd).is_ok());
 
-        assert!(cadence_date_problem(Some("once"), None).is_some());
-        assert!(cadence_date_problem(Some("daily"), Some("2026-10-27")).is_some());
-        assert!(cadence_date_problem(None, Some("2026-10-27")).is_some());
-        assert_eq!(cadence_date_problem(Some("weekly"), None), None);
-        assert_eq!(cadence_date_problem(None, None), None);
+        // The guard refuses each mismatch before the socket, exit 1.
+        for bad in [
+            &["--cadence", "once", "--time", "09:00"][..],
+            &["--cadence", "daily", "--time", "09:00", "--date", "2026-10-27"],
+            &["--date", "2026-10-27"],
+            &["--cadence", "once", "--time", "09:00", "--date", "27-10-2026"],
+            &["--cadence", "once", "--time", "09:00", "--date", "2026-02-30"],
+        ] {
+            let err = pre_connect_guard(&parse(bad).cmd).expect_err(&format!("{bad:?} should be refused"));
+            assert_eq!(err.code, exit_code::ERROR, "{bad:?}");
+        }
     }
 
     #[test]

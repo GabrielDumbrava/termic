@@ -8,7 +8,7 @@ process.env.TZ = "America/New_York";
 import { describe, it, expect } from "vitest";
 import {
   GRACE_MS, decidePass, initialLastSlot, latestSlotAtOrBefore, nextSlotAfter, parseTime,
-  localDate, onceSlot, parseDate, slotOnDay, slotsBetween,
+  localDate, onceProblem, onceSlot, parseDate, slotOnDay, slotsBetween,
 } from "@/lib/schedules/slots";
 import type { ScheduleCadence, TaskSchedule } from "@/lib/types";
 
@@ -230,5 +230,36 @@ describe("a once cadence", () => {
 
   it("does not run in a disabled schedule", () => {
     expect(decidePass(sched({ cadence: once(), enabled: false }), slot + MIN, false)).toEqual({ kind: "none" });
+  });
+
+  it("refuses to arm a broken date, a time the clocks skip, or a moment already past", () => {
+    const before = slot - HOUR;
+    expect(onceProblem(once(), before)).toBeNull();
+    expect(onceProblem(once("2026-02-30"), before)).toBe("date");
+    expect(onceProblem(once("27-10-2026"), before)).toBe("date");
+    expect(onceProblem(once("2026-10-27", "25:00"), before)).toBe("date");
+    expect(onceProblem(once("2027-03-14", "02:30"), before)).toBe("gap");
+    // The repeated hour at fall-back exists (twice), so it is not a gap.
+    expect(onceProblem(once("2026-11-01", "01:30"), before)).toBeNull();
+    expect(onceProblem(once(), slot)).toBe("past");
+    expect(onceProblem(once(), slot + MIN)).toBe("past");
+    // An edit that leaves a finished one-off's date and time alone passes;
+    // moving either is checked against the clock again.
+    expect(onceProblem(once(), slot + MIN, once())).toBeNull();
+    expect(onceProblem(once("2026-10-26"), slot + MIN, once())).toBe("past");
+    expect(onceProblem(once(), slot + MIN, daily())).toBe("past");
+  });
+
+  it("editing the date re-arms a finished one-off, which then fires on the new date only", () => {
+    const done = sched({ cadence: once(), last_slot: slot });
+    const now = at(2026, 10, 28, 10);
+    expect(decidePass(done, now, false)).toEqual({ kind: "none" });
+    const moved = once("2026-11-03");
+    const rearmed = { ...done, cadence: moved, last_slot: initialLastSlot(moved, now) };
+    const newSlot = at(2026, 11, 3, 9);
+    expect(rearmed.last_slot).toBeNull();
+    expect(decidePass(rearmed, newSlot - MIN, false)).toEqual({ kind: "none" });
+    expect(decidePass(rearmed, newSlot + MIN, false)).toEqual({ kind: "fire", slot: newSlot, catchUp: false, missedBefore: 0 });
+    expect(decidePass({ ...rearmed, last_slot: newSlot }, at(2026, 12, 1), false)).toEqual({ kind: "none" });
   });
 });

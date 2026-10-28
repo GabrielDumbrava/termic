@@ -171,28 +171,6 @@ fn time_ok(t: &str) -> bool {
     h < 24 && m < 60
 }
 
-/// Whether `d` is a real calendar date written `YYYY-MM-DD` (`2026-02-30` is
-/// not one). The runner reads it with `Date(y, m, d)`, which would roll such a
-/// date into March, so the boundary refuses it instead.
-fn cadence_date_ok(d: &str) -> bool {
-    let b = d.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-        return false;
-    }
-    if !d[..4].bytes().chain(d[5..7].bytes()).chain(d[8..].bytes()).all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    let (y, m, day): (u32, u32, u32) = (d[..4].parse().unwrap_or(0), d[5..7].parse().unwrap_or(0), d[8..].parse().unwrap_or(0));
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let days = match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => if leap { 29 } else { 28 },
-        _ => return false,
-    };
-    y >= 1970 && (1..=days).contains(&day)
-}
-
 /// Why `s` cannot be stored, or `None`. The frontend validates the same
 /// things for its own messages; this is the boundary that does not trust it.
 pub fn schedule_problem(s: &TaskSchedule) -> Option<String> {
@@ -212,7 +190,7 @@ pub fn schedule_problem(s: &TaskSchedule) -> Option<String> {
     if s.cadence.kind == CadenceKind::Weekly && !s.cadence.weekday.is_some_and(|d| d <= 6) {
         return Some("a weekly schedule needs a weekday".into());
     }
-    if s.cadence.kind == CadenceKind::Once && !s.cadence.date.as_deref().is_some_and(cadence_date_ok) {
+    if s.cadence.kind == CadenceKind::Once && !s.cadence.date.as_deref().is_some_and(termic_proto::calendar_date_ok) {
         return Some("a one-off schedule needs a date, YYYY-MM-DD".into());
     }
     if !(1..=MAX_KEEP_RUNS).contains(&s.keep_runs) {
@@ -616,6 +594,19 @@ mod tests {
         assert!(serde_json::to_value(&s).unwrap()["report_days"].is_null());
         let back: TaskSchedule = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn a_one_off_round_trips_with_its_date_and_where_it_stopped() {
+        let mut s = sched();
+        s.cadence = ScheduleCadence { kind: CadenceKind::Once, time: "09:00".into(), weekday: None, date: Some("2026-10-27".into()) };
+        // Acted on: last_slot sits on its one slot, which is what "Done" reads.
+        s.last_slot = Some(1_793_106_000_000);
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["cadence"], serde_json::json!({ "kind": "once", "time": "09:00", "date": "2026-10-27" }));
+        let back: TaskSchedule = serde_json::from_value(v).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(schedule_problem(&back), None);
     }
 
     // ── the folder and the exclude line ──────────────────────────────────

@@ -2543,9 +2543,16 @@ input (default tomorrow, `min` today) next to the time. It exists because a
 date the schedule runs on is not a weekday: "27 October" has no preset. Create
 refuses a moment that has already passed ("Pick a date and time that are
 still ahead"), since `initialLastSlot` would stamp it as done and it would
-never run; an edit that leaves a past one-off untouched is let through. After
-it acts the row reads "Done", not "Paused": nothing is switched off, there is
-simply no next slot.
+never run; an edit that leaves a past one-off untouched is let through. It
+also refuses a time the date does not have, the hour the clocks skip at
+spring-forward ("That time does not exist on that date"), which `onceSlot`
+would otherwise move an hour on without saying so. Both rules are
+`onceProblem` in `src/lib/schedules/slots.ts`, which `termic schedule set` and
+MCP `schedule_set` go through too (`scheduleCli.ts`), so the three agree; the
+date's shape and calendar validity are also checked before the socket by
+`termic_proto::schedule_date_problem`, shared by the CLI and the MCP tool.
+After it acts the row reads "Done", not "Paused": nothing is switched off,
+there is simply no next slot.
 `ScheduleDialog.tsx` creates one with a new parent
 (project, name, agent and model, prompt or library entry, cadence, the
 Seatbelt sandbox and YOLO seeded the way New Task seeds them, catch-up,
