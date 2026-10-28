@@ -10,9 +10,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { EditTab, ScratchTab, ExternalTab, Task } from "@/lib/types";
-import { EditorState, Compartment, Annotation, type Extension } from "@codemirror/state";
+import { EditorState, Compartment, Annotation, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, tooltips } from "@codemirror/view";
-import { indentWithTab } from "@codemirror/commands";
+import { indentWithTab, isolateHistory } from "@codemirror/commands";
+import { previewHistory } from "./markdown/editTarget";
 import { basicSetup } from "codemirror";
 import { search } from "@codemirror/search";
 import { lintGutter, setDiagnostics } from "@codemirror/lint";
@@ -44,7 +45,7 @@ import { createLangSwitch } from "@/lib/langSwitch";
 import { forceParsing } from "@codemirror/language";
 import { navHint } from "@/lib/lsp/navHint";
 import { gotoLocation as revealLine } from "@/lib/gotoLocation";
-import { isPureCrlf } from "@/lib/lineEndings";
+import { isPureCrlf, normalizeEol } from "@/lib/lineEndings";
 
 /** How long after the last keystroke a scratchpad's buffer is flushed to the
  *  scratch store and its title re-derived. Both ride the TYPING path, so both
@@ -114,6 +115,30 @@ const noAutocorrectOnPanelInputs = ViewPlugin.define(view => {
  *  inserts, and how wide an existing tab character renders. */
 function indentExtension(style: IndentStyle): Extension {
   return [indentUnit.of(style.unit), EditorState.tabSize.of(style.size)];
+}
+
+/** What the markdown preview may ask of the editor it edits through (see
+ *  components/task/markdown/editTarget). */
+export interface EditorHandle {
+  /** exactly ⌘S: saves, or opens the pad's promote picker, toasts included */
+  save(): void;
+  /** the write alone, no toast; null when there is nowhere to write */
+  persist(): Promise<void> | null;
+  /** unsaved changes in the buffer (always true for an untitled pad), not
+   *  counting what a save still in flight is writing: a second preview edit
+   *  landing mid-save is not "other unsaved changes" */
+  isDirty(): boolean;
+  /** show the tab dirty while `on` even though the buffer is not (the
+   *  block editor's unapplied text), so closing it asks */
+  holdDirty(on: boolean): void;
+}
+const EDITOR_HANDLES = new WeakMap<EditorView, EditorHandle>();
+export const editorHandle = (view: EditorView): EditorHandle | undefined => EDITOR_HANDLES.get(view);
+
+/** persist() refused: the file changed on disk since this buffer last read
+ *  or wrote it. The "changed on disk" banner is up; nothing was written. */
+export class DiskChangedError extends Error {
+  constructor() { super("changed on disk"); this.name = "DiskChangedError"; }
 }
 
 // Marks a doc-replacing transaction as an external reload (file changed on
@@ -205,10 +230,26 @@ export function EditorPane({ task, tab, active, onContent }: {
   // only touches the store on the clean→dirty edge, not every
   // keystroke (patchTab re-renders the whole TabBar).
   const dirtyRef = useRef(false);
+  // the markdown preview's block editor has text not yet applied: the tab
+  // shows dirty for it too, so closing asks (EditorHandle.holdDirty)
+  const heldRef = useRef(false);
+  // every write of the tab's dirty flag goes through here, so a save or a
+  // reload clearing the buffer's half never drops the held half
+  const syncDirty = () => {
+    const dirty = dirtyRef.current || heldRef.current;
+    // gone already (a close unmounting the block editor) or unchanged: no write
+    const cur = (useApp.getState().tabs[task.id] ?? []).find(t => t.id === tab.id) as { dirty?: boolean } | undefined;
+    if (cur && !!cur.dirty !== dirty) useApp.getState().patchTab(task.id, tab.id, { dirty });
+  };
   // Scratchpad flush state (GH #244). The last content and title actually
   // written, so the debounced flush can bail when nothing changed; the
   // pending timer; and the unmount flush, rebound by every mount.
   const lastFlushedRef = useRef<string | null>(null);
+  // A task file's text as this buffer last read or wrote it (line breaks
+  // normalized). persist() refuses to write over a file that moved on since:
+  // there is no file watcher, so a clean buffer sits behind an agent's writes
+  // until its turn settles, and a save would silently undo them.
+  const diskTextRef = useRef<string | null>(null);
   const lastTitleRef = useRef<string | null>(null);
   const flushTimerRef = useRef<number | null>(null);
   // Unregisters this pad from lib/scratchLive (the CLI's way into the buffer).
@@ -369,7 +410,7 @@ export function EditorPane({ task, tab, active, onContent }: {
         const markDirty = () => {
           if (dirtyRef.current) return;
           dirtyRef.current = true;
-          useApp.getState().patchTab(task.id, tab.id, { dirty: true });
+          syncDirty();
         };
         if (tab.type === "scratch" && !tab.path) dirtyRef.current = true;
         // ── scratchpad crash safety (GH #244) ──────────────────────────
@@ -431,31 +472,84 @@ export function EditorPane({ task, tab, active, onContent }: {
         };
         lastFlushedRef.current = content;
         lastTitleRef.current = null;
+        diskTextRef.current = tab.type === "edit" ? normalizeEol(content) : null;
 
-        // ⌘S → write the buffer to disk. termic NEVER auto-saves; this
-        // is the only path that clears `dirty`. Returns true so
-        // CodeMirror treats the key as handled and preventDefault's it.
-        const saveDoc = (v: EditorView): boolean => {
+        // Write the buffer to where this tab saves (task file or scratch-tree
+        // file) and clear `dirty` once it lands. Null when there is nowhere to
+        // write: an untitled pad, an external file. Shared by ⌘S below and by
+        // the markdown preview's save policy (editorHandle), so there is one
+        // save path. Saves run one at a time, so two quick preview edits
+        // can't land on disk out of order; `saving` is the doc the newest one
+        // writes.
+        let chain: Promise<unknown> = Promise.resolve();
+        let saving: Text | null = null;
+        const persist = (v: EditorView): Promise<void> | null => {
+          const p = write(v);
+          if (!p) return null;
+          const doc = saving = v.state.doc;
+          const run = chain.then(p);
+          // a refused or failed save leaves that text unsaved again
+          chain = run.catch(() => { if (saving === doc) saving = null; });
+          return run;
+        };
+        const write = (v: EditorView): (() => Promise<void>) | null => {
+          const doc = v.state.doc;
+          const text = doc.toString();
+          // only when the buffer is still what was written: an edit made
+          // while the read + write were in flight stays dirty, or the next
+          // reload would replace it as if it were saved
+          const clean = () => {
+            if (v.state.doc !== doc) return;
+            dirtyRef.current = false;
+            syncDirty();
+          };
           if (tab.type === "scratch" && tab.path) {
-            const scope = tab.scope ?? "global";
-            const name = tab.path.split("/").pop() || tab.path;
-            const text = v.state.doc.toString();
-            scratchFileWrite(scope, tab.projectId, tab.path, text)
-              .then(() => {
-                dirtyRef.current = false;
-                useApp.getState().patchTab(task.id, tab.id, { dirty: false });
-                useUI.getState().pushToast(t("editor.savedToast", { name }), "success");
-              })
-              .catch((e) => {
-                useUI.getState().pushToast(String(e), "error");
-              });
-            return true;
+            const p = tab.path;
+            return () => scratchFileWrite(tab.scope ?? "global", tab.projectId, p, text).then(clean);
           }
+          if (tab.type !== "edit") return null;
+          const path = tab.path;
+          // ponytail: read-then-write, so a write landing between the two
+          // still wins. The window is one IPC round trip, not a whole turn.
+          // A read that fails refuses too: a file now over the read cap or
+          // not UTF-8 is still writable, and it is not the file we loaded.
+          // (A deleted one fails the write anyway.)
+          const refuse = () => { setDiskChanged(true); throw new DiskChangedError(); };
+          return () => taskFileRead(task.id, path).then(disk => {
+            const now = normalizeEol(disk);
+            if (diskTextRef.current != null && now !== diskTextRef.current && now !== text) refuse();
+            return taskFileWrite(task.id, path, text);
+          }, refuse).then(() => {
+            diskTextRef.current = text;
+            clean();
+            // Git-only tick (NOT bumpFsRevision: that would make every
+            // open editor (this one included) re-read from disk, and a
+            // keystroke landing between the write and that re-read would
+            // pop a spurious "changed on disk" banner). Must stay in this
+            // .then(): bumped before the write resolves, the status could
+            // be computed against the old file.
+            useApp.getState().bumpGitRevision(task.id);
+            // The file on disk is what `git blame` reads, and it just
+            // changed: drop the snapshot and let the extension re-fetch.
+            if (usePrefs.getState().inlineBlame) {
+              invalidateBlame(task.id, tab.path);
+              v.dispatch({ effects: refreshBlame.of() });
+            }
+          });
+        };
+
+        // ⌘S → write the buffer to disk. Typing in the editor NEVER
+        // auto-saves; the one other writer is an edit made from the markdown
+        // preview (a checkbox, a block edit), which saves only when the
+        // buffer had no unsaved changes before it (MarkdownPane's save
+        // policy, docs/markdown.md). Returns true so CodeMirror treats the
+        // key as handled and preventDefault's it.
+        const saveDoc = (v: EditorView): boolean => {
           // A pad has nowhere to save TO yet. ⌘S opens the promote picker
           // instead of writing to the scratch store: quietly filing the note
           // under `<data_dir>/scratch/` would report success and put it
           // somewhere the user will never look again (GH #244).
-          if (tab.type === "scratch") {
+          if (tab.type === "scratch" && !tab.path) {
             void useUI.getState().askScratchSave(task.id, tab.id);
             return true;
           }
@@ -468,27 +562,12 @@ export function EditorPane({ task, tab, active, onContent }: {
             useUI.getState().pushToast(t("editor.readOnlyToast"), "info");
             return true;
           }
-          const name = tab.path.split("/").pop() || tab.path;
-          taskFileWrite(task.id, tab.path, v.state.doc.toString())
-            .then(() => {
-              dirtyRef.current = false;
-              useApp.getState().patchTab(task.id, tab.id, { dirty: false });
-              useUI.getState().pushToast(t("editor.savedToast", { name }), "success");
-              // Git-only tick (NOT bumpFsRevision: that would make every
-              // open editor — this one included — re-read from disk, and a
-              // keystroke landing between the write and that re-read would
-              // pop a spurious "changed on disk" banner). Must stay in this
-              // .then(): bumped before the write resolves, the status could
-              // be computed against the old file.
-              useApp.getState().bumpGitRevision(task.id);
-              // The file on disk is what `git blame` reads, and it just
-              // changed: drop the snapshot and let the extension re-fetch.
-              if (usePrefs.getState().inlineBlame) {
-                invalidateBlame(task.id, tab.path);
-                v.dispatch({ effects: refreshBlame.of() });
-              }
-            })
-            .catch(e => useUI.getState().pushToast(t("editor.saveFailed", { error: e }), "error"));
+          const path = tab.path ?? "";
+          const name = path.split("/").pop() || path;
+          persist(v)
+            ?.then(() => useUI.getState().pushToast(t("editor.savedToast", { name }), "success"))
+            .catch(e => useUI.getState().pushToast(e instanceof DiskChangedError
+              ? t("editor.diskChangedNotSaved", { name }) : t("editor.saveFailed", { error: e }), "error"));
           return true;
         };
 
@@ -507,6 +586,7 @@ export function EditorPane({ task, tab, active, onContent }: {
               // bracket matching, close-brackets, autocomplete, active-line +
               // selection-match highlight, and the default/search/history keymaps.
               basicSetup,
+              previewHistory,
               search({ top: true }),
               // CodeMirror's search panel inputs inherit WKWebView's
               // browser defaults (spellcheck + autocorrect ON), which
@@ -593,6 +673,12 @@ export function EditorPane({ task, tab, active, onContent }: {
           parent: hostRef.current,
         });
         viewRef.current = view;
+        EDITOR_HANDLES.set(view, {
+          save: () => { saveDoc(view); },
+          persist: () => persist(view),
+          isDirty: () => dirtyRef.current && view.state.doc !== saving,
+          holdDirty: on => { heldRef.current = on; syncDirty(); },
+        });
         elog("view created");
         if (tab.type === "scratch" && !tab.path) {
           // An agent's `termic scratchpad write` lands IN this buffer: the human sees
@@ -757,8 +843,11 @@ export function EditorPane({ task, tab, active, onContent }: {
       v.dispatch({
         effects: indentCompRef.current.reconfigure(indentExtension(detectIndent(content))),
         changes: { from: 0, to: v.state.doc.length, insert: content },
-        annotations: ExternalReload.of(true),
+        // isolated: one undo step of its own, never merged with an edit
+        // either side, so ⌘Z from the preview can tell it is not a preview edit
+        annotations: [ExternalReload.of(true), isolateHistory.of("full")],
       });
+    diskTextRef.current = normalizeEol(content);
     // The buffer now matches disk again, so blame can be trusted again. Same
     // reasoning as the save path, and the same reason docs/ideas/lsp.md wants
     // this path to fire a full-document didChange.
@@ -785,11 +874,18 @@ export function EditorPane({ task, tab, active, onContent }: {
     taskFileRead(task.id, filePath).then(content => {
       const v2 = viewRef.current;
       if (!v2) return;
-      if (content === v2.state.doc.toString()) { setDiskChanged(false); return; }
+      if (content === v2.state.doc.toString()) { diskTextRef.current = normalizeEol(content); setDiskChanged(false); return; }
       if (dirtyRef.current) { setDiskChanged(true); return; }
       applyDiskContent(content);
     }).catch(() => {});
   }, [task.id, filePath, isTaskFile, applyDiskContent]);
+
+  // "Keep mine": the user has seen the newer file and chose their buffer, so
+  // that version is the one the next save may replace.
+  const keepMine = useCallback(() => {
+    setDiskChanged(false);
+    taskFileRead(task.id, filePath).then(content => { diskTextRef.current = normalizeEol(content); }).catch(() => {});
+  }, [task.id, filePath]);
 
   // User accepted the prompt: re-read (content may have moved on since the
   // change was detected) and swap it in, discarding the buffer's edits — so
@@ -798,7 +894,7 @@ export function EditorPane({ task, tab, active, onContent }: {
     taskFileRead(task.id, filePath).then(content => {
       applyDiskContent(content);
       dirtyRef.current = false;
-      useApp.getState().patchTab(task.id, tab.id, { dirty: false });
+      syncDirty();
     }).catch(() => {});
   }, [task.id, filePath, tab.id, applyDiskContent]);
 
@@ -1018,7 +1114,7 @@ export function EditorPane({ task, tab, active, onContent }: {
             {t("editor.reload")}
           </button>
           <button
-            onClick={() => setDiskChanged(false)}
+            onClick={keepMine}
             className="rounded px-2 py-[3px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
           >
             {t("editor.keepMine")}
