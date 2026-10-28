@@ -118,6 +118,7 @@ export default {
     checksFailing: "检查失败",
     approved: "已批准",
     openOn: "在 {{forge}} 上打开",
+    new: "新",
   },
   taskWorkBadge: {
     working: "智能体工作中",

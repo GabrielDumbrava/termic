@@ -19,10 +19,13 @@
 //   2. Background. `initPrStatusPoller` (App start) runs one global slow
 //      tick over every task with a PR identity persisted on its record,
 //      whether or not it has been visited this session. See its doc below.
-//   3. Focus. Activating a task, or refocusing the window with one in
-//      front, runs an unforced refresh for it (at most one per task per
-//      30s), which is what DISCOVERS a PR the agent opened itself. See
-//      `initPrRefreshOnFocus` below.
+//   3. Focus and turn end. Activating a task or refocusing the window with
+//      one in front runs an unforced refresh for it (at most one per task
+//      per 30s); one of its agents finishing a turn does too while the task
+//      has no PR yet (at most one per task per 2 min). That is what
+//      DISCOVERS a PR the agent opened itself. See `initPrRefreshOnFocus`.
+//      A PR found while its task is not in front is highlighted on the
+//      sidebar mark until the task is visited (`unseen`).
 //
 // Layer 2 exists because layer 1 is bound to a component that is usually
 // unmounted (issue #281): `PrCard` lives inside `GitPanel`, which renders
@@ -144,6 +147,21 @@ export function snapshotsAfter(
 
 /** Write the cache, dropping tasks that no longer exist. Only prunes once
  *  the task list has loaded: before that "not in the list" means nothing. */
+const LS_PR_UNSEEN = scoped("prUnseen");
+
+/** Stored JSON back to the unseen map; anything malformed is dropped. */
+export function parseUnseen(raw: string | null): Record<string, number> {
+  let doc: unknown;
+  try { doc = raw ? JSON.parse(raw) : null; } catch { return {}; }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return {};
+  return Object.fromEntries(Object.entries(doc as Record<string, unknown>)
+    .filter((e): e is [string, number] => Number.isInteger(e[1]) && (e[1] as number) > 0));
+}
+
+function persistUnseen(unseen: Record<string, number>) {
+  try { localStorage.setItem(LS_PR_UNSEEN, JSON.stringify(unseen)); } catch { /* private mode */ }
+}
+
 function persistSnapshots(snapshots: Record<string, PrSnapshot>) {
   const tasks = useApp.getState().tasks;
   const live = tasks.length ? new Set(tasks.filter(t => !t.archived).map(t => t.id)) : null;
@@ -169,6 +187,12 @@ interface PrStore {
   /** What each task's PR last read, kept across launches. Feeds the PR mark
    *  only; see "last-known status" above. */
   snapshots: Record<string, PrSnapshot>;
+  /** taskId -> number of a PR found while that task was not in front, until
+   *  the task is visited. The sidebar mark is highlighted meanwhile, so a PR
+   *  an unattended agent opened is not just one more grey glyph. Persisted. */
+  unseen: Record<string, number>;
+  /** Drop a task's "new PR" highlight (visiting it, or opening the PR). */
+  markPrSeen: (taskId: string) => void;
   /** gh/glab/az install + auth status. null until the first detect resolves
    *  (the UI treats null as "still probing", not "missing"). */
   forges: ForgeCliStatus[] | null;
@@ -204,6 +228,15 @@ export const usePr = create<PrStore>((set, get) => ({
     try { return parsePrSnapshots(localStorage.getItem(LS_PR_SNAPSHOTS)); } catch { return {}; }
   })(),
   forges: null,
+  unseen: (() => {
+    try { return parseUnseen(localStorage.getItem(LS_PR_UNSEEN)); } catch { return {}; }
+  })(),
+  markPrSeen: (taskId) => {
+    if (!(taskId in get().unseen)) return;
+    const { [taskId]: _, ...rest } = get().unseen;
+    set({ unseen: rest });
+    persistUnseen(rest);
+  },
 
   refreshForges: async () => {
     try {
@@ -303,6 +336,12 @@ export const usePr = create<PrStore>((set, get) => ({
         if (found) {
           const known = useApp.getState().tasks.find(t => t.id === taskId);
           if (known && (known.pr_number !== found.number || known.pr_provider !== found.provider)) {
+            // A PR new to this task, found while you were elsewhere.
+            if (known.pr_number !== found.number && useApp.getState().activeTaskId !== taskId) {
+              const unseen = { ...get().unseen, [taskId]: found.number };
+              set({ unseen });
+              persistUnseen(unseen);
+            }
             useApp.setState(st => ({
               tasks: st.tasks.map(t => t.id === taskId
                 ? { ...t, pr_number: found.number, pr_provider: found.provider, pr_url: found.url }
@@ -494,20 +533,57 @@ function refreshFocused() {
   if (prFocusEligible(id)) void usePr.getState().refresh(id);
 }
 
+/** Turn-end lookups are DISCOVERY only, at most one per task per this long.
+ *  A task that already has a PR stays on the 3-minute background tick, so a
+ *  busy agent never turns into a `gh` call per turn. */
+const TURN_LOOKUP_MS = 120_000;
+const lastTurnLookup = new Map<string, number>();
+
+/** Tasks with an agent tab that just stopped working. A turn ending is when
+ *  an agent that ran `gh pr create` has a PR to find, and with the task
+ *  already in front no focus change comes to look for it (#435). */
+export function tasksThatStoppedWorking(
+  tabs: Record<string, readonly { id: string; workState?: string }[]>,
+  prev: Record<string, readonly { id: string; workState?: string }[]>,
+): string[] {
+  const out: string[] = [];
+  for (const [taskId, list] of Object.entries(tabs)) {
+    const before = prev[taskId];
+    if (list === before || !before) continue;
+    const was = new Map(before.map(t => [t.id, t.workState]));
+    if (list.some(t => t.workState !== "working" && was.get(t.id) === "working")) out.push(taskId);
+  }
+  return out;
+}
+
 let focusUnsubs: (() => void)[] | null = null;
 
 /** Refresh the active task's PR when it becomes active, and when the window
- *  comes back into focus with it in front. Idempotent; started with the
+ *  comes back into focus with it in front; and any task's PR when one of its
+ *  agents finishes a turn. Idempotent; started with the
  *  poller. Store subscriptions rather than a component effect: a poll bound
  *  to a mounted component is exactly the #281 trap described above. */
 export function initPrRefreshOnFocus() {
   if (focusUnsubs) return;
   focusUnsubs = [
     useApp.subscribe((s, prev) => {
-      if (s.activeTaskId !== prev.activeTaskId) refreshFocused();
+      if (s.activeTaskId === prev.activeTaskId) return;
+      if (s.activeTaskId) usePr.getState().markPrSeen(s.activeTaskId);
+      refreshFocused();
     }),
     useUI.subscribe((s, prev) => {
       if (s.windowFocused && !prev.windowFocused) refreshFocused();
+    }),
+    useApp.subscribe((s, prev) => {
+      if (s.tabs === prev.tabs) return;
+      const now = Date.now();
+      for (const id of tasksThatStoppedWorking(s.tabs, prev.tabs)) {
+        const task = s.tasks.find(t => t.id === id);
+        if (!task || hasPrIdentity(task) || !prFocusEligible(id)) continue;
+        if (now - (lastTurnLookup.get(id) ?? 0) < TURN_LOOKUP_MS) continue;
+        lastTurnLookup.set(id, now);
+        void usePr.getState().refresh(id);
+      }
     }),
   ];
 }
@@ -516,6 +592,7 @@ export function initPrRefreshOnFocus() {
 export function stopPrRefreshOnFocus() {
   focusUnsubs?.forEach(u => u());
   focusUnsubs = null;
+  lastTurnLookup.clear();
 }
 
 /** Start the global PR status poller. Idempotent; called from App once

@@ -30,6 +30,7 @@ export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false
   // read (store/pr.ts "last-known status"), so a launch does not start grey
   // and colour in one row at a time. The live lookup always wins.
   const cached = usePr(s => (s.byTask[task.id]?.lookup?.pr ? null : cachedPrFor(s.snapshots, task)));
+  const unseenNumber = usePr(s => s.unseen[task.id]);
   const url = pr?.url ?? task.pr_url ?? null;
   if (!url) return null;
   const provider = pr?.provider ?? task.pr_provider;
@@ -59,17 +60,24 @@ export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false
     state === "open"   ? { Icon: GitPullRequest, label: t("taskPrBadge.stateOpen") + failingSuffix } :
     { Icon: GitPullRequest, label: "" };
   const id = `${noun}${num ? ` ${prRef(provider, num)}` : ""}`;
+  // Opened while the task was not in front, and not visited since.
+  const fresh = unseenNumber != null && unseenNumber === num;
   const forge = forgeName(provider);
   return (
-    <Tip content={`${id}${label ? ` · ${label}` : ""}. ${t("taskPrBadge.openOn", { forge })}`} delay={0}>
+    <Tip content={`${fresh ? `${t("taskPrBadge.new")} · ` : ""}${id}${label ? ` · ${label}` : ""}. ${t("taskPrBadge.openOn", { forge })}`} delay={0}>
       <button
         data-no-drag
         data-testid={testId}
         data-pr-state={state ?? "unknown"}
         data-pr-approved={approved ? "" : undefined}
         data-pr-cached={!pr && cached ? "" : undefined}
-        onClick={(e) => { e.stopPropagation(); openPath(url).catch(() => {}); }}
-        className="flex shrink-0 items-center gap-0.5 rounded p-px hover:bg-[var(--color-bg-3)]"
+        data-pr-new={fresh ? "" : undefined}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (fresh) usePr.getState().markPrSeen(task.id);
+          openPath(url).catch(() => {});
+        }}
+        className={`flex shrink-0 items-center gap-0.5 rounded p-px hover:bg-[var(--color-bg-3)]${fresh ? " bg-[var(--color-accent)]/15 ring-1 ring-[var(--color-accent)]/50" : ""}`}
         style={showNumber ? { color } : undefined}
       >
         {(showIcon || !(showNumber && num)) && <Icon className="h-3 w-3" style={{ color }} />}

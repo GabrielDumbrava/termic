@@ -118,6 +118,7 @@ export default {
     checksFailing: "checks failing",
     approved: "approved",
     openOn: "Open on {{forge}}",
+    new: "New",
   },
   taskWorkBadge: {
     working: "Agent working",

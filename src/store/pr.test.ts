@@ -31,7 +31,7 @@ vi.mock("@/lib/archiveTask", () => ({
 
 import {
   usePr, newCommentsSince, commentPromptFor, watchTickNow, openPrArchiveWarning,
-  pollableTasks, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus,
+  pollableTasks, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus, tasksThatStoppedWorking, parseUnseen,
   prFocusEligible,
   mergeAlreadyHandled,
   parsePrSnapshots, snapshotsAfter, cachedPrFor,
@@ -926,6 +926,7 @@ describe("refresh on focus", () => {
     vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
     useApp.setState({ activeTaskId: null });
     useUI.setState({ windowFocused: true });
+    usePr.setState({ byTask: {}, unseen: {} });
   });
 
   it("looks up the PR when a task becomes active, even with no identity yet", async () => {
@@ -957,6 +958,68 @@ describe("refresh on focus", () => {
     stopPrRefreshOnFocus();
   });
 
+  it("looks when an agent in the task you are watching finishes its turn (#435)", async () => {
+    seedApp();
+    useApp.setState({ activeTaskId: "ws1", tabs: { ws1: [{ id: "a", type: "terminal", cli: "claude", workState: "working" }] } as any });
+    // Found while in front: nothing to highlight.
+    initPrRefreshOnFocus();
+    expect(ipc.taskPrStatus).not.toHaveBeenCalled();
+    // Watching it: the done is acknowledged straight to idle, and nothing refocuses.
+    useApp.setState({ tabs: { ws1: [{ id: "a", type: "terminal", cli: "claude", workState: "idle" }] } as any });
+    await vi.waitFor(() => expect(usePr.getState().byTask.ws1?.lookup?.pr?.number).toBe(7));
+    expect(ipc.taskPrStatus).toHaveBeenCalledTimes(1);
+    expect(usePr.getState().unseen.ws1).toBeUndefined();
+    stopPrRefreshOnFocus();
+  });
+
+  const agentTab = (workState: string) => ({ ws1: [{ id: "a", type: "terminal", cli: "claude", workState }] } as any);
+
+  it("turn ends only look for a PR the task does not have yet, at most every 2 minutes", async () => {
+    seedApp();
+    useApp.setState({ activeTaskId: "ws1", tabs: agentTab("working") });
+    initPrRefreshOnFocus();
+    useApp.setState({ tabs: agentTab("idle") });
+    await vi.waitFor(() => expect(ipc.taskPrStatus).toHaveBeenCalledTimes(1));
+    // Found: the task has an identity now, so the next turn end leaves it to
+    // the background tick, even past the store's 30s floor.
+    await vi.waitFor(() => expect(useApp.getState().tasks[0].pr_number).toBe(7));
+    usePr.setState({ byTask: { ws1: { ...usePr.getState().byTask.ws1, fetchedAt: 0 } } });
+    useApp.setState({ tabs: agentTab("working") });
+    useApp.setState({ tabs: agentTab("idle") });
+    await Promise.resolve();
+    expect(ipc.taskPrStatus).toHaveBeenCalledTimes(1);
+    stopPrRefreshOnFocus();
+  });
+
+  it("a busy agent with no PR costs one lookup per 2 minutes, not one per turn", async () => {
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue({ status: "ok", pr: null } as any);
+    seedApp();
+    useApp.setState({ activeTaskId: "ws1", tabs: agentTab("working") });
+    initPrRefreshOnFocus();
+    useApp.setState({ tabs: agentTab("idle") });
+    await vi.waitFor(() => expect(usePr.getState().byTask.ws1?.fetchedAt).toBeGreaterThan(0));
+    // Past the store's own 30s floor, so only the turn-end limit can stop it.
+    usePr.setState({ byTask: { ws1: { ...usePr.getState().byTask.ws1, fetchedAt: 0 } } });
+    useApp.setState({ tabs: agentTab("working") });
+    useApp.setState({ tabs: agentTab("idle") });
+    await Promise.resolve();
+    expect(ipc.taskPrStatus).toHaveBeenCalledTimes(1);
+    stopPrRefreshOnFocus();
+  });
+
+  it("only a working-to-not-working edge counts as a turn ending", () => {
+    const working = [{ id: "a", workState: "working" }];
+    const idle = [{ id: "a", workState: "idle" }];
+    expect(tasksThatStoppedWorking({ t: idle }, { t: working })).toEqual(["t"]);
+    expect(tasksThatStoppedWorking({ t: [{ id: "a", workState: "done" }] }, { t: working })).toEqual(["t"]);
+    expect(tasksThatStoppedWorking({ t: working }, { t: idle })).toEqual([]);
+    expect(tasksThatStoppedWorking({ t: idle }, { t: [{ id: "a", workState: "done" }] })).toEqual([]);
+    // Same array: nothing changed for that task.
+    expect(tasksThatStoppedWorking({ t: working }, { t: working })).toEqual([]);
+    // A tab closed mid-turn is not a turn that ended with something to find.
+    expect(tasksThatStoppedWorking({ t: [] }, { t: working })).toEqual([]);
+  });
+
   it("skips tasks a PR lookup means nothing for", async () => {
     seedApp(undefined, { is_main_checkout: true });
     initPrRefreshOnFocus();
@@ -964,6 +1027,42 @@ describe("refresh on focus", () => {
     await Promise.resolve();
     expect(ipc.taskPrStatus).not.toHaveBeenCalled();
     stopPrRefreshOnFocus();
+  });
+});
+
+// A PR an unattended agent opened is highlighted until its task is visited.
+describe("new PR highlight", () => {
+  beforeEach(() => {
+    stopPrRefreshOnFocus();
+    localStorage.clear();
+    usePr.setState({ unseen: {}, byTask: {} });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+  });
+
+  it("marks a PR found while another task is in front, and visiting clears it", async () => {
+    seedApp();
+    useApp.setState({ activeTaskId: "other" });
+    initPrRefreshOnFocus();
+    await usePr.getState().refresh("ws1");
+    expect(usePr.getState().unseen).toEqual({ ws1: 7 });
+    expect(parseUnseen(localStorage.getItem("prUnseen"))).toEqual({ ws1: 7 });
+    useApp.setState({ activeTaskId: "ws1" });
+    expect(usePr.getState().unseen).toEqual({});
+    expect(parseUnseen(localStorage.getItem("prUnseen"))).toEqual({});
+    stopPrRefreshOnFocus();
+  });
+
+  it("does not mark a PR the task already had", async () => {
+    seedApp(undefined, { pr_number: 7, pr_provider: "github", pr_url: "https://github.com/o/r/pull/7" });
+    useApp.setState({ activeTaskId: "other" });
+    await usePr.getState().refresh("ws1");
+    expect(usePr.getState().unseen).toEqual({});
+  });
+
+  it("reads a malformed store as empty", () => {
+    expect(parseUnseen("not json")).toEqual({});
+    expect(parseUnseen('{"a":7,"b":"x","c":-1,"d":1.5}')).toEqual({ a: 7 });
+    expect(parseUnseen(null)).toEqual({});
   });
 });
 
