@@ -1,5 +1,6 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from "vitest";
-import { INDEFINITE, localDateTime, matchesCaffeinateSettings, requestFromDraft, type CaffeinateStatus } from "./caffeinate";
+import { INDEFINITE, lastCaffeinateHours, localDateTime, matchesCaffeinateSettings, rememberCaffeinateHours, requestFromDraft, type CaffeinateStatus } from "./caffeinate";
 
 describe("caffeinate draft validation", () => {
   it("rejects invalid durations without constructing an IPC request", () => {
@@ -18,6 +19,18 @@ describe("caffeinate draft validation", () => {
   });
   it("automatic mode has no deadline and does not use a hidden duration field", () => {
     expect(requestFromDraft("agents", "", "bad", false, false)).toEqual({ mode: "agents", closed_lid: false, display: false });
+  });
+  it("offers the duration last started, and falls back to 2 hours on junk", () => {
+    localStorage.clear();
+    expect(lastCaffeinateHours()).toBe("2");
+    rememberCaffeinateHours("8");
+    expect(lastCaffeinateHours()).toBe("8");
+    rememberCaffeinateHours(INDEFINITE);
+    expect(lastCaffeinateHours()).toBe(INDEFINITE);
+    for (const junk of ["0", "25", "abc", ""]) {
+      localStorage.setItem("caffeinateHours", junk);
+      expect(lastCaffeinateHours()).toBe("2");
+    }
   });
   it("the ∞ preset asks for an indefinite session and matches it back", () => {
     const request = requestFromDraft("duration", INDEFINITE, "", false, true);

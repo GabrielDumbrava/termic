@@ -6,7 +6,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { caffeinatePermission, recoverCaffeinate, initCaffeinate, INDEFINITE, localDateTime, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateTab } from "@/lib/caffeinate";
+import { caffeinatePermission, recoverCaffeinate, initCaffeinate, INDEFINITE, lastCaffeinateHours, localDateTime, rememberCaffeinateHours, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateTab } from "@/lib/caffeinate";
 
 const PRESETS = ["1", "2", "4", "8", "16", "24", INDEFINITE];
 
@@ -16,7 +16,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
   const connectionError = useCaffeinate(s => s.error);
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<CaffeinateTab>("duration");
-  const [hours, setHours] = useState("2");
+  const [hours, setHours] = useState(lastCaffeinateHours);
   const [until, setUntil] = useState(() => localDateTime(new Date(Date.now() + 7_200_000)));
   const [closedLid, setClosedLid] = useState(false);
   const [display, setDisplay] = useState(false);
@@ -60,6 +60,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
       setMode(status?.mode === "agents" || status?.mode === "until" ? status.mode : "duration");
       if (status?.mode === "duration" && status.duration_minutes != null) setHours(String(status.duration_minutes / 60));
       if (status?.mode === "indefinite") setHours(INDEFINITE);
+      if (!status || status.mode === "off") setHours(lastCaffeinateHours());
       if (status?.mode === "until" && status.deadline_ms != null) setUntil(localDateTime(new Date(status.deadline_ms)));
       else if (new Date(until).getTime() <= Date.now()) setUntil(localDateTime(new Date(Date.now() + 7_200_000)));
       setClosedLid(status?.closed_lid ?? false);
@@ -84,6 +85,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
     if (busy || current) return;
     const request = requestFromDraft(mode, hours, until, closedLid, display);
     if (typeof request === "string") { setError(t(`caffeinate.${request}`)); return; }
+    if (mode === "duration") rememberCaffeinateHours(hours);
     void act(() => setCaffeinate(request));
   };
   const inputClass = "h-9 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 text-[13px] text-[var(--color-fg)]";
@@ -103,11 +105,9 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
         </PopoverTrigger>
       </Tip>
       <PopoverContent side={compact ? "right" : "top"} align="start" className="w-[360px] max-w-[calc(100vw-16px)] max-h-[calc(100vh-32px)] overflow-y-auto p-4">
-        <div data-testid="caffeinate-panel" aria-busy={busy} className="space-y-4 text-[13px]">
-          <header className="space-y-1.5">
-            <h2 className="flex items-center gap-2 text-[15px] font-semibold text-[var(--color-fg)]"><Coffee className="h-4 w-4 text-[var(--color-accent)]" />{t("caffeinate.title")}</h2>
-            <p className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)]">{t("caffeinate.description")}</p>
-          </header>
+        {/* The status card is the heading: a "Caffeinate" title above it said
+            the name twice ("Caffeinate" / "Caffeinate is off"). */}
+        <div data-testid="caffeinate-panel" role="group" aria-label={t("caffeinate.title")} aria-busy={busy} className="space-y-4 text-[13px]">
           <section className={cn("rounded-lg border p-3", status?.active ? "border-[var(--color-accent)]/30 bg-[var(--color-accent)]/8" : "border-[var(--color-border-soft)] bg-[var(--color-bg-2)]")}>
             <div className="flex items-start justify-between gap-2">
               <div ref={statusRef} tabIndex={-1} role="status" data-testid="caffeinate-status" className="min-w-0 space-y-1 rounded focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]">

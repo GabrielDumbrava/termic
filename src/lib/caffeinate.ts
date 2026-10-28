@@ -71,6 +71,20 @@ export async function recoverCaffeinate(): Promise<void> {
   const status = await invoke<CaffeinateStatus>("caffeinate_recover");
   receive(status);
 }
+const LS_HOURS = "caffeinateHours";
+/** The duration last started (hours, or ∞), so the next session offers it
+ *  again instead of the 2-hour default. Machine-wide, like caffeinate. */
+export function lastCaffeinateHours(): string {
+  try {
+    const saved = localStorage.getItem(LS_HOURS)?.trim() ?? "";
+    if (saved === INDEFINITE) return saved;
+    const n = Number(saved);
+    return saved && Number.isFinite(n) && n > 0 && n <= 24 ? saved : "2";
+  } catch { return "2"; }
+}
+export function rememberCaffeinateHours(hours: string): void {
+  try { localStorage.setItem(LS_HOURS, hours.trim()); } catch { /* private mode */ }
+}
 export function localDateTime(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;

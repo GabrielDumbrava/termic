@@ -79,6 +79,7 @@ describe("caffeinate", () => {
   });
   after(async () => {
     rmSync(failureFile, { force: true });
+    await browser.execute(() => { try { localStorage.removeItem("caffeinateHours"); } catch { /* private mode */ } });
     await browser.execute(async () => { await window.__termic!.invoke("caffeinate_set", { request: { mode: "off" } }); });
     if (sidebarBefore) await browser.execute(value => window.__termic!.useApp.setState(value), sidebarBefore);
     if (task) await archiveTask(task);
@@ -178,6 +179,10 @@ describe("caffeinate", () => {
     await stop();
     expect(await native()).toMatchObject({ mode: "off", display: false });
     expect(await browser.execute(s => !!document.querySelector(s), DISPLAY_STATUS)).toBe(false);
+    // Off again, the next session offers the duration last started, not 2h.
+    await browser.keys("Escape"); await waitGone(PANEL); await open();
+    expect(await browser.execute(() => document.querySelector('[data-testid="caffeinate-preset-indefinite"]')!.getAttribute("aria-pressed"))).toBe("true");
+    expect(await text(APPLY)).toBe("Keep awake until turned off");
   });
 
   it("validates an until deadline and replaces an active session", async () => {

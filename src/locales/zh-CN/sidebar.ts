@@ -2,7 +2,7 @@
 // 以及共享的菜单内容（项目操作、分组操作）。
 export default {
   caffeinate: {
-    title: "保持唤醒", description: "保持电脑唤醒，让智能体继续运行。",
+    title: "保持唤醒",
     displayOn: "保持屏幕常亮", displayHintOff: "关闭时：屏幕仍可关闭和锁定，但电脑保持唤醒，智能体会继续工作。", displayHintOn: "保持唤醒期间屏幕也会保持开启。",
     statusDisplayOn: "屏幕保持开启。", statusDisplayOff: "屏幕可以关闭，电脑保持唤醒。",
     untilOff: "直到你手动关闭", keepIndefinitely: "保持唤醒，直到手动关闭", indefinite: "直到手动关闭",

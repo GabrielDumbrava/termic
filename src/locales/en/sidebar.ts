@@ -2,7 +2,7 @@
 // and the shared menu bodies (project actions, group actions).
 export default {
   caffeinate: {
-    title: "Caffeinate", description: "Keeps your computer awake so agents keep running.",
+    title: "Caffeinate",
     displayOn: "Keep display on", displayHintOff: "Off: the screen can still turn off and lock, but your computer stays awake and agents keep working.", displayHintOn: "The screen stays on too while caffeinate is active.",
     statusDisplayOn: "The display stays on.", statusDisplayOff: "The display can turn off. Your computer stays awake.",
     untilOff: "Until you turn it off", keepIndefinitely: "Keep awake until turned off", indefinite: "Until turned off",
