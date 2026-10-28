@@ -14611,12 +14611,11 @@ fn pr_lookup_at(
     // number just comes back "not found" and degrades to None).
     let known_number =
         known_number.filter(|_| known_provider.map_or(true, |p| p == provider));
-    let by_branch = forge::pr_status(provider, cwd, None);
-    let resolved = match by_branch {
-        Ok(Some(pr)) => Ok(Some(pr)),
-        Ok(None) if known_number.is_some() => forge::pr_status(provider, cwd, known_number),
-        other => other,
-    };
+    let resolved = branch_then_number(
+        forge::pr_status(provider, cwd, None),
+        known_number.is_some(),
+        || forge::pr_status(provider, cwd, known_number),
+    );
     match resolved {
         Ok(pr) => PrLookup {
             provider: Some(provider.to_string()),
@@ -14992,6 +14991,25 @@ async fn project_forge_issues(project_id: String, limit: Option<u32>, scope: Opt
 /// Live PR/MR status for the task's branch (host repo). Hits the
 /// network via the forge CLI — callers poll at a slow cadence (60s), not
 /// the 4s git-status tick.
+/// The by-branch answer, else the stored number's. The number is asked when
+/// the branch finds no PR (its source branch was deleted after a merge) and
+/// also when the branch lookup FAILS: a detached HEAD, which is what a PR
+/// review checkout is, has no branch to look up and `gh` reports that as an
+/// error, so the badge froze on its last state for good (GH #435). If the
+/// number fails too, the branch's error is the one reported.
+fn branch_then_number<T, E>(
+    by_branch: Result<Option<T>, E>,
+    knows_number: bool,
+    by_number: impl FnOnce() -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    match by_branch {
+        Ok(Some(pr)) => Ok(Some(pr)),
+        Ok(None) if knows_number => by_number(),
+        Err(e) if knows_number => by_number().or(Err(e)),
+        other => other,
+    }
+}
+
 #[tauri::command]
 async fn task_pr_status(id: String) -> Result<PrLookup, String> {
     tauri::async_runtime::spawn_blocking(move || pr_lookup_blocking(&id))
@@ -32080,6 +32098,22 @@ mod tests {
     fn read_capped_file_rejects_directory() {
         let dir = tempdir().unwrap();
         assert!(read_capped_file(dir.path(), 10).is_err());
+    }
+
+    #[test]
+    fn a_pr_lookup_falls_back_to_the_stored_number_when_the_branch_cannot_answer() {
+        type R = Result<Option<u32>, &'static str>;
+        let never = || -> R { panic!("the number must not be asked") };
+        assert_eq!(branch_then_number(Ok(Some(1)), true, never), Ok(Some(1)));
+        // Source branch deleted after a merge.
+        assert_eq!(branch_then_number(Ok(None), true, || -> R { Ok(Some(7)) }), Ok(Some(7)));
+        // Detached HEAD: gh errors with "not on any branch" (GH #435).
+        assert_eq!(branch_then_number(Err("not on any branch"), true, || -> R { Ok(Some(7)) }), Ok(Some(7)));
+        // Both fail: the branch's error is the one shown.
+        assert_eq!(branch_then_number(Err("offline"), true, || -> R { Err("also offline") }), Err("offline"));
+        // No stored number: nothing to fall back to, one CLI call.
+        assert_eq!(branch_then_number(Err("offline"), false, never), Err("offline"));
+        assert_eq!(branch_then_number(Ok(None), false, never), Ok(None));
     }
 
     #[test]
