@@ -4,6 +4,27 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.20.0] - 2026-10-28
+
+Review markdown in the preview, pick Todos projects, keep the display on.
+
+### Features
+- Markdown preview as a review surface: a reader layout with its own text width, font and line height (Text width: Full brings the old look back), line numbers, an outline, go to line (⌘G), and task lists and whole blocks you can edit right in the preview. It also renders callouts, footnotes, definition lists, highlights, math and collapsible sections.
+- Todos: pick several projects in the filter, remembered. Issue and PR lists are cached, so Todos, New Task and Review PR open with the last lists right away.
+- Keep awake: a Keep display on option (off, the screen can still turn off and lock while the computer stays awake), an ∞ preset that holds until you turn it off, and the last duration you started is preselected.
+- Sidebar: a PR opened in a task you have not visited yet is highlighted on its badge until you open the task.
+- Task finder: an Open filter (⌘7, Ctrl+7 on Linux and Windows, or `is:open`) for tasks with a live agent, and ⌘O opens the finder on it whenever an agent is running.
+- Audio files in the file tree open in a player.
+- termic CLI and MCP: `new --member` (MCP `members`) picks which repos of a multi-repo project get a worktree, and `project list` shows each project's members.
+
+### Bug fixes
+- A task's PR badge no longer gets stuck: review tasks on a detached HEAD find their PR by number, and a PR an agent opens shows up when its turn ends ([#435](https://github.com/simion/termic/issues/435)).
+- Windows: the mouse wheel reaches terminal apps that ask for it, such as opencode ([#437](https://github.com/simion/termic/issues/437)).
+- Windows: settings files are replaced in one step, so a read never finds one missing or half-written ([#195](https://github.com/simion/termic/issues/195)).
+- Windows: the comment box fits its text at 125% display scaling instead of showing a scrollbar.
+- The Keep awake popover no longer shows its title twice.
+- Schedules: a one-off set from the CLI or MCP with a time already past is refused instead of marked done, and a time skipped by a clock change is reported ([#403](https://github.com/simion/termic/issues/403)).
+
 ## [1.19.2] - 2026-10-26
 
 Keep your computer awake while agents work, triage todos, share shell history.
