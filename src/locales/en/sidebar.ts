@@ -2,7 +2,10 @@
 // and the shared menu bodies (project actions, group actions).
 export default {
   caffeinate: {
-    title: "Caffeinate", description: "Display sleep and screen lock work normally.",
+    title: "Caffeinate", description: "Keeps your computer awake so agents keep running.",
+    displayOn: "Keep display on", displayHintOff: "Off: the screen can still turn off and lock, but your computer stays awake and agents keep working.", displayHintOn: "The screen stays on too while caffeinate is active.",
+    statusDisplayOn: "The display stays on.", statusDisplayOff: "The display can turn off. Your computer stays awake.",
+    untilOff: "Until you turn it off", keepIndefinitely: "Keep awake until turned off", indefinite: "Until turned off",
     loading: "Connecting…", off: "Caffeinate is off", armed: "Your computer can sleep until an agent starts working.",
     ends: "Until {{time}}", working_one: "{{count}} agent working", working_other: "{{count}} agents working", unknown: "Agent activity unknown (limited to 20 minutes)",
     waiting: "Waiting for your input (five-minute grace)", finishing: "No active work. Allowing sleep shortly.",

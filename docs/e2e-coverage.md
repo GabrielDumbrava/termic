@@ -1,7 +1,8 @@
 # E2E coverage map & checklist
 
 `caffeinate.e2e.ts` covers the coffee popover's three modes, draft validation,
-16/24-hour presets, accepted-duration restoration, explicit status/confirmation
+16/24-hour and ∞ (until turned off) presets, the Keep display on toggle and its
+"computer stays awake" copy, accepted-duration restoration, explicit status/confirmation
 copy, direct Bug/Contact footer controls,
 expiry while administrator authorization remains pending,
 native expiry, adapter errors, real-PTY delegated activity, optional lid

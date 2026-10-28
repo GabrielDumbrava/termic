@@ -50,6 +50,9 @@ fn inhibit(what: &str) -> Result<(Connection, OwnedFd), String> {
 #[derive(Default)]
 pub struct Backend {
     held: Option<(Connection, OwnedFd)>,
+    // logind has no display inhibitor; blanking belongs to the desktop
+    // session, which drops the inhibit when this connection closes.
+    display: Option<Connection>,
 }
 impl Backend {
     pub fn check(&self) -> Result<(), String> {
@@ -63,6 +66,28 @@ impl Backend {
             self.held = Some(inhibit("sleep")?);
         } else if !on {
             self.held.take();
+        }
+        Ok(())
+    }
+    pub fn set_display(&mut self, on: bool) -> Result<(), String> {
+        if on && self.display.is_none() {
+            let connection = Builder::session()
+                .map_err(|e| e.to_string())?
+                .method_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .map_err(|e| e.to_string())?;
+            Proxy::new(
+                &connection,
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                "org.freedesktop.ScreenSaver",
+            )
+            .map_err(|e| e.to_string())?
+            .call::<_, _, u32>("Inhibit", &("Termic", "Termic agent work"))
+            .map_err(|e| e.to_string())?;
+            self.display = Some(connection);
+        } else if !on {
+            self.display.take();
         }
         Ok(())
     }

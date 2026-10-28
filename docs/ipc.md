@@ -3,7 +3,9 @@
 Power controls: `caffeinate_status`, `caffeinate_set` (`{ request }`),
 `caffeinate_permission` (`{ install }`) and `caffeinate_recover` return a
 revisioned native status snapshot, including the original `duration_minutes`
-and the current `deadline_ms`. `caffeinate://status` broadcasts changes
+and the current `deadline_ms`. `mode` is `off`, `duration`, `until`, `agents` or
+`indefinite`; the request and status both carry `display` (Keep display on).
+`caffeinate://status` broadcasts changes
 across profile windows. Configuration, authorization and recovery are async;
 the manager and timers live outside the webview. See [Caffeinate](caffeinate.md).
 

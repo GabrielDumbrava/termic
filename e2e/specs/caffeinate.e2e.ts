@@ -115,7 +115,7 @@ describe("caffeinate", () => {
 
   it("offers 16 and 24 hours, explains pending changes, and restores the accepted choice", async () => {
     await open(); await clickWhenVisible('[data-testid="caffeinate-choice-duration"]');
-    for (const hours of [1, 2, 4, 8, 16, 24]) await waitVisible(`[data-testid="caffeinate-preset-${hours}"]`);
+    for (const hours of [1, 2, 4, 8, 16, 24, "indefinite"]) await waitVisible(`[data-testid="caffeinate-preset-${hours}"]`);
     await clickWhenVisible('[data-testid="caffeinate-preset-16"]');
     expect(await text(APPLY)).toBe("Keep awake for 16 hours");
     await clickWhenVisible(APPLY); await browser.waitUntil(active);
@@ -139,6 +139,45 @@ describe("caffeinate", () => {
     await waitVisible('[data-testid="caffeinate-current"]');
     expect(await browser.execute(s => [...document.querySelectorAll(`${s} button`)].map(el => el.textContent?.trim()).some(label => ["Start", "Stop", "Apply"].includes(label ?? "")), PANEL)).toBe(false);
     await stop();
+  });
+
+  it("runs until turned off from the ∞ preset, and says the computer stays awake with the display off", async () => {
+    const DISPLAY = '[data-testid="caffeinate-display"]';
+    const HINT = '[data-testid="caffeinate-display-hint"]';
+    const DISPLAY_STATUS = '[data-testid="caffeinate-display-status"]';
+    const native = () => browser.execute(async () => await window.__termic!.invoke("caffeinate_status") as { mode: string; display: boolean; deadline_ms: number | null });
+    await open(); await clickWhenVisible('[data-testid="caffeinate-choice-duration"]');
+    // Unchecked, the copy states the computer itself does not sleep.
+    expect(await browser.execute(s => document.querySelector<HTMLInputElement>(s)!.checked, DISPLAY)).toBe(false);
+    expect(await text(HINT)).toContain("your computer stays awake");
+    await clickWhenVisible('[data-testid="caffeinate-preset-indefinite"]');
+    expect(await text(APPLY)).toBe("Keep awake until turned off");
+    await clickWhenVisible(APPLY);
+    await browser.waitUntil(async () => await active() && await mode() === "indefinite");
+    expect(await native()).toMatchObject({ mode: "indefinite", display: false, deadline_ms: null });
+    expect(await text(STATUS)).toContain("Until you turn it off");
+    expect(await browser.execute(s => document.querySelector(s)?.getAttribute("data-display"), DISPLAY_STATUS)).toBe("false");
+    expect(await text(DISPLAY_STATUS)).toBe("The display can turn off. Your computer stays awake.");
+    await capture("caffeinate-indefinite.png");
+
+    // The display toggle alone is a pending change against the running session.
+    await clickWhenVisible(DISPLAY);
+    await waitVisible('[data-testid="caffeinate-pending"]');
+    expect(await text(HINT)).toBe("The screen stays on too while caffeinate is active.");
+    expect((await native()).display).toBe(false);
+    await clickWhenVisible(APPLY); await waitVisible('[data-testid="caffeinate-current"]');
+    await browser.waitUntil(async () => (await native()).display);
+    expect(await text(DISPLAY_STATUS)).toBe("The display stays on.");
+    await capture("caffeinate-indefinite-display.png");
+
+    // Reopening restores both the ∞ preset and the display choice.
+    await browser.keys("Escape"); await waitGone(PANEL); await open();
+    expect(await browser.execute(() => document.querySelector('[data-testid="caffeinate-preset-indefinite"]')!.getAttribute("aria-pressed"))).toBe("true");
+    expect(await browser.execute(s => document.querySelector<HTMLInputElement>(s)!.checked, DISPLAY)).toBe(true);
+    await waitVisible('[data-testid="caffeinate-current"]');
+    await stop();
+    expect(await native()).toMatchObject({ mode: "off", display: false });
+    expect(await browser.execute(s => !!document.querySelector(s), DISPLAY_STATUS)).toBe(false);
   });
 
   it("validates an until deadline and replaces an active session", async () => {

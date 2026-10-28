@@ -74,9 +74,36 @@ fn string(value: &str) -> Ref {
     let value = CString::new(value).expect("constant CF string");
     unsafe { CFStringCreateWithCString(std::ptr::null(), value.as_ptr(), 0x08000100) }
 }
+fn create_assertion(kind: &str) -> Result<u32, String> {
+    let kind = string(kind);
+    let reason = string("Termic agent work");
+    let mut id = 0;
+    let result = unsafe { IOPMAssertionCreateWithName(kind, 255, reason, &mut id) };
+    unsafe {
+        CFRelease(kind);
+        CFRelease(reason);
+    }
+    if result != 0 {
+        return Err(format!("macOS could not prevent idle sleep ({result})"));
+    }
+    Ok(id)
+}
+fn release_assertion(slot: &mut Option<u32>) -> Result<(), String> {
+    if let Some(id) = *slot {
+        let result = unsafe { IOPMAssertionRelease(id) };
+        if result != 0 {
+            return Err(format!(
+                "macOS could not release sleep assertion ({result})"
+            ));
+        }
+        *slot = None;
+    }
+    Ok(())
+}
 #[derive(Default)]
 pub struct Backend {
     assertion: Option<u32>,
+    display: Option<u32>,
 }
 impl Backend {
     pub fn check(&self) -> Result<(), String> {
@@ -84,34 +111,24 @@ impl Backend {
     }
     pub fn set_awake(&mut self, on: bool) -> Result<(), String> {
         if on && self.assertion.is_none() {
-            let kind = string("PreventUserIdleSystemSleep");
-            let reason = string("Termic agent work");
-            let mut id = 0;
-            let result = unsafe { IOPMAssertionCreateWithName(kind, 255, reason, &mut id) };
-            unsafe {
-                CFRelease(kind);
-                CFRelease(reason);
-            }
-            if result != 0 {
-                return Err(format!("macOS could not prevent idle sleep ({result})"));
-            }
-            self.assertion = Some(id);
+            self.assertion = Some(create_assertion("PreventUserIdleSystemSleep")?);
         } else if !on {
-            if let Some(id) = self.assertion {
-                let result = unsafe { IOPMAssertionRelease(id) };
-                if result != 0 {
-                    return Err(format!(
-                        "macOS could not release sleep assertion ({result})"
-                    ));
-                }
-                self.assertion = None;
-            }
+            release_assertion(&mut self.assertion)?;
+        }
+        Ok(())
+    }
+    pub fn set_display(&mut self, on: bool) -> Result<(), String> {
+        if on && self.display.is_none() {
+            self.display = Some(create_assertion("PreventUserIdleDisplaySleep")?);
+        } else if !on {
+            release_assertion(&mut self.display)?;
         }
         Ok(())
     }
 }
 impl Drop for Backend {
     fn drop(&mut self) {
+        let _ = self.set_display(false);
         let _ = self.set_awake(false);
     }
 }

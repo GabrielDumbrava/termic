@@ -2,11 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
-export type CaffeinateMode = "off" | "duration" | "until" | "agents";
+export type CaffeinateMode = "off" | "duration" | "until" | "agents" | "indefinite";
+/** The duration preset that means "until turned off". */
+export const INDEFINITE = "∞";
+/** The popover's three tabs; indefinite lives under Duration as its ∞ preset. */
+export type CaffeinateTab = Exclude<CaffeinateMode, "off" | "indefinite">;
 export interface CaffeinateStatus {
   mode: CaffeinateMode;
   active: boolean;
   closed_lid: boolean;
+  display: boolean;
   lid_active: boolean;
   lid_supported: boolean;
   lid_permission: boolean;
@@ -25,6 +30,7 @@ export interface CaffeinateRequest {
   duration_minutes?: number;
   until_ms?: number;
   closed_lid?: boolean;
+  display?: boolean;
 }
 export const useCaffeinate = create<{ status: CaffeinateStatus | null; error: string | null }>(() => ({ status: null, error: null }));
 let started = false;
@@ -71,25 +77,30 @@ export function localDateTime(date: Date): string {
 }
 
 /** Compare the original duration, not a running timer's remaining time. */
-export function matchesCaffeinateSettings(status: CaffeinateStatus | null, mode: Exclude<CaffeinateMode, "off">, hours: string, until: string, closedLid: boolean): boolean {
-  if (!status || status.mode !== mode || status.closed_lid !== closedLid) return false;
+export function matchesCaffeinateSettings(status: CaffeinateStatus | null, mode: CaffeinateTab, hours: string, until: string, closedLid: boolean, display: boolean): boolean {
+  if (!status || status.closed_lid !== closedLid || status.display !== display) return false;
+  const indefinite = mode === "duration" && hours.trim() === INDEFINITE;
+  if (status.mode !== (indefinite ? "indefinite" : mode)) return false;
+  if (indefinite) return true;
   if (mode === "duration") return status.duration_minutes != null && !!hours.trim()
     && Math.abs(Number(hours) * 60 - status.duration_minutes) < 0.000001;
   if (mode === "until") return status.deadline_ms != null && localDateTime(new Date(status.deadline_ms)) === until;
   return true;
 }
-export function requestFromDraft(mode: Exclude<CaffeinateMode, "off">, hours: string, until: string, closedLid: boolean, now = Date.now()): CaffeinateRequest | "invalidDuration" | "invalidTime" {
+export function requestFromDraft(mode: CaffeinateTab, hours: string, until: string, closedLid: boolean, display: boolean, now = Date.now()): CaffeinateRequest | "invalidDuration" | "invalidTime" {
+  const options = { closed_lid: closedLid, display };
   if (mode === "duration") {
+    if (hours.trim() === INDEFINITE) return { mode: "indefinite", ...options };
     const value = Number(hours);
     if (!hours.trim() || !Number.isFinite(value) || value <= 0 || value > 24) return "invalidDuration";
-    return { mode, duration_minutes: value * 60, closed_lid: closedLid };
+    return { mode, duration_minutes: value * 60, ...options };
   }
   if (mode === "until") {
     const date = new Date(until);
     const end = date.getTime();
     // Reject nonexistent local times rather than silently shifting a DST gap.
     if (!Number.isFinite(end) || localDateTime(date) !== until || end <= now || end - now > 86_400_000) return "invalidTime";
-    return { mode, until_ms: end, closed_lid: closedLid };
+    return { mode, until_ms: end, ...options };
   }
-  return { mode, closed_lid: closedLid };
+  return { mode, ...options };
 }

@@ -1,24 +1,25 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { Coffee, CircleAlert, Check, ChevronDown, MonitorOff, LoaderCircle } from "lucide-react";
+import { Coffee, CircleAlert, Check, ChevronDown, Monitor, MonitorOff, LoaderCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { caffeinatePermission, recoverCaffeinate, initCaffeinate, localDateTime, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateMode } from "@/lib/caffeinate";
+import { caffeinatePermission, recoverCaffeinate, initCaffeinate, INDEFINITE, localDateTime, matchesCaffeinateSettings, requestFromDraft, setCaffeinate, useCaffeinate, type CaffeinateTab } from "@/lib/caffeinate";
 
-const PRESETS = [1, 2, 4, 8, 16, 24];
+const PRESETS = ["1", "2", "4", "8", "16", "24", INDEFINITE];
 
 export function CaffeinateControl({ compact }: { compact: boolean }) {
   const { t } = useTranslation("sidebar");
   const status = useCaffeinate(s => s.status);
   const connectionError = useCaffeinate(s => s.error);
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<Exclude<CaffeinateMode, "off">>("duration");
+  const [mode, setMode] = useState<CaffeinateTab>("duration");
   const [hours, setHours] = useState("2");
   const [until, setUntil] = useState(() => localDateTime(new Date(Date.now() + 7_200_000)));
   const [closedLid, setClosedLid] = useState(false);
+  const [display, setDisplay] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
@@ -28,7 +29,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
   const enabled = !!status && (status.mode !== "off" || status.active);
   const warning = error ?? connectionError ?? status?.error;
   const current = enabled && !status?.error && (status?.active || status?.mode === "agents")
-    && matchesCaffeinateSettings(status, mode, hours, until, closedLid);
+    && matchesCaffeinateSettings(status, mode, hours, until, closedLid, display);
   const deadline = status?.deadline_ms == null ? null : new Date(status.deadline_ms).toLocaleString(undefined, {
     month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });
@@ -40,12 +41,15 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
     : !status.active && status.error ? t("caffeinate.retry")
     : !status.active && status.mode === "agents" ? t("caffeinate.armed")
     : !status.active ? t("caffeinate.retry")
+    : status.mode === "indefinite" ? t("caffeinate.untilOff")
     : status.mode !== "agents" ? t("caffeinate.ends", { time: deadline })
     : status.working > 0 ? t(status.working === 1 ? "caffeinate.working_one" : "caffeinate.working_other", { count: status.working })
     : status.unknown > 0 ? t("caffeinate.unknown")
     : status.waiting > 0 ? t("caffeinate.waiting") : t("caffeinate.finishing");
   const parsedUntil = new Date(until);
+  const indefinite = mode === "duration" && hours.trim() === INDEFINITE;
   const action = mode === "agents" ? t("caffeinate.enableAuto")
+    : indefinite ? t("caffeinate.keepIndefinitely")
     : mode === "duration" ? Number.isFinite(Number(hours)) && Number(hours) > 0 && Number(hours) <= 24
       ? t("caffeinate.keepFor", { duration: t("caffeinate.durationHours", { count: Number(hours) }) }) : t("caffeinate.chooseDuration")
     : Number.isFinite(parsedUntil.getTime()) && parsedUntil.getTime() > Date.now() && parsedUntil.getTime() - Date.now() <= 86_400_000 ? t("caffeinate.keepUntil", { time: parsedUntil.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) })
@@ -53,11 +57,13 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
 
   const openChanged = (value: boolean) => {
     if (value) {
-      setMode(status?.mode && status.mode !== "off" ? status.mode : "duration");
+      setMode(status?.mode === "agents" || status?.mode === "until" ? status.mode : "duration");
       if (status?.mode === "duration" && status.duration_minutes != null) setHours(String(status.duration_minutes / 60));
+      if (status?.mode === "indefinite") setHours(INDEFINITE);
       if (status?.mode === "until" && status.deadline_ms != null) setUntil(localDateTime(new Date(status.deadline_ms)));
       else if (new Date(until).getTime() <= Date.now()) setUntil(localDateTime(new Date(Date.now() + 7_200_000)));
       setClosedLid(status?.closed_lid ?? false);
+      setDisplay(status?.display ?? false);
       setError(null);
       void initCaffeinate();
     }
@@ -76,7 +82,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (busy || current) return;
-    const request = requestFromDraft(mode, hours, until, closedLid);
+    const request = requestFromDraft(mode, hours, until, closedLid, display);
     if (typeof request === "string") { setError(t(`caffeinate.${request}`)); return; }
     void act(() => setCaffeinate(request));
   };
@@ -100,7 +106,7 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
         <div data-testid="caffeinate-panel" aria-busy={busy} className="space-y-4 text-[13px]">
           <header className="space-y-1.5">
             <h2 className="flex items-center gap-2 text-[15px] font-semibold text-[var(--color-fg)]"><Coffee className="h-4 w-4 text-[var(--color-accent)]" />{t("caffeinate.title")}</h2>
-            <p className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)]"><MonitorOff className="h-3.5 w-3.5 shrink-0" />{t("caffeinate.description")}</p>
+            <p className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)]">{t("caffeinate.description")}</p>
           </header>
           <section className={cn("rounded-lg border p-3", status?.active ? "border-[var(--color-accent)]/30 bg-[var(--color-accent)]/8" : "border-[var(--color-border-soft)] bg-[var(--color-bg-2)]")}>
             <div className="flex items-start justify-between gap-2">
@@ -109,6 +115,10 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
                   <span aria-hidden="true" className={cn("h-2 w-2 shrink-0 rounded-full", status?.active ? "bg-[var(--color-accent)]" : "border border-[var(--color-fg-dim)]")} />{heading}
                 </p>
                 <p className="text-[12px] leading-relaxed text-[var(--color-fg-dim)]">{detail}</p>
+                {status?.active && <p data-testid="caffeinate-display-status" data-display={status.display} className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)]">
+                  {status.display ? <Monitor className="h-3.5 w-3.5 shrink-0" /> : <MonitorOff className="h-3.5 w-3.5 shrink-0" />}
+                  {t(status.display ? "caffeinate.statusDisplayOn" : "caffeinate.statusDisplayOff")}
+                </p>}
                 {status?.closed_lid && <p data-testid="caffeinate-lid-status" data-active={status.lid_active} className="text-[12px] text-[var(--color-fg-dim)]">{status.lid_active ? t("caffeinate.lidActive") : t("caffeinate.lidArmed")}</p>}
               </div>
               {enabled && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void act(() => setCaffeinate({ mode: "off" }))} data-testid="caffeinate-stop" className="shrink-0 text-[12px]">{t("caffeinate.turnOff")}</Button>}
@@ -125,11 +135,11 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
                 </label>)}
               </div>
               {mode === "duration" && <div className="space-y-3">
-                <div role="group" aria-label={t("caffeinate.presets")} className="grid grid-cols-6 gap-1.5">
-                  {PRESETS.map(value => <Button type="button" size="sm" variant="secondary" key={value} data-testid={`caffeinate-preset-${value}`}
-                    aria-label={t("caffeinate.durationHours", { count: value })} aria-pressed={Number(hours) === value}
-                    onClick={() => { setHours(String(value)); setError(null); }}
-                    className={cn("h-9 px-0 text-[13px] transition-none", Number(hours) === value && "border-[var(--color-accent)] bg-[var(--color-accent)]/12 text-[var(--color-accent)]")}>{t("caffeinate.preset", { count: value })}</Button>)}
+                <div role="group" aria-label={t("caffeinate.presets")} className="grid grid-cols-7 gap-1.5">
+                  {PRESETS.map(value => ({ value, pressed: value === INDEFINITE ? hours.trim() === value : Number(hours) === Number(value) })).map(({ value, pressed }) => <Button type="button" size="sm" variant="secondary" key={value} data-testid={`caffeinate-preset-${value === INDEFINITE ? "indefinite" : value}`}
+                    aria-label={value === INDEFINITE ? t("caffeinate.indefinite") : t("caffeinate.durationHours", { count: Number(value) })} aria-pressed={pressed}
+                    onClick={() => { setHours(value); setError(null); }}
+                    className={cn("h-9 px-0 text-[13px] transition-none", pressed && "border-[var(--color-accent)] bg-[var(--color-accent)]/12 text-[var(--color-accent)]")}>{value === INDEFINITE ? value : t("caffeinate.preset", { count: Number(value) })}</Button>)}
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <label htmlFor={`${id}-hours`} className="space-y-0.5 text-[var(--color-fg-dim)]">
@@ -151,6 +161,13 @@ export function CaffeinateControl({ compact }: { compact: boolean }) {
                 <p className="text-[11px] text-[var(--color-fg-dim)]">{Intl.DateTimeFormat().resolvedOptions().timeZone} · {t("caffeinate.durationLimit")}</p>
               </div>}
             </fieldset>
+            <div className="space-y-1 border-t border-[var(--color-border-soft)] pt-3">
+              <label className="flex items-center gap-2 text-[var(--color-fg)]">
+                <input type="checkbox" checked={display} onChange={e => setDisplay(e.target.checked)} aria-describedby={`${id}-display`} data-testid="caffeinate-display" className="accent-[var(--color-accent)]" />
+                {t("caffeinate.displayOn")}
+              </label>
+              <p id={`${id}-display`} data-testid="caffeinate-display-hint" className="pl-5 text-[12px] leading-relaxed text-[var(--color-fg-dim)]">{t(display ? "caffeinate.displayHintOn" : "caffeinate.displayHintOff")}</p>
+            </div>
             <div className="space-y-2 border-t border-[var(--color-border-soft)] pt-3">
               <label className="flex items-center gap-2 text-[var(--color-fg)]">
                 <input type="checkbox" checked={closedLid} disabled={!status?.lid_supported} onChange={e => setClosedLid(e.target.checked)} data-testid="caffeinate-lid" className="accent-[var(--color-accent)]" />

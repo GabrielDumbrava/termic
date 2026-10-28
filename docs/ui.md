@@ -1,7 +1,8 @@
 # UI
 
-The sidebar coffee mug opens [Caffeinate](caffeinate.md), with duration,
-deadline and automatic agent-work modes. Its indicator reflects native power
+The sidebar coffee mug opens [Caffeinate](caffeinate.md), with duration
+(including ∞, until turned off), deadline and automatic agent-work modes, and
+a Keep display on toggle. Its indicator reflects native power
 state, with separate closed-lid status and errors. All original footer icons
 retain their order and stay directly accessible; Coffee leads the row, before Theme.
 The footer retains the shared bottom-bar height in expanded and compact modes.

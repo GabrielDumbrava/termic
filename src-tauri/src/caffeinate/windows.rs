@@ -141,6 +141,7 @@ fn checked(code: u32) -> Result<(), String> {
 #[derive(Default)]
 pub struct Backend {
     request: Option<HANDLE>,
+    display: bool,
 }
 impl Backend {
     pub fn check(&self) -> Result<(), String> {
@@ -168,6 +169,7 @@ impl Backend {
                 }
                 self.request = Some(handle);
             } else if !on {
+                self.set_display(false)?;
                 if let Some(handle) = self.request {
                     if PowerClearRequest(handle, PowerRequestSystemRequired) == 0 {
                         return Err(std::io::Error::last_os_error().to_string());
@@ -177,6 +179,27 @@ impl Backend {
                 }
             }
         }
+        Ok(())
+    }
+    /// Rides on the system request's handle, so it needs `set_awake(true)` first.
+    pub fn set_display(&mut self, on: bool) -> Result<(), String> {
+        let Some(handle) = self.request else {
+            return if on { Err("Keep the computer awake before the display".into()) } else { Ok(()) };
+        };
+        if on == self.display {
+            return Ok(());
+        }
+        let ok = unsafe {
+            if on {
+                PowerSetRequest(handle, PowerRequestDisplayRequired)
+            } else {
+                PowerClearRequest(handle, PowerRequestDisplayRequired)
+            }
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        self.display = on;
         Ok(())
     }
 }

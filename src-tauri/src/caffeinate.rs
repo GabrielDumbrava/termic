@@ -91,6 +91,8 @@ pub enum Mode {
     Duration,
     Until,
     Agents,
+    /// Until turned off. Like a timed session, it does not survive relaunch.
+    Indefinite,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -103,6 +105,8 @@ pub struct Request {
     pub until_ms: Option<u64>,
     #[serde(default)]
     pub closed_lid: bool,
+    #[serde(default)]
+    pub display: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -110,6 +114,7 @@ pub struct Status {
     pub mode: Mode,
     pub active: bool,
     pub closed_lid: bool,
+    pub display: bool,
     pub lid_active: bool,
     pub lid_supported: bool,
     pub lid_permission: bool,
@@ -248,7 +253,7 @@ impl Policy {
         }
         match self.request.mode {
             Mode::Off => false,
-            Mode::Duration | Mode::Until => true,
+            Mode::Duration | Mode::Until | Mode::Indefinite => true,
             Mode::Agents => {
                 let (working, waiting, unknown) = self.counts(elapsed);
                 if working > 0 {
@@ -445,6 +450,7 @@ pub(crate) fn start(app: tauri::AppHandle) {
         mode: Mode::Off,
         active: false,
         closed_lid: false,
+        display: false,
         lid_active: false,
         lid_supported: platform::lid_supported(),
         lid_permission: platform::permission(),
@@ -503,6 +509,7 @@ fn worker(
     let mut first_battery_check = true;
     let mut queues_enabled = false;
     let mut retry_at = 0;
+    let mut display_held = false;
     loop {
         let now = now_ms();
         if first_battery_check || battery_check.elapsed() >= Duration::from_secs(60) {
@@ -554,6 +561,17 @@ fn worker(
                 }
             }
         }
+        let want_display = status.active && policy.request.display;
+        if want_display != display_held {
+            match backend.set_display(want_display) {
+                Ok(()) => display_held = want_display,
+                Err(error) => {
+                    status.error = Some(error);
+                    // Drop the request rather than retry on every hook frame.
+                    policy.request.display = false;
+                }
+            }
+        }
         let want_lid =
             status.active && policy.request.closed_lid && !permission_pending && !recovering;
         if !want_lid {
@@ -591,6 +609,7 @@ fn worker(
             None
         };
         status.closed_lid = policy.request.closed_lid;
+        status.display = policy.request.display;
         let display_deadline = policy
             .elapsed_deadline
             .map(|end| now.saturating_add(end.saturating_sub(elapsed)))
@@ -669,6 +688,7 @@ fn worker(
             Ok(Message::Configure(mut request, reply)) => {
                 if request.mode == Mode::Off {
                     request.closed_lid = false;
+                    request.display = false;
                 }
                 // Validate before stopping the current session.
                 let mut candidate = Policy::default();
@@ -972,6 +992,29 @@ mod tests {
         assert!(policy.wanted(u64::MAX, elapsed_end - 1));
         assert!(!policy.wanted(10, elapsed_end));
         assert_eq!(policy.request.mode, Mode::Off);
+    }
+    #[test]
+    fn indefinite_holds_without_a_deadline_until_turned_off() {
+        let mut policy = Policy::default();
+        policy
+            .configure(
+                Request {
+                    mode: Mode::Indefinite,
+                    display: true,
+                    ..Request::default()
+                },
+                10,
+            )
+            .unwrap();
+        assert_eq!((policy.deadline, policy.elapsed_deadline), (None, None));
+        assert!(policy.wanted(u64::MAX, u64::MAX));
+        let guard = policy.guard_deadline();
+        assert_eq!((guard.wall, guard.elapsed), (None, None));
+        policy.configure(Request::default(), 20).unwrap();
+        assert!(!policy.wanted(30, 30));
+        // An older policy file without `display` still loads.
+        let old: Request = serde_json::from_str(r#"{"mode":"agents","closed_lid":false}"#).unwrap();
+        assert!(!old.display);
     }
     #[test]
     fn hookless_and_attention_have_finite_grace() {

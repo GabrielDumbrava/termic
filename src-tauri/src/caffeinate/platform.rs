@@ -36,6 +36,9 @@ mod native {
                 Ok(())
             }
         }
+        pub fn set_display(&mut self, _on: bool) -> Result<(), String> {
+            Ok(())
+        }
     }
     pub fn lid_supported() -> bool {
         cfg!(feature = "e2e")

@@ -2,8 +2,12 @@
 
 The coffee mug in the sidebar footer's bottom-left corner controls
 machine-wide sleep prevention. All profile windows share one native manager.
-The display can sleep and the session can lock; no display-awake assertion or
-simulated input is used.
+By default only the system is held awake: the display can sleep and the
+session can lock while agents keep running. **Keep display on** adds a
+display-awake request for the same session (it is released with it). The
+popover states under the checkbox that the computer stays awake with it off,
+and the status card says which of the two is in effect, because a dark screen
+reads as "it went to sleep" otherwise. No simulated input is used.
 
 The footer order is the coffee mug, then Theme, Report a bug, Contact,
 Shortcuts and Activity, with Settings alone on the right. All actions stay direct
@@ -14,6 +18,10 @@ sidebar keeps the same order in a vertical stack.
 
 - **For a duration:** any positive duration up to 24 hours, including fractional
   hours, with selected-state presets for 1/2/4/8/16/24 hours and a custom field.
+- **Until turned off (∞):** the last duration preset, native mode
+  `indefinite`. No deadline; Turn off or the 10% battery check ends it. Like a
+  timed session it does not restart on relaunch, so a forgotten one cannot
+  outlive the app.
 - **Until a time:** a future local date/time within 24 hours. The form shows
   the time zone and rejects nonexistent local times rather than normalizing a
   daylight-saving gap silently.
@@ -112,7 +120,8 @@ killed can defer cleanup until that recovery.
 
 ### macOS
 
-Ordinary mode uses `PreventUserIdleSystemSleep` through IOKit. Closed-lid mode
+Ordinary mode uses `PreventUserIdleSystemSleep` through IOKit; Keep display on
+adds a second `PreventUserIdleDisplaySleep` assertion. Closed-lid mode
 uses privileged `pmset disablesleep 1`, restoring `0` afterward. If sleep was
 already disabled, Termic refuses to take ownership. Do not combine this
 system-wide boolean override with another app changing the same setting;
@@ -145,7 +154,8 @@ was written from the OS interfaces rather than translated from its code.
 ### Windows
 
 Ordinary mode uses a handle-based `PowerRequestSystemRequired`, with a matching
-clear/close. It never requests `PowerRequestDisplayRequired`.
+clear/close. Keep display on sets `PowerRequestDisplayRequired` on the same
+handle and clears it before the system request is cleared.
 
 Closed-lid mode saves the active plan's AC and DC lid actions, sets both to
 Do Nothing and reapplies that plan. A native lid notification calls
@@ -168,6 +178,9 @@ It does not force shutdown or override a changed plan. This needs hardware testi
 Ordinary mode holds a logind `sleep` inhibitor FD. Closed-lid mode additionally
 holds a `handle-lid-switch` inhibitor. A sleep inhibitor alone does not override
 logind's default lid handling. No persistent logind configuration is edited.
+logind has no display inhibitor, so Keep display on calls
+`org.freedesktop.ScreenSaver.Inhibit` on the session bus and holds that
+connection; the desktop drops the inhibit when it closes. Untested on hardware.
 FDs are explicitly close-on-exec, and loss of the owning process releases them.
 Periodic checks detect a lost sleep inhibitor and attempt reacquisition.
 
