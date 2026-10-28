@@ -974,7 +974,7 @@ describe("refresh on focus", () => {
 
   const agentTab = (workState: string) => ({ ws1: [{ id: "a", type: "terminal", cli: "claude", workState }] } as any);
 
-  it("turn ends only look for a PR the task does not have yet, at most every 2 minutes", async () => {
+  it("turn ends only look for a PR the task does not have yet, at most once a minute", async () => {
     seedApp();
     useApp.setState({ activeTaskId: "ws1", tabs: agentTab("working") });
     initPrRefreshOnFocus();
@@ -991,7 +991,7 @@ describe("refresh on focus", () => {
     stopPrRefreshOnFocus();
   });
 
-  it("a busy agent with no PR costs one lookup per 2 minutes, not one per turn", async () => {
+  it("a busy agent with no PR costs one lookup a minute, not one per turn", async () => {
     vi.mocked(ipc.taskPrStatus).mockResolvedValue({ status: "ok", pr: null } as any);
     seedApp();
     useApp.setState({ activeTaskId: "ws1", tabs: agentTab("working") });

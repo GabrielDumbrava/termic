@@ -22,7 +22,7 @@
 //   3. Focus and turn end. Activating a task or refocusing the window with
 //      one in front runs an unforced refresh for it (at most one per task
 //      per 30s); one of its agents finishing a turn does too while the task
-//      has no PR yet (at most one per task per 2 min). That is what
+//      has no PR yet (at most one per task per minute). That is what
 //      DISCOVERS a PR the agent opened itself. See `initPrRefreshOnFocus`.
 //      A PR found while its task is not in front is highlighted on the
 //      sidebar mark until the task is visited (`unseen`).
@@ -536,7 +536,7 @@ function refreshFocused() {
 /** Turn-end lookups are DISCOVERY only, at most one per task per this long.
  *  A task that already has a PR stays on the 3-minute background tick, so a
  *  busy agent never turns into a `gh` call per turn. */
-const TURN_LOOKUP_MS = 120_000;
+const TURN_LOOKUP_MS = 60_000;
 const lastTurnLookup = new Map<string, number>();
 
 /** Tasks with an agent tab that just stopped working. A turn ending is when
