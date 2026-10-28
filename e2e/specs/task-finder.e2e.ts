@@ -191,4 +191,43 @@ describe("task finder dialog", () => {
     await browser.keys(["Escape"]);
     await waitGone(DIALOG);
   });
+
+  it("falls back to All on shortcut opening after all agents close, while explicit Open stays empty", async () => {
+    await browser.execute(() => {
+      const app = window.__termic!.useApp.getState();
+      for (const taskId of Object.keys(app.tabs)) {
+        for (const tab of app.tabs[taskId] ?? []) app.closeTab(taskId, tab.id);
+      }
+    });
+    const shortcut = async (key: string) => browser.execute((k, mac) => {
+      const target = document.querySelector('[data-testid="task-finder-input"]') ?? window;
+      target.dispatchEvent(new KeyboardEvent("keydown", {
+        key: k, code: k === "o" ? "KeyO" : `Digit${k}`,
+        metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true,
+      }));
+    }, key, process.platform === "darwin");
+    const active = async (name: string) => browser.execute((n) =>
+      document.querySelector(`[data-testid="task-finder-filter-${n}"]`)?.getAttribute("data-active") === "true", name);
+    const rowText = async () => browser.execute((selector) =>
+      Array.from(document.querySelectorAll(`${selector} [data-row]`), row => row.textContent ?? "").join(" "), DIALOG);
+
+    await shortcut("o");
+    await waitVisible(DIALOG);
+    await browser.waitUntil(async () => await active("all") && (await rowText()).includes("finder-alpha"));
+    expect(await rowText()).toContain("finder-bravo");
+    expect(await rowText()).toContain("finder-charlie");
+    await snap("task-finder-open-fallback.png");
+
+    await shortcut("7");
+    await browser.waitUntil(async () => await active("open") && (await rowText()) === "");
+    expect(await browser.execute((selector) => document.querySelector(selector)?.textContent, DIALOG)).toContain("No matching tasks");
+    await browser.keys(["Escape"]);
+    await waitGone(DIALOG);
+
+    await shortcut("o");
+    await waitVisible(DIALOG);
+    await browser.waitUntil(async () => await active("all") && (await rowText()).includes("finder-alpha"));
+    await browser.keys(["Escape"]);
+    await waitGone(DIALOG);
+  });
 });

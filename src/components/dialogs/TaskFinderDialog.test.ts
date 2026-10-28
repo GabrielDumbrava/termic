@@ -255,6 +255,26 @@ describe("mounted TaskFinderDialog interactions", () => {
   const searchInput = () =>
     document.querySelector<HTMLInputElement>('[data-testid="task-finder-input"]')!;
 
+  function FinderWithShortcuts() {
+    useShortcuts();
+    return createElement(TaskFinderDialog);
+  }
+
+  async function mountClosedFinderWithShortcuts() {
+    await act(async () => {
+      useUI.getState().closeTaskFinder();
+      root.render(createElement(FinderWithShortcuts));
+    });
+  }
+
+  async function pressFinder(modifiers: KeyboardEventInit = { ctrlKey: true }) {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "o", code: "KeyO", bubbles: true, cancelable: true, ...modifiers,
+      }));
+    });
+  }
+
   async function typeQuery(text: string) {
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(searchInput(), text);
@@ -451,23 +471,11 @@ describe("mounted TaskFinderDialog interactions", () => {
   });
 
   it.each([{ ctrlKey: true }, { metaKey: true }])("opens with Open from the shortcut and All from the default action (%j)", async modifiers => {
-    function FinderWithShortcuts() {
-      useShortcuts();
-      return createElement(TaskFinderDialog);
-    }
-
     await seedOpenTasks();
-    await act(async () => {
-      useUI.getState().closeTaskFinder();
-      root.render(createElement(FinderWithShortcuts));
-    });
-    const pressFinder = async () => act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "o", code: "KeyO", bubbles: true, cancelable: true, ...modifiers,
-      }));
-    });
+    await mountClosedFinderWithShortcuts();
+    const openOrClose = () => pressFinder(modifiers);
 
-    await pressFinder();
+    await openOrClose();
     expect(filterBtn("open").dataset.active).toBe("true");
     expect(rowNames()).toHaveLength(2);
     expect(rowNames().join(" ")).toContain("idle-agent");
@@ -477,18 +485,63 @@ describe("mounted TaskFinderDialog interactions", () => {
     expect(filterBtn("all").dataset.active).toBe("true");
     expect(rowNames()).toHaveLength(6);
     await typeQuery("review");
-    await pressFinder();
+    await openOrClose();
     expect(useUI.getState().taskFinderOpen).toBe(false);
-    await pressFinder();
+    await openOrClose();
     expect(filterBtn("open").dataset.active).toBe("true");
     expect(searchInput().value).toBe("");
     expect(rowNames()).toHaveLength(2);
 
-    await pressFinder();
+    await openOrClose();
     // The command palette uses this default action without a filter argument.
     await act(async () => { useUI.getState().openTaskFinder(); });
     expect(filterBtn("all").dataset.active).toBe("true");
     expect(rowNames()).toHaveLength(6);
     expect(searchInput().value).toBe("");
+  });
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])("falls back to All on a fresh session without live agents (%j)", async modifiers => {
+    await mountClosedFinderWithShortcuts();
+    await pressFinder(modifiers);
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(2);
+    expect(rowNames().join(" ")).toContain("backlog-task");
+
+    // An explicitly selected Open filter still means Open, even when empty.
+    await pressShortcut("7", modifiers as any);
+    expect(filterBtn("open").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(0);
+  });
+
+  it("rechecks live agents on every shortcut opening, excluding shells, editors, exited and archived agents", async () => {
+    await seedOpenTasks();
+    await mountClosedFinderWithShortcuts();
+    await pressFinder();
+    expect(filterBtn("open").dataset.active).toBe("true");
+    await pressFinder();
+
+    await act(async () => {
+      const tabs = useApp.getState().tabs;
+      useApp.setState({ tabs: { ...tabs, "t-review": [], "idle-agent": [] } });
+    });
+    await pressFinder();
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(6);
+    await pressFinder();
+
+    await act(async () => {
+      useApp.setState({ tabs: {
+        ...useApp.getState().tabs,
+        "idle-agent": [{ id: "idle-tab", type: "terminal", cli: "claude", ptyId: "pty-idle" }],
+      } as any });
+    });
+    await pressFinder();
+    expect(filterBtn("open").dataset.active).toBe("true");
+    expect(rowNames()).toHaveLength(1);
+    expect(rowNames()[0]).toContain("idle-agent");
+
+    await typeQuery("no-such-task");
+    expect(rowNames()).toHaveLength(0);
+    expect(filterBtn("open").dataset.active).toBe("true");
   });
 });
