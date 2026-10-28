@@ -13,6 +13,13 @@ describe("previewKindForPath", () => {
     expect(previewKindForPath("Report.PDF")).toBe("pdf");
   });
 
+  it("routes audio extensions to \"audio\"", () => {
+    expect(previewKindForPath("memo.mp3")).toBe("audio");
+    expect(previewKindForPath("rec/Take 2.M4A")).toBe("audio");
+    expect(previewKindForPath("loop.wav")).toBe("audio");
+    expect(previewKindForPath("voice.opus")).toBe("audio");
+  });
+
   it("returns null for non-previewable and extension-less files", () => {
     expect(previewKindForPath("main.ts")).toBeNull();
     expect(previewKindForPath("README.md")).toBeNull();

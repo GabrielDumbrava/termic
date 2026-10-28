@@ -1,6 +1,7 @@
-// Read-only preview for image/PDF files opened from the file tree. No
-// CodeMirror instance. Images render as an <img> fed a base64 data URL read
-// over IPC (taskFileReadBase64). PDFs render as an <embed> pointed at the
+// Read-only preview for image/PDF/audio files opened from the file tree. No
+// CodeMirror instance. Images render as an <img> and audio as an <audio>,
+// both fed a base64 data URL read over IPC (taskFileReadBase64; the CSP's
+// media-src allows data: for exactly this). PDFs render as an <embed> pointed at the
 // `taskpdf:` URI scheme (src-tauri): WKWebView renders a PDF served as a real
 // application/pdf resource, but shows blank for a data: URL, so PDFs can't go
 // through the base64 channel. Same extension whitelist on both sides
@@ -59,8 +60,8 @@ export function PreviewPane({ task, tab }: { task: Task; tab: EditTab }) {
   useEffect(() => {
     // PDFs never come through here: they render declaratively via <embed>
     // below, fed by the stat-only fingerprint effect further down. So the
-    // base64 read runs for images only.
-    if (kind !== "image") return;
+    // base64 read runs for images and audio.
+    if (kind !== "image" && kind !== "audio") return;
     let alive = true;
     const identity = `${task.id}:${tab.path}`;
     const isNewFile = identityRef.current !== identity;
@@ -151,7 +152,12 @@ export function PreviewPane({ task, tab }: { task: Task; tab: EditTab }) {
     <div className="relative h-full overflow-auto bg-[var(--color-bg)]">
       {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">{t("shared.loading")}</div>}
       {err && <div className="p-4 text-[14px] text-[var(--color-err)]">{t("shared.errorWithMessage", { message: err })}</div>}
-      {url && (
+      {url && kind === "audio" && (
+        <div className="flex h-full items-center justify-center p-4">
+          <audio data-testid="audio-preview" src={url} controls aria-label={tab.title} className="w-full max-w-xl" />
+        </div>
+      )}
+      {url && kind === "image" && (
         <div className="flex h-full items-center justify-center p-4">
           <img src={url} alt={tab.title} className="max-h-full max-w-full object-contain" />
         </div>

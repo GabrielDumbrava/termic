@@ -43,6 +43,12 @@ describe("tauri.conf.json CSP", () => {
     expect(directive("script-src")).toBe("script-src 'self' 'wasm-unsafe-eval'");
   });
 
+  it("plays media only from the app and from bytes it already read", () => {
+    // data: is the audio preview (GH #373): PreviewPane plays a file read over
+    // IPC. No remote origin, so it cannot become a fetch channel.
+    expect(directive("media-src")).toBe("media-src 'self' data:");
+  });
+
   it("still declares a default-src fallback", () => {
     // Without this, an unlisted directive falls back to "anything goes" in some
     // engines, which would quietly undo the guarantee the other assertions make.

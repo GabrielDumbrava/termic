@@ -15802,6 +15802,13 @@ fn preview_mime_for_ext(p: &Path) -> Option<&'static str> {
         "ico" => Some("image/x-icon"),
         "avif" => Some("image/avif"),
         "pdf" => Some("application/pdf"),
+        // Played by PreviewPane's <audio>, from a data: URL (GH #373).
+        "mp3" => Some("audio/mpeg"),
+        "m4a" => Some("audio/mp4"),
+        "aac" => Some("audio/aac"),
+        "wav" => Some("audio/wav"),
+        "ogg" | "oga" | "opus" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
         _ => None,
     }
 }
@@ -32082,6 +32089,8 @@ mod tests {
         assert_eq!(preview_mime_for_ext(Path::new("d.svg")), Some("image/svg+xml"));
         assert_eq!(preview_mime_for_ext(Path::new("p.avif")), Some("image/avif"));
         assert_eq!(preview_mime_for_ext(Path::new("doc.PDF")), Some("application/pdf"));
+        assert_eq!(preview_mime_for_ext(Path::new("memo.MP3")), Some("audio/mpeg"));
+        assert_eq!(preview_mime_for_ext(Path::new("take.m4a")), Some("audio/mp4"));
     }
 
     #[test]

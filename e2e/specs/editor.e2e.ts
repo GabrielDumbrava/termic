@@ -4470,3 +4470,66 @@ describe("markdown split: scroll sync and preview comments", () => {
     expect(await previewTopSection()).toBe(10);
   });
 });
+
+/** A valid 16-bit mono PCM WAV of `ms` silence: header plus zeroed samples. */
+function silentWav(ms: number, rate = 8000): Buffer {
+  const samples = Math.round((rate * ms) / 1000);
+  const data = samples * 2;
+  const b = Buffer.alloc(44 + data);
+  b.write("RIFF", 0); b.writeUInt32LE(36 + data, 4); b.write("WAVE", 8);
+  b.write("fmt ", 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34);
+  b.write("data", 36); b.writeUInt32LE(data, 40);
+  return b;
+}
+
+// GH #373: audio files open in a player, not the binary-file notice. The
+// bytes reach the <audio> as a data: URL, which the CSP's media-src has to
+// allow; without it the element renders and never loads, so the case waits
+// for real metadata rather than for the element.
+describe("audio preview", () => {
+  let taskId!: string;
+  const wavName = "e2e-voice.wav";
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    try {
+      execSync(`git -C "${fixture}" clean -fd`);
+    } catch {
+      /* nothing */
+    }
+  });
+
+  it("plays a .wav opened from the file tree", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-audio");
+    writeFileSync(path.join(fixture, wavName), silentWav(500));
+    await browser.execute((id) => window.__termic!.useApp.getState().bumpFsRevision(id), taskId);
+
+    const sel = `[data-path="${wavName}"]`;
+    await browser.waitUntil(
+      () => browser.execute((s) => !!document.querySelector(s), sel),
+      { timeout: 10_000, timeoutMsg: `${wavName} never appeared in the tree` },
+    );
+    await browser.execute((s) => (document.querySelector(s) as HTMLElement).click(), sel);
+
+    await browser.waitUntil(
+      () => browser.execute(() =>
+        document.querySelector('[data-testid="audio-preview"]')?.getAttribute("src")?.startsWith("data:audio/wav;base64,") ?? false),
+      { timeout: 10_000, timeoutMsg: "the audio player never rendered" },
+    );
+    // Loaded, not just rendered: a CSP block leaves readyState at 0.
+    await browser.waitUntil(
+      () => browser.execute(() => {
+        const a = document.querySelector<HTMLAudioElement>('[data-testid="audio-preview"]');
+        return !!a && a.readyState >= 1 && !a.error;
+      }),
+      { timeout: 10_000, timeoutMsg: "the audio element never loaded its data: URL (media-src?)" },
+    );
+    const duration = await browser.execute(() => document.querySelector<HTMLAudioElement>('[data-testid="audio-preview"]')!.duration);
+    expect(duration).toBeGreaterThan(0.4);
+    expect(duration).toBeLessThan(0.6);
+    await snap("audio-preview.png");
+  });
+});
