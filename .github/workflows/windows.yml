@@ -45,6 +45,11 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace --lib
+      # GH #437: the bundled ConPTY forwards a TUI's mouse reporting request.
+      # Its own process (portable-pty picks a ConPTY once per process).
+      - name: Bundled ConPTY forwards mouse reporting
+        working-directory: src-tauri
+        run: cargo test --test conpty_mouse
       # A measurement, not a gate: does ConPTY pass the escape sequences
       # agent hooks and prompt marks rely on through to the app?
       # (docs/ideas/windows.md, "Measure first", M1.)
@@ -89,6 +94,11 @@ jobs:
           name: termic-windows-x64-setup
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
+      # GH #437: tauri.windows.conf.json puts these beside termic.exe, the
+      # only place portable-pty looks before falling back to the system ConPTY.
+      - name: The bundled ConPTY is installed beside the exe
+        run: |
+          ls "$LOCALAPPDATA/Termic/conpty.dll" "$LOCALAPPDATA/Termic/OpenConsole.exe"
       - name: The installed app is running
         run: |
           sleep 15

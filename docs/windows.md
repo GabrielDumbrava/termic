@@ -112,6 +112,15 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   its shell and command tabs included, before deleting its worktree,
   because Windows will not delete a directory that is a live process's
   working directory.
+  The ConPTY is Microsoft's newer `conpty.dll` + `OpenConsole.exe`, shipped
+  beside `termic.exe` (`src-tauri/resources/windows/conpty`, placed by
+  `tauri.windows.conf.json`), not the one built into Windows: that one does
+  not forward a program's mouse reporting request, so the wheel scrolled
+  xterm's scrollback instead of reaching TUIs like opencode (GH #437).
+  portable-pty prefers a `conpty.dll` next to the exe and falls back to the
+  system one without it. The EOF and title behaviour above was measured on
+  the system ConPTY. `src-tauri/tests/conpty_mouse.rs` gates the mouse
+  request in the Windows CI job.
 - **CLI control plane.** Loopback TCP on an ephemeral port, whose address
   is written into the `termic.sock` path (`termic_proto::local`). The
   per-boot token in the per-user data dir remains the credential. This is

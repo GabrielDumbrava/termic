@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/sounds/choo_choo.caf": "resources/sounds/choo_choo.caf",
+      "resources/windows/conpty/conpty.dll": "conpty.dll",
+      "resources/windows/conpty/OpenConsole.exe": "OpenConsole.exe"
+    }
+  }
+}
