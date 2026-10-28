@@ -225,6 +225,8 @@ interface UIState {
   projectPickerOpen: boolean;
   /** Global fuzzy task finder (⌘O) — search across all active tasks and switch immediately. */
   taskFinderOpen: boolean;
+  /** Opening default: keyboard quick switching uses Open, the palette uses All. */
+  taskFinderInitialFilter: "all" | "open";
   /** What the picked project is FOR. "task" opens the standard New Task
    *  dialog; "issue" opens it straight into the forge issue picker. Same
    *  picker either way, because "which project" is the first question in
@@ -405,7 +407,7 @@ interface UIState {
   closeSearchEverywhere: () => void;
   openProjectPicker: (intent?: "task" | "issue") => void;
   closeProjectPicker: () => void;
-  openTaskFinder: () => void;
+  openTaskFinder: (initialFilter?: "all" | "open") => void;
   closeTaskFinder: () => void;
   openCommandPalette: (view?: "root" | "theme") => void;
   closeCommandPalette: () => void;
@@ -576,6 +578,7 @@ export const useUI = create<UIState>((set, get) => ({
   projectPickerOpen: false,
   projectPickerIntent: "task",
   taskFinderOpen: false,
+  taskFinderInitialFilter: "all",
   commandPaletteOpen: false,
   commandPaletteView: "root",
   promptPaletteOpen: false,
@@ -675,7 +678,7 @@ export const useUI = create<UIState>((set, get) => ({
   closeFindInFiles:  () => set({ findInFilesTaskId: null }),
   openProjectPicker: (intent = "task") => set({ projectPickerOpen: true, projectPickerIntent: intent }),
   closeProjectPicker:() => set({ projectPickerOpen: false }),
-  openTaskFinder:    () => set({ taskFinderOpen: true }),
+  openTaskFinder:    (initialFilter = "all") => set({ taskFinderOpen: true, taskFinderInitialFilter: initialFilter }),
   closeTaskFinder:   () => set({ taskFinderOpen: false }),
   openCommandPalette: (view = "root") => set({ commandPaletteOpen: true, commandPaletteView: view }),
   closeCommandPalette:() => set({ commandPaletteOpen: false }),

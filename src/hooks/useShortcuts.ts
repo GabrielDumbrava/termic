@@ -50,6 +50,7 @@ import {
 } from "@/lib/shortcuts";
 import { isTerminalCloseCombo } from "@/lib/terminalFind";
 import { visualProjectOrder } from "@/lib/projectGroups";
+import { taskHasOpenAgent } from "@/lib/taskBoardState";
 import type { TerminalTab } from "@/lib/types";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
@@ -252,7 +253,12 @@ export function useShortcuts() {
           e.preventDefault();
           const ui = useUI.getState();
           if (ui.taskFinderOpen) ui.closeTaskFinder();
-          else ui.openTaskFinder();
+          else {
+            // Prefer live agents, but keep sleeping tasks reachable when none are open.
+            const hasOpenTasks = state.tasks.some(task =>
+              !task.archived && taskHasOpenAgent(state.tabs[task.id] ?? []));
+            ui.openTaskFinder(hasOpenTasks ? "open" : "all");
+          }
           return;
         }
 

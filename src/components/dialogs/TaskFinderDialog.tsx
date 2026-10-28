@@ -2,7 +2,7 @@
 // and switch immediately. Built for rapid keyboard-driven context switching
 // without touching the mouse or disturbing the sidebar tree layout.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useTranslation } from "react-i18next";
 import { Bell, GitPullRequest, Search, X } from "lucide-react";
@@ -35,9 +35,11 @@ const MAX_RESULTS = 30;
 
 export const STATUS_QUALIFIER_RE = /(?:^|\s)(?:status|is):(?:"([^"]+)"|'([^']+)'|([^\s]+))/i;
 
+type TaskFinderFilter = BoardStateColumn | "open";
+
 export interface FilterOption {
   key: string;
-  column: BoardStateColumn | null;
+  column: TaskFinderFilter | null;
   labelKey: string;
   accent?: string;
 }
@@ -49,15 +51,17 @@ export const FILTER_OPTIONS: readonly FilterOption[] = [
   { key: "4", column: "attention", labelKey: "taskFinder.filterAttention", accent: COL_ACCENT.attention },
   { key: "5", column: "review", labelKey: "taskFinder.filterReview", accent: COL_ACCENT.review },
   { key: "6", column: "backlog", labelKey: "taskFinder.filterBacklog", accent: COL_ACCENT.backlog },
+  { key: "7", column: "open", labelKey: "taskFinder.filterOpen" },
 ];
 
 export function resolveStatusQualifier(
   raw: string,
   tc?: (key: string) => string,
-): BoardStateColumn | null {
+): TaskFinderFilter | null {
   const norm = raw.trim().toLowerCase().replace(/[-_]/g, " ");
   if (!norm) return null;
 
+  if (norm === "open") return "open";
   if (norm === "working" || norm === "work" || norm === "running") return "working";
   if (norm === "review" || norm === "in review" || norm === "pr") return "review";
   if (norm === "attention" || norm === "needs attention" || norm === "blocked" || norm === "warn") return "attention";
@@ -109,6 +113,7 @@ export function TaskFinderDialog() {
   const { t } = useTranslation("dialogs");
   const { t: tc } = useTranslation("chrome");
   const open = useUI(s => s.taskFinderOpen);
+  const initialFilter = useUI(s => s.taskFinderInitialFilter);
   const close = useUI(s => s.closeTaskFinder);
   const tasks = useApp(s => s.tasks);
   const projects = useApp(s => s.projects);
@@ -131,23 +136,23 @@ export function TaskFinderDialog() {
   );
 
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<BoardStateColumn | null>(null);
+  const [statusFilter, setStatusFilter] = useState<TaskFinderFilter | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
-  // Reset query, status filter, and active selection whenever the finder opens.
-  useEffect(() => {
+  // Apply the opening default before paint so reopening never flashes stale results.
+  useLayoutEffect(() => {
     if (open) {
       setQuery("");
-      setStatusFilter(null);
+      setStatusFilter(initialFilter === "open" ? "open" : null);
       setActiveIdx(0);
     }
-  }, [open]);
+  }, [open, initialFilter]);
 
   // Derive any status qualifier typed directly in the query (e.g. `is:review` or `status:working`).
-  const queryQualifier = useMemo<BoardStateColumn | null>(() => {
+  const queryQualifier = useMemo<TaskFinderFilter | null>(() => {
     const m = query.match(STATUS_QUALIFIER_RE);
     if (!m) return null;
     const rawVal = m[1] || m[2] || m[3] || "";
@@ -158,7 +163,7 @@ export function TaskFinderDialog() {
   // so the displayed results and highlighted footer filter chip always agree.
   const activeStatus = queryQualifier ?? statusFilter;
 
-  const selectStatusFilter = useCallback((col: BoardStateColumn | null) => {
+  const selectStatusFilter = useCallback((col: TaskFinderFilter | null) => {
     // If the selected filter is already active (via statusFilter or typed qualifier),
     // selecting it again toggles it off back to All.
     const isAlreadyActive = col !== null && activeStatus === col;
@@ -188,17 +193,12 @@ export function TaskFinderDialog() {
 
     const trimmed = query.trim();
 
-    // Parse optional status: / is: qualifier from query text or explicit statusFilter
-    let filterColumn: BoardStateColumn | null = statusFilter;
+    // Use the same effective filter as the footer, stripping recognized qualifiers.
+    const filterColumn = activeStatus;
     let q = trimmed;
     const qualifierMatch = q.match(STATUS_QUALIFIER_RE);
-    if (qualifierMatch) {
-      const rawVal = qualifierMatch[1] || qualifierMatch[2] || qualifierMatch[3] || "";
-      const resolved = resolveStatusQualifier(rawVal, tc);
-      if (resolved) {
-        filterColumn = resolved;
-        q = q.replace(qualifierMatch[0], " ").trim();
-      }
+    if (qualifierMatch && queryQualifier) {
+      q = q.replace(qualifierMatch[0], " ").trim();
     }
 
     if (!trimmed && !filterColumn) {
@@ -240,7 +240,7 @@ export function TaskFinderDialog() {
       const facts = statusFacts[task.id] ?? NO_TAB_FACTS;
       const pr = prByTask?.[task.id]?.lookup ?? null;
       const column = boardColumnFromFacts(task, facts, pr, workPrefs) as BoardStateColumn;
-      if (filterColumn && column !== filterColumn) continue;
+      if (filterColumn === "open" ? !facts.open : filterColumn && column !== filterColumn) continue;
 
       const statusLabel = tc(COL_LABEL[column] || "board.colSettled");
       const project = projectMap.get(task.project_id);
@@ -303,7 +303,7 @@ export function TaskFinderDialog() {
 
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, MAX_RESULTS);
-  }, [open, tasks, projects, recentTasks, activeTaskId, query, statusFilter, statusFacts, prByTask, workPrefs, tc]);
+  }, [open, tasks, projects, recentTasks, activeTaskId, query, activeStatus, queryQualifier, statusFacts, prByTask, workPrefs, tc]);
 
   // Keep active index clamped and reset when search query or filter changes.
   useEffect(() => {
@@ -493,11 +493,11 @@ export function TaskFinderDialog() {
             })}
           </div>
 
-          <div className="flex items-center justify-between border-t border-[var(--color-border-soft)] px-3 py-1.5 text-[11px] text-[var(--color-fg-faint)] select-none">
-            <div className="flex items-center gap-2 min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-[var(--color-border-soft)] px-3 py-1.5 text-[11px] text-[var(--color-fg-faint)] select-none">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
               <span className="shrink-0">{t("taskFinder.count", { count: results.length })}</span>
               <span className="h-3 w-px shrink-0 bg-[var(--color-border-soft)]" />
-              <div className="flex items-center gap-1 overflow-x-auto py-0.5">
+              <div className="flex flex-wrap items-center gap-1 py-0.5">
                 {FILTER_OPTIONS.map(({ key, column, labelKey, accent }) => {
                   const isActive = column === null ? activeStatus === null : activeStatus === column;
                   return (
