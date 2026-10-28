@@ -235,7 +235,7 @@ export function TodosView() {
                     ? t("todos.allProjects")
                     : picked.length === 1
                       ? picked[0].name
-                      : t("todos.projectsPicked", { count: picked.length })}
+                      : t(picked.length === 1 ? "todos.projectsPicked_one" : "todos.projectsPicked_other", { count: picked.length })}
                 </span>
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>

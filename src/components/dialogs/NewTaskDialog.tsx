@@ -955,7 +955,7 @@ export function NewTaskDialog() {
     // Same stale guard as enterIssues: a lookup landing in a re-opened
     // dialog would show the previous project's PRs.
     const stale = staleFor(projectId, useUI.getState().newTaskSeed);
-    fetchForgeList(mineQuery)
+    fetchForgeList(mineQuery, { urgent: true })
       .then(l => {
         if (stale()) return;
         const { lookup, refreshErr } = afterRevalidate(shownMine, l);
@@ -974,7 +974,7 @@ export function NewTaskDialog() {
     const reviewQuery = { projectId, kind: "prs", scope: "review" } as const;
     const shownReview = cachedForgeList(reviewQuery);
     setPrReviewLookup(shownReview);
-    fetchForgeList(reviewQuery)
+    fetchForgeList(reviewQuery, { urgent: true })
       .then(l => { if (!stale()) setPrReviewLookup(afterRevalidate(shownReview, l).lookup); })
       .catch(() => {});
   }
@@ -1014,7 +1014,7 @@ export function NewTaskDialog() {
     setPrOpenLookup(shown);
     setPrOpenLoading(!shown);
     setListRefreshErr(e => (e?.list === "open" ? null : e));
-    fetchForgeList(query)
+    fetchForgeList(query, { urgent: true })
       .then(l => {
         if (stale()) return;
         const { lookup, refreshErr } = afterRevalidate(shown, l);
@@ -1199,7 +1199,7 @@ export function NewTaskDialog() {
     const reopened = staleFor(projectId, useUI.getState().newTaskSeed);
     const seq = ++issueFetchSeq.current;
     const stale = () => reopened() || seq !== issueFetchSeq.current;
-    fetchForgeList(query)
+    fetchForgeList(query, { urgent: true })
       .then(l => {
         if (stale()) return;
         const { lookup, refreshErr } = afterRevalidate(shown, l);

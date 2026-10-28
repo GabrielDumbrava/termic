@@ -13,7 +13,8 @@ import {
   useForgeLists,
   type ForgeListEntry,
 } from "./forgeLists";
-import { BODY_MAX } from "@/lib/issuePrompt";
+import { BODY_MAX, issueContext } from "@/lib/issuePrompt";
+import { prReviewPrompt } from "@/lib/prReview";
 import { useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
 import type { ForgeIssue, ForgePr, IssueLookup, PrPickList, Project } from "@/lib/types";
@@ -162,6 +163,56 @@ describe("forge lists", () => {
     expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(3);
   });
 
+  it("puts a dialog's fetch ahead of the lists Todos queued first", async () => {
+    const ds = Array.from({ length: 6 }, () => deferred<IssueLookup>());
+    ds.forEach((d) => vi.mocked(ipc.projectForgeIssues).mockReturnValueOnce(d.promise));
+
+    // Three running, two waiting: a Todos refresh across five projects.
+    const todos = ["p1", "p2", "p3", "p4", "p5"].map((id) => fetchForgeList(assigned(id)));
+    const dialog = fetchForgeList(assigned("dlg"), { urgent: true });
+    await Promise.resolve();
+    expect(vi.mocked(ipc.projectForgeIssues).mock.calls.map((c) => c[0])).toEqual(["p1", "p2", "p3"]);
+
+    ds[0].resolve(issuesOk([]));
+    await vi.waitFor(() => expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(4));
+    expect(vi.mocked(ipc.projectForgeIssues).mock.calls[3][0]).toBe("dlg");
+
+    ds.slice(1).forEach((d) => d.resolve(issuesOk([])));
+    await Promise.all([...todos, dialog]);
+  });
+
+  it("moves a list Todos already queued to the front when a dialog asks for the same one", async () => {
+    const ds = Array.from({ length: 5 }, () => deferred<IssueLookup>());
+    ds.forEach((d) => vi.mocked(ipc.projectForgeIssues).mockReturnValueOnce(d.promise));
+
+    const todos = ["p1", "p2", "p3", "p4", "p5"].map((id) => fetchForgeList(assigned(id)));
+    // p5 is last in line; the dialog joins that fetch rather than starting one.
+    const dialog = fetchForgeList(assigned("p5"), { urgent: true });
+    expect(dialog).toBe(todos[4]);
+
+    ds[0].resolve(issuesOk([]));
+    await vi.waitFor(() => expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(4));
+    expect(vi.mocked(ipc.projectForgeIssues).mock.calls[3][0]).toBe("p5");
+
+    ds.slice(1).forEach((d) => d.resolve(issuesOk([])));
+    await Promise.all(todos);
+    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(5);
+  });
+
+  it("frees the slot of a fetch that throws before returning its promise", async () => {
+    vi.mocked(ipc.projectForgeIssues).mockImplementationOnce(() => { throw new Error("sync boom"); });
+    await expect(fetchForgeList(assigned("p1"))).rejects.toThrow("sync boom");
+
+    // Three more must all start at once: the thrown one left no slot taken.
+    const ds = Array.from({ length: 3 }, () => deferred<IssueLookup>());
+    ds.forEach((d) => vi.mocked(ipc.projectForgeIssues).mockReturnValueOnce(d.promise));
+    const all = ["p2", "p3", "p4"].map((id) => fetchForgeList(assigned(id)));
+    await Promise.resolve();
+    expect(ipc.projectForgeIssues).toHaveBeenCalledTimes(4);
+    ds.forEach((d) => d.resolve(issuesOk([])));
+    await Promise.all(all);
+  });
+
   it("drops an answer that lands after the lists were cleared", async () => {
     const d = deferred<IssueLookup>();
     vi.mocked(ipc.projectForgeIssues).mockReturnValueOnce(d.promise);
@@ -219,6 +270,41 @@ describe("forge lists", () => {
       expect(rows[0].a.issues[1].body).toBe("short");
       // The entry in memory keeps the whole body.
       expect(cachedForgeList(assigned())?.issues[0].body).toHaveLength(BODY_MAX * 3);
+    });
+
+    const restore = (entry: ForgeListEntry) =>
+      Object.values(parseSnapshot(serializeSnapshot({ k: entry }, null)))[0].ok!;
+
+    it("keeps the truncation note for a CRLF body, which the prompt measures without its \\r", () => {
+      // GitHub's web editor writes CRLF. ~7700 characters, ~130 of them \r.
+      const body = Array.from({ length: 130 }, (_, i) => `Line ${i} of the reproduction steps goes here.\r\n`).join("")
+        + "x".repeat(1500);
+      expect(body.length).toBeGreaterThan(BODY_MAX * 1.5);
+      const live = issue(5, body);
+      const entry: ForgeListEntry = { query: assigned(), status: "ok", ok: issuesOk([live]), okAt: 1, fetchedAt: 1 };
+      const restored = (restore(entry) as IssueLookup).issues[0];
+
+      expect(issueContext(live)).toContain("[body truncated");
+      expect(issueContext(restored)).toBe(issueContext(live));
+    });
+
+    it("keeps the note when the cut would land on blanks the prompt trims away", () => {
+      const live = issue(6, "a".repeat(BODY_MAX) + " ".repeat(50) + "tail of the body");
+      const entry: ForgeListEntry = { query: assigned(), status: "ok", ok: issuesOk([live]), okAt: 1, fetchedAt: 1 };
+      const restored = (restore(entry) as IssueLookup).issues[0];
+
+      expect(issueContext(restored)).toContain("[body truncated");
+      expect(issueContext(restored)).toBe(issueContext(live));
+    });
+
+    it("cuts a CRLF PR description where the review prompt does", () => {
+      const body = "Summary of the change.\r\n".repeat(400);
+      const live = { ...pr(8), body };
+      const entry: ForgeListEntry = { query: mine(), status: "ok", ok: prsOk([live]), okAt: 1, fetchedAt: 1 };
+      const restored = (restore(entry) as PrPickList).prs[0];
+
+      expect(prReviewPrompt(live, "Review it.")).toContain("Description cut here");
+      expect(prReviewPrompt(restored, "Review it.")).toBe(prReviewPrompt(live, "Review it."));
     });
 
     it("does not rewrite an unchanged snapshot", async () => {

@@ -169,9 +169,11 @@ interface ForgeListEntry {
   visible until the fresh response arrives, and a failed refresh keeps them.
 - **Launch snapshot**: the ok answers are written to the scoped
   `forgeListSnapshot` key once the queue drains, under a hard budget of
-  256K characters (personal lists first, then repo-wide ones), with bodies
-  cut one past the prompts' 4000-character cap so a prompt built from a
-  restored row is the same text. Restored entries keep their fetch time,
+  256K characters (personal lists first, then repo-wide ones). Bodies are
+  cut one past the prompts' 4000-character cap, measured on the text the
+  prompts measure (control characters stripped and trimmed, so a CRLF body
+  loses its `\r` first) and ending on a non-blank character, so a prompt
+  built from a restored row is the same text, truncation note included. Restored entries keep their fetch time,
   so they are stale and re-fetched by the first reader.
 - **Isolated updates**: Updating a list writes only to `useForgeLists`.
   `useApp` subscribers are not notified, preventing idle terminal
@@ -183,8 +185,10 @@ Rather than unbounded `Promise.allSettled` fan-out:
 1. **Concurrency limit**: every list fetch, from any caller, routes through
    one bounded work queue (maximum 3 concurrent CLI subprocesses), and a
    query already in flight is joined rather than fetched twice.
-2. **Current-view priority**: not built. Queued requests run in order and
-   are not discarded on a filter change.
+2. **Dialog priority**: the New Task and Review PR dialogs' fetches wait at
+   the front of the queue, and a dialog joining a list Todos queued first
+   moves it there, so an open dialog never waits out a Todos refresh. Todos'
+   own requests run in order and are not discarded on a filter change.
 3. **Graceful failure decoding**: Existing forge lookups return status
    within the payload (`status: "ok" | "auth_failed" | "cli_missing"`).
    The store parses the response payload directly and flags the entry

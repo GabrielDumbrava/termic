@@ -114,7 +114,7 @@ export function ReviewPrDialog() {
     const query = { projectId, kind: "prs", scope: "review", limit: 8 } as const;
     const shown = cachedForgeList(query);
     setWaiting(shown);
-    fetchForgeList(query)
+    fetchForgeList(query, { urgent: true })
       .then(r => { if (!cancelled) setWaiting(afterRevalidate(shown, r).lookup); })
       .catch(() => {});
     return () => { cancelled = true; };

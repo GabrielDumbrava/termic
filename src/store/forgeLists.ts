@@ -13,8 +13,8 @@ import { create } from "zustand";
 import { useApp } from "@/store/app";
 import { projectForgeIssues, projectForgePrs } from "@/lib/ipc";
 import { scoped } from "@/lib/profileScope";
-import { BODY_MAX as ISSUE_BODY_MAX } from "@/lib/issuePrompt";
-import { BODY_MAX as PR_BODY_MAX } from "@/lib/prReview";
+import { BODY_MAX as ISSUE_BODY_MAX, cleanIssueText } from "@/lib/issuePrompt";
+import { BODY_MAX as PR_BODY_MAX, cleanPrText } from "@/lib/prReview";
 import type { ForgeIssue, ForgePr, IssueLookup, IssueScope, PrPickList, PrScope } from "@/lib/types";
 
 export type IssueListQuery = { projectId: string; kind: "issues"; scope: IssueScope; limit?: number };
@@ -71,13 +71,29 @@ const PR_SCOPES: readonly string[] = ["mine", "review", "open"];
  *  first when the budget runs out. */
 const PERSONAL_SCOPES: readonly string[] = ["assigned", "mentions", "mine", "review"];
 
-/** Bodies cut one past what a prompt inlines, so a prompt built from a
- *  restored row is the same text, truncation note included. */
+/** A body cut for the snapshot so the prompt built from it is the same text
+ *  as from the live row, truncation note included.
+ *
+ *  The prompt cleans and trims a body BEFORE comparing it to its cap, so the
+ *  cut is made on that cleaned text, not the raw one: a body from GitHub's
+ *  web editor is CRLF, and a raw cut one past the cap lost every `\r` to the
+ *  cleaning, landed under the cap, and the note saying there is more went
+ *  with it. The cut ends on a non-blank character for the same reason, since
+ *  the prompt's trim would pull a cut ending in spaces back under too. */
+export function cutBodyForSnapshot(body: string, max: number, clean: (s: string) => string): string {
+  if (body.length <= max + 1) return body;
+  const text = clean(body).trim();
+  if (text.length <= max) return text;
+  let end = max + 1;
+  while (end < text.length && /\s/.test(text[end - 1])) end++;
+  return text.slice(0, end);
+}
+
 function capBodies(a: ForgeListAnswer): ForgeListAnswer {
   if ("issues" in a) {
-    return { ...a, issues: a.issues.map((i) => (i.body.length > ISSUE_BODY_MAX + 1 ? { ...i, body: i.body.slice(0, ISSUE_BODY_MAX + 1) } : i)) };
+    return { ...a, issues: a.issues.map((i) => ({ ...i, body: cutBodyForSnapshot(i.body, ISSUE_BODY_MAX, cleanIssueText) })) };
   }
-  return { ...a, prs: a.prs.map((p) => (p.body.length > PR_BODY_MAX + 1 ? { ...p, body: p.body.slice(0, PR_BODY_MAX + 1) } : p)) };
+  return { ...a, prs: a.prs.map((p) => ({ ...p, body: cutBodyForSnapshot(p.body, PR_BODY_MAX, cleanPrText) })) };
 }
 
 /** The ok entries as snapshot text, newest first within personal-before-repo,
@@ -187,23 +203,37 @@ export const useForgeLists = create<ForgeListsState>(() => ({
 let epoch = 0;
 const inFlight = new Map<string, Promise<ForgeListAnswer>>();
 let active = 0;
-const queue: Array<() => void> = [];
+const queue: Array<{ key: string; run: () => void }> = [];
 
-function schedule<T>(job: () => Promise<T>): Promise<T> {
+/** Run `job` within the concurrency bound. An `urgent` one (a dialog someone
+ *  is looking at) waits at the FRONT: Todos on All is five lists a project,
+ *  and a dialog behind a twenty-project refresh would wait out a hundred. */
+function schedule<T>(key: string, job: () => Promise<T>, urgent: boolean): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const run = () => {
       active++;
-      job().then(resolve, reject).finally(() => {
+      // A job that throws before returning its promise still frees its slot.
+      let p: Promise<T>;
+      try { p = job(); } catch (e) { p = Promise.reject(e); }
+      p.then(resolve, reject).finally(() => {
         active--;
-        queue.shift()?.();
+        queue.shift()?.run();
         // One write per burst, once the queue has drained. On a timer, so it
         // runs after the answer that just landed has been recorded.
         if (active === 0 && queue.length === 0) setTimeout(persistSnapshot, 0);
       });
     };
     if (active < MAX_CONCURRENT_FETCHES) run();
-    else queue.push(run);
+    else if (urgent) queue.unshift({ key, run });
+    else queue.push({ key, run });
   });
+}
+
+/** Move a list still waiting in the queue to its front, for an urgent caller
+ *  joining a fetch Todos queued first. */
+function hurry(key: string) {
+  const i = queue.findIndex((j) => j.key === key);
+  if (i > 0) queue.unshift(...queue.splice(i, 1));
 }
 
 function setEntry(key: string, next: (prev: ForgeListEntry | undefined) => ForgeListEntry) {
@@ -222,25 +252,36 @@ export function cachedForgeList(q: ForgeListQuery): ForgeListAnswer | null {
   return useForgeLists.getState().entries[forgeListKey(q)]?.ok ?? null;
 }
 
+export interface FetchOptions {
+  /** Jump the queue: the dialogs pass this, Todos does not. */
+  urgent?: boolean;
+}
+
 /** Fetch a list now, joining a fetch already in flight for the same query.
  *  Resolves with the forge's answer whatever its status, and rejects only
  *  when the IPC itself throws. */
-export function fetchForgeList(q: IssueListQuery): Promise<IssueLookup>;
-export function fetchForgeList(q: PrListQuery): Promise<PrPickList>;
-export function fetchForgeList(q: ForgeListQuery): Promise<ForgeListAnswer>;
-export function fetchForgeList(q: ForgeListQuery): Promise<ForgeListAnswer> {
+export function fetchForgeList(q: IssueListQuery, opts?: FetchOptions): Promise<IssueLookup>;
+export function fetchForgeList(q: PrListQuery, opts?: FetchOptions): Promise<PrPickList>;
+export function fetchForgeList(q: ForgeListQuery, opts?: FetchOptions): Promise<ForgeListAnswer>;
+export function fetchForgeList(q: ForgeListQuery, opts: FetchOptions = {}): Promise<ForgeListAnswer> {
   const key = forgeListKey(q);
   const running = inFlight.get(key);
-  if (running) return running;
+  if (running) {
+    if (opts.urgent) hurry(key);
+    return running;
+  }
 
   const at = epoch;
   const limit = limitOf(q);
   setEntry(key, (e) => ({ query: q, status: "loading", ok: e?.ok ?? null, okAt: e?.okAt ?? 0, fetchedAt: e?.fetchedAt ?? 0 }));
 
-  const p: Promise<ForgeListAnswer> = schedule<ForgeListAnswer>(() =>
-    q.kind === "issues"
-      ? projectForgeIssues(q.projectId, limit, q.scope)
-      : projectForgePrs(q.projectId, { scope: q.scope, limit }),
+  const p: Promise<ForgeListAnswer> = schedule<ForgeListAnswer>(
+    key,
+    () =>
+      q.kind === "issues"
+        ? projectForgeIssues(q.projectId, limit, q.scope)
+        : projectForgePrs(q.projectId, { scope: q.scope, limit }),
+    !!opts.urgent,
   )
     .then(
       (answer) => {

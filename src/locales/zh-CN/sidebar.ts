@@ -246,7 +246,8 @@ export default {
   todos: {
     title: "待办事项",
     allProjects: "所有项目",
-    projectsPicked: "{{count}} 个项目",
+    projectsPicked_one: "{{count}} 个项目",
+    projectsPicked_other: "{{count}} 个项目",
     refresh: "刷新",
     refreshing: "刷新中…",
     searchPlaceholder: "按标题、编号、作者或标签搜索…",
