@@ -28558,11 +28558,17 @@ mod tests {
         });
     }
 
+    // both tests below share the global queue and cargo runs tests in
+    // parallel, so one's `clear()` could land between the other's push and
+    // drain.
+    static DEEP_LINK_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     #[test]
     fn draining_deep_links_hands_each_window_only_its_own() {
         // The race the keyed queue exists for: `mem::take` gave the whole
         // queue to whichever webview asked first, so one profile swallowed
         // another's links.
+        let _serial = DEEP_LINK_TEST_LOCK.lock();
         crate::PENDING_DEEP_LINKS.lock().clear();
         {
             let mut q = crate::PENDING_DEEP_LINKS.lock();
@@ -28585,6 +28591,7 @@ mod tests {
 
     #[test]
     fn draining_for_a_window_with_nothing_queued_takes_nothing_from_anyone() {
+        let _serial = DEEP_LINK_TEST_LOCK.lock();
         crate::PENDING_DEEP_LINKS.lock().clear();
         crate::PENDING_DEEP_LINKS.lock().push(("main".into(), "termic://new".into()));
         assert!(crate::drain_deep_links_for("profile-ghost").is_empty());
