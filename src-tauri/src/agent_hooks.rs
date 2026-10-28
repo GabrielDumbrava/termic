@@ -2258,7 +2258,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         f.write_all(bytes).map_err(|e| format!("write temp: {e}"))?;
         f.sync_all().map_err(|e| format!("sync temp: {e}"))?;
     }
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename into place: {e}"))
+    // One-step replace on Windows too: the agent may read it mid-write.
+    crate::rename_replace(&tmp, path).map_err(|e| format!("rename into place: {e}"))
 }
 
 /// Read and parse settings.json. A missing file is an empty object; malformed

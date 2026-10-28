@@ -1655,13 +1655,71 @@ pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
         // Bytes must be durable before the rename is visible.
         f.sync_data()?;
         drop(f);
-        fs::rename(&tmp, dest)
+        rename_replace(&tmp, dest)
     };
     let res = write();
     if res.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     res
+}
+
+/// `fs::rename`, except that on Windows the swap is one step for readers.
+///
+/// std's Windows rename is `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`, which
+/// leaves a moment where the destination name does not exist: a concurrent
+/// `read_to_string` gets NotFound, so a settings load racing a save read "no
+/// file" (GH #195; the concurrent-reader test below caught it on CI). A
+/// POSIX-semantics rename replaces the name in place, like unix rename(2).
+/// FAT, some network shares and pre-1809 Windows refuse it; those fall back
+/// to std's rename, which still replaces, just not in one step.
+#[cfg(windows)]
+pub(crate) fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfoEx, SetFileInformationByHandle, DELETE, FILE_RENAME_INFO,
+    };
+    // Win32_System_WindowsProgramming, which this crate does not enable.
+    const REPLACE_IF_EXISTS: u32 = 0x1;
+    const POSIX_SEMANTICS: u32 = 0x2;
+    let posix = || -> std::io::Result<()> {
+        let file = fs::OpenOptions::new().access_mode(DELETE).open(from)?;
+        // With no RootDirectory the new name must be fully qualified.
+        let full = std::path::absolute(to)?;
+        let text = full.as_os_str().to_string_lossy();
+        let verbatim = if text.starts_with(r"\\?\") {
+            text.into_owned()
+        } else if let Some(unc) = text.strip_prefix(r"\\") {
+            format!(r"\\?\UNC\{unc}")
+        } else {
+            format!(r"\\?\{text}")
+        };
+        let name: Vec<u16> = std::ffi::OsStr::new(&verbatim).encode_wide().collect();
+        let offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+        let size = offset + (name.len() + 1) * 2;
+        // u64 cells: FILE_RENAME_INFO holds a HANDLE, so it is 8-aligned.
+        let mut buf = vec![0u64; size.div_ceil(8)];
+        let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        unsafe {
+            (*info).Anonymous.Flags = REPLACE_IF_EXISTS | POSIX_SEMANTICS;
+            (*info).RootDirectory = std::ptr::null_mut();
+            (*info).FileNameLength = (name.len() * 2) as u32;
+            std::ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                (&raw mut (*info).FileName).cast::<u16>(),
+                name.len(),
+            );
+            if SetFileInformationByHandle(file.as_raw_handle() as _, FileRenameInfoEx, info.cast(), size as u32) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    };
+    posix().or_else(|_| fs::rename(from, to))
+}
+#[cfg(not(windows))]
+pub(crate) fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::rename(from, to)
 }
 
 // ───────────────────────────── projects IO ─────────────────────────────

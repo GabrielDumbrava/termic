@@ -567,6 +567,17 @@ the result. Never call `on_main_thread` FROM the main thread (the tray
 handler, `setup`): it waits on itself. The tray row calls `profile_open`
 from the blocking pool for that reason.
 
+## `fs::rename` on Windows is not a one-step replace
+
+std's Windows `rename` is `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`, which
+leaves a moment where the destination name does not exist. A reader that
+opens it then gets NotFound, so "write a temp file and rename it over" was
+still not atomic for a settings load racing a save. `write_atomic` (and the
+agent-hook writer) go through `rename_replace`, which asks for a
+POSIX-semantics rename (`FileRenameInfoEx`) first and falls back to std's
+rename where the filesystem refuses it (GH #195). Use it for any file
+something may read while you write it.
+
 ## ConPTY gives the reader no EOF when the child exits
 
 On unix, the PTY reader hits EOF when the last process holding the slave
