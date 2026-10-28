@@ -98,7 +98,12 @@ export function buildComposer(spec: ComposerSpec, target: CommentTarget, host: {
     // (visible once zoom or a classic-scrollbar setting shows them). Scroll
     // only once the cap is actually reached.
     const borders = ta.offsetHeight - ta.clientHeight;
-    const want = ta.scrollHeight + borders;
+    let want = ta.scrollHeight + borders;
+    ta.style.height = `${Math.min(want, 220)}px`;
+    // At a fractional devicePixelRatio (Windows at 125%) the borders snap to
+    // device pixels and the integer measurements above miss one: top up
+    // whatever the text still overflows by.
+    want += Math.max(0, ta.scrollHeight - ta.clientHeight);
     ta.style.height = `${Math.min(want, 220)}px`;
     ta.style.overflowY = want > 220 ? "auto" : "hidden";
     host.onResize?.();

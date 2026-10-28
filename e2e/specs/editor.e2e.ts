@@ -2952,9 +2952,12 @@ describe("comment on an editor selection for the agent", () => {
     // follow it, or the batch points the agent at the wrong place.
     await browser.execute((id) => {
       const host = document.querySelector(`[data-task-id="${id}"] .cm-editor`) as HTMLElement;
-      (host as unknown as { __cmView: any }).__cmView.dispatch({
-        changes: { from: 0, insert: "inserted A\ninserted B\n" },
-      });
+      // The doc's own line break: a CRLF file (Git for Windows checks the
+      // fixture out that way) keeps "\r\n" as its separator, and a bare "\n"
+      // there is not a line break at all.
+      const view = (host as unknown as { __cmView: any }).__cmView;
+      const br = view.state.lineBreak;
+      view.dispatch({ changes: { from: 0, insert: `inserted A${br}inserted B${br}` } });
     }, taskId!);
 
     // The cards label themselves from the STORED range, so this also proves
