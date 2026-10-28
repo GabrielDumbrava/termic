@@ -425,6 +425,7 @@ export default {
     prFork: "fork",
     prFetching: "Fetching the branch…",
     loadingPrs: "Loading your pull requests…",
+    listRefreshFailed: "Showing the last list. Refreshing it failed: {{message}}",
     loadingOpenPrs: "Loading open pull requests…",
     fromWorkItem: "From an {{forge}} work item",
     needsCli: "(needs {{cli}})",

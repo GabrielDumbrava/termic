@@ -134,65 +134,61 @@ This provides a comprehensive personal dashboard across projects.
 - **Command palette**: Register `"View: Todos"` (`view:todos`) in
   `src/components/dialogs/CommandPalette.tsx`.
 
-### 2. Store and state management (`src/store/todos.ts`)
+### 2. Store and state management (`src/store/todos.ts`, `src/store/forgeLists.ts`)
 
-To prevent the store-wide cache failure identified in review, the store
-keys cache entries by query descriptor rather than maintaining a single
-global items array:
+As built, the state is split in two. `useTodos` holds only the filters
+(`selectedProjectIds`, persisted under the scoped `todosProjects` key and
+empty for all projects, plus kind, scope and search) and the table
+`todoQueries()` that turns them into forge list queries. The lists live in
+`useForgeLists`, shared with the New Task dialog's pickers and Review PR's
+waiting list, and the view derives its rows from them with `todoRows()`,
+naming each row after the project as it is called now.
 
 ```typescript
-export type TodoQueryKey = string; // e.g. `${projectId}:${kind}:${scope}`
+type ForgeListQuery =
+  | { projectId: string; kind: "issues"; scope: IssueScope; limit?: number }
+  | { projectId: string; kind: "prs"; scope: PrScope; limit?: number };
 
-export type TodoItem =
-  | { kind: "issue"; projectId: string; issue: ForgeIssue; action: "assigned" | "mentioned" | "open" }
-  | { kind: "pr"; projectId: string; pr: ForgePr; action: "review_requested" | "authored" | "open" };
-
-export interface QueryCacheEntry {
-  items: TodoItem[];
-  fetchedAt: number;
-  status: "idle" | "loading" | "ok" | "error" | "unsupported";
+interface ForgeListEntry {
+  query: ForgeListQuery;
+  status: "loading" | "ok" | "error" | "unsupported";
+  ok: IssueLookup | PrPickList | null; // last ok answer, kept through a failure
+  okAt: number;                        // when `ok` was fetched
+  fetchedAt: number;                   // when the last fetch finished; the TTL counts from here
   errorMessage?: string;
-  generation: number;
-}
-
-interface TodosState {
-  // Query-keyed cache
-  cache: Record<TodoQueryKey, QueryCacheEntry>;
-  inFlightKeys: Set<TodoQueryKey>;
-
-  // Active UI filters (kept in memory, or stored in prefs)
-  selectedProjectId: string | null; // null = all projects
-  kindFilter: "all" | "issues" | "prs";
-  scopeFilter: "for_me" | "review" | "open";
-  searchQuery: string;
-
-  // Actions
-  fetchQuery: (projectId: string, kind: "issues" | "prs", scope: string, force?: boolean) => Promise<void>;
-  fetchVisibleTodos: (force?: boolean) => Promise<void>;
-  setSelectedProjectId: (id: string | null) => void;
-  setKindFilter: (kind: "all" | "issues" | "prs") => void;
-  setScopeFilter: (scope: "for_me" | "review" | "open") => void;
-  setSearchQuery: (query: string) => void;
 }
 ```
 
 #### Cache invariants:
-- **Cache key identity**: Formed by `projectId + kind + scope`.
-- **TTL check on access**: Checked synchronously; no background timers.
+- **Cache key identity**: `projectId + kind + scope + limit`, with a
+  missing limit normalized to the IPC's default (50 issues, 30 PRs), so a
+  bare call and an explicit default are one query.
+- **TTL check on access**: Checked synchronously; no background timers. A
+  failure is cached for the TTL like a success; Refresh forces a retry.
 - **Stale-while-revalidate**: When refreshing, previous results remain
-  visible until the fresh response arrives.
-- **Isolated updates**: Updating a query cache entry writes only to
-  `useTodos`. `useApp` subscribers are not notified, preventing idle
-  terminal re-renders (Bear Trap 8).
+  visible until the fresh response arrives, and a failed refresh keeps them.
+- **Launch snapshot**: the ok answers are written to the scoped
+  `forgeListSnapshot` key once the queue drains, under a hard budget of
+  256K characters (personal lists first, then repo-wide ones). Bodies are
+  cut one past the prompts' 4000-character cap, measured on the text the
+  prompts measure (control characters stripped and trimmed, so a CRLF body
+  loses its `\r` first) and ending on a non-blank character, so a prompt
+  built from a restored row is the same text, truncation note included. Restored entries keep their fetch time,
+  so they are stale and re-fetched by the first reader.
+- **Isolated updates**: Updating a list writes only to `useForgeLists`.
+  `useApp` subscribers are not notified, preventing idle terminal
+  re-renders (Bear Trap 8).
 
 ### 3. Concurrency and execution bounds
 
 Rather than unbounded `Promise.allSettled` fan-out:
-1. **Concurrency limit**: Multi-project requests route through a bounded
-   work queue (maximum 3 concurrent CLI subprocesses).
-2. **Current-view priority**: Queries matching the active filter and
-   selected project execute first. If the user changes filters, in-flight
-   requests finish safely but outdated queued requests are discarded.
+1. **Concurrency limit**: every list fetch, from any caller, routes through
+   one bounded work queue (maximum 3 concurrent CLI subprocesses), and a
+   query already in flight is joined rather than fetched twice.
+2. **Dialog priority**: the New Task and Review PR dialogs' fetches wait at
+   the front of the queue, and a dialog joining a list Todos queued first
+   moves it there, so an open dialog never waits out a Todos refresh. Todos'
+   own requests run in order and are not discarded on a filter change.
 3. **Graceful failure decoding**: Existing forge lookups return status
    within the payload (`status: "ok" | "auth_failed" | "cli_missing"`).
    The store parses the response payload directly and flags the entry

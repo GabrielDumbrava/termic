@@ -63,13 +63,20 @@ export function prCommands(provider: ForgeProvider | null | undefined, n: number
   return { view: `gh pr view ${n} --comments`, diff: `gh pr diff ${n}` };
 }
 
-const BODY_MAX = 4000;
+/** How much PR description a review prompt inlines. Exported for the forge
+ *  list snapshot, which keeps exactly enough to cut it in the same place. */
+export const BODY_MAX = 4000;
 
 /** Control characters other than newline and tab never reach a PTY. */
 function san(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
 }
+
+/** The cleaning `prReviewPrompt` applies to a description before it measures
+ *  it. Exported for the forge list snapshot, for the reason `cleanIssueText`
+ *  in issuePrompt.ts is: the snapshot has to cut where this reads. */
+export const cleanPrText = san;
 
 /** The PR half of a review prompt, then the instruction half. */
 export function prReviewPrompt(

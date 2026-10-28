@@ -249,6 +249,8 @@ export default {
   todos: {
     title: "待办事项",
     allProjects: "所有项目",
+    projectsPicked_one: "{{count}} 个项目",
+    projectsPicked_other: "{{count}} 个项目",
     refresh: "刷新",
     refreshing: "刷新中…",
     searchPlaceholder: "按标题、编号、作者或标签搜索…",
@@ -267,6 +269,7 @@ export default {
     reviewPr: "审查 PR",
     openInBrowser: "在浏览器中打开",
     emptyTitle: "未找到事项",
+    loadingTitle: "正在加载议题和 PR…",
     emptyDescription: "请尝试更改项目、类别或范围筛选条件。",
     actionAssigned: "指派给我",
     actionReview: "等待审查",

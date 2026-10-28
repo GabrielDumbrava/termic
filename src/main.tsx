@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner, guide, ptyActivity, todos, forgeLists] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -81,6 +81,8 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/lib/schedules/runner"),
         import("@/store/guide"),
         import("@/lib/ptyOutputActivity"),
+        import("@/store/todos"),
+        import("@/store/forgeLists"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -114,6 +116,14 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // Which agents' "Usage unknown" label is dismissed, so a spec can put
       // the footer back the way it found it.
       useUsageUnknownDismissed: usageUnknownDismissed.useUsageUnknownDismissed,
+      // The Todos view's filters, and the forge lists it reads. Exposed so a
+      // spec can seed rows: the fixture repo's origin is a local path, which
+      // no forge CLI answers for, so nothing real would ever fill a list.
+      // clearForgeLists also drops the launch snapshot, so seeded rows do not
+      // outlive the spec in the e2e profile.
+      useTodos: todos.useTodos,
+      useForgeLists: forgeLists.useForgeLists,
+      clearForgeLists: forgeLists.clearForgeLists,
       // The webview half of `termic scratchpad`. Exposed so a spec can land a
       // write in the SAME tick as an editor remount, which a round trip over
       // the control socket can only hit by luck (lib/scratchLive).

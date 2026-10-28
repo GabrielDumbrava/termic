@@ -33,7 +33,7 @@ import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/pro
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type IssueScope, type BranchContext, type Settings, type PrPickList, type ForgePr } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
-import { projectForgeIssues } from "@/lib/ipc";
+import { afterRevalidate, cachedForgeList, fetchForgeList } from "@/store/forgeLists";
 import { buildIssuesPrompt, issueBranch, issueRef, issueTaskName } from "@/lib/issuePrompt";
 import { azurePatLoginCmd, forgeCli, forgeInstallCmd, forgeLoginCmd, forgeName, issueNoun, prRef } from "@/lib/forge";
 import { readMemberModes, persistMemberMode, seedMemberMode, readMemberSets, saveMemberSet, deleteMemberSet, type MemberSet } from "@/components/dialogs/memberModes";
@@ -467,6 +467,10 @@ export function NewTaskDialog() {
   const prOpenSeq = useRef(0);
   const [prQuery, setPrQuery] = useState("");
   const [prBusy, setPrBusy] = useState(0);
+  // A list painted from the shared cache whose re-fetch then failed: the
+  // rows stay, and this says why they were not refreshed. Which list it is
+  // about, so the PR pane shows it only under the view it belongs to.
+  const [listRefreshErr, setListRefreshErr] = useState<{ list: "issues" | "you" | "open"; message: string } | null>(null);
   // Resume-args override, set at create so it applies from the FIRST spawn.
   // Exactly the field the task menu's "Resume override" edits
   // (Task.resume_override, task_set_resume_override): same storage, same
@@ -721,6 +725,7 @@ export function NewTaskDialog() {
     // list must not silently carry into the next project's picker.
     setIssueQuery("");
     setIssueLoading(false);
+    setListRefreshErr(null);
     // PR mode is per-open for exactly the issue-mode reason above: leaving
     // it set reopened a different project straight into the PR pane with
     // the PREVIOUS project's cached list.
@@ -940,19 +945,37 @@ export function NewTaskDialog() {
     setPrOpenLookup(null);
     setPrOpenLoading(false);
     prOpenSeq.current++;
-    setPrLoading(true);
+    setListRefreshErr(null);
+    // Painted from the shared cache when it has the list, and re-fetched
+    // either way, like the issue list (loadIssues).
+    const mineQuery = { projectId, kind: "prs", scope: "mine" } as const;
+    const shownMine = cachedForgeList(mineQuery);
+    setPrLookup(shownMine);
+    setPrLoading(!shownMine);
     // Same stale guard as enterIssues: a lookup landing in a re-opened
     // dialog would show the previous project's PRs.
     const stale = staleFor(projectId, useUI.getState().newTaskSeed);
-    projectForgePrs(projectId)
-      .then(l => { if (!stale()) setPrLookup(l); })
-      .catch(e => { if (!stale()) setErr(String(e)); })
+    fetchForgeList(mineQuery, { urgent: true })
+      .then(l => {
+        if (stale()) return;
+        const { lookup, refreshErr } = afterRevalidate(shownMine, l);
+        setPrLookup(lookup);
+        if (refreshErr) setListRefreshErr({ list: "you", message: refreshErr });
+      })
+      .catch(e => {
+        if (stale()) return;
+        if (shownMine) setListRefreshErr({ list: "you", message: String(e) });
+        else setErr(String(e));
+      })
       .finally(() => { if (!stale()) setPrLoading(false); });
     // A failure here only hides the section: the list above already says
-    // why the forge cannot be reached, and saying it twice is noise.
-    setPrReviewLookup(null);
-    projectForgePrs(projectId, { scope: "review" })
-      .then(l => { if (!stale()) setPrReviewLookup(l); })
+    // why the forge cannot be reached, and saying it twice is noise. Rows
+    // painted from the cache stay through one, for the same reason.
+    const reviewQuery = { projectId, kind: "prs", scope: "review" } as const;
+    const shownReview = cachedForgeList(reviewQuery);
+    setPrReviewLookup(shownReview);
+    fetchForgeList(reviewQuery, { urgent: true })
+      .then(l => { if (!stale()) setPrReviewLookup(afterRevalidate(shownReview, l).lookup); })
       .catch(() => {});
   }
 
@@ -966,12 +989,14 @@ export function NewTaskDialog() {
     prOpenSeq.current++;
     setPrQuery("");
     setErr(null);
+    setListRefreshErr(null);
   }
 
   /** "All open" is fetched on the click, never on entry: someone who never
    *  asks for the repo's list pays nothing for it. Refetched on each click,
-   *  like the issue scopes, so a PR opened a minute ago shows up. Going back
-   *  to "For you" needs no fetch, its lists are already loaded. */
+   *  like the issue scopes, so a PR opened a minute ago shows up; the last
+   *  answer paints from the shared cache meanwhile. Going back to "For you"
+   *  needs no fetch, its lists are already loaded. */
   function choosePrView(next: "you" | "open") {
     if (next === prView || !projectId) return;
     setPrView(next);
@@ -984,13 +1009,23 @@ export function NewTaskDialog() {
     const reopened = staleFor(projectId, useUI.getState().newTaskSeed);
     const seq = ++prOpenSeq.current;
     const stale = () => reopened() || seq !== prOpenSeq.current;
-    setPrOpenLookup(null);
-    setPrOpenLoading(true);
-    projectForgePrs(projectId, { scope: "open", limit: PR_OPEN_LIMIT })
-      .then(l => { if (!stale()) setPrOpenLookup(l); })
-      .catch(e => { if (!stale()) setPrOpenLookup({
-        provider: null, remote_url: "", status: "error", message: String(e), prs: [],
-      }); })
+    const query = { projectId, kind: "prs", scope: "open", limit: PR_OPEN_LIMIT } as const;
+    const shown = cachedForgeList(query);
+    setPrOpenLookup(shown);
+    setPrOpenLoading(!shown);
+    setListRefreshErr(e => (e?.list === "open" ? null : e));
+    fetchForgeList(query, { urgent: true })
+      .then(l => {
+        if (stale()) return;
+        const { lookup, refreshErr } = afterRevalidate(shown, l);
+        setPrOpenLookup(lookup);
+        if (refreshErr) setListRefreshErr({ list: "open", message: refreshErr });
+      })
+      .catch(e => {
+        if (stale()) return;
+        if (shown) setListRefreshErr({ list: "open", message: String(e) });
+        else setPrOpenLookup({ provider: null, remote_url: "", status: "error", message: String(e), prs: [] });
+      })
       .finally(() => { if (!stale()) setPrOpenLoading(false); });
   }
 
@@ -1148,7 +1183,15 @@ export function NewTaskDialog() {
 
   function loadIssues(scope: IssueScope) {
     if (!projectId) return;
-    setIssueLoading(true);
+    // The last answer for this list paints at once when the shared cache has
+    // one (Todos fills it too, and it survives a relaunch); the spinner is
+    // only for a list never fetched. Re-fetched either way, so a freshly
+    // filed issue still shows up.
+    const query = { projectId, kind: "issues", scope, limit: 50 } as const;
+    const shown = cachedForgeList(query);
+    setIssueLookup(shown);
+    setIssueLoading(!shown);
+    setListRefreshErr(e => (e?.list === "issues" ? null : e));
     // The fetch outlives a close: a stale lookup landing in a re-opened
     // dialog would seed the wrong project's issues (and its provider into
     // the pane copy and prompts). Same guard as projectBranchContext above,
@@ -1156,11 +1199,18 @@ export function NewTaskDialog() {
     const reopened = staleFor(projectId, useUI.getState().newTaskSeed);
     const seq = ++issueFetchSeq.current;
     const stale = () => reopened() || seq !== issueFetchSeq.current;
-    projectForgeIssues(projectId, 50, scope)
-      .then(l => { if (!stale()) setIssueLookup(l); })
-      .catch(e => { if (!stale()) setIssueLookup({
-        provider: null, remote_url: "", status: "error", message: String(e), issues: [],
-      }); })
+    fetchForgeList(query, { urgent: true })
+      .then(l => {
+        if (stale()) return;
+        const { lookup, refreshErr } = afterRevalidate(shown, l);
+        setIssueLookup(lookup);
+        if (refreshErr) setListRefreshErr({ list: "issues", message: refreshErr });
+      })
+      .catch(e => {
+        if (stale()) return;
+        if (shown) setListRefreshErr({ list: "issues", message: String(e) });
+        else setIssueLookup({ provider: null, remote_url: "", status: "error", message: String(e), issues: [] });
+      })
       .finally(() => { if (!stale()) setIssueLoading(false); });
   }
 
@@ -1231,6 +1281,7 @@ export function NewTaskDialog() {
     }
     setIssuePicks([]);
     setErr(null);
+    setListRefreshErr(null);
   }
 
   /** Fills name, branch and first message from the picks: the LAST one
@@ -2322,6 +2373,11 @@ export function NewTaskDialog() {
             </div>
           )}
 
+          {listRefreshErr && listRefreshErr.list === prView && (
+            <p data-testid="list-refresh-failed" className="break-words text-[12px] leading-snug text-[var(--color-fg-faint)]">
+              {t("newTask.listRefreshFailed", { message: listRefreshErr.message })}
+            </p>
+          )}
           {prView === "open" ? (
             prOpenLoading ? (
               <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
@@ -2424,7 +2480,9 @@ export function NewTaskDialog() {
             {t("newTask.issueColumnIntro", { noun: paneNouns.noun, nouns: paneNouns.nouns })}
           </p>
           {/* Scope chips: chosen, never arriving on their own, so the list
-              below only changes when you click. GitHub offers All,
+              below only changes when you click, or once when a list painted
+              from the shared cache is replaced by its re-fetch (an unchanged
+              list keeps its rows as they are). GitHub offers All,
               Assigned to you, and Mentions you; GitLab and Azure DevOps
               offer All and Assigned to you. */}
           {paneProvider && (
@@ -2458,6 +2516,11 @@ export function NewTaskDialog() {
                 </button>
               ))}
             </div>
+          )}
+          {listRefreshErr?.list === "issues" && (
+            <p data-testid="list-refresh-failed" className="break-words text-[12px] leading-snug text-[var(--color-fg-faint)]">
+              {t("newTask.listRefreshFailed", { message: listRefreshErr.message })}
+            </p>
           )}
           {issueLoading ? (
             <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">

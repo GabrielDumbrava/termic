@@ -252,6 +252,8 @@ export default {
   todos: {
     title: "Todos",
     allProjects: "All projects",
+    projectsPicked_one: "{{count}} project",
+    projectsPicked_other: "{{count}} projects",
     refresh: "Refresh",
     refreshing: "Refreshing…",
     searchPlaceholder: "Search by title, #number, author, label…",
@@ -270,6 +272,7 @@ export default {
     reviewPr: "Review PR",
     openInBrowser: "Open in browser",
     emptyTitle: "No items found",
+    loadingTitle: "Loading issues and PRs…",
     emptyDescription: "Try changing your project, kind, or scope filters.",
     actionAssigned: "assigned",
     actionReview: "review requested",

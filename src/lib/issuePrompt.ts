@@ -18,7 +18,7 @@ import { slugify, branchify } from "@/lib/utils";
  *  a description); past a few thousand characters the agent is better served
  *  by the link and the fetch command than by the whole wall of text, and the
  *  first part is where the actual ask lives. */
-const BODY_MAX = 4000;
+export const BODY_MAX = 4000;
 
 /** `#123` everywhere: GitHub, GitLab (issues are #; ! is reserved for merge
  *  requests) and Azure DevOps (work items are #; ! is the PR marker there).
@@ -89,6 +89,11 @@ export function issueBranch(
 function san(s: string): string {
   return s.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 }
+
+/** The cleaning `issueContext` applies to a body before it measures it.
+ *  Exported for the forge list snapshot, which has to cut a body the way
+ *  this reads it: a CRLF body loses every `\r` here first. */
+export const cleanIssueText = san;
 
 /** The issue half of the prompt: identity, link, body, and how to read the
  *  discussion. Exported separately so tests can assert it without depending

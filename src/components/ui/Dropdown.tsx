@@ -1,6 +1,7 @@
 import * as DM from "@radix-ui/react-dropdown-menu";
 import { type ReactNode } from "react";
 import { MENU_LABEL, MENU_ROW } from "./menuStyle";
+import { Checkbox } from "./Checkbox";
 import { cn } from "@/lib/utils";
 
 export const DropdownRoot   = DM.Root;
@@ -97,6 +98,36 @@ export function DropdownItem({ children, className, onSelect, disabled, ...data 
         className,
       )}
     >{children}</DM.Item>
+  );
+}
+
+/** A row of a multi-select: Radix's checkbox item, so it reads as one
+ *  (`menuitemcheckbox`, `aria-checked`), drawn with the themed `Checkbox`.
+ *  A pick keeps the menu OPEN, since ticking several rows in a row is the
+ *  point, and Radix still calls `onCheckedChange` after that preventDefault.
+ *
+ *  The box is a picture of the state, not a second control: pointer events
+ *  pass through it to the item, so the item is the one thing that toggles. */
+export function DropdownCheckboxItem({ children, checked, onCheckedChange, className, disabled, ...data }: {
+  children: ReactNode; checked: boolean; onCheckedChange: (next: boolean) => void;
+  className?: string; disabled?: boolean;
+} & DataAttrs) {
+  return (
+    <DM.CheckboxItem
+      {...data}
+      checked={checked}
+      onCheckedChange={onCheckedChange}
+      onSelect={(e) => e.preventDefault()}
+      disabled={disabled}
+      className={cn(
+        "flex cursor-pointer items-center gap-2 text-[var(--color-fg)]", MENU_ROW,
+        "outline-none data-[highlighted]:bg-[var(--color-hover)] data-[disabled]:opacity-40 data-[disabled]:cursor-not-allowed",
+        className,
+      )}
+    >
+      <Checkbox checked={checked} tabIndex={-1} aria-hidden className="pointer-events-none h-3.5 w-3.5" />
+      {children}
+    </DM.CheckboxItem>
   );
 }
 
