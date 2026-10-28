@@ -35,6 +35,7 @@ import {
   projectRemove,
   settingsLoad,
   taskCreate,
+  taskCreateMulti,
   taskImportWorktree,
   taskOpenRepo,
   taskRename,
@@ -70,7 +71,7 @@ import { slugify } from "@/lib/utils";
 import { checkoutTaskName, remoteNames } from "@/lib/existingBranch";
 import { padHandler } from "@/lib/scratchCli";
 import { scheduleHandler } from "@/lib/scheduleCli";
-import type { SandboxMode, Task, TerminalTab } from "@/lib/types";
+import type { CreateMultiMember, SandboxMode, Task, TerminalTab } from "@/lib/types";
 import {
   collectTaskProps, propKeyProblem, propValueProblem, PROP_KEYS_PER_TAB, type CollectedProp,
 } from "@/lib/tabProps";
@@ -154,6 +155,11 @@ interface NewTaskParams {
    *  resolved the review library prompt into it) gets the PR's details in
    *  front. The server derived `name` as review-pr-<n> when none was given. */
   pr?: number;
+  /** `new --member` (v24): members of a multi-repo project, already resolved
+   *  from names, ordered and given their mode by the server against the
+   *  disk-read project (a plain-folder member, or any in a main checkout, is
+   *  `repo_root`). */
+  members?: Pick<CreateMultiMember, "root_path" | "mode">[];
 }
 
 /** The main checkout stays uncaged unless explicitly opted in, and
@@ -204,9 +210,11 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
     );
     if (dup) throw new Error(`task "${dup.name}" already exists in this project`);
     const resume = typeof p.resume === "string" && p.resume ? p.resume : undefined;
+    const members = membersOf(p);
     if (mode === "repo_root") {
       const sandbox = pins ? await mainCheckoutSandbox(p.projectId, pins) : undefined;
-      return taskOpenRepo(p.projectId, cli, name, sandbox, undefined, resume, undefined, p.agentArgs);
+      // yolo is applied after the create (newTaskHandler); no members links every one.
+      return taskOpenRepo(p.projectId, cli, name, sandbox, undefined, resume, undefined, p.agentArgs, undefined, members?.map(m => m.root_path));
     }
     if (slugify(name) === "") {
       throw new Error("Task name must contain at least one letter or number.");
@@ -237,6 +245,21 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
     } catch {
       // non-git edge or transient git failure; keep the derived branch
     }
+    if (members) {
+      // Member branch and base stay unset, so Rust falls back to the task
+      // branch and each member's own base, as the dialog does.
+      return taskCreateMulti({
+        id: crypto.randomUUID(),
+        project_id: p.projectId,
+        name,
+        cli,
+        agent_args: p.agentArgs,
+        base_branch: base_branch ?? undefined,
+        branch,
+        members,
+        ...(pins ?? {}),
+      });
+    }
     return taskCreate({
       id: crypto.randomUUID(),
       project_id: p.projectId,
@@ -254,6 +277,12 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
 /** The branch `new --checkout` asked for, or undefined for any other create. */
 function checkoutBranchOf(p: NewTaskParams): string | undefined {
   return typeof p.checkout === "string" && p.checkout.trim() ? p.checkout.trim() : undefined;
+}
+
+/** The members `new --member` asked for, or undefined for any other create
+ *  (the server sends null then). */
+function membersOf(p: NewTaskParams): NewTaskParams["members"] {
+  return Array.isArray(p.members) && p.members.length ? p.members : undefined;
 }
 
 /** Turn a review request into an ordinary create: a worktree checks out the
@@ -416,10 +445,15 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   // checkout on a plain folder would otherwise quietly open the main
   // checkout instead.
   if (checkout && nonGit) throw new Error("checkout needs a git repository; this project is a plain folder");
+  const members = membersOf(p);
   // A checkout is always a worktree: the branch goes into its own folder.
-  const mode: NewTaskMode = nonGit
-    ? "repo_root"
-    : checkout || p.mode === "worktree" ? "worktree" : p.mode === "main" ? "repo_root" : readNewTaskMode();
+  // With members the server already settled the mode, and a plain-folder
+  // multi-repo host still worktrees its members, so no pin there.
+  const mode: NewTaskMode = members
+    ? p.mode === "main" ? "repo_root" : "worktree"
+    : nonGit
+      ? "repo_root"
+      : checkout || p.mode === "worktree" ? "worktree" : p.mode === "main" ? "repo_root" : readNewTaskMode();
 
   const task = importing ? await importTask(p) : await createTask(p, mode);
   // Before anything mounts, so the first spawn composes the flags in.
@@ -441,7 +475,9 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   if (p.open) useApp.getState().setActiveTask(task.id);
 
   let stopSetupStream: (() => void) | null = null;
-  if (!importing && mode === "worktree") {
+  // A multi-repo create runs its members' setup scripts from Rust, never the
+  // host's, so it gets no setup tab (the dialog's rule).
+  if (!importing && !members && mode === "worktree") {
     const launched = await launchSetupTab(task.id, { focus: false }).catch(() => false);
     if (launched) stopSetupStream = streamSetupOutput(task.id, progress);
   }

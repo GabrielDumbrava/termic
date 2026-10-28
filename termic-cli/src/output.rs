@@ -349,7 +349,7 @@ pub fn project_list_text(projects: &[ProjectInfo]) -> String {
     let rows: Vec<[String; 4]> = projects
         .iter()
         .map(|p| {
-            [p.name.clone(), p.tasks.to_string(), p.default_agent.clone(), p.root_path.clone()]
+            [p.name.clone(), p.tasks.to_string(), p.default_agent.clone(), format!("{}{}", p.root_path, multi_suffix(p))]
         })
         .collect();
     let cells = |s: &str| s.chars().count();
@@ -441,7 +441,21 @@ pub fn result_text(r: &ResultData) -> String {
 }
 
 pub fn project_add_text(p: &ProjectInfo) -> String {
-    format!("added project {} at {}", p.name, p.root_path)
+    format!("added project {} at {}{}", p.name, p.root_path, multi_suffix(p))
+}
+
+/// What follows a multi-repo project's path: its member names. Nothing for
+/// a single repo, so those lines read as they always did.
+fn multi_suffix(p: &ProjectInfo) -> String {
+    if p.project_type != "multi" {
+        return String::new();
+    }
+    let names: Vec<&str> = p.members.iter().map(|m| m.name.as_str()).collect();
+    if names.is_empty() {
+        "  (multi-repo, no members)".into()
+    } else {
+        format!("  (multi-repo: {})", names.join(", "))
+    }
 }
 
 /// What a grant means, in the words a person deciding needs.
@@ -938,6 +952,47 @@ api      longer-task-name  codex   -        -             b2";
         assert_eq!(out, expected);
     }
 
+    fn shop() -> ProjectInfo {
+        let member = |name: &str, root: &str, non_git: bool, base: &str| termic_proto::ProjectMemberInfo {
+            name: name.into(),
+            root_path: root.into(),
+            non_git,
+            base_branch: base.into(),
+        };
+        ProjectInfo {
+            id: "p2".into(),
+            name: "shop".into(),
+            root_path: "/src/shop".into(),
+            tasks: 1,
+            default_agent: "claude".into(),
+            project_type: "multi".into(),
+            members: vec![member("api", "/src/api", false, "origin/main"), member("handbook", "/src/docs", true, "")],
+        }
+    }
+
+    #[test]
+    fn project_list_golden_marks_a_multi_repo_project_and_leaves_single_rows_alone() {
+        let web = ProjectInfo {
+            id: "p1".into(),
+            name: "web".into(),
+            root_path: "/repo/web".into(),
+            tasks: 3,
+            default_agent: "claude".into(),
+            project_type: "single".into(),
+            members: Vec::new(),
+        };
+        let mut empty = shop();
+        empty.name = "bare".into();
+        empty.members.clear();
+        let expected = "\
+NAME  TASKS  AGENT   PATH
+web   3      claude  /repo/web
+shop  1      claude  /src/shop  (multi-repo: api, handbook)
+bare  1      claude  /src/shop  (multi-repo, no members)";
+        assert_eq!(project_list_text(&[web, shop(), empty]), expected);
+        assert_eq!(project_add_text(&shop()), "added project shop at /src/shop  (multi-repo: api, handbook)");
+    }
+
     #[test]
     fn list_text_empty() {
         assert_eq!(list_text(&[]), "no tasks");
@@ -1223,6 +1278,8 @@ created web/fix-auth
             root_path: "/repo/web".into(),
             tasks: 3,
             default_agent: "claude".into(),
+            project_type: "single".into(),
+            members: Vec::new(),
         };
         assert_eq!(project_add_text(&p), "added project web at /repo/web");
         let out = project_list_text(&[p]);
@@ -1342,7 +1399,7 @@ commits:
                 project: "p".into(),
                 killed_agents: 0,
             }),
-            project_list_text(&[ProjectInfo::default()]),
+            project_list_text(&[ProjectInfo::default(), shop()]),
             project_remove_text(&ProjectRemoveData { name: "n".into(), removed_tasks: 0 }),
         ] {
             assert!(!s.contains('\u{2014}'), "em dash in output: {s}");

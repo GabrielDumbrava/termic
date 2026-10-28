@@ -115,7 +115,13 @@ use std::io::{self, BufRead, Read, Write};
 /// v23: `group` gains `join` (move the task into another task's group) and
 /// `leave` (take it out of its group). A v22 server would drop both and
 /// answer with the group unchanged, which reads as success.
-pub const PROTOCOL_VERSION: u32 = 23;
+///
+/// v24: `new` gains `members`, the member repos of a multi-repo project the
+/// task worktrees (or, in the main checkout, links). A v23 server would drop
+/// the field and create a task with no member worktrees, or with every
+/// member linked, which reads as success. `project list` reports each
+/// project's `type` and members.
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// A pasted "123", "#123", "!123" or a PR / MR link, reduced to its number.
 /// None for anything else. The webview's `parsePrRef` (src/lib/prReview.ts)
@@ -516,6 +522,12 @@ pub enum Command {
         /// and `checkout`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pr: Option<u64>,
+        /// v24: multi-repo projects only. Member NAMES as the caller typed
+        /// them (`--member`); the server resolves them against the project,
+        /// refuses an unknown one, and forwards root_paths. Empty = the
+        /// pre-v24 create. Excludes `from`, `checkout`, `pr` and `resume`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        members: Vec<String>,
     },
     /// Block until the task's agent is quiescent: settled AND its
     /// message queue is empty. Streamed reply (state + heartbeat
@@ -1497,6 +1509,24 @@ pub struct ProjectInfo {
     /// Live (non-archived) task count.
     pub tasks: u32,
     pub default_agent: String,
+    /// v24: "single" or "multi", the app's `Project.type`.
+    #[serde(rename = "type", default)]
+    pub project_type: String,
+    /// v24: a multi-repo project's member repos, in project order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<ProjectMemberInfo>,
+}
+
+/// One member repo of a multi-repo project (v24).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ProjectMemberInfo {
+    /// What `new --member` takes.
+    pub name: String,
+    pub root_path: String,
+    /// A plain folder: a task links it, never worktrees it.
+    pub non_git: bool,
+    /// The ref its worktrees branch from. Empty for a plain folder.
+    pub base_branch: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2360,6 +2390,7 @@ mod tests {
                 cwd: Some("/repo/web".into()),
                 parent_task: None,
                 pr: None,
+                members: vec!["alpha".into(), "Beta".into()],
             },
             Command::New {
                 name: "bare".into(),
@@ -2382,6 +2413,7 @@ mod tests {
                 cwd: None,
                 parent_task: None,
                 pr: None,
+                members: Vec::new(),
             },
             // v14 checkout shape: an existing branch, the name left to the app.
             Command::New {
@@ -2405,6 +2437,7 @@ mod tests {
                 cwd: None,
                 parent_task: None,
                 pr: None,
+                members: Vec::new(),
             },
             // v7 import shape (GH #169): adopt a worktree + resume a session.
             Command::New {
@@ -2428,6 +2461,7 @@ mod tests {
                 cwd: None,
                 parent_task: None,
                 pr: None,
+                members: Vec::new(),
             },
             Command::Wait {
                 task: Some("fix-auth".into()),
@@ -2657,6 +2691,42 @@ mod tests {
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""peer":"laptop""#) && line.contains(r#""from_task":"w1""#), "{line}");
         assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), req);
+    }
+
+    fn shop_project() -> ProjectInfo {
+        ProjectInfo {
+            id: "p2".into(),
+            name: "shop".into(),
+            root_path: "/src/shop-host".into(),
+            tasks: 0,
+            default_agent: "claude".into(),
+            project_type: "multi".into(),
+            members: vec![
+                ProjectMemberInfo {
+                    name: "api".into(),
+                    root_path: "/src/api".into(),
+                    non_git: false,
+                    base_branch: "origin/main".into(),
+                },
+                ProjectMemberInfo { name: "docs".into(), root_path: "/src/docs".into(), non_git: true, base_branch: String::new() },
+            ],
+        }
+    }
+
+    #[test]
+    fn project_info_names_its_type_as_the_app_does_and_omits_no_members() {
+        // `type`, not `project_type`: the key projects.json and the webview's
+        // `Project.type` use.
+        let v = serde_json::to_value(shop_project()).unwrap();
+        assert_eq!(v["type"], "multi");
+        assert_eq!(v["members"][1]["non_git"], true);
+        let single = ProjectInfo { project_type: "single".into(), ..ProjectInfo::default() };
+        let v = serde_json::to_value(&single).unwrap();
+        assert!(v.get("members").is_none(), "{v}");
+        // A v23 server's row (neither key) still parses.
+        let old = r#"{"id":"p1","name":"web","root_path":"/r","tasks":0,"default_agent":"claude"}"#;
+        let p: ProjectInfo = serde_json::from_str(old).unwrap();
+        assert_eq!((p.project_type.as_str(), p.members.len()), ("", 0));
     }
 
     #[test]
@@ -2919,13 +2989,18 @@ mod tests {
                 old_name: "fix-auth".into(),
             }),
             ReplyData::ProjectList(ProjectListData {
-                projects: vec![ProjectInfo {
-                    id: "p1".into(),
-                    name: "web".into(),
-                    root_path: "/repo/web".into(),
-                    tasks: 3,
-                    default_agent: "claude".into(),
-                }],
+                projects: vec![
+                    ProjectInfo {
+                        id: "p1".into(),
+                        name: "web".into(),
+                        root_path: "/repo/web".into(),
+                        tasks: 3,
+                        default_agent: "claude".into(),
+                        project_type: "single".into(),
+                        members: Vec::new(),
+                    },
+                    shop_project(),
+                ],
             }),
             ReplyData::Pad(PadData {
                 task_id: "w1".into(),

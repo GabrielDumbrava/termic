@@ -1210,6 +1210,28 @@ pub(crate) fn resolve_project_for_worktree<'a>(
     })
 }
 
+/// `new --member` (v24): the named members of a multi-repo project as
+/// root_paths, in PROJECT order, so the order and repeats the caller typed
+/// change nothing (a filter, like `task_open_repo`'s `members`). Names match
+/// case-insensitively, like project names.
+fn resolve_new_members(proj: &Project, names: &[String]) -> Result<Vec<String>, proto::ErrorBody> {
+    let is = |m: &crate::ProjectMember, n: &str| m.name.eq_ignore_ascii_case(n.trim());
+    if let Some(unknown) = names.iter().find(|n| !proj.members.iter().any(|m| is(m, n))) {
+        let have: Vec<&str> = proj.members.iter().map(|m| m.name.as_str()).collect();
+        return Err(proto::ErrorBody {
+            code: ErrorCode::NotFound,
+            message: format!(
+                "project \"{}\" has no member \"{}\" (members: {})",
+                proj.name,
+                unknown.trim(),
+                have.join(", ")
+            ),
+            data: None,
+        });
+    }
+    Ok(proj.members.iter().filter(|m| names.iter().any(|n| is(m, n))).map(|m| m.root_path.clone()).collect())
+}
+
 fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
     let Command::New {
         name,
@@ -1232,6 +1254,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         cwd,
         parent_task,
         pr,
+        members,
     } = &req.cmd
     else {
         unreachable!("handle_new called with a non-new command")
@@ -1283,6 +1306,14 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
     }
     if *pr == Some(0) {
         return fail(ErrorCode::BadRequest, "pr needs a pull request number".into());
+    }
+    // Members shape (v24): task_create_multi cuts fresh member worktrees and
+    // has no adopt, existing-branch or session-seed path.
+    if !members.is_empty() && (from.is_some() || checkout.is_some() || pr.is_some() || resume.is_some()) {
+        return fail(
+            ErrorCode::BadRequest,
+            "--member creates a fresh multi-repo task; it cannot combine with --from, --checkout, --resume or a review".into(),
+        );
     }
     let review_name = pr.map(|n| format!("review-pr-{n}"));
     let mut trimmed = name.trim();
@@ -1360,12 +1391,36 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         );
     }
 
+    let member_paths = if members.is_empty() {
+        None
+    } else if proj.project_type != crate::ProjectType::Multi {
+        let multi: Vec<&str> =
+            projects.iter().filter(|p| p.project_type == crate::ProjectType::Multi).map(|p| p.name.as_str()).collect();
+        let valid = if multi.is_empty() {
+            "no multi-repo project is registered".to_string()
+        } else {
+            format!("multi-repo projects: {}", multi.join(", "))
+        };
+        return fail(
+            ErrorCode::BadRequest,
+            format!("project \"{}\" is not a multi-repo project; --member needs one ({valid})", proj.name),
+        );
+    } else {
+        match resolve_new_members(proj, members) {
+            Ok(paths) => Some(paths),
+            Err(e) => return Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
+        }
+    };
+
     // Non-git projects cannot host worktrees (the GUI forces the main
     // checkout for them); an explicit --worktree is an impossible ask,
     // and an unspecified mode is pinned to main HERE, against the
     // disk-read project, so a lagging webview store cannot fall back to
-    // a remembered worktree mode.
-    if proj.non_git && mode.as_deref() == Some("worktree") {
+    // a remembered worktree mode. Members are the exception: a plain-folder
+    // multi-repo host still worktrees its members (the dialog's
+    // `canWorktree`), and naming them means worktrees unless --main says
+    // otherwise, never the remembered mode.
+    if proj.non_git && member_paths.is_none() && mode.as_deref() == Some("worktree") {
         return fail(
             ErrorCode::BadRequest,
             format!(
@@ -1374,7 +1429,24 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             ),
         );
     }
-    let mode = if proj.non_git { &Some("main".to_string()) } else { mode };
+    let mode = match (&member_paths, proj.non_git) {
+        (Some(_), _) => Some(if mode.as_deref() == Some("main") { "main" } else { "worktree" }),
+        (None, true) => Some("main"),
+        (None, false) => mode.as_deref(),
+    };
+    // Each member's mode is settled here too, from the disk-read project: a
+    // webview store that lags a member edit would send a plain folder out
+    // as a worktree, and `git branch` fails on it.
+    let member_specs = member_paths.as_ref().map(|paths| {
+        paths
+            .iter()
+            .map(|root| {
+                let non_git = proj.members.iter().any(|m| &m.root_path == root && m.non_git);
+                let member_mode = if mode == Some("main") || non_git { "repo_root" } else { "worktree" };
+                serde_json::json!({ "root_path": root, "mode": member_mode })
+            })
+            .collect::<Vec<_>>()
+    });
 
     // Same-name collision is a clean error naming the existing task,
     // never cleanup (docs/plans/cli.md: task_create_sync's orphan
@@ -1510,6 +1582,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         "prompt": prompt,
         "promptId": prompt_id,
         "pr": pr,
+        "members": member_specs,
     });
     // Forward setup output; heartbeat on idle. A dead client cannot
     // cancel the create (it already committed app-side), so emit
@@ -3758,12 +3831,27 @@ fn handle_schedule(
 // ───────────────────────────── projects ──────────────────────────────
 
 fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
+    let multi = p.project_type == crate::ProjectType::Multi;
     proto::ProjectInfo {
         id: p.id.clone(),
         name: p.name.clone(),
         root_path: p.root_path.clone(),
         tasks: tasks.iter().filter(|t| !t.archived && t.project_id == p.id).count() as u32,
         default_agent: p.default_cli.clone(),
+        project_type: if multi { "multi" } else { "single" }.into(),
+        members: if multi {
+            p.members
+                .iter()
+                .map(|m| proto::ProjectMemberInfo {
+                    name: m.name.clone(),
+                    root_path: m.root_path.clone(),
+                    non_git: m.non_git,
+                    base_branch: m.base_branch.clone(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -6892,6 +6980,7 @@ mod tests {
             cwd: None,
             parent_task: None,
             pr: None,
+            members: Vec::new(),
         }
     }
 
@@ -7272,6 +7361,149 @@ mod tests {
             .unwrap();
         assert_eq!(err.code, ErrorCode::Internal);
         assert!(err.message.contains("could not create the task"), "{}", err.message);
+    }
+
+    // ── new --member: a multi-repo task's members (v24) ──────────────
+
+    /// The stub plus a multi-repo project "mono" with members api, Web and
+    /// a plain-folder docs; `non_git_host` makes its host a plain folder.
+    fn multi_host(non_git_host: bool) -> StubHost {
+        let mut host = StubHost::default();
+        let mut mono = project("p3", "mono", "/repo/mono");
+        mono.project_type = crate::ProjectType::Multi;
+        mono.non_git = non_git_host;
+        mono.members = [("api", "/src/api", false), ("Web", "/src/web", false), ("docs", "/src/docs", true)]
+            .into_iter()
+            .map(|(name, root, non_git)| crate::ProjectMember {
+                name: name.into(),
+                root_path: root.into(),
+                non_git,
+                ..Default::default()
+            })
+            .collect();
+        host.projects.push(mono);
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        host
+    }
+
+    fn member_cmd(name: &str, members: &[&str]) -> Command {
+        let mut cmd = new_cmd(name, Some("mono"));
+        if let Command::New { members: m, .. } = &mut cmd {
+            *m = members.iter().map(|s| s.to_string()).collect();
+        }
+        cmd
+    }
+
+    /// The `new_task` params a successful create sent.
+    fn sent(host: &StubHost, cmd: Command) -> serde_json::Value {
+        let reply = handle(&req(cmd, Some("tok")), host);
+        assert!(reply.ok, "{reply:?}");
+        host.rpc_calls.lock().unwrap().last().unwrap().1.clone()
+    }
+
+    #[test]
+    fn new_members_forward_root_paths_in_project_order_as_a_worktree_task() {
+        let host = multi_host(false);
+        // Typed order, case and repeats change nothing: project order, once each.
+        let params = sent(&host, member_cmd("t1", &["docs", "API", "api"]));
+        assert_eq!(params["projectId"], "p3");
+        // The plain-folder member is linked, decided from the disk read.
+        assert_eq!(
+            params["members"],
+            serde_json::json!([
+                { "root_path": "/src/api", "mode": "worktree" },
+                { "root_path": "/src/docs", "mode": "repo_root" },
+            ])
+        );
+        // Members mean worktrees, never the GUI's remembered mode.
+        assert_eq!(params["mode"], "worktree");
+        let params = sent(&host, member_cmd("t2", &["WEB", " web "]));
+        assert_eq!(params["members"], serde_json::json!([{ "root_path": "/src/web", "mode": "worktree" }]));
+        // No members: the pre-v24 params, mode left to the webview.
+        let params = sent(&host, new_cmd("t3", Some("mono")));
+        assert!(params["members"].is_null(), "{params}");
+        assert!(params["mode"].is_null(), "{params}");
+    }
+
+    #[test]
+    fn new_members_with_main_link_the_named_checkouts() {
+        let host = multi_host(false);
+        let mut cmd = member_cmd("t1", &["api"]);
+        if let Command::New { mode, .. } = &mut cmd {
+            *mode = Some("main".into());
+        }
+        let params = sent(&host, cmd);
+        assert_eq!(params["mode"], "main");
+        assert_eq!(params["members"], serde_json::json!([{ "root_path": "/src/api", "mode": "repo_root" }]));
+    }
+
+    #[test]
+    fn new_members_on_a_plain_folder_host_still_worktree() {
+        // The host folder has no git, but its members do: the dialog's
+        // `canWorktree` holds for a multi project, so no main-checkout pin.
+        let host = multi_host(true);
+        let params = sent(&host, member_cmd("t1", &["api"]));
+        assert_eq!(params["mode"], "worktree");
+        let mut cmd = member_cmd("t2", &["api"]);
+        if let Command::New { mode, .. } = &mut cmd {
+            *mode = Some("worktree".into());
+        }
+        assert_eq!(sent(&host, cmd)["mode"], "worktree", "an explicit worktree is not refused");
+        // Without members the plain-folder pin is unchanged.
+        let params = sent(&host, new_cmd("t3", Some("mono")));
+        assert_eq!(params["mode"], "main");
+        assert!(params["members"].is_null(), "{params}");
+    }
+
+    #[test]
+    fn new_member_refusals_fire_before_any_rpc() {
+        let mut host = multi_host(false);
+        let mut infra = project("p4", "infra", "/repo/infra");
+        infra.project_type = crate::ProjectType::Multi;
+        host.projects.push(infra);
+        // An unknown name, among good ones: named, with the members to pick from.
+        let err = handle(&req(member_cmd("t1", &["api", "billing"]), Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("\"billing\""), "{}", err.message);
+        assert!(err.message.contains("api, Web, docs"), "{}", err.message);
+        // A single-repo project has no members to name: the refusal names the
+        // projects that do, or says there are none.
+        let on_web = || {
+            let mut cmd = member_cmd("t1", &["api"]);
+            if let Command::New { project, .. } = &mut cmd {
+                *project = Some("web".into());
+            }
+            cmd
+        };
+        let err = handle(&req(on_web(), Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(
+            err.message,
+            "project \"web\" is not a multi-repo project; --member needs one (multi-repo projects: mono, infra)"
+        );
+        let err = handle(&req(on_web(), Some("tok")), &StubHost::default()).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(
+            err.message,
+            "project \"web\" is not a multi-repo project; --member needs one (no multi-repo project is registered)"
+        );
+        // The multi create has no adopt, existing-branch, review or resume path.
+        let shapes: [fn(&mut Command); 4] = [
+            |c| if let Command::New { from, .. } = c { *from = Some("/elsewhere/wt".into()) },
+            |c| if let Command::New { checkout, .. } = c { *checkout = Some("alice/fix".into()) },
+            |c| if let Command::New { pr, .. } = c { *pr = Some(7) },
+            |c| if let Command::New { resume, agent, .. } = c {
+                *resume = Some("SESSION-X".into());
+                *agent = Some("claude".into());
+            },
+        ];
+        for shape in shapes {
+            let mut cmd = member_cmd("t1", &["api"]);
+            shape(&mut cmd);
+            let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+            assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        }
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
     }
 
     // ── tab / agents (GH #138) ───────────────────────────────────────
@@ -8550,6 +8782,20 @@ mod tests {
         );
         assert_eq!(reply.error.unwrap().code, ErrorCode::NotFound);
         assert!(host.ops.lock().unwrap().is_empty());
+    }
+
+    // ── project list: each project's type and members (v24) ──────────
+
+    #[test]
+    fn project_list_reports_each_projects_type_and_a_multi_projects_members() {
+        let host = multi_host(false);
+        let Some(ReplyData::ProjectList(l)) = handle(&req(Command::ProjectList, Some("tok")), &host).data else { panic!() };
+        let mono = l.projects.iter().find(|p| p.name == "mono").unwrap();
+        assert_eq!(mono.project_type, "multi");
+        let rows: Vec<_> = mono.members.iter().map(|m| (m.name.as_str(), m.root_path.as_str(), m.non_git)).collect();
+        assert_eq!(rows, [("api", "/src/api", false), ("Web", "/src/web", false), ("docs", "/src/docs", true)]);
+        let web = l.projects.iter().find(|p| p.name == "web").unwrap();
+        assert_eq!((web.project_type.as_str(), web.members.len()), ("single", 0));
     }
 
     // ── streamed replies over the real socket ────────────────────────

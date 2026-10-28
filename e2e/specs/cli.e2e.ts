@@ -1204,6 +1204,164 @@ describe("termic new --checkout: an existing branch into a new worktree", () => 
   });
 });
 
+// `termic new --member` (proto v24): an orchestrator names the member repos a
+// multi-repo task needs. Before it, the CLI cut a host-only worktree on a git
+// host and, on a plain-folder host, opened the main checkout with EVERY member
+// linked. The host here is a plain folder, the case that used to be pinned to
+// the main checkout, driven through the real sidecar.
+//
+// Fixture: the git.e2e.ts multi-repo shape, a non-git host plus two throwaway
+// member repos under one tmp dir, torn down completely afterwards.
+describe("termic new --member: only the named members of a multi-repo task", () => {
+  const PROJECT = "e2e-cli-multi";
+  const gitIn = (cwd: string, args: string) =>
+    execSync(`git ${args}`, { cwd, encoding: "utf8" }).trim();
+  const cli = (...args: string[]) =>
+    runCli(["--no-launch", "--json", "new", ...args, "--project", PROJECT, "--agent", "fakeagent"],
+      { TERMIC_DATA_DIR: dataDir });
+  const stored = (taskId: string) =>
+    JSON.parse(fs.readFileSync(path.join(dataDir, "tasks", `${taskId}.json`), "utf8"));
+  const repo = (name: string) => path.join(tmp, name);
+
+  let tmp = "";
+  let projectId = "";
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await waitForClisDetected();
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-cli-multi-"));
+    fs.mkdirSync(repo("host"));
+    for (const name of ["alpha", "beta"]) {
+      fs.mkdirSync(repo(name));
+      gitIn(repo(name), "init -b main -q");
+      fs.writeFileSync(path.join(repo(name), "README.md"), `# ${name}\n`);
+      gitIn(repo(name), "add .");
+      gitIn(repo(name), "-c user.email=e2e@termic.dev -c user.name=e2e commit -q -m init");
+    }
+    projectId = await browser.execute(async (host, alpha, beta, name) => {
+      const t = window.__termic!;
+      // A run that died before its teardown leaves the project behind.
+      for (const p of t.useApp.getState().projects.filter((p: any) => p.name === name)) {
+        try { await t.ipc.projectRemove(p.id); } catch { /* has live tasks */ }
+      }
+      // Explicit base: these repos have no remote to derive one from.
+      const spec = (root_path: string, n: string) => ({
+        root_path, name: n, base_branch: "main", setup_script: "", run_script: "", archive_script: "",
+      });
+      const proj = await t.ipc.projectAddMulti(host, name, [spec(alpha, "alpha"), spec(beta, "beta")], true);
+      await t.useApp.getState().loadAll();
+      return proj.id as string;
+    }, repo("host"), repo("alpha"), repo("beta"), PROJECT);
+  });
+
+  after(async () => {
+    await browser.execute(async (pid) => {
+      const t = window.__termic!;
+      for (const task of t.useApp.getState().tasks) {
+        if (task.project_id === pid && !task.archived) await t.ipc.taskArchive(task.id, true);
+      }
+      try { await t.ipc.projectRemove(pid); } catch { /* already gone */ }
+      await t.useApp.getState().loadAll();
+    }, projectId);
+    rmTree(tmp, { bestEffort: true });
+  });
+
+  it("project list reports it as multi-repo with its members, and a single repo as single", () => {
+    const projects = JSON.parse(runCli(["--no-launch", "--json", "project", "list"],
+      { TERMIC_DATA_DIR: dataDir })).projects;
+    const p = projects.find((p: any) => p.name === PROJECT);
+    expect(p.type).toBe("multi");
+    expect(p.members.map((m: any) => [m.name, fs.realpathSync.native(m.root_path), m.non_git, m.base_branch])).toEqual([
+      ["alpha", fs.realpathSync.native(repo("alpha")), false, "main"],
+      ["beta", fs.realpathSync.native(repo("beta")), false, "main"],
+    ]);
+    const single = projects.find((p: any) => p.name === "fixture-repo");
+    expect(single.type).toBe("single");
+    expect(single.members).toBeUndefined();
+  });
+
+  it("worktrees only the named member, on the task branch", async () => {
+    // Case-insensitive, and no --worktree: naming a member means a worktree.
+    const out = JSON.parse(cli("cli-multi-alpha", "--member", "ALPHA"));
+    const task = stored(out.task.id);
+    expect(task.is_main_checkout).toBe(false);
+    expect(task.composition.map((m: any) => [m.dir_name, m.mode])).toEqual([["alpha", "worktree"]]);
+    // A real worktree of alpha on the task branch, not its live checkout.
+    const alpha = task.composition[0];
+    expect(alpha.branch).toBe(task.branch);
+    expect(gitIn(alpha.path, "rev-parse --abbrev-ref HEAD")).toBe(task.branch);
+    expect(fs.realpathSync.native(alpha.path)).not.toBe(fs.realpathSync.native(repo("alpha")));
+    // beta was not named: no branch cut there, and not in the task's repos.
+    expect(gitIn(repo("beta"), `branch --list ${JSON.stringify(task.branch)}`)).toBe("");
+    const st = await browser.execute((id) => window.__termic!.ipc.taskGitStatus(id), out.task.id);
+    expect(st.repos.map((r: any) => r.dir_name)).toEqual(["", "alpha"]);
+  });
+
+  it("worktrees every named member, each on the one task branch", async () => {
+    const out = JSON.parse(cli("cli-multi-both", "--member", "alpha", "--member", "beta"));
+    const task = stored(out.task.id);
+    expect(task.is_main_checkout).toBe(false);
+    expect(task.composition.map((m: any) => [m.dir_name, m.mode])).toEqual([
+      ["alpha", "worktree"],
+      ["beta", "worktree"],
+    ]);
+    for (const m of task.composition) {
+      expect(gitIn(m.path, "rev-parse --abbrev-ref HEAD")).toBe(task.branch);
+      expect(fs.realpathSync.native(m.path)).not.toBe(fs.realpathSync.native(repo(m.dir_name)));
+    }
+    const st = await browser.execute((id) => window.__termic!.ipc.taskGitStatus(id), out.task.id);
+    expect(st.repos.map((r: any) => r.dir_name)).toEqual(["", "alpha", "beta"]);
+  });
+
+  it("--main links only the named member's live checkout into the host", async () => {
+    const out = JSON.parse(cli("cli-multi-main", "--member", "beta", "--main"));
+    const task = stored(out.task.id);
+    expect(task.is_main_checkout).toBe(true);
+    expect(task.composition.map((m: any) => [m.dir_name, m.mode])).toEqual([["beta", "repo_root"]]);
+    expect(fs.realpathSync.native(path.join(repo("host"), "beta"))).toBe(fs.realpathSync.native(repo("beta")));
+    expect(fs.existsSync(path.join(repo("host"), "alpha"))).toBe(false);
+  });
+
+  it("refuses an unknown member, listing the members, and creates nothing", async () => {
+    let err = "";
+    try {
+      cli("cli-multi-typo", "--member", "alpha", "--member", "gamma");
+    } catch (e) {
+      err = (e as Error).message;
+    }
+    expect(err).toContain("exit 1");
+    expect(err).toContain("\"gamma\"");
+    expect(err).toContain("alpha, beta");
+    const list = await rpc({ cmd: "list", project: PROJECT });
+    expect(list.ok).toBe(true);
+    expect(list.data.tasks.some((t: any) => t.name === "cli-multi-typo")).toBe(false);
+    expect(gitIn(repo("alpha"), "branch --list \"*cli-multi-typo*\"")).toBe("");
+  });
+
+  it("refuses --member on a single-repo project, naming the multi-repo ones, and creates nothing", async () => {
+    let err = "";
+    try {
+      runCli(["--no-launch", "--json", "new", "cli-multi-single", "--member", "alpha",
+        "--project", "fixture-repo", "--agent", "fakeagent"], { TERMIC_DATA_DIR: dataDir });
+    } catch (e) {
+      err = (e as Error).message;
+    }
+    expect(err).toContain("exit 1");
+    expect(err).toContain("is not a multi-repo project; --member needs one");
+    const named = /\(multi-repo projects: ([^)]*)\)/.exec(err)?.[1].split(", ");
+    expect(named).toContain(PROJECT);
+    expect(named).not.toContain("fixture-repo");
+    const list = await rpc({ cmd: "list", project: "fixture-repo" });
+    expect(list.ok).toBe(true);
+    expect(list.data.tasks.some((t: any) => t.name === "cli-multi-single")).toBe(false);
+    const fixtureRoot = await browser.execute(() =>
+      (window.__termic!.useApp.getState().projects
+        .find((p: any) => p.name === "fixture-repo") as any).root_path);
+    expect(gitIn(fixtureRoot, "branch --list \"*cli-multi-single*\"")).toBe("");
+  });
+});
+
 describe("termic new task parameters (GH #287)", () => {
   let taskId = "";
 

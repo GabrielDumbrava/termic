@@ -210,6 +210,30 @@ Rules that matter:
 - Task names must be unique per project; a duplicate name is a clean
   error, so pick a fresh name or archive the old task first.
 
+### Multi-repo projects
+
+A multi-repo project holds several repos, possibly many (every service
+a team owns, say), plus a host folder whose CLAUDE.md and AGENTS.md
+every task of it sees. Each task picks the members it needs and gets
+its own worktree of each, on one task branch.
+
+Find one first. `project list` (MCP `project_list`) marks each
+multi-repo project and lists its members; with `--json`, `type` is
+"multi" and `members` holds each one's `name` and `root_path`:
+
+    "$TERMIC_CLI" project list
+
+Then name the members the task needs with `--member <name>`, once per
+member (MCP `task_new` `members`): each gets its own worktree on the
+task branch, a plain-folder member is linked, and the rest stay out.
+With `--main` the named members' live checkouts are linked instead. An
+unknown name fails before anything is created and lists the project's
+members. Without `--member` no member gets a worktree, so pass it
+whenever the work touches a member repo:
+
+    "$TERMIC_CLI" new fix-login --project shop --member api --member web \
+      -p "..."
+
 ### Your task group
 
 Every task you create with `new` from inside your own task joins YOUR
